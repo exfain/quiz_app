@@ -8,6 +8,7 @@ urlpatterns = [
     path('join/', views.join_session, name='join_session'),
     path('lobby/<str:session_code>/', views.lobby, name='lobby'),
     path('monitor/<str:session_code>/', views.monitor, name='monitor'),
+    path('spectate/<str:session_code>/', views.spectate_session, name='spectate_session'),
     path('session/<str:session_code>/leaderboard/', views.session_leaderboard, name='session_leaderboard'),
     # API endpoints
     path('api/session/<str:session_code>/leaderboard/', views.session_leaderboard_api, name='session_leaderboard_api'),

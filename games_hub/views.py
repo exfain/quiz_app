@@ -393,6 +393,15 @@ def monitor(request, session_code: str):
     })
 
 
+def spectate_session(request, session_code: str):
+    """Read-only spectator view for a hub session. No participant registration."""
+    session = get_object_or_404(HubSession, code=session_code)
+    return render(request, 'hub/spectate.html', {
+        'session': session,
+        'session_code': session_code,
+    })
+
+
 @login_required
 @require_POST
 def add_step_to_session(request, session_code):

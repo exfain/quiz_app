@@ -40,6 +40,9 @@
                         <i data-lucide="play" class="me-1"></i> Start Session
                     </button>
                     {% endif %}
+                    <button id="spectateBtn" class="btn btn-outline-info" onclick="window.open('/hub/spectate/{{ session.code }}/', '_blank')">
+                        <i data-lucide="monitor" class="me-1"></i> Spectator-View öffnen
+                    </button>
                     <button id="recallLobbyBtn" class="btn btn-outline-warning">
                         <i data-lucide="users" class="me-1"></i> Alle in Lobby zurück schicken (Debug-only)
                     </button>
