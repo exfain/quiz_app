@@ -355,7 +355,9 @@ class AssignConsumer(AsyncWebsocketConsumer):
             del self.__class__._round_submissions[key]
             await asyncio.sleep(2)
             self.__class__._auto_advancing.discard(advance_key)
-            await self.handle_admin_next_round({})
+            # expected_round mitsenden: wenn Admin-Timer die Runde bereits vorangerückt hat,
+            # erkennt der Guard in handle_admin_next_round den Konflikt und überspringt.
+            await self.handle_admin_next_round({'expected_round': round_index})
 
     async def handle_participant_submit_answer(self, data):
         """Speichert alle gesammelten Runden-Antworten als AssignAnswer in der DB."""
