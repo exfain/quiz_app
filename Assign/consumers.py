@@ -300,9 +300,7 @@ class AssignConsumer(AsyncWebsocketConsumer):
 
         if not is_correct:
             # Teilnehmer als ausgeschieden markieren
-            if self.room_code not in self.__class__._eliminated_participants:
-                self.__class__._eliminated_participants[self.room_code] = set()
-            self.__class__._eliminated_participants[self.room_code].add(self.channel_name)
+            self.__class__._eliminated_participants.setdefault(self.room_code, set()).add(self.channel_name)
 
         await self.send(text_data=json.dumps({
             'type': 'round_checked',
@@ -386,6 +384,15 @@ class AssignConsumer(AsyncWebsocketConsumer):
                     }
                 }
             )
+        else:
+            await self.send(text_data=json.dumps({
+                'type': 'answer_submitted',
+                'message': 'Already submitted or question not active',
+                'points_earned': 0,
+                'correct_matches': 0,
+                'total_matches': 0,
+                'accuracy': 0
+            }))
 
     async def handle_participant_join(self, data):
         """Handle new participant joining"""
