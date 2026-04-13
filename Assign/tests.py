@@ -30,6 +30,7 @@ class CheckRoundAnswerTest(TransactionTestCase):
         )
         self.consumer = AssignConsumer()
         self.consumer.room_code = '1234'
+        # Nur room_code wird benötigt; channel_name/channel_layer nicht gesetzt (kein WS-Kontext)
 
     def _get_shuffled_pos_for_original(self, original_idx):
         """Hilfsmethode: ermittelt shuffled Position für einen Original-Index."""
@@ -64,25 +65,40 @@ class CheckRoundAnswerTest(TransactionTestCase):
         )
         self.assertFalse(result)
 
-    def test_save_participant_answer_correct_conversion(self):
-        """save_participant_answer rechnet shuffled → original korrekt um."""
-        randomized = self.question.get_randomized_items(room_code='1234')
-        position_to_original = randomized['position_to_original']
+    def test_distractor_round_is_always_wrong(self):
+        """Eine Runde ohne Eintrag in correct_matches (Distractor) ergibt immer False."""
+        # round_index 99 existiert nicht in correct_matches → immer False
+        result = async_to_sync(self.consumer.check_round_answer)(
+            self.question, 99, {'99': 0}
+        )
+        self.assertFalse(result)
 
-        # Simuliere accumulatedMatches: {left_idx: shuffled_pos} für alle 3 korrekten Runden
+    def test_save_participant_answer_correct_conversion(self):
+        """save_participant_answer konvertiert shuffled→original korrekt und speichert AssignAnswer."""
+        # current_question auf dem Quiz setzen (notwendig für save_participant_answer)
+        self.quiz.current_question = self.question
+        self.quiz.save()
+
+        # Shuffled Matches für alle 3 korrekten Runden bauen
         shuffled_matches = {}
         for left_idx_str, correct_orig in self.question.correct_matches.items():
             shuffled_pos = self._get_shuffled_pos_for_original(correct_orig)
             shuffled_matches[left_idx_str] = shuffled_pos
 
-        # Konvertierung simulieren (wie in save_participant_answer)
-        original_user_matches = {}
-        for left_idx, shuffled_right_pos in shuffled_matches.items():
-            original_right_idx = position_to_original.get(int(shuffled_right_pos))
-            if original_right_idx is not None:
-                original_user_matches[left_idx] = original_right_idx
+        result = async_to_sync(self.consumer.save_participant_answer)(
+            'Alice', 'sess1', shuffled_matches, 12.0
+        )
 
-        self.assertEqual(original_user_matches, {'0': 2, '1': 0, '2': 1})
+        self.assertIsNotNone(result, "save_participant_answer sollte ein Ergebnis-Dict zurückgeben")
+        self.assertEqual(result['correct_matches'], 3)
+        self.assertEqual(result['points_earned'], 30)
+        self.assertEqual(result['accuracy'], 100.0)
+
+        # Sicherstellen dass AssignAnswer in der DB gespeichert wurde
+        answer = AssignAnswer.objects.get(
+            quiz=self.quiz, participant=self.participant, question=self.question
+        )
+        self.assertEqual(answer.user_matches, {'0': 2, '1': 0, '2': 1})
 
     def test_assign_answer_score_calculation(self):
         """AssignAnswer berechnet Punkte korrekt: 3 richtige × 10 Punkte = 30."""
@@ -108,4 +124,5 @@ class CheckRoundAnswerTest(TransactionTestCase):
         )
         self.assertEqual(answer.points_earned, 10)
         self.assertEqual(answer.get_correct_matches_count(), 1)
+        self.assertEqual(answer.get_total_matches_count(), 1)
         self.assertAlmostEqual(answer.get_accuracy_percentage(), 33.3, places=1)
