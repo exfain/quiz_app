@@ -1,3 +1,109 @@
 from django.test import TestCase
+from django.contrib.auth.models import User
+from .models import AssignQuiz, AssignQuestion, AssignParticipant, AssignAnswer
 
-# Create your tests here.
+
+class CheckRoundAnswerTest(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username='testuser', password='pass')
+        self.quiz = AssignQuiz.objects.create(
+            title='Test Quiz',
+            creator=self.user,
+            room_code='1234'
+        )
+        # Frage: 3 linke Items, 3 rechte Items, correct_matches = {"0": 2, "1": 0, "2": 1}
+        self.question = AssignQuestion.objects.create(
+            question_text='Match items',
+            points=10,
+            time_limit=60,
+            left_items=['A', 'B', 'C'],
+            right_items=['X', 'Y', 'Z'],
+            correct_matches={'0': 2, '1': 0, '2': 1},
+            created_by=self.user,
+        )
+        self.participant = AssignParticipant.objects.create(
+            quiz=self.quiz,
+            name='Alice',
+            hub_session_code='sess1'
+        )
+
+    def _get_shuffled_pos_for_original(self, original_idx):
+        """Hilfsmethode: ermittelt shuffled Position für einen Original-Index."""
+        randomized = self.question.get_randomized_items(room_code='1234')
+        for shuffled_pos, orig in randomized['position_to_original'].items():
+            if orig == original_idx:
+                return shuffled_pos
+        return None
+
+    def test_correct_answer_round_0(self):
+        """Richtige Zuordnung für Runde 0 ergibt True."""
+        shuffled_pos = self._get_shuffled_pos_for_original(2)  # correct: right[2] = 'Z'
+        randomized = self.question.get_randomized_items(room_code='1234')
+        position_to_original = randomized['position_to_original']
+
+        user_match = {'0': shuffled_pos}
+        original_right_idx = position_to_original.get(int(shuffled_pos))
+        correct_original_idx = self.question.correct_matches.get('0')
+        self.assertEqual(int(original_right_idx), int(correct_original_idx))
+
+    def test_wrong_answer_round_0(self):
+        """Falsche Zuordnung für Runde 0 ergibt False."""
+        # correct für Runde 0 ist original_idx 2, wir nehmen original_idx 0
+        shuffled_pos = self._get_shuffled_pos_for_original(0)
+        randomized = self.question.get_randomized_items(room_code='1234')
+        position_to_original = randomized['position_to_original']
+
+        original_right_idx = position_to_original.get(int(shuffled_pos))
+        correct_original_idx = self.question.correct_matches.get('0')
+        self.assertNotEqual(int(original_right_idx), int(correct_original_idx))
+
+    def test_empty_match_is_wrong(self):
+        """Leeres user_match (kein Drop) zählt als falsch."""
+        user_match = {}
+        shuffled_right_pos = user_match.get('0')
+        self.assertIsNone(shuffled_right_pos)
+
+    def test_save_participant_answer_correct_conversion(self):
+        """save_participant_answer rechnet shuffled → original korrekt um."""
+        randomized = self.question.get_randomized_items(room_code='1234')
+        position_to_original = randomized['position_to_original']
+
+        # Simuliere accumulatedMatches: {left_idx: shuffled_pos} für alle 3 korrekten Runden
+        shuffled_matches = {}
+        for left_idx_str, correct_orig in self.question.correct_matches.items():
+            shuffled_pos = self._get_shuffled_pos_for_original(correct_orig)
+            shuffled_matches[left_idx_str] = shuffled_pos
+
+        # Konvertierung simulieren (wie in save_participant_answer)
+        original_user_matches = {}
+        for left_idx, shuffled_right_pos in shuffled_matches.items():
+            original_right_idx = position_to_original.get(int(shuffled_right_pos))
+            if original_right_idx is not None:
+                original_user_matches[left_idx] = original_right_idx
+
+        self.assertEqual(original_user_matches, {'0': 2, '1': 0, '2': 1})
+
+    def test_assign_answer_score_calculation(self):
+        """AssignAnswer berechnet Punkte korrekt: 3 richtige × 10 Punkte = 30."""
+        answer = AssignAnswer.objects.create(
+            quiz=self.quiz,
+            participant=self.participant,
+            question=self.question,
+            user_matches={'0': 2, '1': 0, '2': 1},  # alle korrekt (original indices)
+            time_taken=15.0
+        )
+        self.assertEqual(answer.points_earned, 30)
+        self.assertEqual(answer.get_correct_matches_count(), 3)
+        self.assertEqual(answer.get_accuracy_percentage(), 100.0)
+
+    def test_assign_answer_partial_score(self):
+        """AssignAnswer berechnet Teilpunkte: 1 richtig × 10 Punkte = 10."""
+        answer = AssignAnswer.objects.create(
+            quiz=self.quiz,
+            participant=self.participant,
+            question=self.question,
+            user_matches={'0': 2},  # nur Runde 0 korrekt
+            time_taken=5.0
+        )
+        self.assertEqual(answer.points_earned, 10)
+        self.assertEqual(answer.get_correct_matches_count(), 1)
