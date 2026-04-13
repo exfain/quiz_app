@@ -145,11 +145,6 @@
                                         Zurücksetzen
                                     </button>
 
-                                    <!-- Submit Button -->
-                                    <button class="btn btn-primary btn-lg w-100 submit-answer" id="submitAnswerBtn" disabled>
-                                        <i data-lucide="check-circle"></i>
-                                        Antwort absenden
-                                    </button>
                                 </div>
                             </div>
                         </div>
@@ -714,43 +709,6 @@
             background: var(--secondary-200);
         }
 
-        /* Submit Button */
-        .submit-answer {
-            height: 60px;
-            font-size: 1.125rem;
-            font-weight: 600;
-            transition: all var(--transition-fast);
-        }
-
-        .submit-answer:disabled {
-            opacity: 0.5;
-            cursor: not-allowed;
-        }
-
-        .submit-answer.loading {
-            position: relative;
-            color: transparent !important;
-        }
-
-        .submit-answer.loading::after {
-            content: '';
-            position: absolute;
-            width: 20px;
-            height: 20px;
-            top: 50%;
-            left: 50%;
-            margin-left: -10px;
-            margin-top: -10px;
-            border: 2px solid transparent;
-            border-top-color: currentColor;
-            border-radius: 50%;
-            animation: spin 1s linear infinite;
-        }
-
-        @keyframes spin {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
-        }
 
         /* Answer Submitted State */
         .submitted-card {
@@ -1137,10 +1095,6 @@
                 }
 
                 bindEvents() {
-                    // Submit answer button
-                    document.getElementById('submitAnswerBtn').addEventListener('click', () => {
-                        this.submitAnswer();
-                    });
                     // Zurücksetzen button
                     document.getElementById('resetRoundBtn')?.addEventListener('click', () => {
                         this.resetRoundDrop();
@@ -1424,12 +1378,6 @@
                     }
 
                     // Submit-Button einblenden (deaktiviert bis eine Zuordnung gemacht wurde)
-                    const submitBtn = document.getElementById('submitAnswerBtn');
-                    submitBtn.style.display = '';
-                    submitBtn.disabled = true;
-                    submitBtn.innerHTML = '<i data-lucide="check-circle"></i> Antwort bestätigen';
-                    try { lucide.createIcons(); } catch(_) {}
-
                     // Reset-Button ausblenden (neue Runde = kein Drop vorhanden)
                     const resetBtn = document.getElementById('resetRoundBtn');
                     if (resetBtn) resetBtn.classList.add('d-none');
@@ -1602,9 +1550,7 @@
 
                     this.userMatches = { [leftIndex]: rightIndex };
 
-                    // Submit-Button aktivieren, Reset-Button einblenden
-                    const submitBtn = document.getElementById('submitAnswerBtn');
-                    if (submitBtn) submitBtn.disabled = false;
+                    // Reset-Button einblenden
                     const resetBtn = document.getElementById('resetRoundBtn');
                     if (resetBtn) resetBtn.classList.remove('d-none');
                 }
@@ -1627,9 +1573,7 @@
                         el.classList.remove('inactive-item');
                         el.draggable = true;
                     });
-                    // Submit sperren, Reset ausblenden
-                    const submitBtn = document.getElementById('submitAnswerBtn');
-                    if (submitBtn) submitBtn.disabled = true;
+                    // Reset ausblenden
                     const resetBtn = document.getElementById('resetRoundBtn');
                     if (resetBtn) resetBtn.classList.add('d-none');
                     this.userMatches = {};
@@ -1693,7 +1637,6 @@
 
                     // UI sperren
                     document.querySelectorAll('.draggable-item').forEach(el => { el.draggable = false; el.style.cursor = 'default'; });
-                    document.getElementById('submitAnswerBtn').style.display = 'none';
                     const resetBtn = document.getElementById('resetRoundBtn');
                     if (resetBtn) resetBtn.classList.add('d-none');
 
@@ -1742,7 +1685,6 @@
                             document.querySelectorAll('.draggable-item').forEach(el => {
                                 el.draggable = false; el.style.cursor = 'default';
                             });
-                            document.getElementById('submitAnswerBtn').style.display = 'none';
                             const resetBtn = document.getElementById('resetRoundBtn');
                             if (resetBtn) resetBtn.classList.add('d-none');
                         }
