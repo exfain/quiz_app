@@ -1158,6 +1158,7 @@
                     this._pendingHistoryEntry = null;
                     this._wrongEntry = null;
                     this._bufferedRoundsComplete = false;
+                    this._bufferedRoundAdvanced = null;
                     this.userMatches = {};
                     this.questionStartTime = Date.now();
                     this.currentQuestion = question;
@@ -1680,6 +1681,7 @@
 
                     const leftIdx = parseInt(Object.keys(this.userMatches)[0]);
                     const rightIdx = this.userMatches[leftIdx];
+                    console.log('[submitAnswer] leftIdx:', leftIdx, 'rightIdx:', rightIdx, 'userMatches:', JSON.stringify(this.userMatches));
                     this.accumulatedMatches[leftIdx] = rightIdx;
                     this.roundSubmitted = true;
 
@@ -1707,12 +1709,29 @@
 
                 onTimeUp() {
                     if (this.hasAnswered || this.roundSubmitted) return;
+                    console.log('[onTimeUp] userMatches:', JSON.stringify(this.userMatches), 'currentRoundIndex:', this.currentRoundIndex);
+
+                    // Sicherheitsnetz: userMatches aus dem DOM rekonstruieren falls leer aber ein Drop sichtbar ist
+                    if (Object.keys(this.userMatches).length === 0) {
+                        const matchedItem = document.querySelector('.draggable-item.matched');
+                        const occupiedZone = document.querySelector('.drop-zone.occupied:not(.completed-round)');
+                        if (matchedItem && occupiedZone) {
+                            const leftIndex = parseInt(matchedItem.dataset.leftIndex);
+                            const rightIndex = parseInt(occupiedZone.dataset.rightIndex);
+                            if (!isNaN(leftIndex) && !isNaN(rightIndex)) {
+                                console.warn('[onTimeUp] userMatches war leer, rekonstruiert aus DOM:', leftIndex, '→', rightIndex);
+                                this.userMatches = { [leftIndex]: rightIndex };
+                            }
+                        }
+                    }
+
                     if (Object.keys(this.userMatches).length > 0) {
                         // Vorhandene Zuordnung einreichen
                         this.submitAnswer();
                     } else {
                         // Keine Zuordnung getroffen → leere Antwort → Eliminierung
                         if (this.websocket && this.websocket.readyState === WebSocket.OPEN) {
+                            console.log('[onTimeUp] Keine Zuordnung — leere Antwort gesendet');
                             this.websocket.send(JSON.stringify({
                                 type: 'participant_check_round',
                                 round_index: this.currentRoundIndex,

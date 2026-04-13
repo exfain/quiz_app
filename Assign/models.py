@@ -131,37 +131,27 @@ class AssignQuestion(SyncBase):
     def get_randomized_items(self, room_code=None):
         """Return items with right items shuffled for gameplay"""
         import random
-        
-        # Create a deterministic seed based on question ID and room code
+        import hashlib
+
+        # Deterministic seed via MD5 (unaffected by PYTHONHASHSEED, thread-safe)
         seed_string = f"{self.id}_{room_code or 'default'}"
-        seed = abs(hash(seed_string)) % (2**32)
-        
-        # Save the current random state
-        random_state = random.getstate()
-        
-        try:
-            # Set our deterministic seed
-            random.seed(seed)
-            
-            # Create a copy of right items with original indices
-            right_items_with_indices = [(i, item) for i, item in enumerate(self.right_items)]
-            
-            # Shuffle the right items deterministically
-            shuffled_right_items = right_items_with_indices.copy()
-            random.shuffle(shuffled_right_items)
-            
-            # Create mapping from shuffled position to original index
-            position_to_original = {}
-            shuffled_right_items_formatted = []
-            
-            for new_pos, (original_idx, text) in enumerate(shuffled_right_items):
-                position_to_original[new_pos] = original_idx
-                shuffled_right_items_formatted.append({'id': new_pos, 'text': text})
-            
-        finally:
-            # Always restore the previous random state
-            random.setstate(random_state)
-        
+        seed_bytes = hashlib.md5(seed_string.encode()).digest()
+        seed = int.from_bytes(seed_bytes[:4], 'big')
+
+        # Use a local Random instance — never touches the global random state,
+        # so concurrent threads cannot corrupt each other's shuffle.
+        rng = random.Random(seed)
+
+        right_items_with_indices = [(i, item) for i, item in enumerate(self.right_items)]
+        shuffled_right_items = right_items_with_indices.copy()
+        rng.shuffle(shuffled_right_items)
+
+        position_to_original = {}
+        shuffled_right_items_formatted = []
+        for new_pos, (original_idx, text) in enumerate(shuffled_right_items):
+            position_to_original[new_pos] = original_idx
+            shuffled_right_items_formatted.append({'id': new_pos, 'text': text})
+
         return {
             'left_items': [{'id': i, 'text': item} for i, item in enumerate(self.left_items)],
             'right_items': shuffled_right_items_formatted,
