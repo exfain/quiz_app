@@ -1705,10 +1705,20 @@
                 }
 
                 onTimeUp() {
-                    if (this.hasAnswered) return;
-                    // Wenn noch ein Drop vorliegt, der nicht bestätigt wurde → auto-submit
-                    if (!this.roundSubmitted && this.userMatches && Object.keys(this.userMatches).length > 0) {
+                    if (this.hasAnswered || this.roundSubmitted) return;
+                    if (Object.keys(this.userMatches).length > 0) {
+                        // Vorhandene Zuordnung einreichen
                         this.submitAnswer();
+                    } else {
+                        // Keine Zuordnung getroffen → leere Antwort → Eliminierung
+                        if (this.websocket && this.websocket.readyState === WebSocket.OPEN) {
+                            this.websocket.send(JSON.stringify({
+                                type: 'participant_check_round',
+                                round_index: this.currentRoundIndex,
+                                user_match: {},
+                            }));
+                            this.roundSubmitted = true;
+                        }
                     }
                 }
 
