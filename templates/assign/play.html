@@ -1718,6 +1718,13 @@
                                 user_match: {},
                             }));
                             this.roundSubmitted = true;
+                            // UI sperren (identisch zu submitAnswer)
+                            document.querySelectorAll('.draggable-item').forEach(el => {
+                                el.draggable = false; el.style.cursor = 'default';
+                            });
+                            document.getElementById('submitAnswerBtn').style.display = 'none';
+                            const resetBtn = document.getElementById('resetRoundBtn');
+                            if (resetBtn) resetBtn.classList.add('d-none');
                         }
                     }
                 }
