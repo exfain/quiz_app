@@ -1471,7 +1471,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 // Immer admin_next_round senden – auch bei letzter Runde.
                 // Der Server sendet dann question_rounds_complete (statt question_ended),
                 // damit Teilnehmer ihre letzte Antwort noch auto-submiten können.
-                this.websocket.send(JSON.stringify({ type: 'admin_next_round' }));
+                this.websocket.send(JSON.stringify({ type: 'admin_next_round', expected_round: this.currentRoundIndex }));
             }
         }
         

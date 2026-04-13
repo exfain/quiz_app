@@ -207,6 +207,14 @@ class AssignConsumer(AsyncWebsocketConsumer):
         if not quiz or not quiz.current_question:
             return
 
+        # Guard gegen Doppel-Advance: Wenn Admin-Timer und Auto-Advance gleichzeitig feuern,
+        # prüfen ob die Runde noch dem erwarteten Stand entspricht.
+        expected_round = data.get('expected_round')
+        if expected_round is not None:
+            current_round = await self.get_current_round_index(quiz.id)
+            if current_round != expected_round:
+                return
+
         question = quiz.current_question
         question_data = await self.get_question_data(question)
         total_rounds = len(question_data['left_items'])
