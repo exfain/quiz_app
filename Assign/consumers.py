@@ -3,7 +3,7 @@ import json
 from channels.generic.websocket import AsyncWebsocketConsumer
 from channels.db import database_sync_to_async
 from django.utils import timezone
-from .models import AssignQuiz, AssignParticipant, AssignQuestion
+from .models import AssignQuiz, AssignParticipant, AssignQuestion, AssignAnswer
 from games_hub.models import HubGameStep
 
 
@@ -18,6 +18,8 @@ class AssignConsumer(AsyncWebsocketConsumer):
     _channel_participants: dict[str, str] = {}
     # Effektives Zeit-Limit pro Raum (kann vom gespeicherten Wert abweichen)
     _effective_time_limits: dict[str, int] = {}
+    # Tracks eliminated participant channels per room
+    _eliminated_participants: dict[str, set] = {}
 
     async def connect(self):
         self.room_code = self.scope['url_route']['kwargs']['room_code']
@@ -51,6 +53,9 @@ class AssignConsumer(AsyncWebsocketConsumer):
             self.__class__._participant_channels[self.room_code].discard(self.channel_name)
         # Teilnehmer-Name-Mapping entfernen
         self.__class__._channel_participants.pop(self.channel_name, None)
+        # Eliminated-Tracking bereinigen
+        if self.room_code in self.__class__._eliminated_participants:
+            self.__class__._eliminated_participants[self.room_code].discard(self.channel_name)
 
     # Receive message from WebSocket
     async def receive(self, text_data):
@@ -73,6 +78,8 @@ class AssignConsumer(AsyncWebsocketConsumer):
                 await self.handle_admin_show_solution(text_data_json)
             elif message_type == 'participant_check_round':
                 await self.handle_participant_check_round(text_data_json)
+            elif message_type == 'participant_submit_answer':
+                await self.handle_participant_submit_answer(text_data_json)
             elif message_type == 'participant_join':
                 await self.handle_participant_join(text_data_json)
             elif message_type == 'ping':
@@ -145,6 +152,8 @@ class AssignConsumer(AsyncWebsocketConsumer):
             if key[0] == self.room_code:
                 del self.__class__._round_submissions[key]
         self.__class__._auto_advancing.discard(self.room_code)
+        # Eliminierte Teilnehmer für neue Frage zurücksetzen
+        self.__class__._eliminated_participants[self.room_code] = set()
 
         # Get question data for drag-drop
         question_data = await self.get_question_data(question)
@@ -275,7 +284,11 @@ class AssignConsumer(AsyncWebsocketConsumer):
             })
 
     async def handle_participant_check_round(self, data):
-        """Prüft die Zuordnung für eine einzelne Runde und gibt is_correct zurück (ohne DB-Speicherung)."""
+        """Prüft die Zuordnung für eine einzelne Runde. Eliminiert Teilnehmer bei falscher Antwort."""
+        # Bereits ausgeschiedene Teilnehmer ignorieren
+        if self.channel_name in self.__class__._eliminated_participants.get(self.room_code, set()):
+            return
+
         round_index = data.get('round_index', 0)
         user_match = data.get('user_match', {})  # {str(left_idx): shuffled_right_pos}
 
@@ -284,10 +297,18 @@ class AssignConsumer(AsyncWebsocketConsumer):
             return
 
         is_correct = await self.check_round_answer(quiz.current_question, round_index, user_match)
+
+        if not is_correct:
+            # Teilnehmer als ausgeschieden markieren
+            if self.room_code not in self.__class__._eliminated_participants:
+                self.__class__._eliminated_participants[self.room_code] = set()
+            self.__class__._eliminated_participants[self.room_code].add(self.channel_name)
+
         await self.send(text_data=json.dumps({
             'type': 'round_checked',
             'is_correct': is_correct,
             'round_index': round_index,
+            'eliminated': not is_correct,
         }))
 
         # Live-Response an Admin broadcasten
@@ -307,10 +328,10 @@ class AssignConsumer(AsyncWebsocketConsumer):
             }
         )
 
-        # Auto-advance: track this channel's submission for the current round.
-        # Nur auslösen wenn round_index mit dem aktuellen Serverstand übereinstimmt –
-        # verhindert, dass verspätete Einreichungen (nach manuellem Admin-Advance) einen
-        # zu frühen Runden-Wechsel triggern und den Teilnehmer fälschlicherweise eliminieren.
+        if not is_correct:
+            return  # Ausgeschieden — kein Auto-Advance-Tracking
+
+        # Auto-advance: nur auslösen wenn round_index mit aktuellem Serverstand übereinstimmt
         current_server_round = await self.get_current_round_index(quiz.id)
         if current_server_round != round_index:
             return
@@ -329,6 +350,42 @@ class AssignConsumer(AsyncWebsocketConsumer):
             await asyncio.sleep(2)
             self.__class__._auto_advancing.discard(advance_key)
             await self.handle_admin_next_round({})
+
+    async def handle_participant_submit_answer(self, data):
+        """Speichert alle gesammelten Runden-Antworten als AssignAnswer in der DB."""
+        participant_name = data.get('participant_name')
+        hub_session = data.get('hub_session')
+        user_matches = data.get('user_matches', {})
+        time_taken = data.get('time_taken', 0)
+
+        answer = await self.save_participant_answer(
+            participant_name, hub_session, user_matches, time_taken
+        )
+
+        if answer:
+            await self.send(text_data=json.dumps({
+                'type': 'answer_submitted',
+                'message': 'Answer submitted successfully',
+                'points_earned': answer['points_earned'],
+                'correct_matches': answer['correct_matches'],
+                'total_matches': answer['total_matches'],
+                'accuracy': answer['accuracy']
+            }))
+
+            await self.channel_layer.group_send(
+                self.room_group_name,
+                {
+                    'type': 'participant_answered',
+                    'answer': {
+                        'participant_name': participant_name,
+                        'points_earned': answer['points_earned'],
+                        'correct_matches': answer['correct_matches'],
+                        'total_matches': answer['total_matches'],
+                        'time_taken': time_taken,
+                        'accuracy': answer['accuracy']
+                    }
+                }
+            )
 
     async def handle_participant_join(self, data):
         """Handle new participant joining"""
@@ -710,9 +767,10 @@ class AssignConsumer(AsyncWebsocketConsumer):
             pass
     
     async def get_active_participant_count(self):
-        """Anzahl aktiver (verbundener) Teilnehmer-Channels in diesem Quiz."""
+        """Anzahl aktiver Teilnehmer-Channels: verbunden UND nicht ausgeschieden."""
         channels = self.__class__._participant_channels.get(self.room_code, set())
-        return len(channels)
+        eliminated = self.__class__._eliminated_participants.get(self.room_code, set())
+        return len(channels - eliminated)
 
     @database_sync_to_async
     def get_final_scores(self):
@@ -733,3 +791,48 @@ class AssignConsumer(AsyncWebsocketConsumer):
             return list(qs.values('name', 'total_score'))
         except AssignQuiz.DoesNotExist:
             return []
+
+    @database_sync_to_async
+    def save_participant_answer(self, participant_name, hub_session, user_matches, time_taken):
+        """Konvertiert shuffled Positionen → Original-Indizes und speichert AssignAnswer."""
+        try:
+            quiz = AssignQuiz.objects.select_related('current_question').get(room_code=self.room_code)
+            participant = quiz.participants.get(name=participant_name, hub_session_code=hub_session)
+
+            if not quiz.current_question:
+                return None
+
+            # Doppeltes Speichern verhindern
+            existing = AssignAnswer.objects.filter(
+                quiz=quiz, participant=participant, question=quiz.current_question
+            ).first()
+            if existing:
+                return None
+
+            # Shuffled Positionen → Original-Indizes umrechnen
+            randomized_data = quiz.current_question.get_randomized_items(room_code=self.room_code)
+            position_to_original = randomized_data['position_to_original']
+
+            original_user_matches = {}
+            for left_idx, shuffled_right_pos in user_matches.items():
+                original_right_idx = position_to_original.get(int(shuffled_right_pos))
+                if original_right_idx is not None:
+                    original_user_matches[left_idx] = original_right_idx
+
+            answer = AssignAnswer.objects.create(
+                quiz=quiz,
+                participant=participant,
+                question=quiz.current_question,
+                user_matches=original_user_matches,
+                time_taken=time_taken
+            )
+
+            return {
+                'points_earned': answer.points_earned,
+                'correct_matches': answer.get_correct_matches_count(),
+                'total_matches': answer.get_total_matches_count(),
+                'accuracy': answer.get_accuracy_percentage()
+            }
+
+        except (AssignQuiz.DoesNotExist, AssignParticipant.DoesNotExist):
+            return None
