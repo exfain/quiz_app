@@ -355,9 +355,10 @@ class AssignConsumer(AsyncWebsocketConsumer):
         hub_session = data.get('hub_session')
         user_matches = data.get('user_matches', {})
         time_taken = data.get('time_taken', 0)
+        question_id = data.get('question_id')
 
         answer = await self.save_participant_answer(
-            participant_name, hub_session, user_matches, time_taken
+            participant_name, hub_session, user_matches, time_taken, question_id
         )
 
         if answer:
@@ -800,24 +801,32 @@ class AssignConsumer(AsyncWebsocketConsumer):
             return []
 
     @database_sync_to_async
-    def save_participant_answer(self, participant_name, hub_session, user_matches, time_taken):
+    def save_participant_answer(self, participant_name, hub_session, user_matches, time_taken, question_id=None):
         """Konvertiert shuffled Positionen → Original-Indizes und speichert AssignAnswer."""
         try:
             quiz = AssignQuiz.objects.select_related('current_question').get(room_code=self.room_code)
             participant = quiz.participants.get(name=participant_name, hub_session_code=hub_session)
 
-            if not quiz.current_question:
+            # Frage per question_id nachschlagen (bevorzugt), Fallback auf current_question
+            if question_id:
+                try:
+                    question = AssignQuestion.objects.get(id=question_id)
+                except AssignQuestion.DoesNotExist:
+                    return None
+            elif quiz.current_question:
+                question = quiz.current_question
+            else:
                 return None
 
             # Doppeltes Speichern verhindern
             existing = AssignAnswer.objects.filter(
-                quiz=quiz, participant=participant, question=quiz.current_question
+                quiz=quiz, participant=participant, question=question
             ).first()
             if existing:
                 return None
 
             # Shuffled Positionen → Original-Indizes umrechnen
-            randomized_data = quiz.current_question.get_randomized_items(room_code=self.room_code)
+            randomized_data = question.get_randomized_items(room_code=self.room_code)
             position_to_original = randomized_data['position_to_original']
 
             original_user_matches = {}
@@ -829,7 +838,7 @@ class AssignConsumer(AsyncWebsocketConsumer):
             answer = AssignAnswer.objects.create(
                 quiz=quiz,
                 participant=participant,
-                question=quiz.current_question,
+                question=question,
                 user_matches=original_user_matches,
                 time_taken=time_taken
             )

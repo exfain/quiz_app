@@ -1279,7 +1279,8 @@
                             participant_name: this.participantName,
                             hub_session: this.hubSession,
                             user_matches: this.accumulatedMatches,
-                            time_taken: timeTaken
+                            time_taken: timeTaken,
+                            question_id: this.currentQuestion ? this.currentQuestion.id : null,
                         }));
                         this.hasAnswered = true;
                     }
