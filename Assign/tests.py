@@ -1,9 +1,11 @@
-from django.test import TestCase
+from django.test import TransactionTestCase
 from django.contrib.auth.models import User
+from asgiref.sync import async_to_sync
 from .models import AssignQuiz, AssignQuestion, AssignParticipant, AssignAnswer
+from .consumers import AssignConsumer
 
 
-class CheckRoundAnswerTest(TestCase):
+class CheckRoundAnswerTest(TransactionTestCase):
     def setUp(self):
         self.user = User.objects.create_user(username='testuser', password='pass')
         self.quiz = AssignQuiz.objects.create(
@@ -26,6 +28,8 @@ class CheckRoundAnswerTest(TestCase):
             name='Alice',
             hub_session_code='sess1'
         )
+        self.consumer = AssignConsumer()
+        self.consumer.room_code = '1234'
 
     def _get_shuffled_pos_for_original(self, original_idx):
         """Hilfsmethode: ermittelt shuffled Position für einen Original-Index."""
@@ -37,31 +41,28 @@ class CheckRoundAnswerTest(TestCase):
 
     def test_correct_answer_round_0(self):
         """Richtige Zuordnung für Runde 0 ergibt True."""
-        shuffled_pos = self._get_shuffled_pos_for_original(2)  # correct: right[2] = 'Z'
-        randomized = self.question.get_randomized_items(room_code='1234')
-        position_to_original = randomized['position_to_original']
-
-        user_match = {'0': shuffled_pos}
-        original_right_idx = position_to_original.get(int(shuffled_pos))
-        correct_original_idx = self.question.correct_matches.get('0')
-        self.assertEqual(int(original_right_idx), int(correct_original_idx))
+        # correct für Runde 0 ist original_idx 2 (right_items[2] = 'Z')
+        shuffled_pos = self._get_shuffled_pos_for_original(2)
+        result = async_to_sync(self.consumer.check_round_answer)(
+            self.question, 0, {'0': shuffled_pos}
+        )
+        self.assertTrue(result)
 
     def test_wrong_answer_round_0(self):
         """Falsche Zuordnung für Runde 0 ergibt False."""
-        # correct für Runde 0 ist original_idx 2, wir nehmen original_idx 0
+        # correct für Runde 0 ist original_idx 2; wir nehmen original_idx 0 (falsch)
         shuffled_pos = self._get_shuffled_pos_for_original(0)
-        randomized = self.question.get_randomized_items(room_code='1234')
-        position_to_original = randomized['position_to_original']
-
-        original_right_idx = position_to_original.get(int(shuffled_pos))
-        correct_original_idx = self.question.correct_matches.get('0')
-        self.assertNotEqual(int(original_right_idx), int(correct_original_idx))
+        result = async_to_sync(self.consumer.check_round_answer)(
+            self.question, 0, {'0': shuffled_pos}
+        )
+        self.assertFalse(result)
 
     def test_empty_match_is_wrong(self):
         """Leeres user_match (kein Drop) zählt als falsch."""
-        user_match = {}
-        shuffled_right_pos = user_match.get('0')
-        self.assertIsNone(shuffled_right_pos)
+        result = async_to_sync(self.consumer.check_round_answer)(
+            self.question, 0, {}
+        )
+        self.assertFalse(result)
 
     def test_save_participant_answer_correct_conversion(self):
         """save_participant_answer rechnet shuffled → original korrekt um."""
@@ -107,3 +108,4 @@ class CheckRoundAnswerTest(TestCase):
         )
         self.assertEqual(answer.points_earned, 10)
         self.assertEqual(answer.get_correct_matches_count(), 1)
+        self.assertAlmostEqual(answer.get_accuracy_percentage(), 33.3, places=1)
