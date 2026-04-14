@@ -1195,7 +1195,8 @@ document.addEventListener('DOMContentLoaded', function() {
         sendNextRound() {
             if (this.websocket && this.websocket.readyState === WebSocket.OPEN) {
                 this.websocket.send(JSON.stringify({
-                    type: 'admin_next_round'
+                    type: 'admin_next_round',
+                    expected_round: this.currentRoundIndex
                 }));
             }
         }
@@ -1203,7 +1204,8 @@ document.addEventListener('DOMContentLoaded', function() {
         endRoundEarly() {
             if (this.websocket && this.websocket.readyState === WebSocket.OPEN) {
                 this.websocket.send(JSON.stringify({
-                    type: 'admin_next_round'
+                    type: 'admin_next_round',
+                    expected_round: this.currentRoundIndex
                 }));
             }
         }
