@@ -1481,8 +1481,14 @@
                         zonesList.appendChild(completedZone);
                     });
 
+                    // Bereits korrekt gematchte rechte Items ausfiltern (client-seitig, timing-sicher)
+                    const usedRightIndices = new Set(
+                        (this.roundHistory || []).map(h => h.rightIdx).filter(r => r !== undefined)
+                    );
+                    const filteredNormRight = normRight.filter(item => !usedRightIndices.has(item.originalIndex));
+
                     // Danach aktive Drop-Zones für die aktuelle Runde
-                    normRight.forEach((item) => {
+                    filteredNormRight.forEach((item) => {
                         const dropZone = document.createElement('div');
                         dropZone.className = 'drop-zone';
                         dropZone.dataset.rightIndex = item.originalIndex;
@@ -1633,7 +1639,7 @@
                     const leftText = document.querySelector(`.draggable-item[data-left-index="${leftIdx}"]`)?.textContent?.trim() || '';
                     const occupiedZone = document.querySelector('.drop-zone.occupied:not(.completed-round)');
                     const rightText = occupiedZone?.querySelector('.drop-zone-label')?.textContent?.trim() || '';
-                    this._pendingHistoryEntry = { leftIdx, leftText, rightText };
+                    this._pendingHistoryEntry = { leftIdx, leftText, rightText, rightIdx };
 
                     // UI sperren
                     document.querySelectorAll('.draggable-item').forEach(el => { el.draggable = false; el.style.cursor = 'default'; });
@@ -1644,7 +1650,8 @@
                     if (this.websocket && this.websocket.readyState === WebSocket.OPEN) {
                         this.websocket.send(JSON.stringify({
                             type: 'participant_check_round',
-                            round_index: leftIdx,
+                            round_index: this.currentRoundIndex,
+                            left_item_index: leftIdx,
                             user_match: { [leftIdx]: rightIdx },
                         }));
                     }

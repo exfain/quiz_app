@@ -8,7 +8,7 @@ from games_hub.models import HubGameStep
 
 
 class AssignConsumer(AsyncWebsocketConsumer):
-    # Tracks which channels have submitted for a given (room_code, round_index)
+    # Tracks which channels have submitted for a given (room_code, server_round_index)
     _round_submissions: dict[tuple, set] = {}
     # Prevents duplicate auto-advance/auto-end triggers
     _auto_advancing: set = set()
@@ -20,6 +20,8 @@ class AssignConsumer(AsyncWebsocketConsumer):
     _effective_time_limits: dict[str, int] = {}
     # Tracks eliminated participant channels per room
     _eliminated_participants: dict[str, set] = {}
+    # Tracks original right-item indices that were correctly matched per room
+    _room_matched_originals: dict[str, set] = {}
 
     async def connect(self):
         self.room_code = self.scope['url_route']['kwargs']['room_code']
@@ -154,6 +156,8 @@ class AssignConsumer(AsyncWebsocketConsumer):
         self.__class__._auto_advancing.discard(self.room_code)
         # Eliminierte Teilnehmer für neue Frage zurücksetzen
         self.__class__._eliminated_participants[self.room_code] = set()
+        # Verwendete rechte Items für neue Frage zurücksetzen
+        self.__class__._room_matched_originals[self.room_code] = set()
 
         # Get question data for drag-drop
         question_data = await self.get_question_data(question)
@@ -297,14 +301,15 @@ class AssignConsumer(AsyncWebsocketConsumer):
         if self.channel_name in self.__class__._eliminated_participants.get(self.room_code, set()):
             return
 
-        round_index = data.get('round_index', 0)
+        round_index = data.get('round_index', 0)  # Server-Rundenstand (für Guard und Auto-Advance)
+        left_item_index = data.get('left_item_index', round_index)  # Tatsächlicher linker Item-Index (für Check)
         user_match = data.get('user_match', {})  # {str(left_idx): shuffled_right_pos}
 
         quiz = await self.get_quiz()
         if not quiz or not quiz.current_question:
             return
 
-        is_correct = await self.check_round_answer(quiz.current_question, round_index, user_match)
+        is_correct, original_right_idx = await self.check_round_answer(quiz.current_question, left_item_index, user_match)
 
         if not is_correct:
             # Teilnehmer als ausgeschieden markieren
@@ -337,11 +342,16 @@ class AssignConsumer(AsyncWebsocketConsumer):
         if not is_correct:
             return  # Ausgeschieden — kein Auto-Advance-Tracking
 
-        # Auto-advance: nur auslösen wenn round_index mit aktuellem Serverstand übereinstimmt
+        # Original-Index des korrekt gematchten rechten Items merken (für Filterung der nächsten Runde)
+        if original_right_idx is not None:
+            self.__class__._room_matched_originals.setdefault(self.room_code, set()).add(original_right_idx)
+
+        # Guard: Wenn Admin die Runde bereits vorangerückt hat, kein Auto-Advance auslösen.
         current_server_round = await self.get_current_round_index(quiz.id)
         if current_server_round != round_index:
             return
 
+        # Auto-advance: Tracking per Server-Rundenstand
         key = (self.room_code, round_index)
         if key not in self.__class__._round_submissions:
             self.__class__._round_submissions[key] = set()
@@ -355,8 +365,6 @@ class AssignConsumer(AsyncWebsocketConsumer):
             del self.__class__._round_submissions[key]
             await asyncio.sleep(2)
             self.__class__._auto_advancing.discard(advance_key)
-            # expected_round mitsenden: wenn Admin-Timer die Runde bereits vorangerückt hat,
-            # erkennt der Guard in handle_admin_next_round den Konflikt und überspringt.
             await self.handle_admin_next_round({'expected_round': round_index})
 
     async def handle_participant_submit_answer(self, data):
@@ -678,18 +686,14 @@ class AssignConsumer(AsyncWebsocketConsumer):
             pass
 
     @database_sync_to_async
-    def get_round_right_items(self, question, round_index):
-        """Verbleibende rechte Items für diese Runde: alle Items minus die in Vorrunden korrekt genutzten."""
+    def get_round_right_items(self, question, round_index=None):
+        """Verbleibende rechte Items: alle Items minus die tatsächlich korrekt gematchten."""
         randomized = question.get_randomized_items(room_code=self.room_code)
         all_right = randomized['right_items']            # [{'id': shuffled_pos, 'text': ...}]
         position_to_original = randomized['position_to_original']
 
-        # Original-Indizes der in Vorrunden (0..round_index-1) korrekt gematchten rechten Items
-        used_original_indices = set()
-        for prev_round in range(round_index):
-            correct_orig = question.correct_matches.get(str(prev_round))
-            if correct_orig is not None:
-                used_original_indices.add(int(correct_orig))
+        # Original-Indizes der bereits korrekt gematchten rechten Items (room-level tracking)
+        used_original_indices = self.__class__._room_matched_originals.get(self.room_code, set())
 
         # Alle rechten Items außer den bereits genutzten zurückgeben
         remaining = [
@@ -700,13 +704,13 @@ class AssignConsumer(AsyncWebsocketConsumer):
 
     @database_sync_to_async
     def check_round_answer(self, question, round_index, user_match):
-        """Gibt True zurück, wenn die Zuordnung für round_index korrekt ist."""
+        """Gibt (is_correct, original_right_idx) zurück."""
         randomized = question.get_randomized_items(room_code=self.room_code)
         position_to_original = randomized['position_to_original']
 
         correct_original_idx = question.correct_matches.get(str(round_index))
         if correct_original_idx is None:
-            return False  # Distractor-Item → Zuordnung ist immer falsch
+            return False, None  # Distractor-Item → Zuordnung ist immer falsch
 
         # User-Antwort: shuffled right position für diesen left index
         # Explizite None-Prüfung, da 0 ein gültiger shuffled-Index ist (kein falsches Falsy!)
@@ -714,13 +718,14 @@ class AssignConsumer(AsyncWebsocketConsumer):
         if shuffled_right_pos is None:
             shuffled_right_pos = user_match.get(round_index)
         if shuffled_right_pos is None:
-            return False
+            return False, None
 
         original_right_idx = position_to_original.get(int(shuffled_right_pos))
         if original_right_idx is None:
-            return False
+            return False, None
 
-        return int(original_right_idx) == int(correct_original_idx)
+        is_correct = int(original_right_idx) == int(correct_original_idx)
+        return is_correct, original_right_idx
 
     @database_sync_to_async
     def get_question_data(self, question):
