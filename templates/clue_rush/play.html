@@ -1013,11 +1013,13 @@
                     
                     this.resetClues();
                     this.loadQuestion(question);
+                    this.setClueTimerVisible(false);
                     this.showState('questionState');
                 }
 
                 onQuestionEnded(data) {
                     clearInterval(this.questionTimer);
+                    this.setClueTimerVisible(false);
                     if (data && data.correct_answer && this.hasAnswered) {
                         this.showCorrectAnswer(data.correct_answer);
                     } else {
@@ -1059,12 +1061,33 @@
                     try {
                         // Append clue to existing list (clues accumulate until next question)
                         this.addClue(clue);
-                        // Start per-clue timer on both displays
-                        const duration = parseInt(clue.duration, 10);
-                        if (!isNaN(duration) && duration > 0) {
-                            this.startClueTimer(duration);
+                        const hasNextClue = clue && clue.has_next_clue === true;
+                        // Only show/run timer when another clue will follow.
+                        if (hasNextClue) {
+                            this.setClueTimerVisible(true);
+                            const duration = parseInt(clue.duration, 10);
+                            if (!isNaN(duration) && duration > 0) {
+                                this.startClueTimer(duration);
+                            }
+                        } else {
+                            clearInterval(this.questionTimer);
+                            this.setClueTimerVisible(false);
                         }
                     } catch (e) { console.error(e); }
+                }
+
+                setClueTimerVisible(isVisible) {
+                    const wrapMain = document.getElementById('playerTimerCircle')?.closest('.question-timer');
+                    const wrapSubmitted = document.getElementById('playerTimerCircleSubmitted')?.closest('.question-timer');
+                    const display = isVisible ? '' : 'none';
+                    if (wrapMain) wrapMain.style.display = display;
+                    if (wrapSubmitted) wrapSubmitted.style.display = display;
+                    if (!isVisible) {
+                        const t1 = document.getElementById('playerTimeLeft');
+                        const t2 = document.getElementById('playerTimeLeftSubmitted');
+                        if (t1) t1.textContent = '-';
+                        if (t2) t2.textContent = '-';
+                    }
                 }
 
                 startClueTimer(duration) {
@@ -1181,47 +1204,6 @@
                     document.getElementById('submitAnswerBtn').disabled = true;
                 }
 
-                startQuestionTimer(timeLimit) {
-                    clearInterval(this.questionTimer);
-                    
-                    let timeLeft = timeLimit;
-                    const timerEl = document.getElementById('playerTimeLeft');
-                    const circleEl = document.getElementById('playerTimerCircle');
-                    const timerElSubmitted = document.getElementById('playerTimeLeftSubmitted');
-                    const circleElSubmitted = document.getElementById('playerTimerCircleSubmitted');
-                    
-                    const updateTimer = () => {
-                        const elements = [
-                            { timer: timerEl, circle: circleEl },
-                            { timer: timerElSubmitted, circle: circleElSubmitted },
-                        ];
-
-                        elements.forEach(el => {
-                            if (el.timer) el.timer.textContent = timeLeft;
-                            if (el.circle) {
-                                el.circle.classList.remove('danger', 'warning');
-                                if (timeLeft <= 5) {
-                                    el.circle.classList.add('danger');
-                                } else if (timeLeft <= 15) {
-                                    el.circle.classList.add('warning');
-                                }
-                            }
-                        });
-                    };
-
-                    updateTimer(); // Initial update
-                    
-                    this.questionTimer = setInterval(() => {
-                        timeLeft--;
-                        updateTimer();
-                        
-                        if (timeLeft <= 0) {
-                            clearInterval(this.questionTimer);
-                            this.onTimeUp();
-                        }
-                    }, 1000);
-                }
-
                 submitAnswer() {
                     if (!this.selectedAnswer || this.hasAnswered) return;
                     
@@ -1255,17 +1237,6 @@
                         document.getElementById('submittedTime').textContent = timeTaken.toFixed(1);
                         this.showState('answerSubmittedState');
                     }, 500);
-                }
-
-                onTimeUp() {
-                    if (this.hasAnswered) return;
-                    
-                    // Auto-submit if an answer is selected, otherwise show time's up
-                    if (this.selectedAnswer) {
-                        this.submitAnswer();
-                    } else {
-                        this.showWaitingForNextQuestion();
-                    }
                 }
 
                 showWaitingForNextQuestion() {

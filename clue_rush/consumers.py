@@ -588,6 +588,16 @@ class ClueRushGameConsumer(AsyncWebsocketConsumer):
                     'clue': clue,
                 }
             )
+            # No next-clue timer after the last clue.
+            if not clue.get('has_next_clue', False):
+                await self.channel_layer.group_send(
+                    self.room_group_name,
+                    {
+                        'type': 'clue_sequence_completed',
+                        'message': 'All clues have been sent.'
+                    }
+                )
+                break
             try:
                 await asyncio.sleep(max(0, int(clue.get('duration', 0))))
             except asyncio.CancelledError:
@@ -730,11 +740,13 @@ class ClueRushGameConsumer(AsyncWebsocketConsumer):
                 session.clue_end_time = timezone.now() + timezone.timedelta(seconds=next_obj.duration)
                 session.save()
             quiz.save()
+            has_next_clue = clues_qs.filter(order__gt=next_obj.order).exists()
             return {
                 'id': next_obj.id,
                 'order': next_obj.order,
                 'clue_text': next_obj.clue_text,
                 'duration': next_obj.duration,
+                'has_next_clue': has_next_clue,
             }
         except ClueRushGame.DoesNotExist:
             return None

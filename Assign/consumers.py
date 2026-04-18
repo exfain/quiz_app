@@ -20,6 +20,8 @@ class AssignConsumer(AsyncWebsocketConsumer):
     _participant_channels: dict[str, set] = {}
     # Maps channel_name → participant_name (für Live-Response-Anzeige)
     _channel_participants: dict[str, str] = {}
+    # Maps channel_name → hub_session_code (für session-scope Filter)
+    _channel_hub_sessions: dict[str, str] = {}
     # Effektives Zeit-Limit pro Raum (kann vom gespeicherten Wert abweichen)
     _effective_time_limits: dict[str, int] = {}
     # Tracks eliminated participant channels per room
@@ -59,6 +61,7 @@ class AssignConsumer(AsyncWebsocketConsumer):
             self.__class__._participant_channels[self.room_code].discard(self.channel_name)
         # Teilnehmer-Name-Mapping entfernen
         self.__class__._channel_participants.pop(self.channel_name, None)
+        self.__class__._channel_hub_sessions.pop(self.channel_name, None)
         # Eliminated-Tracking bereinigen
         if self.room_code in self.__class__._eliminated_participants:
             self.__class__._eliminated_participants[self.room_code].discard(self.channel_name)
@@ -416,6 +419,7 @@ class AssignConsumer(AsyncWebsocketConsumer):
             self.__class__._participant_channels[self.room_code].add(self.channel_name)
             # Channel → Name-Mapping für Live-Responses
             self.__class__._channel_participants[self.channel_name] = participant['name']
+            self.__class__._channel_hub_sessions[self.channel_name] = hub_session or ''
             
             # Broadcast to admin
             await self.channel_layer.group_send(
@@ -802,9 +806,104 @@ class AssignConsumer(AsyncWebsocketConsumer):
     
     async def get_active_participant_count(self):
         """Anzahl aktiver Teilnehmer-Channels: verbunden UND nicht ausgeschieden."""
+        return len(await self.get_relevant_active_channels())
+
+    async def get_relevant_active_channels(self):
         channels = self.__class__._participant_channels.get(self.room_code, set())
         eliminated = self.__class__._eliminated_participants.get(self.room_code, set())
-        return len(channels - eliminated)
+        active_channels = channels - eliminated
+
+        session_code = await self._get_hub_session_code_for_room()
+        if not session_code:
+            return active_channels
+
+        return {
+            channel for channel in active_channels
+            if self.__class__._channel_hub_sessions.get(channel) == session_code
+        }
+
+    async def maybe_auto_advance_if_all_logged(self, round_index: int):
+        key = (self.room_code, round_index)
+        logged = self.__class__._round_logged.get(key, set())
+        active_count = await self.get_active_participant_count()
+        logged_count = len(logged)
+        advance_key = f'{self.room_code}_{round_index}'
+        if active_count > 0 and logged_count >= active_count and advance_key not in self.__class__._auto_advancing:
+            self.__class__._auto_advancing.add(advance_key)
+            await asyncio.sleep(0.6)
+            self.__class__._auto_advancing.discard(advance_key)
+            await self.handle_admin_next_round({'expected_round': round_index})
+
+    async def broadcast_round_log_status_for_round(self, round_index: int):
+        active_channels = await self.get_relevant_active_channels()
+        key = (self.room_code, round_index)
+        logged = self.__class__._round_logged.get(key, set())
+        statuses = []
+        for channel in active_channels:
+            pname = self.__class__._channel_participants.get(channel, '?')
+            statuses.append({
+                'participant_name': pname,
+                'logged': channel in logged,
+            })
+        statuses.sort(key=lambda x: x['participant_name'].lower())
+        await self.channel_layer.group_send(
+            self.room_group_name,
+            {
+                'type': 'round_log_status',
+                'round_index': round_index,
+                'statuses': statuses,
+                'active_count': len(active_channels),
+                'logged_count': sum(1 for s in statuses if s['logged']),
+                'all_logged': len(active_channels) > 0 and all(s['logged'] for s in statuses),
+            }
+        )
+
+    async def evaluate_current_round(self, quiz, round_index: int):
+        """Evaluate this round once (at round end), not at login time."""
+        key = (self.room_code, round_index)
+        active_channels = await self.get_relevant_active_channels()
+        round_selections = self.__class__._round_selections.get(key, {})
+        round_logged = self.__class__._round_logged.get(key, set())
+
+        for channel in list(active_channels):
+            selection = round_selections.get(channel, {})
+            left_item_index = selection.get('left_item_index', round_index)
+            user_match = selection.get('user_match', {}) or {}
+            is_correct, original_right_idx = await self.check_round_answer(quiz.current_question, left_item_index, user_match)
+
+            if not is_correct:
+                self.__class__._eliminated_participants.setdefault(self.room_code, set()).add(channel)
+            elif original_right_idx is not None:
+                self.__class__._room_matched_originals.setdefault(self.room_code, set()).add(original_right_idx)
+
+            participant_name = self.__class__._channel_participants.get(channel, '?')
+            await self.channel_layer.group_send(
+                self.room_group_name,
+                {
+                    'type': 'participant_answered',
+                    'answer': {
+                        'participant_name': participant_name,
+                        'logged': channel in round_logged,
+                        'status': 'eingeloggt' if channel in round_logged else 'nicht eingeloggt',
+                        'round_index': round_index,
+                    }
+                }
+            )
+            await self.channel_layer.group_send(
+                self.room_group_name,
+                {
+                    'type': 'round_checked',
+                    'target_channel': channel,
+                    'is_correct': is_correct,
+                    'round_index': round_index,
+                    'eliminated': not is_correct,
+                }
+            )
+
+        # cleanup this round caches
+        self.__class__._round_logged.pop(key, None)
+        self.__class__._round_selections.pop(key, None)
+        self.__class__._round_submissions.pop(key, None)
 
     async def maybe_auto_advance_if_all_logged(self, round_index: int):
         key = (self.room_code, round_index)
