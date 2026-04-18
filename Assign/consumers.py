@@ -10,6 +10,10 @@ from games_hub.models import HubGameStep
 class AssignConsumer(AsyncWebsocketConsumer):
     # Tracks which channels have submitted for a given (room_code, server_round_index)
     _round_submissions: dict[tuple, set] = {}
+    # Tracks explicit "eingeloggt/final" channels for a given (room_code, server_round_index)
+    _round_logged: dict[tuple, set] = {}
+    # Tracks latest temporary selection per channel for a given (room_code, server_round_index)
+    _round_selections: dict[tuple, dict] = {}
     # Prevents duplicate auto-advance/auto-end triggers
     _auto_advancing: set = set()
     # Tracks participant channels per room (nur Teilnehmer, nicht Admins)
@@ -80,6 +84,10 @@ class AssignConsumer(AsyncWebsocketConsumer):
                 await self.handle_admin_show_solution(text_data_json)
             elif message_type == 'participant_check_round':
                 await self.handle_participant_check_round(text_data_json)
+            elif message_type == 'participant_update_selection':
+                await self.handle_participant_update_selection(text_data_json)
+            elif message_type == 'participant_log_round':
+                await self.handle_participant_log_round(text_data_json)
             elif message_type == 'participant_submit_answer':
                 await self.handle_participant_submit_answer(text_data_json)
             elif message_type == 'participant_join':
@@ -153,6 +161,12 @@ class AssignConsumer(AsyncWebsocketConsumer):
         for key in list(self.__class__._round_submissions):
             if key[0] == self.room_code:
                 del self.__class__._round_submissions[key]
+        for key in list(self.__class__._round_logged):
+            if key[0] == self.room_code:
+                del self.__class__._round_logged[key]
+        for key in list(self.__class__._round_selections):
+            if key[0] == self.room_code:
+                del self.__class__._round_selections[key]
         self.__class__._auto_advancing.discard(self.room_code)
         # Eliminierte Teilnehmer für neue Frage zurücksetzen
         self.__class__._eliminated_participants[self.room_code] = set()
@@ -190,6 +204,7 @@ class AssignConsumer(AsyncWebsocketConsumer):
                 }
             }
         )
+        await self.broadcast_round_log_status_for_round(0)
 
     async def handle_admin_end_question(self, data):
         """Handle admin ending current question (nach Auflösung / 'Spiel beendet')."""
@@ -220,6 +235,8 @@ class AssignConsumer(AsyncWebsocketConsumer):
                 return
 
         question = quiz.current_question
+        current_round = await self.get_current_round_index(quiz.id)
+        await self.evaluate_current_round(quiz, current_round)
         question_data = await self.get_question_data(question)
         total_rounds = len(question_data['left_items'])
 
@@ -264,6 +281,7 @@ class AssignConsumer(AsyncWebsocketConsumer):
                     'time_limit': self.__class__._effective_time_limits.get(self.room_code, quiz.current_question.time_limit),
                 }
             )
+            await self.broadcast_round_log_status_for_round(new_round_index)
 
     async def handle_admin_end_quiz(self, data):
         """Handle admin ending the quiz"""
@@ -296,76 +314,47 @@ class AssignConsumer(AsyncWebsocketConsumer):
             })
 
     async def handle_participant_check_round(self, data):
-        """Prüft die Zuordnung für eine einzelne Runde. Eliminiert Teilnehmer bei falscher Antwort."""
-        # Bereits ausgeschiedene Teilnehmer ignorieren
+        """Legacy compatibility: treated as final round login."""
+        await self.handle_participant_log_round(data)
+
+    async def handle_participant_update_selection(self, data):
+        """Store participant's temporary current selection for this round."""
         if self.channel_name in self.__class__._eliminated_participants.get(self.room_code, set()):
             return
-
-        round_index = data.get('round_index', 0)  # Server-Rundenstand (für Guard und Auto-Advance)
-        left_item_index = data.get('left_item_index', round_index)  # Tatsächlicher linker Item-Index (für Check)
-        user_match = data.get('user_match', {})  # {str(left_idx): shuffled_right_pos}
-
-        quiz = await self.get_quiz()
-        if not quiz or not quiz.current_question:
+        round_index = data.get('round_index', 0)
+        key = (self.room_code, round_index)
+        if self.channel_name in self.__class__._round_logged.get(key, set()):
             return
+        left_item_index = data.get('left_item_index', round_index)
+        user_match = data.get('user_match', {}) or {}
+        self.__class__._round_selections.setdefault(key, {})[self.channel_name] = {
+            'left_item_index': left_item_index,
+            'user_match': user_match,
+        }
 
-        is_correct, original_right_idx = await self.check_round_answer(quiz.current_question, left_item_index, user_match)
+    async def handle_participant_log_round(self, data):
+        """Participant explicitly logs/finalizes answer for this round."""
+        if self.channel_name in self.__class__._eliminated_participants.get(self.room_code, set()):
+            return
+        round_index = data.get('round_index', 0)
+        key = (self.room_code, round_index)
+        if self.channel_name in self.__class__._round_logged.get(key, set()):
+            return
+        left_item_index = data.get('left_item_index', round_index)
+        user_match = data.get('user_match', {}) or {}
 
-        if not is_correct:
-            # Teilnehmer als ausgeschieden markieren
-            self.__class__._eliminated_participants.setdefault(self.room_code, set()).add(self.channel_name)
+        self.__class__._round_selections.setdefault(key, {})[self.channel_name] = {
+            'left_item_index': left_item_index,
+            'user_match': user_match,
+        }
+        self.__class__._round_logged.setdefault(key, set()).add(self.channel_name)
 
         await self.send(text_data=json.dumps({
-            'type': 'round_checked',
-            'is_correct': is_correct,
+            'type': 'round_logged',
             'round_index': round_index,
-            'eliminated': not is_correct,
         }))
-
-        # Live-Response an Admin broadcasten
-        participant_name = self.__class__._channel_participants.get(self.channel_name, '?')
-        await self.channel_layer.group_send(
-            self.room_group_name,
-            {
-                'type': 'participant_answered',
-                'answer': {
-                    'participant_name': participant_name,
-                    'correct_matches': 1 if is_correct else 0,
-                    'total_matches': 1,
-                    'accuracy': 100 if is_correct else 0,
-                    'points_earned': 0,
-                    'time_taken': None,
-                }
-            }
-        )
-
-        if not is_correct:
-            return  # Ausgeschieden — kein Auto-Advance-Tracking
-
-        # Original-Index des korrekt gematchten rechten Items merken (für Filterung der nächsten Runde)
-        if original_right_idx is not None:
-            self.__class__._room_matched_originals.setdefault(self.room_code, set()).add(original_right_idx)
-
-        # Guard: Wenn Admin die Runde bereits vorangerückt hat, kein Auto-Advance auslösen.
-        current_server_round = await self.get_current_round_index(quiz.id)
-        if current_server_round != round_index:
-            return
-
-        # Auto-advance: Tracking per Server-Rundenstand
-        key = (self.room_code, round_index)
-        if key not in self.__class__._round_submissions:
-            self.__class__._round_submissions[key] = set()
-        self.__class__._round_submissions[key].add(self.channel_name)
-
-        active_count = await self.get_active_participant_count()
-        submitted_count = len(self.__class__._round_submissions[key])
-        advance_key = f'{self.room_code}_{round_index}'
-        if active_count > 0 and submitted_count >= active_count and advance_key not in self.__class__._auto_advancing:
-            self.__class__._auto_advancing.add(advance_key)
-            del self.__class__._round_submissions[key]
-            await asyncio.sleep(2)
-            self.__class__._auto_advancing.discard(advance_key)
-            await self.handle_admin_next_round({'expected_round': round_index})
+        await self.broadcast_round_log_status_for_round(round_index)
+        await self.maybe_auto_advance_if_all_logged(round_index)
 
     async def handle_participant_submit_answer(self, data):
         """Speichert alle gesammelten Runden-Antworten als AssignAnswer in der DB."""
@@ -470,6 +459,7 @@ class AssignConsumer(AsyncWebsocketConsumer):
                                 'current_left_item': current_left_item,
                             }
                         }))
+                await self.broadcast_round_log_status_for_round(round_index)
 
     async def handle_admin_show_leaderboard(self):
         await self.channel_layer.group_send(
@@ -573,11 +563,32 @@ class AssignConsumer(AsyncWebsocketConsumer):
             'answer': event['answer']
         }))
 
+    async def round_log_status(self, event):
+        await self.send(text_data=json.dumps({
+            'type': 'round_log_status',
+            'round_index': event.get('round_index', 0),
+            'statuses': event.get('statuses', []),
+            'active_count': event.get('active_count', 0),
+            'logged_count': event.get('logged_count', 0),
+            'all_logged': event.get('all_logged', False),
+        }))
+
     async def participant_joined(self, event):
         """Send new participant info to admin"""
         await self.send(text_data=json.dumps({
             'type': 'participant_joined',
             'participant': event['participant']
+        }))
+
+    async def round_checked(self, event):
+        target_channel = event.get('target_channel')
+        if target_channel and target_channel != self.channel_name:
+            return
+        await self.send(text_data=json.dumps({
+            'type': 'round_checked',
+            'is_correct': event.get('is_correct'),
+            'round_index': event.get('round_index'),
+            'eliminated': event.get('eliminated'),
         }))
 
     # Database operations
@@ -794,6 +805,93 @@ class AssignConsumer(AsyncWebsocketConsumer):
         channels = self.__class__._participant_channels.get(self.room_code, set())
         eliminated = self.__class__._eliminated_participants.get(self.room_code, set())
         return len(channels - eliminated)
+
+    async def maybe_auto_advance_if_all_logged(self, round_index: int):
+        key = (self.room_code, round_index)
+        logged = self.__class__._round_logged.get(key, set())
+        active_count = await self.get_active_participant_count()
+        logged_count = len(logged)
+        advance_key = f'{self.room_code}_{round_index}'
+        if active_count > 0 and logged_count >= active_count and advance_key not in self.__class__._auto_advancing:
+            self.__class__._auto_advancing.add(advance_key)
+            await asyncio.sleep(0.6)
+            self.__class__._auto_advancing.discard(advance_key)
+            await self.handle_admin_next_round({'expected_round': round_index})
+
+    async def broadcast_round_log_status_for_round(self, round_index: int):
+        channels = self.__class__._participant_channels.get(self.room_code, set())
+        eliminated = self.__class__._eliminated_participants.get(self.room_code, set())
+        active_channels = channels - eliminated
+        key = (self.room_code, round_index)
+        logged = self.__class__._round_logged.get(key, set())
+        statuses = []
+        for channel in active_channels:
+            pname = self.__class__._channel_participants.get(channel, '?')
+            statuses.append({
+                'participant_name': pname,
+                'logged': channel in logged,
+            })
+        statuses.sort(key=lambda x: x['participant_name'].lower())
+        await self.channel_layer.group_send(
+            self.room_group_name,
+            {
+                'type': 'round_log_status',
+                'round_index': round_index,
+                'statuses': statuses,
+                'active_count': len(active_channels),
+                'logged_count': sum(1 for s in statuses if s['logged']),
+                'all_logged': len(active_channels) > 0 and all(s['logged'] for s in statuses),
+            }
+        )
+
+    async def evaluate_current_round(self, quiz, round_index: int):
+        """Evaluate this round once (at round end), not at login time."""
+        key = (self.room_code, round_index)
+        channels = self.__class__._participant_channels.get(self.room_code, set())
+        eliminated = self.__class__._eliminated_participants.get(self.room_code, set())
+        active_channels = channels - eliminated
+        round_selections = self.__class__._round_selections.get(key, {})
+        round_logged = self.__class__._round_logged.get(key, set())
+
+        for channel in list(active_channels):
+            selection = round_selections.get(channel, {})
+            left_item_index = selection.get('left_item_index', round_index)
+            user_match = selection.get('user_match', {}) or {}
+            is_correct, original_right_idx = await self.check_round_answer(quiz.current_question, left_item_index, user_match)
+
+            if not is_correct:
+                self.__class__._eliminated_participants.setdefault(self.room_code, set()).add(channel)
+            elif original_right_idx is not None:
+                self.__class__._room_matched_originals.setdefault(self.room_code, set()).add(original_right_idx)
+
+            participant_name = self.__class__._channel_participants.get(channel, '?')
+            await self.channel_layer.group_send(
+                self.room_group_name,
+                {
+                    'type': 'participant_answered',
+                    'answer': {
+                        'participant_name': participant_name,
+                        'logged': channel in round_logged,
+                        'status': 'eingeloggt' if channel in round_logged else 'nicht eingeloggt',
+                        'round_index': round_index,
+                    }
+                }
+            )
+            await self.channel_layer.group_send(
+                self.room_group_name,
+                {
+                    'type': 'round_checked',
+                    'target_channel': channel,
+                    'is_correct': is_correct,
+                    'round_index': round_index,
+                    'eliminated': not is_correct,
+                }
+            )
+
+        # cleanup this round caches
+        self.__class__._round_logged.pop(key, None)
+        self.__class__._round_selections.pop(key, None)
+        self.__class__._round_submissions.pop(key, None)
 
     @database_sync_to_async
     def get_final_scores(self):

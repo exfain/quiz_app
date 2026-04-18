@@ -641,7 +641,6 @@
         .answer-card:hover {
             background-color: var(--bg-tertiary);
             border-color: var(--color-primary);
-            transform: translateY(-2px);
             box-shadow: var(--shadow-md);
         }
 
@@ -1378,8 +1377,11 @@
                             // Only auto-submit a timeout if this player has
                             // NOT already submitted a move for this round.
                             if (this.moreRoundsInQuestion && !this.hasSubmittedMove)  {
-                                // Submit round as failed due to timeout
-                                this.submitCurrentRound(true);
+                                // If a valid current selection exists, submit it
+                                // normally so non-explicit "check" inputs are
+                                // still accepted at round end.
+                                const hasSelection = !!this.currentRoundItemId;
+                                this.submitCurrentRound(!hasSelection);
                                 // Show waiting state while we await the
                                 // authoritative result.
                                 this.showState('waitingRoundState');
@@ -1639,6 +1641,33 @@
                     this.applyRoundResult(data);
                 }
 
+                onRoundStarted(roundData) {
+                    if (this.isEliminated || !this.moreRoundsInQuestion) return;
+
+                    this.showState('topicState');
+                    this.hasSubmittedMove = false;
+                    this.pendingRoundResult = null;
+
+                    const timeLimit = roundData?.time_limit_seconds || this.currentQuestion?.round_time_limit || 0;
+                    this.roundTimerEnded = (timeLimit <= 0);
+                    this.startPlayerTimer(timeLimit);
+
+                    if (roundData && typeof roundData.round_number === 'number') {
+                        this.currentRound = roundData.round_number;
+                    } else {
+                        this.currentRound += 1;
+                    }
+                    this.renderCurrentRound();
+                }
+
+                onRoundEnded(_survivors) {}
+
+                onNoMoreRounds() {
+                    if (this.roundTimer) {
+                        clearInterval(this.roundTimer);
+                    }
+                }
+
                 applyRoundResult(data) {
                     if (data.participant_name !== this.participantName) {
                         return;
@@ -1726,23 +1755,7 @@
 
                     if (data.has_more_rounds) {
                         setTimeout(() => {
-                            this.showState('topicState');
-
-                            // Reset per-round submission state for the next round
-                            this.hasSubmittedMove = false;
-                            this.pendingRoundResult = null;
-
-                            const timeLimit = this.currentQuestion?.round_time_limit || 0;
-                            // If there is no timer, mark the round as "timer ended"
-                            // immediately so that onRoundResult applies results without waiting.
-                            this.roundTimerEnded = (timeLimit <= 0);
-
-                            console.log("Current Question ", this.currentQuestion)
-                            console.log("Time Limit ", timeLimit)
-                            this.startPlayerTimer(timeLimit);
-
-                            this.currentRound += 1;
-                            this.renderCurrentRound();
+                            this.showState('waitingRoundState');
                         }, 1500);
                     } else {
                         // Final state: show full correct order with arrows and question
