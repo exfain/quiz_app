@@ -142,11 +142,6 @@
                         <div id="activeQuestion">
                             <div class="active-question-header">
                                 <h6>Current Question</h6>
-                                <div class="question-timer">
-                                    <div class="timer-circle" id="questionTimerCircle">
-                                        <span id="questionTimeLeft">{{ quiz.current_question.time_limit }}</span>
-                                    </div>
-                                </div>
                             </div>
                             
                             <div class="current-question-content">
@@ -170,7 +165,11 @@
                                         {% for clue in quiz.current_question.clues.all %}
                                         <li class="list-group-item d-flex justify-content-between align-items-center" data-clue-order="{{ clue.order }}">
                                             <div class="clue-text"><strong>#{{ clue.order }}</strong> {{ clue.clue_text }}</div>
+                                            {% if quiz.current_clue and clue.order <= quiz.current_clue.order %}
+                                            <span class="badge bg-success clue-status">Sent</span>
+                                            {% else %}
                                             <span class="badge bg-secondary clue-status">Pending</span>
+                                            {% endif %}
                                         </li>
                                         {% endfor %}
                                     </ul>
@@ -376,7 +375,6 @@
 .question-item:hover {
     background-color: var(--bg-tertiary);
     border-color: var(--color-secondary);
-    transform: translateY(-2px);
     box-shadow: var(--shadow-md);
 }
 
@@ -859,7 +857,6 @@ document.addEventListener('DOMContentLoaded', function() {
         constructor() {
             this.roomCode = '{{ quiz.room_code }}';
             this.websocket = null;
-            this.questionTimer = null;
             this.quizStartTime = {% if quiz.started_at %}new Date('{{ quiz.started_at|date:"c" }}'){% else %}null{% endif %};
             this.isActive = '{{ quiz.status }}' === 'active';
             this.init();
@@ -1207,53 +1204,6 @@ document.addEventListener('DOMContentLoaded', function() {
             }
         }
         
-        startQuestionTimer() {
-            // Prefer any override set at send-time (stored just before backend switched state)
-            let override = null;
-            try {
-                const raw = localStorage.getItem(`override_time_${this.roomCode}`);
-                if (raw) {
-                    const v = parseInt(raw, 10);
-                    if (!isNaN(v) && v > 0) override = v;
-                }
-            } catch(_) {}
-            let serverTimeLeft = 0;
-            try {
-                const serverEl = document.getElementById('questionTimeLeft');
-                if (serverEl && serverEl.textContent) {
-                    const sv = parseInt(serverEl.textContent, 10);
-                    if (!isNaN(sv) && sv > 0) serverTimeLeft = sv;
-                }
-            } catch(_) {}
-            const timeLeft = (override !== null) ? override : serverTimeLeft;
-            if (timeLeft <= 0) return;
-            
-            let currentTime = timeLeft;
-            const timerElement = document.getElementById('questionTimeLeft');
-            const circleElement = document.getElementById('questionTimerCircle');
-            
-            this.questionTimer = setInterval(() => {
-                currentTime--;
-                if (timerElement) timerElement.textContent = currentTime;
-                
-                if (circleElement) {
-                    circleElement.className = 'timer-circle';
-                    if (currentTime <= 20) {
-                        circleElement.classList.add('danger');
-                    } else if (currentTime <= 40) {
-                        circleElement.classList.add('warning');
-                    }
-                }
-                
-                if (currentTime <= 0) {
-                    clearInterval(this.questionTimer);
-                    this.onQuestionTimeout();
-                }
-            }, 1000);
-            // Clear one-time override so subsequent questions use their own values
-            try { localStorage.removeItem(`override_time_${this.roomCode}`); } catch(_) {}
-        }
-        
         startQuizTimer() {
             if (!this.quizStartTime) return;
             
@@ -1426,24 +1376,19 @@ document.addEventListener('DOMContentLoaded', function() {
             // Connection indicator could be added here
         }
         
-        onQuestionTimeout() {
-            console.log('Question timed out');
-            if (this.websocket && this.websocket.readyState === WebSocket.OPEN) {
-                this.websocket.send(JSON.stringify({
-                    type: 'admin_end_question'
-                }));
-            }
-        }
-
         markClueSent(clue) {
             try {
                 const list = document.getElementById('clueList');
                 if (!list) return;
-                const item = list.querySelector(`[data-clue-order="${clue.order}"]`);
-                if (!item) return;
-                item.classList.add('clue-sent');
-                const badge = item.querySelector('.clue-status');
-                if (badge) { badge.classList.remove('bg-secondary'); badge.classList.add('bg-success'); badge.textContent = 'Sent'; }
+                const currentOrder = Number(clue.order);
+                list.querySelectorAll('[data-clue-order]').forEach((item) => {
+                    const order = Number(item.getAttribute('data-clue-order'));
+                    if (!Number.isNaN(order) && order <= currentOrder) {
+                        item.classList.add('clue-sent');
+                        const badge = item.querySelector('.clue-status');
+                        if (badge) { badge.classList.remove('bg-secondary'); badge.classList.add('bg-success'); badge.textContent = 'Sent'; }
+                    }
+                });
             } catch (e) { console.error(e); }
         }
 
@@ -1456,10 +1401,6 @@ document.addEventListener('DOMContentLoaded', function() {
     // Initialize Geography Quiz Monitor
     const monitor = new ClueRushMonitor();
     
-    // Start question timer if there's an active question
-    {% if quiz.current_question %}
-        monitor.startQuestionTimer();
-    {% endif %}
 });
 
 // Minimal hub listener for admin auto-redirect across steps

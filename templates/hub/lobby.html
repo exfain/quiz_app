@@ -55,7 +55,6 @@
         transition: all 0.2s ease;
       }
       #joinBtn:hover:not(:disabled) {
-        transform: translateY(-1px);
         box-shadow: 0 4px 12px rgba(37, 99, 235, 0.3);
       }
       #joinBtn:disabled {
@@ -130,7 +129,6 @@
       .vote-section { margin-top: 1.5rem; }
       .vote-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: .9rem; }
       .vote-card { padding: .9rem 1rem; border-radius: 12px; background: linear-gradient(180deg, rgba(17,24,39,.75), rgba(15,23,42,.9)); border: 1px solid rgba(167,139,250,.18); cursor: pointer; transition: border-color .2s, transform .15s; position: relative; }
-      .vote-card:hover { border-color: rgba(34,211,238,.5); transform: translateY(-2px); }
       .vote-card.voted { border-color: var(--primary); background: linear-gradient(180deg, rgba(34,211,238,.1), rgba(15,23,42,.9)); }
       .vote-card-name { font-weight: 600; font-size: .95rem; margin-bottom: .4rem; }
       .vote-bar-wrap { height: 4px; background: rgba(148,163,184,.15); border-radius: 2px; margin-top: .6rem; }

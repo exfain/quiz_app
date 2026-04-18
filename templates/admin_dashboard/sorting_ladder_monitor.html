@@ -159,6 +159,10 @@
                                 <div class="question-text">{{ quiz.current_question.question_text }}</div>
                                 
                                 <div class="question-actions">
+                                    <button class="btn btn-primary" id="startNextRoundBtn">
+                                        <i data-lucide="play-circle"></i>
+                                        Nächste Runde starten
+                                    </button>
                                     <button class="btn btn-warning" id="endQuestionBtn">
                                         <i data-lucide="skip-forward"></i>
                                         End Question Early
@@ -180,6 +184,12 @@
                     </h5>
                 </div>
                 <div class="card-body">
+                    <div class="mb-3">
+                        <h6 class="mb-2">Antwortstatus aktuelle Runde</h6>
+                        <div id="roundAnswerStatusList" class="small text-muted">
+                            Noch keine Antworten in dieser Runde.
+                        </div>
+                    </div>
                     <div id="liveResponses" class="live-responses">
                         <div class="no-responses">
                             <i data-lucide="map"></i>
@@ -368,7 +378,6 @@
 .question-item:hover {
     background-color: var(--bg-tertiary);
     border-color: var(--color-secondary);
-    transform: translateY(-2px);
     box-shadow: var(--shadow-md);
 }
 
@@ -997,6 +1006,10 @@ document.addEventListener('DOMContentLoaded', function() {
                     console.log('Question started');
                     location.reload();
                     break;
+
+                case 'round_answer_status':
+                    this.renderRoundAnswerStatus(data);
+                    break;
                     
                 case 'question_ended':
                     console.log('Question ended:', data.message);
@@ -1077,6 +1090,11 @@ document.addEventListener('DOMContentLoaded', function() {
             // End Question button
             document.getElementById('endQuestionBtn')?.addEventListener('click', () => {
                 this.endCurrentQuestion();
+            });
+
+            // Manual next-round button
+            document.getElementById('startNextRoundBtn')?.addEventListener('click', () => {
+                this.startNextRound();
             });
             
             // Share Code button
@@ -1196,6 +1214,33 @@ document.addEventListener('DOMContentLoaded', function() {
                     type: 'admin_end_question'
                 }));
             }
+        }
+
+        startNextRound() {
+            if (this.websocket && this.websocket.readyState === WebSocket.OPEN) {
+                this.websocket.send(JSON.stringify({
+                    type: 'admin_start_round'
+                }));
+            }
+        }
+
+        renderRoundAnswerStatus(data) {
+            const container = document.getElementById('roundAnswerStatusList');
+            if (!container) return;
+
+            const statuses = Array.isArray(data.statuses) ? data.statuses : [];
+            if (!statuses.length) {
+                container.innerHTML = 'Keine aktiven Teilnehmer für diese Runde.';
+                return;
+            }
+
+            const rows = statuses.map((entry) => {
+                const answered = !!entry.has_answered;
+                const marker = answered ? '✅' : '⏳';
+                const label = answered ? 'geantwortet' : 'offen';
+                return `<div><strong>${entry.participant_name}</strong>: ${marker} ${label}</div>`;
+            });
+            container.innerHTML = rows.join('');
         }
         
         startQuestionTimer() {
