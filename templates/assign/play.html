@@ -144,6 +144,10 @@
                                         <i data-lucide="rotate-ccw"></i>
                                         Zurücksetzen
                                     </button>
+                                    <button class="btn btn-primary w-100 mb-2 d-none" id="logRoundBtn">
+                                        <i data-lucide="check-circle"></i>
+                                        Antwort einloggen
+                                    </button>
 
                                 </div>
                             </div>
@@ -1072,6 +1076,9 @@
                         case 'round_checked':
                             this.onRoundChecked(data);
                             break;
+                        case 'round_logged':
+                            this.onRoundLogged();
+                            break;
 
                         case 'question_rounds_complete':
                             this.onQuestionRoundsComplete();
@@ -1098,6 +1105,9 @@
                     // Zurücksetzen button
                     document.getElementById('resetRoundBtn')?.addEventListener('click', () => {
                         this.resetRoundDrop();
+                    });
+                    document.getElementById('logRoundBtn')?.addEventListener('click', () => {
+                        this.logCurrentRound();
                     });
                 }
 
@@ -1130,14 +1140,6 @@
 
                 onRoundAdvanced(data) {
                     if (this.eliminated) return;
-
-                    // Wenn ein Drop vorliegt, der noch nicht bestätigt wurde → jetzt auto-submit
-                    // und round_advanced puffern bis round_checked zurückkommt
-                    if (!this.roundSubmitted && this.userMatches && Object.keys(this.userMatches).length > 0) {
-                        this._bufferedRoundAdvanced = data;
-                        this.submitAnswer();
-                        return;
-                    }
 
                     // Race-Condition: Teilnehmer hat bereits submitted (z.B. via onTimeUp),
                     // aber round_checked ist noch nicht angekommen → puffern und warten
@@ -1180,6 +1182,17 @@
                     this.startQuestionTimer(timeLimit);
                     this.loadRound(data.round_index, data.current_left_item, data.right_items);
                     this.showState('questionState');
+                }
+
+                onRoundLogged() {
+                    this.roundSubmitted = true;
+                    document.querySelectorAll('.draggable-item').forEach(el => { el.draggable = false; el.style.cursor = 'default'; });
+                    const resetBtn = document.getElementById('resetRoundBtn');
+                    if (resetBtn) resetBtn.classList.add('d-none');
+                    const logBtn = document.getElementById('logRoundBtn');
+                    if (logBtn) logBtn.classList.add('d-none');
+                    const waitMsg = document.getElementById('roundSubmittedMessage');
+                    if (waitMsg) { waitMsg.classList.remove('d-none'); try { lucide.createIcons(); } catch(_) {} }
                 }
 
                 onRoundChecked(data) {
@@ -1276,13 +1289,6 @@
                 onQuestionRoundsComplete() {
                     if (this.eliminated) return;
                     clearInterval(this.questionTimer);
-
-                    // Drop vorliegt aber noch nicht bestätigt → auto-submit und puffern
-                    if (!this.roundSubmitted && this.userMatches && Object.keys(this.userMatches).length > 0) {
-                        this._bufferedRoundsComplete = true;
-                        this.submitAnswer();
-                        return;
-                    }
 
                     // Race-Condition: bereits submitted (z.B. via onTimeUp) aber round_checked noch ausstehend
                     if (this.roundSubmitted && this.lastRoundCorrect === null) {
@@ -1381,6 +1387,8 @@
                     // Reset-Button ausblenden (neue Runde = kein Drop vorhanden)
                     const resetBtn = document.getElementById('resetRoundBtn');
                     if (resetBtn) resetBtn.classList.add('d-none');
+                    const logBtn = document.getElementById('logRoundBtn');
+                    if (logBtn) logBtn.classList.add('d-none');
 
                     // Warte-Nachricht ausblenden
                     const waitMsg = document.getElementById('roundSubmittedMessage');
@@ -1555,10 +1563,20 @@
                     this.dropLocked = true;
 
                     this.userMatches = { [leftIndex]: rightIndex };
+                    if (this.websocket && this.websocket.readyState === WebSocket.OPEN) {
+                        this.websocket.send(JSON.stringify({
+                            type: 'participant_update_selection',
+                            round_index: this.currentRoundIndex,
+                            left_item_index: leftIndex,
+                            user_match: { [leftIndex]: rightIndex },
+                        }));
+                    }
 
                     // Reset-Button einblenden
                     const resetBtn = document.getElementById('resetRoundBtn');
                     if (resetBtn) resetBtn.classList.remove('d-none');
+                    const logBtn = document.getElementById('logRoundBtn');
+                    if (logBtn) logBtn.classList.remove('d-none');
                 }
 
                 resetRoundDrop() {
@@ -1583,6 +1601,16 @@
                     const resetBtn = document.getElementById('resetRoundBtn');
                     if (resetBtn) resetBtn.classList.add('d-none');
                     this.userMatches = {};
+                    const logBtn = document.getElementById('logRoundBtn');
+                    if (logBtn) logBtn.classList.add('d-none');
+                    if (this.websocket && this.websocket.readyState === WebSocket.OPEN) {
+                        this.websocket.send(JSON.stringify({
+                            type: 'participant_update_selection',
+                            round_index: this.currentRoundIndex,
+                            left_item_index: this.currentRoundIndex,
+                            user_match: {},
+                        }));
+                    }
                 }
 
                 startQuestionTimer(timeLimit) {
@@ -1645,16 +1673,22 @@
                     document.querySelectorAll('.draggable-item').forEach(el => { el.draggable = false; el.style.cursor = 'default'; });
                     const resetBtn = document.getElementById('resetRoundBtn');
                     if (resetBtn) resetBtn.classList.add('d-none');
+                    const logBtn = document.getElementById('logRoundBtn');
+                    if (logBtn) logBtn.classList.add('d-none');
 
-                    // Prüfung beim Server anfragen
+                    // Antwort explizit einloggen
                     if (this.websocket && this.websocket.readyState === WebSocket.OPEN) {
                         this.websocket.send(JSON.stringify({
-                            type: 'participant_check_round',
+                            type: 'participant_log_round',
                             round_index: this.currentRoundIndex,
                             left_item_index: leftIdx,
                             user_match: { [leftIdx]: rightIdx },
                         }));
                     }
+                }
+
+                logCurrentRound() {
+                    this.submitAnswer();
                 }
 
                 onTimeUp() {

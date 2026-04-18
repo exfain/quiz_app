@@ -960,6 +960,10 @@ document.addEventListener('DOMContentLoaded', function() {
                 case 'participant_answered':
                     this.addLiveResponse(data.answer);
                     break;
+
+                case 'round_log_status':
+                    this.updateRoundLogStatus(data);
+                    break;
                     
                 case 'quiz_started':
                     console.log('Quiz started:', data.message);
@@ -1398,48 +1402,29 @@ document.addEventListener('DOMContentLoaded', function() {
             if (noResponses) noResponses.remove();
 
             // Bestehenden Eintrag für diesen Teilnehmer suchen
-            const safeName = CSS.escape(response.participant_name);
             const existing = responsesContainer.querySelector(`.response-item[data-participant="${response.participant_name}"]`);
 
-            let correct, total;
-            if (existing) {
-                // Kumulierte Werte auslesen und addieren
-                correct = parseInt(existing.dataset.correct || 0) + response.correct_matches;
-                total   = parseInt(existing.dataset.total   || 0) + response.total_matches;
-            } else {
-                correct = response.correct_matches;
-                total   = response.total_matches;
-            }
-
-            const accuracy = total > 0 ? Math.round((correct / total) * 100) : 0;
-
-            // Qualitätsklasse anhand der kumulierten Genauigkeit
-            let quality = 'poor';
-            if (accuracy >= 90) quality = 'excellent';
-            else if (accuracy >= 70) quality = 'good';
-            else if (accuracy >= 50) quality = 'fair';
+            // Assign: Live Responses zeigt primär den Einloggen-Status.
+            const isLogged = response.logged === true || response.status === 'eingeloggt';
+            const detailText = isLogged ? 'Antwort eingeloggt' : 'Antwort noch nicht eingeloggt';
+            const quality = isLogged ? 'excellent' : 'poor';
 
             if (existing) {
                 // Eintrag aktualisieren
-                existing.dataset.correct = correct;
-                existing.dataset.total   = total;
                 existing.querySelector('.response-avatar').className = `response-avatar ${quality}`;
-                existing.querySelector('.response-details').textContent =
-                    `${correct}/${total} matches • ${accuracy}% accuracy`;
+                existing.querySelector('.response-details').textContent = detailText;
             } else {
                 // Neuen Eintrag anlegen
                 const responseEl = document.createElement('div');
                 responseEl.className = 'response-item';
                 responseEl.dataset.participant = response.participant_name;
-                responseEl.dataset.correct = correct;
-                responseEl.dataset.total   = total;
                 responseEl.innerHTML = `
                     <div class="response-avatar ${quality}">
                         ${response.participant_name.charAt(0).toUpperCase()}
                     </div>
                     <div class="response-content">
                         <div class="response-name">${response.participant_name}</div>
-                        <div class="response-details">${correct}/${total} matches • ${accuracy}% accuracy</div>
+                        <div class="response-details">${detailText}</div>
                     </div>
                 `;
                 responsesContainer.insertBefore(responseEl, responsesContainer.firstChild);
@@ -1449,6 +1434,60 @@ document.addEventListener('DOMContentLoaded', function() {
                 const responseCount = document.getElementById('responseCount');
                 if (responseCount) responseCount.textContent = count;
             }
+        }
+
+        updateRoundLogStatus(data) {
+            const responsesContainer = document.getElementById('liveResponses');
+            if (!responsesContainer) return;
+
+            const statuses = Array.isArray(data.statuses) ? data.statuses : [];
+            if (!statuses.length) {
+                responsesContainer.innerHTML = `
+                    <div class="no-responses">
+                        <i data-lucide="mouse-pointer"></i>
+                        <p>No active participants in this round.</p>
+                    </div>
+                `;
+                const responseCount = document.getElementById('responseCount');
+                if (responseCount) responseCount.textContent = '0';
+                const endRoundEarlyBtn = document.getElementById('endRoundEarlyBtn');
+                if (endRoundEarlyBtn) endRoundEarlyBtn.disabled = true;
+                try { lucide.createIcons(); } catch(_) {}
+                return;
+            }
+
+            responsesContainer.innerHTML = '';
+            statuses.forEach((entry) => {
+                const logged = !!entry.logged;
+                const quality = logged ? 'excellent' : 'poor';
+                const row = document.createElement('div');
+                row.className = 'response-item';
+                row.dataset.participant = entry.participant_name;
+                row.innerHTML = `
+                    <div class="response-avatar ${quality}">
+                        ${entry.participant_name.charAt(0).toUpperCase()}
+                    </div>
+                    <div class="response-content">
+                        <div class="response-name">${entry.participant_name}</div>
+                        <div class="response-details">${logged ? 'Antwort eingeloggt' : 'Antwort noch offen'}</div>
+                    </div>
+                `;
+                responsesContainer.appendChild(row);
+            });
+
+            const responseCount = document.getElementById('responseCount');
+            if (responseCount) {
+                responseCount.textContent = `${data.logged_count || 0}/${data.active_count || statuses.length}`;
+            }
+
+            const endRoundEarlyBtn = document.getElementById('endRoundEarlyBtn');
+            if (endRoundEarlyBtn) {
+                endRoundEarlyBtn.disabled = !data.all_logged;
+                endRoundEarlyBtn.title = data.all_logged
+                    ? 'Alle aktiven Teilnehmer haben eingeloggt'
+                    : 'Nur verfügbar, wenn alle aktiven Teilnehmer eingeloggt haben';
+            }
+            try { lucide.createIcons(); } catch(_) {}
         }
         
         updateParticipantCount() {
