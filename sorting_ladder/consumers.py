@@ -190,6 +190,7 @@ class SortingLadderGameConsumer(AsyncWebsocketConsumer):
             'game_key': 'sorting_ladder',
             'round': round_state,
         })
+        await self.broadcast_round_answer_status(quiz.id)
 
     async def handle_admin_end_round(self, data):
         """
@@ -273,6 +274,7 @@ class SortingLadderGameConsumer(AsyncWebsocketConsumer):
                 'payload': payload,
             }
         )
+        await self.broadcast_round_answer_status(quiz.id)
 
         await self.hub_mirror_event('question_started', {
             'room_code': self.room_code,
@@ -445,6 +447,9 @@ class SortingLadderGameConsumer(AsyncWebsocketConsumer):
             'participant_name': participant_name,
             **result,
         })
+        quiz = await self.get_quiz()
+        if quiz:
+            await self.broadcast_round_answer_status(quiz.id)
 
     async def handle_admin_show_leaderboard(self):
         await self.channel_layer.group_send(
@@ -548,6 +553,13 @@ class SortingLadderGameConsumer(AsyncWebsocketConsumer):
             'has_more_rounds': event['has_more_rounds'],
             'per_question_rounds': event.get('per_question_rounds'),
             'correct_order_ids': event.get('correct_order_ids'),
+        }))
+
+    async def round_answer_status(self, event):
+        await self.send(text_data=json.dumps({
+            'type': 'round_answer_status',
+            'round_number': event.get('round_number'),
+            'statuses': event.get('statuses', []),
         }))
 
     # -------- DB helpers --------
@@ -719,6 +731,28 @@ class SortingLadderGameConsumer(AsyncWebsocketConsumer):
         if not topic:
             return None
 
+        # Current question-based flow: advance round marker/timer without
+        # changing ordering logic.
+        if session.shuffled_item_ids:
+            try:
+                shuffled_ids = [int(x) for x in session.shuffled_item_ids.split(',') if x]
+            except ValueError:
+                shuffled_ids = []
+            max_rounds = max(len(shuffled_ids) - 1, 0)
+            if session.current_round >= max_rounds:
+                return None
+
+            session.current_round += 1
+            session.is_round_active = True
+            session.round_start_time = timezone.now()
+            session.round_end_time = timezone.now() + timezone.timedelta(seconds=session.time_limit_seconds)
+            session.save(update_fields=['current_round', 'is_round_active', 'round_start_time', 'round_end_time'])
+
+            return {
+                'round_number': session.current_round,
+                'time_limit_seconds': session.time_limit_seconds,
+            }
+
         placed_ids = list(session.placed_elements.values_list('id', flat=True))
         active_id = session.active_element_id
 
@@ -741,6 +775,54 @@ class SortingLadderGameConsumer(AsyncWebsocketConsumer):
                 session.placed_elements.order_by('correct_rank')
                 .values('id', 'text')
             ),
+        }
+
+    async def broadcast_round_answer_status(self, quiz_id):
+        status_payload = await self.get_round_answer_status_db(quiz_id)
+        if not status_payload:
+            return
+        await self.channel_layer.group_send(
+            self.room_group_name,
+            {
+                'type': 'round_answer_status',
+                **status_payload,
+            }
+        )
+
+    @database_sync_to_async
+    def get_round_answer_status_db(self, quiz_id):
+        try:
+            quiz = SortingLadderGame.objects.select_related('session', 'current_question').get(id=quiz_id)
+            session = quiz.session
+            question = quiz.current_question
+        except (SortingLadderGame.DoesNotExist, SortingLadderSession.DoesNotExist, AttributeError):
+            return None
+
+        if not question:
+            return None
+
+        current_round = max(int(session.current_round or 0), 1)
+        active_participants = list(
+            quiz.participants.filter(is_active=True, is_eliminated=False)
+            .order_by('name')
+            .values('id', 'name')
+        )
+
+        statuses = []
+        for participant in active_participants:
+            submissions_count = RoundSubmission.objects.filter(
+                quiz=quiz,
+                participant_id=participant['id'],
+                question=question,
+            ).count()
+            statuses.append({
+                'participant_name': participant['name'],
+                'has_answered': submissions_count >= current_round,
+            })
+
+        return {
+            'round_number': current_round,
+            'statuses': statuses,
         }
 
     @database_sync_to_async
