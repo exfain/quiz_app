@@ -802,6 +802,7 @@ document.addEventListener('DOMContentLoaded', function() {
             this.questionTimer = null;
             this.quizStartTime = {% if quiz.started_at %}new Date('{{ quiz.started_at|date:"c" }}'){% else %}null{% endif %};
             this.isActive = '{{ quiz.status }}' === 'active';
+            this.liveResponseState = new Map();
             this.init();
         }
 
@@ -851,6 +852,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 wrapper.appendChild(hint);
             }
             try { lucide.createIcons(); } catch(_) {}
+            this.initializeLiveResponseState();
         }
         
         // Reset all persisted and UI states for sent questions
@@ -871,6 +873,7 @@ document.addEventListener('DOMContentLoaded', function() {
             this.bindEvents();
             this.startQuizTimer();
             this.applySentStates();
+            this.initializeLiveResponseState();
             this.startResponsesPolling();
         }
 
@@ -961,6 +964,7 @@ document.addEventListener('DOMContentLoaded', function() {
                     break;
                     
                 case 'question_started':
+                    this.resetLiveResponseStateForQuestion();
                     console.log('Question started');
                     location.reload();
                     break;
@@ -1254,6 +1258,74 @@ document.addEventListener('DOMContentLoaded', function() {
             setInterval(updateTimer, 1000);
         }
         
+        initializeLiveResponseState() {
+            if (!(this.liveResponseState instanceof Map)) {
+                this.liveResponseState = new Map();
+            }
+            document.querySelectorAll('.participant-item .participant-name').forEach((el) => {
+                const name = (el.textContent || '').trim();
+                if (!name) return;
+                if (!this.liveResponseState.has(name)) {
+                    this.liveResponseState.set(name, { answered: false, eliminated: false });
+                }
+            });
+            this.renderLiveResponseState();
+        }
+
+        resetLiveResponseStateForQuestion() {
+            if (!(this.liveResponseState instanceof Map)) {
+                this.liveResponseState = new Map();
+            }
+            for (const [name, state] of this.liveResponseState.entries()) {
+                this.liveResponseState.set(name, { answered: false, eliminated: !!state?.eliminated });
+            }
+            this.renderLiveResponseState();
+        }
+
+        renderLiveResponseState() {
+            const responsesContainer = document.getElementById('liveResponses');
+            if (!responsesContainer) return;
+
+            const entries = Array.from(this.liveResponseState.entries());
+            if (!entries.length) {
+                responsesContainer.innerHTML = `
+                    <div class="no-responses">
+                        <i data-lucide="clock"></i>
+                        <p>No participant status available yet.</p>
+                    </div>
+                `;
+                const responseCount = document.getElementById('responseCount');
+                if (responseCount) responseCount.textContent = '0';
+                try { lucide.createIcons(); } catch(_) {}
+                return;
+            }
+
+            responsesContainer.innerHTML = '';
+            let answeredCount = 0;
+            entries.forEach(([participantName, state]) => {
+                const eliminated = !!state?.eliminated;
+                const answered = !eliminated && !!state?.answered;
+                if (answered) answeredCount += 1;
+
+                const quality = eliminated ? 'poor' : (answered ? 'excellent' : 'fair');
+                const detailText = eliminated ? 'Ausgeschieden' : (answered ? 'Antwort abgegeben' : 'Warte auf Antwort');
+
+                const row = document.createElement('div');
+                row.className = 'response-item';
+                row.innerHTML = `
+                    <div class="response-avatar ${quality}">${participantName.charAt(0).toUpperCase()}</div>
+                    <div class="response-content">
+                        <div class="response-name">${participantName}</div>
+                        <div class="response-details">${detailText}</div>
+                    </div>
+                `;
+                responsesContainer.appendChild(row);
+            });
+
+            const responseCount = document.getElementById('responseCount');
+            if (responseCount) responseCount.textContent = `${answeredCount}/${entries.length}`;
+        }
+
         addParticipant(participant) {
             const participantsList = document.getElementById('participantsList');
             if (!participantsList) return;
@@ -1283,9 +1355,18 @@ document.addEventListener('DOMContentLoaded', function() {
             
             participantsList.appendChild(participantEl);
             lucide.createIcons();
+            this.initializeLiveResponseState();
         }
         
         addLiveResponse(response) {
+            if (!(this.liveResponseState instanceof Map)) { this.liveResponseState = new Map(); }
+            const participantName = (response.participant_name || '').trim();
+            if (!participantName) return;
+            const prev = this.liveResponseState.get(participantName) || { answered: false, eliminated: false };
+            this.liveResponseState.set(participantName, { answered: true, eliminated: !!(prev.eliminated || response.is_eliminated) });
+            this.renderLiveResponseState();
+            return;
+
             const responsesContainer = document.getElementById('liveResponses');
             if (!responsesContainer) return;
 
