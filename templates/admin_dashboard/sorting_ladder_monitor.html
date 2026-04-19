@@ -986,8 +986,17 @@ document.addEventListener('DOMContentLoaded', function() {
                     
                 case 'question_started':
                     this.resetLiveResponseStateForQuestion();
+                    this.setNextRoundButtonEnabled(true);
                     console.log('Question started');
                     location.reload();
+                    break;
+
+                case 'round_ended':
+                    this.setNextRoundButtonEnabled(!!data.has_next_round);
+                    break;
+
+                case 'no_more_rounds':
+                    this.setNextRoundButtonEnabled(false);
                     break;
 
                 case 'round_answer_status':
@@ -1201,6 +1210,14 @@ document.addEventListener('DOMContentLoaded', function() {
                     type: 'admin_start_round'
                 }));
             }
+        }
+
+        setNextRoundButtonEnabled(enabled) {
+            const btn = document.getElementById('startNextRoundBtn');
+            if (!btn) return;
+            btn.disabled = !enabled;
+            btn.classList.toggle('disabled', !enabled);
+            btn.title = enabled ? '' : 'Alle Runden dieses Sets sind abgeschlossen';
         }
 
         renderRoundAnswerStatus(data) {

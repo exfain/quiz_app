@@ -200,20 +200,22 @@ class SortingLadderGameConsumer(AsyncWebsocketConsumer):
         if not quiz:
             return
 
-        survivors = await self.end_round_db(quiz.id)
+        round_end_payload = await self.end_round_db(quiz.id)
 
         await self.channel_layer.group_send(
             self.room_group_name,
             {
                 'type': 'round_ended',
-                'survivors': survivors
+                'survivors': round_end_payload.get('survivors', []),
+                'has_next_round': round_end_payload.get('has_next_round', False),
             }
         )
 
         await self.hub_mirror_event('round_ended', {
             'room_code': self.room_code,
             'game_key': 'sorting_ladder',
-            'survivors': survivors,
+            'survivors': round_end_payload.get('survivors', []),
+            'has_next_round': round_end_payload.get('has_next_round', False),
         })
 
     async def handle_admin_end_quiz(self, data):
@@ -500,6 +502,7 @@ class SortingLadderGameConsumer(AsyncWebsocketConsumer):
         await self.send(text_data=json.dumps({
             'type': 'round_ended',
             'survivors': event['survivors'],
+            'has_next_round': event.get('has_next_round', False),
         }))
 
     async def no_more_rounds(self, event):
@@ -696,6 +699,10 @@ class SortingLadderGameConsumer(AsyncWebsocketConsumer):
         session.active_element = None
         session.save()
 
+        # Elimination is scoped to the current question/set. Reset it when a
+        # new question starts so participants can play the next set.
+        quiz.participants.filter(is_eliminated=True).update(is_eliminated=False)
+
         quiz.current_question = question
         quiz.save(update_fields=['current_question'])
 
@@ -838,9 +845,24 @@ class SortingLadderGameConsumer(AsyncWebsocketConsumer):
 
         session.end_round()
 
-        survivors = quiz.participants.filter(is_eliminated=False, is_active=True) \
-                                     .values('id', 'name', 'rounds_survived')
-        return list(survivors)
+        survivors = list(
+            quiz.participants.filter(is_eliminated=False, is_active=True)
+            .values('id', 'name', 'rounds_survived')
+        )
+
+        has_next_round = False
+        if quiz.current_question and session.shuffled_item_ids:
+            try:
+                shuffled_ids = [int(x) for x in session.shuffled_item_ids.split(',') if x]
+            except ValueError:
+                shuffled_ids = []
+            max_rounds = max(len(shuffled_ids) - 1, 0)
+            has_next_round = session.current_round < max_rounds
+
+        return {
+            'survivors': survivors,
+            'has_next_round': bool(has_next_round),
+        }
 
     @database_sync_to_async
     def end_question_db(self, quiz_id):
