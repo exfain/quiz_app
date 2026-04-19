@@ -1648,18 +1648,11 @@
                         return;
                     }
 
-                    // Store the latest result so we can show it when the
-                    // round timer has fully elapsed.
                     this.pendingRoundResult = data;
-
-                    // If the timer is still running, stay in the waiting
-                    // state and defer showing the round result.
-                    if (!this.roundTimerEnded) {
-                        this.showState('topicState');
-                        this.setInteractionLock(true, 'Waiting for other players...');
-                        return;
+                    this.roundTimerEnded = true;
+                    if (this.roundTimer) {
+                        clearInterval(this.roundTimer);
                     }
-
                     this.applyRoundResult(data);
                 }
 
@@ -1699,6 +1692,7 @@
                     if (data.participant_name !== this.participantName) {
                         return;
                     }
+                    this.isEliminated = !!data.is_eliminated;
 
                     const resultTitle = document.getElementById('roundResultTitle');
                     const resultText = document.getElementById('roundResultText');
@@ -1743,7 +1737,7 @@
                         const totalPossibleRoundsForQuestion = Math.max((this.shuffledItems || []).length - 1, 1);
 
                         if (resultText) {
-                            resultText.textContent = `You have completed ${roundsCompletedForQuestion} successful round(s) out of ${totalPossibleRoundsForQuestion} and earned ${data.points} point(s) so far. Get ready for the next round.`;
+                            resultText.textContent = `You have completed ${roundsCompletedForQuestion} successful round(s) out of ${totalPossibleRoundsForQuestion} and earned ${data.points} point(s) so far. You are eliminated for this question.`;
                         }
                     }
 
@@ -1780,7 +1774,7 @@
                     this.containerItems = this.shuffledItems.filter(it => !this.lockedIds.has(it.id));
                     this.renderCurrentRound();
 
-                    if (data.has_more_rounds) {
+                    if (data.has_more_rounds && !this.isEliminated) {
                         setTimeout(() => {
                             this.showState('topicState');
                             this.setInteractionLock(true, 'Waiting for host to start next round...');
@@ -1821,7 +1815,8 @@
 
                     container.innerHTML = '';
                     if (questionEl && this.currentQuestion) {
-                        questionEl.textContent = this.currentQuestion.text || '';
+                        const base = this.currentQuestion.text || '';
+                        questionEl.textContent = this.isEliminated ? `${base} — You were eliminated in this question.` : base;
                     }
 
                     // Use the final ladderItems (already reordered from

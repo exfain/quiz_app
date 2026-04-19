@@ -966,6 +966,15 @@ class SortingLadderGameConsumer(AsyncWebsocketConsumer):
 
         shuffled_ids = [int(x) for x in session.shuffled_item_ids.split(',') if x]
 
+        # Do not accept submissions if question is no longer active.
+        now = timezone.now()
+        if not session.is_round_active or (session.round_end_time and now > session.round_end_time):
+            return None
+
+        # Ignore submissions from already eliminated participants.
+        if participant.is_eliminated:
+            return None
+
         # If the round ended due to timeout, we record a failed submission
         # without requiring any ordered_item_ids and without modifying the
         # shuffled order.
@@ -976,6 +985,9 @@ class SortingLadderGameConsumer(AsyncWebsocketConsumer):
                 question=question,
                 all_elements=[],
             )
+            if not participant.is_eliminated:
+                participant.is_eliminated = True
+                participant.save(update_fields=['is_eliminated'])
 
             # Per-question points for this participant in this quiz/question
             correct_rounds_for_question = RoundSubmission.objects.filter(
@@ -1011,7 +1023,7 @@ class SortingLadderGameConsumer(AsyncWebsocketConsumer):
             print("total_rounds_for_participant", total_rounds_for_participant)
             print("shuffled ids", shuffled_ids)
             print("shuffled ids len", len(shuffled_ids))
-            has_more_rounds = total_rounds_for_participant < len(shuffled_ids) - 1
+            has_more_rounds = (not participant.is_eliminated) and total_rounds_for_participant < len(shuffled_ids) - 1
 
             full_sorted_ids = list(SortingItem.objects.filter(topic=question).order_by('correct_rank'))
             full_sorted_ids = [item.id for item in full_sorted_ids]
@@ -1025,18 +1037,6 @@ class SortingLadderGameConsumer(AsyncWebsocketConsumer):
                 'per_question_rounds': correct_rounds_for_question,
                 'correct_order_ids': [] if bool(has_more_rounds) else full_sorted_ids,
             }
-
-        # Do not accept submissions if question is no longer active
-        # now = timezone.now()
-        # if not session.is_round_active or (session.round_end_time and now > session.round_end_time):
-        #     print("Session Ended")
-        #     print("Session Round Active ", session.is_round_active)
-        #     print("Session Round End Time ", session.round_end_time)
-        #     return None
-
-        # Ignore submissions from already eliminated participants
-        # if participant.is_eliminated:
-        #     return None
 
         # Parse shared shuffled order from session. This is treated as the
         # master list of all item IDs for this question, but we no longer
@@ -1065,6 +1065,51 @@ class SortingLadderGameConsumer(AsyncWebsocketConsumer):
             print("Invalid IDs")
             return None
 
+        # Prevent duplicate submissions for the same round by this participant.
+        current_round = max(int(session.current_round or 1), 1)
+        played_rounds = RoundSubmission.objects.filter(
+            quiz=quiz,
+            participant=participant,
+            question=question,
+        ).count()
+        if played_rounds >= current_round:
+            return None
+
+        # Enforce ladder growth by exactly one item per round and keep
+        # previously locked items immutable.
+        expected_count = min(current_round + 1, len(shuffled_ids))
+        if len(visible_ids) != expected_count:
+            return None
+
+        previous_correct = (
+            RoundSubmission.objects
+            .filter(
+                quiz=quiz,
+                participant=participant,
+                question=question,
+                is_correct=True,
+            )
+            .order_by('-submitted_at')
+            .first()
+        )
+        if previous_correct and isinstance(previous_correct.all_elements, list) and previous_correct.all_elements:
+            try:
+                locked_ids = [int(x) for x in previous_correct.all_elements]
+            except (TypeError, ValueError):
+                locked_ids = []
+        else:
+            locked_ids = [shuffled_ids[0]] if shuffled_ids else []
+
+        if len(locked_ids) != max(expected_count - 1, 0):
+            return None
+
+        new_ids = [i for i in visible_ids if i not in locked_ids]
+        if len(new_ids) != 1:
+            return None
+        reduced_visible = [i for i in visible_ids if i != new_ids[0]]
+        if reduced_visible != locked_ids:
+            return None
+
         # Persist this round as a RoundSubmission row. RoundSubmission.save()
         # will compute the is_correct flag from the submitted ordering based
         # on SortingItem.correct_rank.
@@ -1075,8 +1120,7 @@ class SortingLadderGameConsumer(AsyncWebsocketConsumer):
             all_elements=visible_ids,
         )
 
-        # Compute the correct ordered prefix for the ladder and update the
-        # shared shuffled order so the visible prefix is always correct.
+        # Compute the correct ordered prefix for the ladder.
         items = list(SortingItem.objects.filter(id__in=visible_ids))
         if len(items) != len(visible_ids):
             print("Invalid items")
@@ -1084,20 +1128,13 @@ class SortingLadderGameConsumer(AsyncWebsocketConsumer):
         rank_map = {item.id: item.correct_rank for item in items}
         sorted_visible_ids = sorted(visible_ids, key=lambda i: rank_map[i])
 
-        # Rewrite shuffled_ids so that its prefix matches sorted_visible_ids
-        remaining_ids = [i for i in shuffled_ids if i not in sorted_visible_ids]
-        shuffled_ids = sorted_visible_ids + remaining_ids
-        session.shuffled_item_ids = ",".join(str(i) for i in shuffled_ids)
-
         # Update participant progression based on correctness
         if submission.is_correct:
             participant.rounds_survived += 1
             participant.save(update_fields=['rounds_survived'])
-
-        # Persist any changes to the shared shuffled order, but do not use
-        # session.current_round here; round availability is tracked per
-        # participant via their own RoundSubmission rows.
-        session.save(update_fields=['shuffled_item_ids'])
+        else:
+            participant.is_eliminated = True
+            participant.save(update_fields=['is_eliminated'])
 
         # Total rounds played (including this one) for this participant and
         # question. This determines if they personally can play more rounds.
@@ -1114,7 +1151,7 @@ class SortingLadderGameConsumer(AsyncWebsocketConsumer):
         print("total_rounds_for_participant", total_rounds_for_participant)
         print("shuffled ids", shuffled_ids)
         print("shuffled ids len", len(shuffled_ids))
-        has_more_rounds = total_rounds_for_participant < len(shuffled_ids) - 1
+        has_more_rounds = (not participant.is_eliminated) and total_rounds_for_participant < len(shuffled_ids) - 1
 
         # Per-question points for this participant in this quiz/question
         # = (number of correct RoundSubmission rows) * question.points
@@ -1133,6 +1170,10 @@ class SortingLadderGameConsumer(AsyncWebsocketConsumer):
             # Scoring errors should not break the round flow
             pass
 
+        full_sorted_ids = list(
+            SortingItem.objects.filter(topic=question).order_by('correct_rank').values_list('id', flat=True)
+        )
+
         return {
             'is_correct': submission.is_correct,
             'rounds_survived': participant.rounds_survived,
@@ -1140,7 +1181,7 @@ class SortingLadderGameConsumer(AsyncWebsocketConsumer):
             'points': points_for_question,
             'has_more_rounds': bool(has_more_rounds),
             'per_question_rounds': correct_rounds_for_question,
-            'correct_order_ids': sorted_visible_ids,
+            'correct_order_ids': sorted_visible_ids if bool(has_more_rounds) else full_sorted_ids,
         }
 
     @database_sync_to_async
