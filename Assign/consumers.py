@@ -357,7 +357,6 @@ class AssignConsumer(AsyncWebsocketConsumer):
             'round_index': round_index,
         }))
         await self.broadcast_round_log_status_for_round(round_index)
-        await self.maybe_auto_advance_if_all_logged(round_index)
 
     async def handle_participant_submit_answer(self, data):
         """Speichert alle gesammelten Runden-Antworten als AssignAnswer in der DB."""
