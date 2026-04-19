@@ -140,8 +140,9 @@ class HubConsumer(AsyncWebsocketConsumer):
         etype = ev.get('type')
         print("Hub Consumer:", etype, "event", ev)
 
-        # Generate a unique event key (type + game_key + room_code)
-        event_key = f"{etype}:{ev.get('game_key')}:{ev.get('room_code')}"
+        # Generate a per-connection event key so duplicate suppression does not
+        # block delivery to other clients in the same hub session.
+        event_key = f"{self.channel_name}:{etype}:{ev.get('game_key')}:{ev.get('room_code')}"
 
         # Check if this event was already processed recently
         if cache.get(event_key):

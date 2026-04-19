@@ -148,17 +148,16 @@
                         <div id="activeQuestion">
                             <div class="active-question-header">
                                 <h6>Current Question</h6>
-                                <div class="question-timer">
-                                    <div class="timer-circle" id="questionTimerCircle">
-                                        <span id="questionTimeLeft">{{ quiz.current_question.total_time }}</span>
-                                    </div>
-                                </div>
                             </div>
                             
                             <div class="current-question-content">
                                 <div class="question-text">{{ quiz.current_question.question_text }}</div>
                                 
                                 <div class="question-actions">
+                                    <button class="btn btn-primary" id="startNextRoundBtn">
+                                        <i data-lucide="play-circle"></i>
+                                        Nächste Runde starten
+                                    </button>
                                     <button class="btn btn-warning" id="endQuestionBtn">
                                         <i data-lucide="skip-forward"></i>
                                         End Question Early
@@ -180,6 +179,12 @@
                     </h5>
                 </div>
                 <div class="card-body">
+                    <div class="mb-3">
+                        <h6 class="mb-2">Antwortstatus aktuelle Runde</h6>
+                        <div id="roundAnswerStatusList" class="small text-muted">
+                            Noch keine Antworten in dieser Runde.
+                        </div>
+                    </div>
                     <div id="liveResponses" class="live-responses">
                         <div class="no-responses">
                             <i data-lucide="map"></i>
@@ -368,7 +373,6 @@
 .question-item:hover {
     background-color: var(--bg-tertiary);
     border-color: var(--color-secondary);
-    transform: translateY(-2px);
     box-shadow: var(--shadow-md);
 }
 
@@ -847,7 +851,6 @@ document.addEventListener('DOMContentLoaded', function() {
         constructor() {
             this.roomCode = '{{ quiz.room_code }}';
             this.websocket = null;
-            this.questionTimer = null;
             this.currentQuestionTimeLeft = 0;
             this.quizStartTime = {% if quiz.started_at %}new Date('{{ quiz.started_at|date:"c" }}'){% else %}null{% endif %};
             this.isActive = '{{ quiz.status }}' === 'active';
@@ -919,15 +922,6 @@ document.addEventListener('DOMContentLoaded', function() {
             this.bindEvents();
             this.startQuizTimer();
             this.applySentStates();
-
-            // If there is an active question when the page loads, start the question timer
-            // const questionTimeEl = document.getElementById('questionTimeLeft');
-            // if (questionTimeEl) {
-            //     const initial = parseInt(questionTimeEl.textContent, 10);
-            //     if (!isNaN(initial) && initial > 0) {
-            //         this.startQuestionTimer(initial);
-            //     }
-            // }
         }
         
         connectWebSocket() {
@@ -997,6 +991,10 @@ document.addEventListener('DOMContentLoaded', function() {
                     console.log('Question started');
                     location.reload();
                     break;
+
+                case 'round_answer_status':
+                    this.renderRoundAnswerStatus(data);
+                    break;
                     
                 case 'question_ended':
                     console.log('Question ended:', data.message);
@@ -1005,10 +1003,6 @@ document.addEventListener('DOMContentLoaded', function() {
                     
                 case 'quiz_ended':
                     console.log('Quiz ended:', data.message);
-                    if (this.questionTimer) {
-                        clearInterval(this.questionTimer);
-                        this.questionTimer = null;
-                    }
                     // Clear persisted sent state so a new session starts fresh
                     this.resetSentStates();
                     location.reload();
@@ -1077,6 +1071,11 @@ document.addEventListener('DOMContentLoaded', function() {
             // End Question button
             document.getElementById('endQuestionBtn')?.addEventListener('click', () => {
                 this.endCurrentQuestion();
+            });
+
+            // Manual next-round button
+            document.getElementById('startNextRoundBtn')?.addEventListener('click', () => {
+                this.startNextRound();
             });
             
             // Share Code button
@@ -1197,52 +1196,32 @@ document.addEventListener('DOMContentLoaded', function() {
                 }));
             }
         }
-        
-        startQuestionTimer() {
-            // Prefer any override set at send-time (stored just before backend switched state)
-            let override = null;
-            try {
-                const raw = localStorage.getItem(`override_time_${this.roomCode}`);
-                if (raw) {
-                    const v = parseInt(raw, 10);
-                    if (!isNaN(v) && v > 0) override = v;
-                }
-            } catch(_) {}
-            let serverTimeLeft = 0;
-            try {
-                const serverEl = document.getElementById('questionTimeLeft');
-                if (serverEl && serverEl.textContent) {
-                    const sv = parseInt(serverEl.textContent, 10);
-                    if (!isNaN(sv) && sv > 0) serverTimeLeft = sv;
-                }
-            } catch(_) {}
-            const timeLeft = (override !== null) ? override : serverTimeLeft;
-            if (timeLeft <= 0) return;
-            
-            let currentTime = timeLeft;
-            const timerElement = document.getElementById('questionTimeLeft');
-            const circleElement = document.getElementById('questionTimerCircle');
-            
-            this.questionTimer = setInterval(() => {
-                currentTime--;
-                if (timerElement) timerElement.textContent = currentTime;
-                
-                if (circleElement) {
-                    circleElement.className = 'timer-circle';
-                    if (currentTime <= 20) {
-                        circleElement.classList.add('danger');
-                    } else if (currentTime <= 40) {
-                        circleElement.classList.add('warning');
-                    }
-                }
-                
-                if (currentTime <= 0) {
-                    clearInterval(this.questionTimer);
-                    this.onQuestionTimeout();
-                }
-            }, 1000);
-            // Clear one-time override so subsequent questions use their own values
-            try { localStorage.removeItem(`override_time_${this.roomCode}`); } catch(_) {}
+
+        startNextRound() {
+            if (this.websocket && this.websocket.readyState === WebSocket.OPEN) {
+                this.websocket.send(JSON.stringify({
+                    type: 'admin_start_round'
+                }));
+            }
+        }
+
+        renderRoundAnswerStatus(data) {
+            const container = document.getElementById('roundAnswerStatusList');
+            if (!container) return;
+
+            const statuses = Array.isArray(data.statuses) ? data.statuses : [];
+            if (!statuses.length) {
+                container.innerHTML = 'Keine aktiven Teilnehmer für diese Runde.';
+                return;
+            }
+
+            const rows = statuses.map((entry) => {
+                const answered = !!entry.has_answered;
+                const marker = answered ? '✅' : '⏳';
+                const label = answered ? 'geantwortet' : 'offen';
+                return `<div><strong>${entry.participant_name}</strong>: ${marker} ${label}</div>`;
+            });
+            container.innerHTML = rows.join('');
         }
         
         startQuizTimer() {
@@ -1353,15 +1332,6 @@ document.addEventListener('DOMContentLoaded', function() {
             // Connection indicator could be added here
         }
         
-        onQuestionTimeout() {
-            console.log('Question timed out');
-            if (this.websocket && this.websocket.readyState === WebSocket.OPEN) {
-                this.websocket.send(JSON.stringify({
-                    type: 'admin_end_question'
-                }));
-            }
-        }
-        
         shareRoomCode() {
             const shareData = {
                 title: 'Join Geography Quiz Room',
@@ -1383,11 +1353,6 @@ document.addEventListener('DOMContentLoaded', function() {
     // Initialize Geography Quiz Monitor
     const monitor = new WhereMonitor();
     
-    // Start question timer if there's an active question
-    {% if quiz.current_question %}
-        console.log('Question Timer Started')
-        monitor.startQuestionTimer();
-    {% endif %}
 });
 
 // Minimal hub listener for admin auto-redirect across steps

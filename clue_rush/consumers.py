@@ -588,6 +588,16 @@ class ClueRushGameConsumer(AsyncWebsocketConsumer):
                     'clue': clue,
                 }
             )
+            # No next-clue timer after the last clue.
+            if not clue.get('has_next_clue', False):
+                await self.channel_layer.group_send(
+                    self.room_group_name,
+                    {
+                        'type': 'clue_sequence_completed',
+                        'message': 'All clues have been sent.'
+                    }
+                )
+                break
             try:
                 await asyncio.sleep(max(0, int(clue.get('duration', 0))))
             except asyncio.CancelledError:
@@ -709,12 +719,15 @@ class ClueRushGameConsumer(AsyncWebsocketConsumer):
             quiz = ClueRushGame.objects.select_related('session', 'current_question').get(room_code=self.room_code)
             if not quiz.current_question:
                 return None
-            # Determine next order
-            current_order = quiz.session.current_clue_number if hasattr(quiz, 'session') and quiz.session else 0
-            next_obj = quiz.current_question.clues.order_by('order').filter(order__gt=current_order).first()
-
-            from icecream import ic
-            ic(current_order, next_obj)
+            clues_qs = quiz.current_question.clues.order_by('order')
+            # Use current_clue as primary source to avoid off-by-one issues
+            # when clue ordering starts at 0 or when session counters get stale.
+            if quiz.current_clue_id:
+                current_order = quiz.current_clue.order
+                next_obj = clues_qs.filter(order__gt=current_order).first()
+            else:
+                # No clue has been sent yet for this question: always start with the first clue
+                next_obj = clues_qs.first()
             if not next_obj:
                 return None
             # Update DB state
@@ -727,11 +740,13 @@ class ClueRushGameConsumer(AsyncWebsocketConsumer):
                 session.clue_end_time = timezone.now() + timezone.timedelta(seconds=next_obj.duration)
                 session.save()
             quiz.save()
+            has_next_clue = clues_qs.filter(order__gt=next_obj.order).exists()
             return {
                 'id': next_obj.id,
                 'order': next_obj.order,
                 'clue_text': next_obj.clue_text,
                 'duration': next_obj.duration,
+                'has_next_clue': has_next_clue,
             }
         except ClueRushGame.DoesNotExist:
             return None
