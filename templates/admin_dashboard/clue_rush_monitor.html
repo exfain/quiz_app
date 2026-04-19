@@ -1231,12 +1231,17 @@ document.addEventListener('DOMContentLoaded', function() {
             if (!(this.liveResponseState instanceof Map)) {
                 this.liveResponseState = new Map();
             }
-            document.querySelectorAll('.participant-item .participant-name').forEach((el) => {
-                const name = (el.textContent || '').trim();
+            document.querySelectorAll('.participant-item').forEach((row) => {
+                const nameEl = row.querySelector('.participant-name');
+                const name = (nameEl?.textContent || '').trim();
                 if (!name) return;
-                if (!this.liveResponseState.has(name)) {
-                    this.liveResponseState.set(name, { answered: false, eliminated: false });
-                }
+                const rowText = (row.textContent || '').toLowerCase();
+                const inferredEliminated = rowText.includes('eliminated') || rowText.includes('ausgeschieden');
+                const prev = this.liveResponseState.get(name) || { answered: false, eliminated: false };
+                this.liveResponseState.set(name, {
+                    answered: !!prev.answered,
+                    eliminated: !!(prev.eliminated || inferredEliminated),
+                });
             });
             this.renderLiveResponseState();
         }
