@@ -699,9 +699,18 @@ class SortingLadderGameConsumer(AsyncWebsocketConsumer):
         session.active_element = None
         session.save()
 
+        # Replay-safety: if the same question is started again in the same quiz,
+        # old submissions for that (quiz, question) must not leak into the new run.
+        RoundSubmission.objects.filter(quiz=quiz, question=question).delete()
+
         # Elimination is scoped to the current question/set. Reset it when a
         # new question starts so participants can play the next set.
         quiz.participants.filter(is_eliminated=True).update(is_eliminated=False)
+        for participant in quiz.participants.all():
+            try:
+                participant.calculate_total_score()
+            except Exception:
+                pass
 
         quiz.current_question = question
         quiz.save(update_fields=['current_question'])

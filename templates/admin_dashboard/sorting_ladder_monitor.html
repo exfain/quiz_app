@@ -181,12 +181,6 @@
                             Noch keine Antworten in dieser Runde.
                         </div>
                     </div>
-                    <div id="liveResponses" class="live-responses">
-                        <div class="no-responses">
-                            <i data-lucide="map"></i>
-                            <p>No responses yet. Send a question to see participant geography guesses in real-time!</p>
-                        </div>
-                    </div>
                 </div>
             </div>
         </div>
@@ -960,10 +954,6 @@ document.addEventListener('DOMContentLoaded', function() {
                     this.updateParticipantCount();
                     break;
                     
-                case 'participant_answered':
-                    this.addLiveResponse(data.answer);
-                    break;
-                    
                 case 'quiz_started':
                     console.log('Quiz started:', data.message);
                     this.isActive = true;
@@ -1225,11 +1215,14 @@ document.addEventListener('DOMContentLoaded', function() {
             if (!container) return;
 
             const statuses = Array.isArray(data.statuses) ? data.statuses : [];
+            const responseCount = document.getElementById('responseCount');
             if (!statuses.length) {
                 container.innerHTML = 'Keine aktiven Teilnehmer für diese Runde.';
+                if (responseCount) responseCount.textContent = '0';
                 return;
             }
 
+            const answeredCount = statuses.filter((entry) => !!entry.has_answered).length;
             const rows = statuses.map((entry) => {
                 const answered = !!entry.has_answered;
                 const marker = answered ? '✅' : '⏳';
@@ -1237,6 +1230,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 return `<div><strong>${entry.participant_name}</strong>: ${marker} ${label}</div>`;
             });
             container.innerHTML = rows.join('');
+            if (responseCount) responseCount.textContent = `${answeredCount}/${statuses.length}`;
         }
         
         initializeLiveResponseState() {
