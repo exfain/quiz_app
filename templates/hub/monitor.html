@@ -35,9 +35,13 @@
                     <a href="{% url 'admin_dashboard:sessions_overview' %}" class="btn btn-outline-secondary">
                         <i data-lucide="layout-dashboard" class="me-1"></i> Dashboard
                     </a>
-                    {% if not session.started_at or (session.started_at and not session.ended_at and not session.is_active) %}
+                    {% if not session.started_at %}
                     <button id="startSessionBtn" class="btn btn-success">
-                        <i data-lucide="play" class="me-1"></i> {% if session.started_at %}Activate Session{% else %}Start Session{% endif %}
+                        <i data-lucide="play" class="me-1"></i> Start Session
+                    </button>
+                    {% elif not session.ended_at and not session.is_active %}
+                    <button id="startSessionBtn" class="btn btn-success">
+                        <i data-lucide="play" class="me-1"></i> Activate Session
                     </button>
                     {% endif %}
                     <button id="spectateBtn" class="btn btn-outline-info" onclick="window.open('/hub/spectate/{{ session.code }}/', '_blank')">
