@@ -148,6 +148,58 @@
             </div>
         </div>
 
+        <!-- Inactive Hub Sessions -->
+        <div class="card border-0 shadow-sm mb-4">
+            <div class="card-header bg-white border-0 py-3 d-flex align-items-center gap-2">
+                <span class="badge bg-secondary rounded-pill" style="font-size:0.7rem;">INACTIVE</span>
+                <h5 class="mb-0">Inactive Sessions</h5>
+                <span class="badge bg-secondary ms-1">{{ inactive_hub_sessions|length }}</span>
+            </div>
+            <div class="card-body p-0">
+                <div class="table-responsive">
+                    <table class="table table-hover mb-0">
+                        <thead class="table-light">
+                            <tr>
+                                <th>Session Code</th>
+                                <th>Session Name</th>
+                                <th>Lobby Link</th>
+                                <th>Last Started</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for session in inactive_hub_sessions %}
+                            {% with lobby_url=request.scheme|add:"://"|add:request.get_host|add:"/hub/lobby/"|add:session.code|add:"/" %}
+                            <tr style="cursor:pointer;" onclick="window.location='{% url 'games_hub:monitor' session.code %}'">
+                                <td><code>{{ session.code }}</code></td>
+                                <td><strong>{{ session.name }}</strong></td>
+                                <td>
+                                    <div class="d-flex align-items-center gap-1" onclick="event.stopPropagation()">
+                                        <a href="{{ lobby_url }}" target="_blank" class="text-truncate" style="max-width:220px;font-size:0.8rem;">{{ lobby_url }}</a>
+                                        <button class="btn btn-link btn-sm p-0 copy-lobby-btn" title="Copy" data-url="{{ lobby_url }}">
+                                            <i data-lucide="copy" style="width:13px;height:13px;color:#6c757d;"></i>
+                                        </button>
+                                    </div>
+                                </td>
+                                <td>{% if session.started_at %}{{ session.started_at|timesince }} ago{% else %}&mdash;{% endif %}</td>
+                                <td>
+                                    <a href="{% url 'games_hub:monitor' session.code %}" class="btn btn-sm btn-outline-primary">
+                                        <i data-lucide="power" style="width:14px;height:14px;"></i> Activate
+                                    </a>
+                                </td>
+                            </tr>
+                            {% endwith %}
+                            {% empty %}
+                            <tr>
+                                <td colspan="5" class="text-center py-4 text-muted">No inactive sessions</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
         <!-- Active Games -->
         {% if active_games %}
         <div class="card border-0 shadow-sm mb-4">

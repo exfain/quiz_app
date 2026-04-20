@@ -1,4 +1,4 @@
-from django.db import models
+from django.db import models, transaction
 from games_website.models import SyncBase
 from django.utils import timezone
 
@@ -13,6 +13,24 @@ class HubSession(SyncBase):
     current_step_index = models.IntegerField(default=0)
     games_weight = models.FloatField(default=2.0)
     scoreboard_visible = models.BooleanField(default=False)
+
+    @classmethod
+    def activate_exclusive(cls, session_code: str):
+        """Activate exactly one not-ended session and mark all other active sessions as inactive."""
+        with transaction.atomic():
+            cls.objects.select_for_update().filter(
+                is_active=True,
+                ended_at__isnull=True
+            ).exclude(code=session_code).update(is_active=False)
+
+            session = cls.objects.select_for_update().get(code=session_code)
+            if session.ended_at:
+                return session
+            if not session.started_at:
+                session.started_at = timezone.now()
+            session.is_active = True
+            session.save(update_fields=['started_at', 'is_active'])
+            return session
 
     def __str__(self):
         return f"HubSession {self.code}"

@@ -71,7 +71,7 @@ def create_session(request):
         except json.JSONDecodeError:
             games_ordered = []
 
-        session = HubSession.objects.create(code=code, name=name)
+        session = HubSession.objects.create(code=code, name=name, is_active=False)
 
         GAME_MODEL_MAP = {
             'quiz':           QuizGameModel,

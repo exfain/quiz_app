@@ -144,6 +144,7 @@ def duplicate_session(request):
             code=new_code,
             name=original.name,
             games_weight=original.games_weight,
+            is_active=False,
             # started_at and ended_at default to None → planned
         )
 
@@ -1284,9 +1285,9 @@ def sessions_overview(request):
     # Get total sessions count
     total_sessions = HubSession.objects.count()
     
-    # Get active sessions (sessions that have started but not ended)
+    # Get active sessions (single-active rule: active flag + not ended)
     active_sessions = HubSession.objects.filter(
-        started_at__isnull=False,
+        is_active=True,
         ended_at__isnull=True
     ).count()
     
@@ -1343,22 +1344,28 @@ def sessions_overview(request):
     # Session codes that have at least one active game running
     active_game_session_codes = {g['hub_session_code'] for g in active_games if g['hub_session_code']}
 
-    # Active hub sessions: started but not ended, OR has active games running
+    # Active hub sessions: explicitly active and not ended
     active_sessions_qs = HubSession.objects.filter(
+        is_active=True,
         ended_at__isnull=True
-    ).filter(
-        Q(started_at__isnull=False) | Q(code__in=active_game_session_codes)
     ).order_by('-started_at').annotate(
         players_count=Count('participants', distinct=True)
     )
 
-    # Planned hub sessions: not started, not ended, and no active games
+    # Planned hub sessions: not started yet and not ended
     planned_sessions_qs = HubSession.objects.filter(
         started_at__isnull=True,
         ended_at__isnull=True
-    ).exclude(
-        code__in=active_game_session_codes
     ).order_by('-created_at').annotate(
+        players_count=Count('participants', distinct=True)
+    )
+
+    # Inactive hub sessions: started before, currently not active, not ended
+    inactive_sessions_qs = HubSession.objects.filter(
+        started_at__isnull=False,
+        is_active=False,
+        ended_at__isnull=True
+    ).order_by('-started_at').annotate(
         players_count=Count('participants', distinct=True)
     )
 
@@ -1381,6 +1388,7 @@ def sessions_overview(request):
         'active_games': active_games,
         'active_hub_sessions': active_sessions_qs,
         'planned_hub_sessions': planned_sessions_qs,
+        'inactive_hub_sessions': inactive_sessions_qs,
         'recent_sessions': [{
             'name': session.name,
             'code': session.code,

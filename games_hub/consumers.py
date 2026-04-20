@@ -222,10 +222,7 @@ class HubConsumer(AsyncWebsocketConsumer):
     @database_sync_to_async
     def start_session_db(self):
         try:
-            session = HubSession.objects.get(code=self.session_code)
-            if not session.started_at:
-                session.started_at = timezone.now()
-            session.save()
+            HubSession.activate_exclusive(self.session_code)
         except HubSession.DoesNotExist:
             pass
 
