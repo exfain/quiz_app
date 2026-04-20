@@ -1396,7 +1396,8 @@
                                 // If a valid current selection exists, submit it
                                 // normally so non-explicit "check" inputs are
                                 // still accepted at round end.
-                                const hasSelection = !!this.currentRoundItemId;
+                                const hasSelection = !!this.currentRoundItemId &&
+                                    this.ladderItems.some(it => Number(it.id) === Number(this.currentRoundItemId));
                                 this.submitCurrentRound(!hasSelection);
                                 // Show waiting state while we await the
                                 // authoritative result.
@@ -1577,17 +1578,21 @@
                     const droppedId = parseInt(dragging.dataset.itemId || '0', 10);
                     if (isNaN(droppedId)) return;
 
-                    // Remove from containerItems
-                    this.containerItems = this.containerItems.filter(it => it.id !== droppedId);
+                    const itemObj = this.shuffledItems.find(it => Number(it.id) === droppedId);
+                    if (!itemObj) {
+                        // Keep state unchanged if the dropped card cannot be
+                        // resolved to a known item.
+                        return;
+                    }
 
                     // Clear visual state on all triangle targets
                     document.querySelectorAll('.triangle-container').forEach(t => t.classList.remove('over'));
 
-                    const itemObj = this.shuffledItems.find(it => it.id === droppedId);
-                    if (!itemObj) return;
+                    // Remove from containerItems only after successful item resolution.
+                    this.containerItems = this.containerItems.filter(it => Number(it.id) !== droppedId);
 
                     // Remove any existing occurrence of this item on the ladder
-                    this.ladderItems = this.ladderItems.filter(it => it.id !== droppedId);
+                    this.ladderItems = this.ladderItems.filter(it => Number(it.id) !== droppedId);
 
                     // Clamp position to valid range and insert
                     const clampedPos = Math.max(0, Math.min(position, this.ladderItems.length));
@@ -1612,10 +1617,12 @@
                 submitCurrentRound(roundTimeOut = false) {
                     if (!this.websocket || this.websocket.readyState !== WebSocket.OPEN) return;
                     if (this.isEliminated || this.isInputLocked) return;
+                    const hasPlacedRoundItem = !!this.currentRoundItemId &&
+                        this.ladderItems.some(it => Number(it.id) === Number(this.currentRoundItemId));
 
                     // For normal submissions, require that exactly one item has been placed this round.
                     // For timeouts, allow submission even if no item is placed so the round is recorded as failed.
-                    if (!this.currentRoundItemId && !roundTimeOut) {
+                    if (!hasPlacedRoundItem && !roundTimeOut) {
                         alert('Please place one item from the container onto the ladder before checking.');
                         return;
                     }
