@@ -191,10 +191,6 @@
                                         <i data-lucide="arrow-right"></i>
                                         Nächste Runde (<span id="nextRoundLabel">{{ current_round_index|add:2 }}/{{ total_rounds_current }}</span>)
                                     </button>
-                                    <button class="btn btn-outline-warning" id="endRoundEarlyBtn">
-                                        <i data-lucide="skip-forward"></i>
-                                        Runde frühzeitig beenden
-                                    </button>
                                     {% else %}
                                     <button class="btn btn-warning" id="endQuestionBtn">
                                         <i data-lucide="check-square"></i>
@@ -1081,11 +1077,6 @@ document.addEventListener('DOMContentLoaded', function() {
                 this.sendNextRound();
             });
 
-            // Runde frühzeitig beenden
-            document.getElementById('endRoundEarlyBtn')?.addEventListener('click', () => {
-                this.endRoundEarly();
-            });
-
             // Share Code button
             document.getElementById('shareCodeBtn')?.addEventListener('click', () => {
                 this.shareRoomCode();
@@ -1208,15 +1199,6 @@ document.addEventListener('DOMContentLoaded', function() {
             }
         }
 
-        endRoundEarly() {
-            if (this.websocket && this.websocket.readyState === WebSocket.OPEN) {
-                this.websocket.send(JSON.stringify({
-                    type: 'admin_next_round',
-                    expected_round: this.currentRoundIndex
-                }));
-            }
-        }
-
         onRoundsComplete() {
             clearInterval(this.questionTimer);
             const actions = document.querySelector('.question-actions');
@@ -1256,11 +1238,9 @@ document.addEventListener('DOMContentLoaded', function() {
 
             // Buttons tauschen
             const nextBtn = document.getElementById('nextRoundBtn');
-            const endRoundEarlyBtn = document.getElementById('endRoundEarlyBtn');
             const endBtn = document.getElementById('endQuestionBtn');
             if (this.isLastRound) {
                 if (nextBtn) nextBtn.style.display = 'none';
-                if (endRoundEarlyBtn) endRoundEarlyBtn.style.display = 'none';
                 if (!endBtn) {
                     const actions = document.querySelector('.question-actions');
                     if (actions) {
@@ -1535,8 +1515,6 @@ document.addEventListener('DOMContentLoaded', function() {
                 `;
                 const responseCount = document.getElementById('responseCount');
                 if (responseCount) responseCount.textContent = '0';
-                const endRoundEarlyBtn = document.getElementById('endRoundEarlyBtn');
-                if (endRoundEarlyBtn) endRoundEarlyBtn.disabled = true;
                 try { lucide.createIcons(); } catch(_) {}
                 return;
             }
@@ -1563,14 +1541,6 @@ document.addEventListener('DOMContentLoaded', function() {
             const responseCount = document.getElementById('responseCount');
             if (responseCount) {
                 responseCount.textContent = `${data.logged_count || 0}/${data.active_count || statuses.length}`;
-            }
-
-            const endRoundEarlyBtn = document.getElementById('endRoundEarlyBtn');
-            if (endRoundEarlyBtn) {
-                endRoundEarlyBtn.disabled = !data.all_logged;
-                endRoundEarlyBtn.title = data.all_logged
-                    ? 'Alle aktiven Teilnehmer haben eingeloggt'
-                    : 'Nur verfügbar, wenn alle aktiven Teilnehmer eingeloggt haben';
             }
             try { lucide.createIcons(); } catch(_) {}
         }
