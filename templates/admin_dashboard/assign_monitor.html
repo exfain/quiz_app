@@ -164,6 +164,11 @@
                                     </div>
                                 </div>
                             </div>
+                            <div class="monitor-phase-strip mb-3">
+                                <span class="phase-pill" id="monitorPhaseLabel">Warte auf Antworten</span>
+                                <span class="phase-meta" id="monitorPhaseProgress">Antworten: 0/0</span>
+                                <span class="phase-meta" id="monitorPhaseTimer">Timer: --</span>
+                            </div>
                             
                             <div class="current-question-content">
                                 <div class="question-text">{{ quiz.current_question.question_text }}</div>
@@ -185,14 +190,14 @@
                                     </div>
                                 </div>
                                 
-                                <div class="question-actions">
+                                <div class="question-actions question-actions--split">
                                     {% if current_round_index < total_rounds_current|add:"-1" %}
-                                    <button class="btn btn-primary" id="nextRoundBtn">
+                                    <button class="btn btn-primary primary-action" id="nextRoundBtn">
                                         <i data-lucide="arrow-right"></i>
                                         Nächste Runde (<span id="nextRoundLabel">{{ current_round_index|add:2 }}/{{ total_rounds_current }}</span>)
                                     </button>
                                     {% else %}
-                                    <button class="btn btn-warning" id="endQuestionBtn">
+                                    <button class="btn btn-warning secondary-action" id="endQuestionBtn">
                                         <i data-lucide="check-square"></i>
                                         Frage beenden
                                     </button>
@@ -508,6 +513,40 @@
     border-color: var(--error-200);
     color: var(--error-600);
     animation: shake 0.5s infinite;
+}
+
+.monitor-phase-strip {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+}
+
+.phase-pill {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.25rem 0.625rem;
+    border-radius: 999px;
+    background: var(--primary-100);
+    color: var(--primary-700);
+    font-weight: 600;
+    font-size: 0.8rem;
+}
+
+.phase-meta {
+    font-size: 0.8125rem;
+    color: var(--text-muted);
+}
+
+.question-actions--split {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+}
+
+.question-actions--split .secondary-action {
+    margin-left: auto;
 }
 
 @keyframes shake {
@@ -841,6 +880,7 @@ document.addEventListener('DOMContentLoaded', function() {
             this.currentRoundIndex = {{ current_round_index }};
             this.totalRoundsCurrentQ = {{ total_rounds_current }};
             this.isLastRound = this.totalRoundsCurrentQ > 0 && this.currentRoundIndex >= this.totalRoundsCurrentQ - 1;
+            this.currentPhaseLabel = 'Warte auf Antworten';
 
             this.liveResponseState = new Map();
             this.init();
@@ -913,6 +953,7 @@ document.addEventListener('DOMContentLoaded', function() {
             this.startQuizTimer();
             this.applySentStates();
             this.initializeLiveResponseState();
+            this.updateMonitorPhase();
         }
         
         connectWebSocket() {
@@ -1201,14 +1242,15 @@ document.addEventListener('DOMContentLoaded', function() {
 
         onRoundsComplete() {
             clearInterval(this.questionTimer);
+            this.currentPhaseLabel = 'Runden abgeschlossen';
             const actions = document.querySelector('.question-actions');
             if (actions) {
                 actions.innerHTML = `
-                    <button class="btn btn-success" id="showSolutionBtn">
+                    <button class="btn btn-success primary-action" id="showSolutionBtn">
                         <i data-lucide="eye"></i>
                         Zuordnung anzeigen
                     </button>
-                    <button class="btn btn-warning" id="endQuestionBtn">
+                    <button class="btn btn-warning secondary-action" id="endQuestionBtn">
                         <i data-lucide="check-square"></i>
                         Spiel beendet
                     </button>
@@ -1217,6 +1259,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 document.getElementById('endQuestionBtn')?.addEventListener('click', () => this.endCurrentQuestion());
                 try { lucide.createIcons(); } catch(_) {}
             }
+            this.updateMonitorPhase();
         }
 
         showSolution() {
@@ -1231,6 +1274,7 @@ document.addEventListener('DOMContentLoaded', function() {
             this.currentRoundIndex = data.round_index;
             this.totalRoundsCurrentQ = data.total_rounds;
             this.isLastRound = (data.round_index >= data.total_rounds - 1);
+            this.currentPhaseLabel = this.isLastRound ? 'Letzte Runde' : 'Runde läuft';
 
             // Runden-Badge aktualisieren
             const badge = document.getElementById('monitorRoundBadge');
@@ -1245,7 +1289,7 @@ document.addEventListener('DOMContentLoaded', function() {
                     const actions = document.querySelector('.question-actions');
                     if (actions) {
                         const btn = document.createElement('button');
-                        btn.className = 'btn btn-warning';
+                        btn.className = 'btn btn-warning secondary-action';
                         btn.id = 'endQuestionBtn';
                         btn.innerHTML = '<i data-lucide="check-square"></i> Frage beenden';
                         btn.addEventListener('click', () => this.sendNextRound());
@@ -1270,6 +1314,7 @@ document.addEventListener('DOMContentLoaded', function() {
             // Setze Timer auf Question-Zeitlimit zurück
             if (timeEl) timeEl.textContent = data.time_limit || 60;
             this.startQuestionTimer();
+            this.updateMonitorPhase();
         }
         
         startQuestionTimer() {
@@ -1296,10 +1341,13 @@ document.addEventListener('DOMContentLoaded', function() {
             let currentTime = timeLeft;
             const timerElement = document.getElementById('questionTimeLeft');
             const circleElement = document.getElementById('questionTimerCircle');
+            this.currentPhaseLabel = 'Runde läuft';
+            this.updateMonitorPhase();
             
             this.questionTimer = setInterval(() => {
                 currentTime--;
                 if (timerElement) timerElement.textContent = currentTime;
+                this.updateMonitorPhase();
                 
                 // Update timer circle color based on time left
                 if (circleElement) {
@@ -1410,6 +1458,8 @@ document.addEventListener('DOMContentLoaded', function() {
 
             const responseCount = document.getElementById('responseCount');
             if (responseCount) responseCount.textContent = `${answeredCount}/${entries.length}`;
+            this.currentPhaseLabel = answeredCount === entries.length ? 'Alle Antworten eingegangen' : 'Warte auf Antworten';
+            this.updateMonitorPhase();
         }
 
         addParticipant(participant) {
@@ -1542,7 +1592,23 @@ document.addEventListener('DOMContentLoaded', function() {
             if (responseCount) {
                 responseCount.textContent = `${data.logged_count || 0}/${data.active_count || statuses.length}`;
             }
+            this.currentPhaseLabel = (data.logged_count || 0) >= (data.active_count || statuses.length)
+                ? 'Alle Antworten eingeloggt'
+                : 'Warte auf Einloggen';
+            this.updateMonitorPhase();
             try { lucide.createIcons(); } catch(_) {}
+        }
+
+        updateMonitorPhase() {
+            const phaseLabelEl = document.getElementById('monitorPhaseLabel');
+            const progressEl = document.getElementById('monitorPhaseProgress');
+            const timerEl = document.getElementById('monitorPhaseTimer');
+            const responseCountEl = document.getElementById('responseCount');
+            const questionTimerEl = document.getElementById('questionTimeLeft');
+
+            if (phaseLabelEl) phaseLabelEl.textContent = this.currentPhaseLabel || 'Warte auf Antworten';
+            if (progressEl) progressEl.textContent = `Antworten: ${responseCountEl?.textContent || '0/0'}`;
+            if (timerEl) timerEl.textContent = `Timer: ${questionTimerEl?.textContent || '--'}`;
         }
         
         updateParticipantCount() {
@@ -1563,6 +1629,8 @@ document.addEventListener('DOMContentLoaded', function() {
         
         onQuestionTimeout() {
             console.log('Question timed out');
+            this.currentPhaseLabel = 'Zeit abgelaufen';
+            this.updateMonitorPhase();
             if (this.websocket && this.websocket.readyState === WebSocket.OPEN) {
                 // Immer admin_next_round senden – auch bei letzter Runde.
                 // Der Server sendet dann question_rounds_complete (statt question_ended),

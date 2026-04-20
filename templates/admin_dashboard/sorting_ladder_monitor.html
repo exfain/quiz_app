@@ -145,16 +145,20 @@
                             <div class="active-question-header">
                                 <h6>Current Question</h6>
                             </div>
+                            <div class="monitor-phase-strip mb-3">
+                                <span class="phase-pill" id="monitorPhaseLabel">Warte auf Antworten</span>
+                                <span class="phase-meta" id="monitorPhaseProgress">Antworten: 0/0</span>
+                            </div>
                             
                             <div class="current-question-content">
                                 <div class="question-text">{{ quiz.current_question.question_text }}</div>
                                 
-                                <div class="question-actions">
-                                    <button class="btn btn-primary" id="startNextRoundBtn">
+                                <div class="question-actions question-actions--split">
+                                    <button class="btn btn-primary primary-action" id="startNextRoundBtn">
                                         <i data-lucide="play-circle"></i>
                                         Nächste Runde starten
                                     </button>
-                                    <button class="btn btn-warning" id="endQuestionBtn">
+                                    <button class="btn btn-warning secondary-action" id="endQuestionBtn">
                                         <i data-lucide="skip-forward"></i>
                                         End Question Early
                                     </button>
@@ -498,6 +502,40 @@
     border-color: var(--error-200);
     color: var(--error-600);
     animation: shake 0.5s infinite;
+}
+
+.monitor-phase-strip {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+}
+
+.phase-pill {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.25rem 0.625rem;
+    border-radius: 999px;
+    background: var(--primary-100);
+    color: var(--primary-700);
+    font-weight: 600;
+    font-size: 0.8rem;
+}
+
+.phase-meta {
+    font-size: 0.8125rem;
+    color: var(--text-muted);
+}
+
+.question-actions--split {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+}
+
+.question-actions--split .secondary-action {
+    margin-left: auto;
 }
 
 @keyframes shake {
@@ -844,6 +882,7 @@ document.addEventListener('DOMContentLoaded', function() {
             this.currentQuestionTimeLeft = 0;
             this.isActive = '{{ quiz.status }}' === 'active';
             this.liveResponseState = new Map();
+            this.currentPhaseLabel = 'Warte auf Antworten';
             this.init();
         }
 
@@ -913,6 +952,7 @@ document.addEventListener('DOMContentLoaded', function() {
             this.bindEvents();
             this.applySentStates();
             this.initializeLiveResponseState();
+            this.updateMonitorPhase();
         }
         
         connectWebSocket() {
@@ -977,16 +1017,22 @@ document.addEventListener('DOMContentLoaded', function() {
                 case 'question_started':
                     this.resetLiveResponseStateForQuestion();
                     this.setNextRoundButtonEnabled(true);
+                    this.currentPhaseLabel = 'Runde läuft';
+                    this.updateMonitorPhase();
                     console.log('Question started');
                     location.reload();
                     break;
 
                 case 'round_ended':
                     this.setNextRoundButtonEnabled(!!data.has_next_round);
+                    this.currentPhaseLabel = data.has_next_round ? 'Runde beendet' : 'Letzte Runde beendet';
+                    this.updateMonitorPhase();
                     break;
 
                 case 'no_more_rounds':
                     this.setNextRoundButtonEnabled(false);
+                    this.currentPhaseLabel = 'Runden abgeschlossen';
+                    this.updateMonitorPhase();
                     break;
 
                 case 'round_answer_status':
@@ -1208,6 +1254,7 @@ document.addEventListener('DOMContentLoaded', function() {
             btn.disabled = !enabled;
             btn.classList.toggle('disabled', !enabled);
             btn.title = enabled ? '' : 'Alle Runden dieses Sets sind abgeschlossen';
+            this.updateMonitorPhase();
         }
 
         renderRoundAnswerStatus(data) {
@@ -1219,6 +1266,8 @@ document.addEventListener('DOMContentLoaded', function() {
             if (!statuses.length) {
                 container.innerHTML = 'Keine aktiven Teilnehmer für diese Runde.';
                 if (responseCount) responseCount.textContent = '0';
+                this.currentPhaseLabel = 'Keine aktiven Teilnehmer';
+                this.updateMonitorPhase();
                 return;
             }
 
@@ -1231,6 +1280,8 @@ document.addEventListener('DOMContentLoaded', function() {
             });
             container.innerHTML = rows.join('');
             if (responseCount) responseCount.textContent = `${answeredCount}/${statuses.length}`;
+            this.currentPhaseLabel = answeredCount === statuses.length ? 'Alle Antworten eingegangen' : 'Warte auf Antworten';
+            this.updateMonitorPhase();
         }
         
         initializeLiveResponseState() {
@@ -1304,6 +1355,19 @@ document.addEventListener('DOMContentLoaded', function() {
 
             const responseCount = document.getElementById('responseCount');
             if (responseCount) responseCount.textContent = `${answeredCount}/${entries.length}`;
+            this.currentPhaseLabel = answeredCount === entries.length ? 'Alle Antworten eingegangen' : 'Warte auf Antworten';
+            this.updateMonitorPhase();
+        }
+
+        updateMonitorPhase() {
+            const phaseLabelEl = document.getElementById('monitorPhaseLabel');
+            const progressEl = document.getElementById('monitorPhaseProgress');
+            const responseCountEl = document.getElementById('responseCount');
+            const nextRoundBtn = document.getElementById('startNextRoundBtn');
+            const actionHint = nextRoundBtn && nextRoundBtn.disabled ? ' · Aktion: Warten' : '';
+
+            if (phaseLabelEl) phaseLabelEl.textContent = this.currentPhaseLabel || 'Warte auf Antworten';
+            if (progressEl) progressEl.textContent = `Antworten: ${responseCountEl?.textContent || '0/0'}${actionHint}`;
         }
 
         addParticipant(participant) {
