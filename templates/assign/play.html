@@ -1716,7 +1716,7 @@
                         if (this.websocket && this.websocket.readyState === WebSocket.OPEN) {
                             console.log('[onTimeUp] Keine Zuordnung — leere Antwort gesendet');
                             this.websocket.send(JSON.stringify({
-                                type: 'participant_check_round',
+                                type: 'participant_log_round',
                                 round_index: this.currentRoundIndex,
                                 user_match: {},
                             }));

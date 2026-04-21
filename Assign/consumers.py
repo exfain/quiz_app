@@ -243,6 +243,17 @@ class AssignConsumer(AsyncWebsocketConsumer):
 
         question = quiz.current_question
         current_round = await self.get_current_round_index(quiz.id)
+
+        # Kurze Gnadenfrist für in-flight participant_log_round Nachrichten
+        # (wichtig bei Timer-Ablauf: Client onTimeUp + Admin next_round feuern fast gleichzeitig).
+        await asyncio.sleep(0.35)
+
+        # Nach der Gnadenfrist erneut prüfen, damit wir keine falsche Runde auswerten,
+        # falls bereits ein anderer Trigger weitergeschaltet hat.
+        latest_round = await self.get_current_round_index(quiz.id)
+        if latest_round != current_round:
+            return
+
         await self.evaluate_current_round(quiz, current_round)
         question_data = await self.get_question_data(question)
         total_rounds = len(question_data['left_items'])
