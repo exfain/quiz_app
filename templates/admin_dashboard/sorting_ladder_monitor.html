@@ -878,6 +878,9 @@ document.addEventListener('DOMContentLoaded', function() {
     class WhereMonitor {
         constructor() {
             this.roomCode = '{{ quiz.room_code }}';
+            const params = new URLSearchParams(window.location.search);
+            const hubScope = params.get('hub_session') || window.__hubCode || '';
+            this.sentStateScope = hubScope || window.location.pathname;
             this.websocket = null;
             this.currentQuestionTimeLeft = 0;
             this.isActive = '{{ quiz.status }}' === 'active';
@@ -887,7 +890,7 @@ document.addEventListener('DOMContentLoaded', function() {
         }
 
         getStorageKey() {
-            return `quiz_sent_${this.roomCode}`;
+            return `quiz_sent_sorting_${this.roomCode}_${this.sentStateScope}`;
         }
         getSentSet() {
             try {

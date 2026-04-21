@@ -1575,13 +1575,22 @@
                 onTriangleDrop(event, position) {
                     if (this.isInputLocked) return;
                     event.preventDefault();
+
+                    // Always clear drop-highlight state, even on early exits,
+                    // so a marker cannot remain green without a real placement.
+                    document.querySelectorAll('.triangle-container').forEach(t => t.classList.remove('over'));
+
                     const pool = document.getElementById('itemPool');
                     if (!pool) return;
 
-                    const dragging = document.querySelector('.answer-card.dragging');
-                    if (!dragging) return;
-
-                    const droppedId = parseInt(dragging.dataset.itemId || '0', 10);
+                    let droppedId = NaN;
+                    if (event.dataTransfer) {
+                        droppedId = parseInt(event.dataTransfer.getData('text/plain') || '0', 10);
+                    }
+                    if (isNaN(droppedId)) {
+                        const dragging = document.querySelector('.answer-card.dragging');
+                        droppedId = parseInt(dragging?.dataset?.itemId || '0', 10);
+                    }
                     if (isNaN(droppedId)) return;
 
                     const itemObj = this.shuffledItems.find(it => Number(it.id) === droppedId);
@@ -1590,9 +1599,6 @@
                         // resolved to a known item.
                         return;
                     }
-
-                    // Clear visual state on all triangle targets
-                    document.querySelectorAll('.triangle-container').forEach(t => t.classList.remove('over'));
 
                     // Remove from containerItems only after successful item resolution.
                     this.containerItems = this.containerItems.filter(it => Number(it.id) !== droppedId);
