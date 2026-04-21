@@ -10,6 +10,7 @@ class ClueRushGame(SyncBase):
     STATUS_CHOICES = [
         ('waiting', 'Waiting'),
         ('active', 'Active'),
+        ('inactive', 'Inactive'),
         ('completed', 'Completed'),
         ('cancelled', 'Cancelled'),
     ]

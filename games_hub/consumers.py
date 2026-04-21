@@ -77,6 +77,7 @@ class HubConsumer(AsyncWebsocketConsumer):
 
     async def handle_start_session(self):
         await self.start_session_db()
+        await self.pause_games_for_inactive_sessions()
         await self.channel_layer.group_send(self.group_name, {'type': 'session_started'})
 
     async def handle_next_step(self):
@@ -108,6 +109,7 @@ class HubConsumer(AsyncWebsocketConsumer):
         if game_status == 'completed':
             # Host navigates on their own; participants stay in the lobby
             return
+        await self.activate_game_for_session(game_key, room_code)
 
         step = {
             'index': -1,
@@ -227,6 +229,26 @@ class HubConsumer(AsyncWebsocketConsumer):
             pass
 
     @database_sync_to_async
+    def pause_games_for_inactive_sessions(self):
+        """
+        If a hub session is inactive (but not ended), any currently active game
+        that belongs to that session is marked inactive.
+        """
+        inactive_session_codes = list(
+            HubSession.objects.filter(is_active=False, ended_at__isnull=True).values_list('code', flat=True)
+        )
+        if not inactive_session_codes:
+            return
+
+        for model in self.get_game_model_map().values():
+            model.objects.filter(
+                status='active',
+                room_code__in=HubGameStep.objects.filter(
+                    session__code__in=inactive_session_codes
+                ).exclude(room_code='').values_list('room_code', flat=True),
+            ).update(status='inactive')
+
+    @database_sync_to_async
     def advance_step_db(self):
         try:
             session = HubSession.objects.get(code=self.session_code)
@@ -271,6 +293,7 @@ class HubConsumer(AsyncWebsocketConsumer):
             session = HubSession.objects.get(code=self.session_code)
             if not session.ended_at:
                 session.ended_at = timezone.now()
+                session.is_active = False
                 session.save()
         except HubSession.DoesNotExist:
             pass
@@ -341,8 +364,8 @@ class HubConsumer(AsyncWebsocketConsumer):
             return False
 
     async def handle_end_session(self):
+        await self.complete_games_for_session()
         await self.end_session_db()
-        await self.reset_all_quizzes_to_waiting()
         await self.channel_layer.group_send(self.group_name, {'type': 'session_ended'})
 
     @database_sync_to_async
@@ -356,6 +379,65 @@ class HubConsumer(AsyncWebsocketConsumer):
             return {'index': idx, **steps[idx]}
         except HubSession.DoesNotExist:
             return None
+
+    @database_sync_to_async
+    def activate_game_for_session(self, game_key, room_code):
+        """
+        Enforce the single-active-game rule inside the current hub session.
+        The selected game becomes active (unless already completed), while
+        other active games in the same session become inactive.
+        """
+        model_map = self.get_game_model_map()
+        target_model = model_map.get(game_key)
+        if not target_model:
+            return
+
+        try:
+            session = HubSession.objects.get(code=self.session_code)
+        except HubSession.DoesNotExist:
+            return
+
+        session_room_codes = list(
+            session.steps.exclude(room_code='').values_list('room_code', flat=True)
+        )
+        if not session_room_codes:
+            return
+
+        for key, model in model_map.items():
+            if key == game_key:
+                continue
+            model.objects.filter(
+                room_code__in=session_room_codes,
+                status='active',
+            ).update(status='inactive')
+
+        target = target_model.objects.filter(room_code=room_code).first()
+        if target and getattr(target, 'status', None) != 'completed':
+            target.status = 'active'
+            target.save(update_fields=['status'])
+
+    @database_sync_to_async
+    def complete_games_for_session(self):
+        """
+        When a session ends, mark all active/inactive games that belong to this
+        session as completed.
+        """
+        try:
+            session = HubSession.objects.get(code=self.session_code)
+        except HubSession.DoesNotExist:
+            return
+
+        session_room_codes = list(
+            session.steps.exclude(room_code='').values_list('room_code', flat=True)
+        )
+        if not session_room_codes:
+            return
+
+        for model in self.get_game_model_map().values():
+            model.objects.filter(
+                room_code__in=session_room_codes,
+                status__in=['active', 'inactive'],
+            ).update(status='completed', ended_at=timezone.now())
 
     @database_sync_to_async
     def get_state(self):
@@ -444,3 +526,16 @@ class HubConsumer(AsyncWebsocketConsumer):
         BlackJackQuiz.objects.update(status='waiting')
         ClueRushGame.objects.update(status='waiting')
         SortingLadderGame.objects.update(status='waiting')
+
+    def get_game_model_map(self):
+        return {
+            'quiz': QuizGameModel,
+            'assign': AssignQuiz,
+            'estimation': EstimationQuiz,
+            'where': WhereQuiz,
+            'who': WhoQuiz,
+            'who_that': WhoThatQuiz,
+            'blackjack': BlackJackQuiz,
+            'clue_rush': ClueRushGame,
+            'sorting_ladder': SortingLadderGame,
+        }
