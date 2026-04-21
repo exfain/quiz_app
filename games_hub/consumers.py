@@ -402,6 +402,8 @@ class HubConsumer(AsyncWebsocketConsumer):
         )
         if not session_room_codes:
             return
+        if room_code not in session_room_codes:
+            return
 
         for key, model in model_map.items():
             if key == game_key:

@@ -432,6 +432,10 @@ class SortingLadderGameConsumer(AsyncWebsocketConsumer):
 
         if not result:
             # Could be late submission, invalid state, or player already eliminated
+            await self.send(text_data=json.dumps({
+                'type': 'round_submission_rejected',
+                'message': 'Round submission rejected. Please try again.',
+            }))
             return
 
         await self.channel_layer.group_send(

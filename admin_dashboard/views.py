@@ -89,6 +89,20 @@ def end_session(request):
         if not session_code:
             return JsonResponse({'success': False, 'error': 'session_code required'}, status=400)
         session = HubSession.objects.get(code=session_code)
+        session_room_codes = list(
+            session.steps.exclude(room_code='').values_list('room_code', flat=True)
+        )
+        if session_room_codes:
+            game_models = [
+                Quiz, EstimationQuiz, AssignQuiz, WhereQuiz, WhoQuiz,
+                WhoThatQuiz, BlackJackQuiz, ClueRushGame, SortingLadderGame,
+            ]
+            now = timezone.now()
+            for model in game_models:
+                model.objects.filter(
+                    room_code__in=session_room_codes,
+                    status__in=['active', 'inactive'],
+                ).update(status='completed', ended_at=now)
         session.ended_at = timezone.now()
         session.is_active = False
         session.save(update_fields=['ended_at', 'is_active'])

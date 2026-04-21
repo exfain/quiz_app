@@ -50,7 +50,7 @@ def quiz_join_view(request):
                 })
             
             # Check if quiz is joinable
-            if quiz.status not in ['waiting', 'active']:
+            if quiz.status not in ['waiting', 'active', 'inactive']:
                 return JsonResponse({
                     'success': False,
                     'error': 'This quiz is no longer accepting participants.'
@@ -128,7 +128,7 @@ def check_room_code(request, room_code):
         quiz = Quiz.objects.get(room_code=room_code)
         
         # Only allow joining waiting or active quizzes
-        if quiz.status not in ['waiting', 'active']:
+        if quiz.status not in ['waiting', 'active', 'inactive']:
             return JsonResponse({
                 'success': False,
                 'error': 'This quiz is no longer accepting participants.'
@@ -191,7 +191,7 @@ def join_quiz(request):
             })
         
         # Check if quiz is joinable
-        if quiz.status not in ['waiting', 'active']:
+        if quiz.status not in ['waiting', 'active', 'inactive']:
             return JsonResponse({
                 'success': False,
                 'error': 'This quiz is no longer accepting participants.'

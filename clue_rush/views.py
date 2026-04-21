@@ -34,7 +34,7 @@ def join_view(request):
             except ClueRushGame.DoesNotExist:
                 return JsonResponse({'success': False, 'error': 'Game not found. Please check the room code.'})
 
-            if quiz.status not in ['waiting', 'active']:
+            if quiz.status not in ['waiting', 'active', 'inactive']:
                 return JsonResponse({'success': False, 'error': 'This quiz is no longer accepting participants.'})
 
             if hub_session:
@@ -83,7 +83,7 @@ def check_room_code(request, room_code):
     """Check if room code is valid and return quiz info."""
     try:
         quiz = ClueRushGame.objects.get(room_code=room_code)
-        if quiz.status not in ['waiting', 'active']:
+        if quiz.status not in ['waiting', 'active', 'inactive']:
             return JsonResponse({'success': False, 'error': 'This quiz is no longer accepting participants.'})
         return JsonResponse({
             'success': True,

@@ -1199,6 +1199,12 @@
                         case 'quiz_ended':
                             this.onQuizEnded(data);
                             break;
+                        case 'round_submission_rejected':
+                            this.hasSubmittedMove = false;
+                            this.setInteractionLock(false);
+                            this.showState('topicState');
+                            alert(data.message || 'Submission was rejected by the server.');
+                            break;
                             
                         case 'participant_count_updated':
                             this.updateParticipantCount(data.count);

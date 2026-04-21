@@ -34,7 +34,7 @@ def join_view(request):
             return JsonResponse({'success': False, 'error': 'Game not found. Please check the room code.'})
 
         # Only allow joining waiting or active games
-        if quiz.status not in ['waiting', 'active']:
+        if quiz.status not in ['waiting', 'active', 'inactive']:
             return JsonResponse({'success': False, 'error': 'This game is no longer accepting participants.'})
 
         # Participant limit (optionally scoped by hub_session)
@@ -84,7 +84,7 @@ def check_room_code(request, room_code):
     """Check if room code is valid and return game info."""
     try:
         quiz = SortingLadderGame.objects.get(room_code=room_code)
-        if quiz.status not in ['waiting', 'active']:
+        if quiz.status not in ['waiting', 'active', 'inactive']:
             return JsonResponse({'success': False, 'error': 'This game is no longer accepting participants.'})
         return JsonResponse({
             'success': True,
