@@ -1100,19 +1100,23 @@ class SortingLadderGameConsumer(AsyncWebsocketConsumer):
             print("Invalid IDs")
             return None
 
-        # Prevent duplicate submissions for the same round by this participant.
-        current_round = max(int(session.current_round or 1), 1)
+        # Prevent duplicate submissions and derive the expected round from
+        # this participant's already persisted submissions (not from
+        # session.current_round). This keeps late in-flight client submits
+        # valid when the host already switched to the next round.
         played_rounds = RoundSubmission.objects.filter(
             quiz=quiz,
             participant=participant,
             question=question,
         ).count()
-        if played_rounds >= current_round:
+        max_rounds = max(len(shuffled_ids) - 1, 0)
+        if played_rounds >= max_rounds:
             return None
 
         # Enforce ladder growth by exactly one item per round and keep
         # previously locked items immutable.
-        expected_count = min(current_round + 1, len(shuffled_ids))
+        expected_round = played_rounds + 1
+        expected_count = min(expected_round + 1, len(shuffled_ids))
         if len(visible_ids) != expected_count:
             return None
 
