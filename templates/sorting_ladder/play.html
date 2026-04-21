@@ -1095,6 +1095,7 @@
                     this.currentRoundItemId = null;
                     this.moreRoundsInQuestion = false;
                     this.pendingRoundResult = null;
+                    this.pendingRoundStart = null;
                     this.roundTimerEnded = false;
                     this.isInputLocked = false;
                     
@@ -1513,28 +1514,11 @@
                         submitBtn.type = 'button';
                         submitBtn.className = 'col btn btn-primary w-100 m-3 submit-answer';
                         submitBtn.id = 'submitRoundBtn';
-                        submitBtn.textContent = 'Check Order';
+                        submitBtn.textContent = 'Einloggen';
                         submitBtn.addEventListener('click', () => this.submitCurrentRound());
                         topicButtons.appendChild(submitBtn);
                     }
                     submitBtn.disabled = this.isInputLocked || this.isEliminated;
-
-                    // Reset button: returns the placed item (if any) back to the
-                    // item container, similar to clicking the "×" on a ladder row.
-                    let resetBtn = document.getElementById('resetRoundBtn');
-                    if (!resetBtn) {
-                        resetBtn = document.createElement('button');
-                        resetBtn.type = 'button';
-                        resetBtn.className = 'col btn btn-danger w-100 m-3 submit-answer';
-                        resetBtn.id = 'resetRoundBtn';
-                        resetBtn.textContent = 'Reset';
-                        resetBtn.addEventListener('click', () => {
-                            if (!this.currentRoundItemId) return;
-                            this.removeCurrentRoundItem(this.currentRoundItemId);
-                        });
-                        topicButtons.appendChild(resetBtn);
-                    }
-                    resetBtn.disabled = this.isInputLocked || !this.currentRoundItemId;
                 }
 
                 onCardDragStart(event, card) {
@@ -1635,7 +1619,7 @@
                     // For normal submissions, require that exactly one item has been placed this round.
                     // For timeouts, allow submission even if no item is placed so the round is recorded as failed.
                     if (!hasPlacedRoundItem && !roundTimeOut) {
-                        alert('Please place one item from the container onto the ladder before checking.');
+                        alert('Please place one item from the container onto the ladder before logging in.');
                         return;
                     }
 
@@ -1677,6 +1661,10 @@
 
                 onRoundStarted(roundData) {
                     if (this.isEliminated || !this.moreRoundsInQuestion) return;
+                    if (this.hasSubmittedMove && !this.pendingRoundResult) {
+                        this.pendingRoundStart = roundData;
+                        return;
+                    }
 
                     this.showState('topicState');
                     this.hasSubmittedMove = false;
@@ -1794,6 +1782,12 @@
                     this.renderCurrentRound();
 
                     if (data.has_more_rounds && !this.isEliminated) {
+                        if (this.pendingRoundStart) {
+                            const bufferedRound = this.pendingRoundStart;
+                            this.pendingRoundStart = null;
+                            this.onRoundStarted(bufferedRound);
+                            return;
+                        }
                         setTimeout(() => {
                             this.showState('topicState');
                             this.setInteractionLock(true, 'Waiting for host to start next round...');
@@ -1823,8 +1817,6 @@
 
                     const submitBtn = document.getElementById('submitRoundBtn');
                     if (submitBtn) submitBtn.disabled = this.isInputLocked || this.isEliminated;
-                    const resetBtn = document.getElementById('resetRoundBtn');
-                    if (resetBtn) resetBtn.disabled = this.isInputLocked || !this.currentRoundItemId;
                 }
 
                 renderFinalOrder() {

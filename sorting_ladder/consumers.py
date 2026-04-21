@@ -1078,8 +1078,13 @@ class SortingLadderGameConsumer(AsyncWebsocketConsumer):
 
         # Do not accept submissions if question is no longer active.
         now = timezone.now()
-        if not session.is_round_active or (session.round_end_time and now > session.round_end_time):
+        if not session.is_round_active:
             return None
+        round_has_timed_out = bool(session.round_end_time and now > session.round_end_time)
+        if round_has_timed_out and not round_time_out:
+            has_visible_order = isinstance(ordered_item_ids, list) and len(ordered_item_ids) > 0
+            if not has_visible_order:
+                return None
 
         # Ignore submissions from already eliminated participants.
         if participant.is_eliminated:
