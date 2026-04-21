@@ -122,6 +122,10 @@ class AssignConsumer(AsyncWebsocketConsumer):
                     'message': 'Drag & Drop Quiz has started!'
                 }
             )
+            await self.hub_mirror_event('quiz_started', {
+                'room_code': self.room_code,
+                'game_key': 'assign',
+            })
 
     async def handle_admin_send_question(self, data):
         """Handle admin sending a new question"""
