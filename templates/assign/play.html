@@ -1140,9 +1140,10 @@
                 onRoundAdvanced(data) {
                     if (this.eliminated) return;
 
-                    // Race-Condition: Teilnehmer hat bereits submitted (z.B. via onTimeUp),
-                    // aber round_checked ist noch nicht angekommen → puffern und warten
-                    if (this.roundSubmitted && this.lastRoundCorrect === null) {
+                    // Immer auf serverseitige Round-Auswertung warten, damit
+                    // auch nicht explizit eingeloggte, aber vorhandene Zuordnungen
+                    // konsistent berücksichtigt werden.
+                    if (this.lastRoundCorrect === null) {
                         this._bufferedRoundAdvanced = data;
                         return;
                     }
@@ -1151,14 +1152,10 @@
                 }
 
                 _applyRoundAdvanced(data) {
-                    this.userMatches = {};
-                    this.roundSubmitted = false;
-
                     clearInterval(this.questionTimer);
 
                     // Auswertung der vorherigen Runde
-                    if (this.lastRoundCorrect === false ||
-                        (this.lastRoundCorrect === null && !this.roundSubmitted)) {
+                    if (this.lastRoundCorrect === false) {
                         // Falsche Antwort oder keine Antwort gegeben → ausgeschieden
                         this._wrongEntry = this._pendingHistoryEntry;
                         this._pendingHistoryEntry = null;
@@ -1174,6 +1171,9 @@
                         this.roundHistory.push(this._pendingHistoryEntry);
                         this._pendingHistoryEntry = null;
                     }
+
+                    this.userMatches = {};
+                    this.roundSubmitted = false;
                     this.lastRoundCorrect = null;
 
                     // Nächste Runde laden
@@ -1478,24 +1478,15 @@
                         leftItemsList.appendChild(div);
                     });
 
-                    // Rechte Seite: zuerst abgeschlossene Zuordnungen aus Vorrunden anzeigen
-                    (this.roundHistory || []).forEach(({ leftText, rightText }) => {
-                        const completedZone = document.createElement('div');
-                        completedZone.className = 'drop-zone occupied completed-round';
-                        completedZone.innerHTML =
-                            `<div class="drop-zone-label">${rightText}</div>`
-                            + `<div class="dropped-item">${leftText}</div>`;
-                        zonesList.appendChild(completedZone);
-                    });
-
-                    // Bereits korrekt gematchte rechte Items ausfiltern (client-seitig, timing-sicher)
-                    const usedRightIndices = new Set(
-                        (this.roundHistory || []).map(h => h.rightIdx).filter(r => r !== undefined)
+                    const completedByRightIndex = new Map(
+                        (this.roundHistory || [])
+                            .filter(h => h && h.rightIdx !== undefined)
+                            .map(h => [h.rightIdx, h])
                     );
-                    const filteredNormRight = normRight.filter(item => !usedRightIndices.has(item.originalIndex));
 
-                    // Danach aktive Drop-Zones für die aktuelle Runde
-                    filteredNormRight.forEach((item) => {
+                    // Rechte Seite in stabiler Reihenfolge anzeigen; korrekt
+                    // zugeordnete Items bleiben an ihrer Position und werden nur markiert.
+                    normRight.forEach((item) => {
                         const dropZone = document.createElement('div');
                         dropZone.className = 'drop-zone';
                         dropZone.dataset.rightIndex = item.originalIndex;
@@ -1504,6 +1495,17 @@
                         label.className = 'drop-zone-label';
                         label.textContent = item.text;
                         dropZone.appendChild(label);
+
+                        const completed = completedByRightIndex.get(item.originalIndex);
+                        if (completed) {
+                            dropZone.classList.add('occupied', 'completed-round');
+                            const droppedItem = document.createElement('div');
+                            droppedItem.className = 'dropped-item';
+                            droppedItem.textContent = completed.leftText || '';
+                            dropZone.appendChild(droppedItem);
+                            zonesList.appendChild(dropZone);
+                            return;
+                        }
 
                         dropZone.addEventListener('dragover', (e) => {
                             if (this.dropLocked) return;
@@ -1562,6 +1564,12 @@
                     this.dropLocked = true;
 
                     this.userMatches = { [leftIndex]: rightIndex };
+                    this._pendingHistoryEntry = {
+                        leftIdx: leftIndex,
+                        leftText: itemText,
+                        rightText: dropZone?.querySelector('.drop-zone-label')?.textContent?.trim() || '',
+                        rightIdx: rightIndex,
+                    };
                     if (this.websocket && this.websocket.readyState === WebSocket.OPEN) {
                         this.websocket.send(JSON.stringify({
                             type: 'participant_update_selection',
@@ -1600,6 +1608,7 @@
                     const resetBtn = document.getElementById('resetRoundBtn');
                     if (resetBtn) resetBtn.classList.add('d-none');
                     this.userMatches = {};
+                    this._pendingHistoryEntry = null;
                     const logBtn = document.getElementById('logRoundBtn');
                     if (logBtn) logBtn.classList.add('d-none');
                     if (this.websocket && this.websocket.readyState === WebSocket.OPEN) {
