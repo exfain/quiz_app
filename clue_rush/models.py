@@ -163,11 +163,11 @@ class ClueAnswer(SyncBase):
 
             total_clues = self.question.clues.count()
             current_clue_number = self.quiz.session.current_clue_number
-            points = self.quiz.current_question.points
+            # Use the answer's own question reference as stable scoring source.
+            # Avoid coupling to mutable quiz.current_question state.
+            points = self.question.points
             if correct:
                 self.points_earned = points + (total_clues - current_clue_number + 1)
-                from icecream import ic
-                ic(points, total_clues, current_clue_number, self.points_earned)
             else:
                 self.points_earned = 0
 

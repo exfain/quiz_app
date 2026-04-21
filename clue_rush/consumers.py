@@ -329,6 +329,22 @@ class ClueRushGameConsumer(AsyncWebsocketConsumer):
                     'type': 'quiz_started',
                     'message': 'Quiz is already in progress'
                 }))
+                snapshot = await self.get_rejoin_snapshot(participant_name, hub_session)
+                if snapshot.get('question'):
+                    await self.send(text_data=json.dumps({
+                        'type': 'question_started',
+                        'question': snapshot['question']
+                    }))
+                for clue in snapshot.get('revealed_clues', []):
+                    await self.send(text_data=json.dumps({
+                        'type': 'clue_started',
+                        'clue': clue
+                    }))
+                if snapshot.get('participant_answer'):
+                    await self.send(text_data=json.dumps({
+                        'type': 'participant_rehydrated',
+                        'answer': snapshot['participant_answer']
+                    }))
 
     async def handle_admin_accept_close_answer(self, data):
         """Admin approves a close answer to award points as correct."""
@@ -871,3 +887,69 @@ class ClueRushGameConsumer(AsyncWebsocketConsumer):
             }
         except ClueRushGame.DoesNotExist:
             return None
+
+    @database_sync_to_async
+    def get_rejoin_snapshot(self, participant_name, hub_session):
+        """Build a server-authoritative snapshot for participant rejoin/reconnect."""
+        try:
+            quiz = ClueRushGame.objects.select_related('current_question', 'current_clue').get(room_code=self.room_code)
+        except ClueRushGame.DoesNotExist:
+            return {}
+
+        question_payload = None
+        revealed_clues = []
+        participant_answer = None
+
+        current_question = quiz.current_question
+        if current_question:
+            question_payload = {
+                'id': current_question.id,
+                'question_text': current_question.question_text,
+                'time_limit': current_question.time_limit,
+                'points': current_question.points,
+            }
+
+            clues_qs = list(current_question.clues.order_by('order'))
+            current_clue_order = None
+            if quiz.current_clue_id:
+                current_clue_order = quiz.current_clue.order
+            else:
+                try:
+                    session = quiz.session
+                    current_clue_order = session.current_clue_number if session else None
+                except Exception:
+                    current_clue_order = None
+
+            if current_clue_order is not None:
+                for clue in clues_qs:
+                    if clue.order <= current_clue_order:
+                        revealed_clues.append({
+                            'id': clue.id,
+                            'order': clue.order,
+                            'clue_text': clue.clue_text,
+                            'duration': clue.duration,
+                            'has_next_clue': any(c.order > clue.order for c in clues_qs),
+                        })
+
+            try:
+                participant = quiz.participants.get(name=participant_name, hub_session_code=hub_session)
+                answer = ClueAnswer.objects.filter(
+                    quiz=quiz,
+                    participant=participant,
+                    question=current_question
+                ).first()
+                if answer:
+                    participant_answer = {
+                        'answer_text': answer.answer_text,
+                        'is_correct': answer.is_correct,
+                        'points_earned': answer.points_earned,
+                        'submitted_at': answer.submitted_at.isoformat() if answer.submitted_at else None,
+                    }
+            except ClueRushParticipant.DoesNotExist:
+                participant_answer = None
+
+        return {
+            'question': question_payload,
+            'revealed_clues': revealed_clues,
+            'participant_answer': participant_answer,
+        }

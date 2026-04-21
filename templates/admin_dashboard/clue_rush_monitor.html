@@ -941,6 +941,7 @@ document.addEventListener('DOMContentLoaded', function() {
             this.startQuizTimer();
             this.applySentStates();
             this.initializeLiveResponseState();
+            this.updateEndQuestionButtonLabel();
         }
         
         connectWebSocket() {
@@ -1475,12 +1476,32 @@ document.addEventListener('DOMContentLoaded', function() {
                         if (badge) { badge.classList.remove('bg-secondary'); badge.classList.add('bg-success'); badge.textContent = 'Sent'; }
                     }
                 });
+                this.updateEndQuestionButtonLabel();
             } catch (e) { console.error(e); }
         }
 
         disableClueSending() {
             const btn = document.getElementById('sendClueBtn');
             if (btn) { btn.disabled = true; btn.title = 'All clues sent'; btn.innerHTML = '<i data-lucide="check"></i> All Clues Sent'; try{ lucide.createIcons(); }catch(_){} }
+            this.updateEndQuestionButtonLabel();
+        }
+
+        updateEndQuestionButtonLabel() {
+            const endBtn = document.getElementById('endQuestionBtn');
+            const clueList = document.getElementById('clueList');
+            if (!endBtn || !clueList) return;
+
+            const clueRows = Array.from(clueList.querySelectorAll('[data-clue-order]'));
+            if (!clueRows.length) return;
+
+            const lastClueAlreadySent = clueRows.every((row) => {
+                const badge = row.querySelector('.clue-status');
+                return badge && badge.textContent.trim().toLowerCase() === 'sent';
+            });
+
+            const icon = endBtn.querySelector('i');
+            endBtn.innerHTML = `${icon ? icon.outerHTML : '<i data-lucide="skip-forward"></i>'} ${lastClueAlreadySent ? 'End Question' : 'End Question Early'}`;
+            try { lucide.createIcons(); } catch(_) {}
         }
     }
     

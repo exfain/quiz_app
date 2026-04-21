@@ -141,7 +141,7 @@ class SortingLadderGameConsumer(AsyncWebsocketConsumer):
                 'type': 'topic_selected',
                 'topic': {
                     'id': topic.id,
-                    'title': topic.title,
+                    'title': topic.question_text,
                     'description': topic.description,
                 },
                 'session': session_payload,
@@ -350,6 +350,23 @@ class SortingLadderGameConsumer(AsyncWebsocketConsumer):
                 'type': 'quiz_started',
                 'message': 'Game is already in progress'
             }))
+            snapshot = await self.get_rejoin_snapshot(name, hub_session_code)
+            if snapshot.get('question_payload'):
+                await self.send(text_data=json.dumps({
+                    'type': 'question_started',
+                    **snapshot['question_payload'],
+                }))
+            if snapshot.get('latest_round_result'):
+                await self.send(text_data=json.dumps({
+                    'type': 'round_result',
+                    'participant_name': name,
+                    **snapshot['latest_round_result'],
+                }))
+            if snapshot.get('round_started'):
+                await self.send(text_data=json.dumps({
+                    'type': 'round_started',
+                    'round': snapshot['round_started'],
+                }))
 
     async def handle_participant_submit_move(self, data):
         """
@@ -381,7 +398,10 @@ class SortingLadderGameConsumer(AsyncWebsocketConsumer):
         )
 
         if not result:
-            # Could be duplicate submission or no active round
+            await self.send(text_data=json.dumps({
+                'type': 'round_submission_rejected',
+                'message': 'Legacy move submissions are not supported. Submit ordered_item_ids instead.',
+            }))
             return
 
         await self.channel_layer.group_send(
@@ -917,53 +937,108 @@ class SortingLadderGameConsumer(AsyncWebsocketConsumer):
         }
 
     @database_sync_to_async
-    def save_round_submission(self, participant_name, hub_session_code, placed_after_id, placed_before_id):
+    def get_rejoin_snapshot(self, participant_name, hub_session_code):
+        """Return minimal server-authoritative snapshot for participant rejoin."""
         try:
-            quiz = SortingLadderGame.objects.select_related('session').get(room_code=self.room_code)
+            quiz = SortingLadderGame.objects.select_related('session', 'current_question').get(room_code=self.room_code)
             session = quiz.session
+            question = quiz.current_question
             participant = quiz.participants.get(name=participant_name, hub_session_code=hub_session_code)
         except (SortingLadderGame.DoesNotExist, SortingLadderSession.DoesNotExist, SortingLadderParticipant.DoesNotExist, AttributeError):
-            return None
+            return {}
 
-        if not session.is_round_active or not session.active_element:
-            return None
+        if not question or not session.shuffled_item_ids:
+            return {}
 
-        existing = RoundSubmission.objects.filter(
-            quiz=quiz,
-            participant=participant,
-            element=session.active_element,
-        ).first()
-        if existing:
-            return None
+        try:
+            shuffled_ids = [int(x) for x in session.shuffled_item_ids.split(',') if x]
+        except ValueError:
+            return {}
+        if not shuffled_ids:
+            return {}
 
-        after_item = None
-        before_item = None
-        if placed_after_id:
-            try:
-                after_item = SortingItem.objects.get(id=placed_after_id)
-            except SortingItem.DoesNotExist:
-                pass
-        if placed_before_id:
-            try:
-                before_item = SortingItem.objects.get(id=placed_before_id)
-            except SortingItem.DoesNotExist:
-                pass
+        item_map = {item.id: item for item in SortingItem.objects.filter(id__in=shuffled_ids)}
+        shuffled_items = [item_map[i] for i in shuffled_ids if i in item_map]
+        if not shuffled_items:
+            return {}
 
-        submission = RoundSubmission.objects.create(
-            quiz=quiz,
-            participant=participant,
-            element=session.active_element,
-            placed_after_element=after_item,
-            placed_before_element=before_item,
+        question_payload = {
+            'question': {
+                'id': question.id,
+                'text': question.question_text,
+                'description': question.description,
+                'upper_label': question.upper_label,
+                'lower_label': question.lower_label,
+                'points': question.points,
+                'time_limit': session.time_limit_seconds,
+            },
+            'items': [{'id': i.id, 'text': i.text} for i in shuffled_items],
+            'time_limit_seconds': session.time_limit_seconds,
+        }
+
+        submissions = list(
+            RoundSubmission.objects.filter(
+                quiz=quiz,
+                participant=participant,
+                question=question,
+            ).order_by('submitted_at')
         )
+        latest_round_result = None
+        round_started = None
+        max_rounds = max(len(shuffled_ids) - 1, 0)
 
-        participant.refresh_from_db()
+        if submissions:
+            latest = submissions[-1]
+            correct_rounds = sum(1 for s in submissions if s.is_correct)
+            points_for_question = correct_rounds * question.points
+            has_more_rounds = (not participant.is_eliminated) and len(submissions) < max_rounds
+
+            visible_ids = latest.all_elements if isinstance(latest.all_elements, list) else []
+            try:
+                visible_ids = [int(x) for x in visible_ids]
+            except (TypeError, ValueError):
+                visible_ids = []
+
+            if visible_ids:
+                vis_items = list(SortingItem.objects.filter(id__in=visible_ids))
+                vis_rank = {i.id: i.correct_rank for i in vis_items}
+                sorted_visible = sorted([i for i in visible_ids if i in vis_rank], key=lambda i: vis_rank[i])
+            else:
+                sorted_visible = []
+
+            full_sorted = list(
+                SortingItem.objects.filter(topic=question).order_by('correct_rank').values_list('id', flat=True)
+            )
+
+            latest_round_result = {
+                'is_correct': latest.is_correct,
+                'rounds_survived': participant.rounds_survived,
+                'is_eliminated': participant.is_eliminated,
+                'points': points_for_question,
+                'has_more_rounds': bool(has_more_rounds),
+                'per_question_rounds': correct_rounds,
+                'correct_order_ids': sorted_visible if has_more_rounds else full_sorted,
+            }
+
+        # If participant has not submitted the current server round yet and is
+        # still active, explicitly sync round start so interaction unlocks.
+        if session.is_round_active and not participant.is_eliminated and len(submissions) < int(session.current_round or 0):
+            round_started = {
+                'round_number': session.current_round,
+                'time_limit_seconds': session.time_limit_seconds,
+            }
 
         return {
-            'is_correct': submission.is_correct,
-            'rounds_survived': participant.rounds_survived,
-            'is_eliminated': participant.is_eliminated,
+            'question_payload': question_payload,
+            'latest_round_result': latest_round_result,
+            'round_started': round_started,
         }
+
+    @database_sync_to_async
+    def save_round_submission(self, participant_name, hub_session_code, placed_after_id, placed_before_id):
+        # Legacy gap-placement flow intentionally disabled:
+        # RoundSubmission no longer has element/placed_* fields.
+        return None
 
     @database_sync_to_async
     def save_round_full_order(self, participant_name, hub_session_code, ordered_item_ids, round_time_out=False):
@@ -1003,8 +1078,13 @@ class SortingLadderGameConsumer(AsyncWebsocketConsumer):
 
         # Do not accept submissions if question is no longer active.
         now = timezone.now()
-        if not session.is_round_active or (session.round_end_time and now > session.round_end_time):
+        if not session.is_round_active:
             return None
+        round_has_timed_out = bool(session.round_end_time and now > session.round_end_time)
+        if round_has_timed_out and not round_time_out:
+            has_visible_order = isinstance(ordered_item_ids, list) and len(ordered_item_ids) > 0
+            if not has_visible_order:
+                return None
 
         # Ignore submissions from already eliminated participants.
         if participant.is_eliminated:
