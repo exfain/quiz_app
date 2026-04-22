@@ -150,6 +150,7 @@ class QuizConsumer(AsyncWebsocketConsumer):
         
         # Get question options
         options = await self.get_question_options(question)
+        double_answer_fields = await self.get_double_answer_fields(question)
         
         # Determine the effective time limit for this send (do NOT persist on the question)
         effective_time_limit = custom_time_limit if custom_time_limit is not None else question.time_limit
@@ -164,6 +165,7 @@ class QuizConsumer(AsyncWebsocketConsumer):
                     'question_text': question.question_text,
                     'question_type': question.question_type,
                     'options': options,
+                    'double_answer_fields': double_answer_fields,
                     'time_limit': effective_time_limit,
                     'points': question.points,
                 }
@@ -178,6 +180,7 @@ class QuizConsumer(AsyncWebsocketConsumer):
                 'question_text': question.question_text,
                 'question_type': question.question_type,
                 'options': options,
+                'double_answer_fields': double_answer_fields,
                 'time_limit': effective_time_limit,
                 'points': question.points,
             }
@@ -410,6 +413,10 @@ class QuizConsumer(AsyncWebsocketConsumer):
                 'question_text': q.question_text,
                 'question_type': q.question_type,
                 'options': options,
+                'double_answer_fields': {
+                    'label_1': (q.double_answer_label_1 or 'Answer 1') if q.question_type == 'double_answer' else '',
+                    'label_2': (q.double_answer_label_2 or 'Answer 2') if q.question_type == 'double_answer' else '',
+                },
                 'time_limit': q.time_limit,
                 'points': q.points,
             }
@@ -531,6 +538,15 @@ class QuizConsumer(AsyncWebsocketConsumer):
         return []
 
     @database_sync_to_async
+    def get_double_answer_fields(self, question):
+        if question.question_type != 'double_answer':
+            return {'label_1': '', 'label_2': ''}
+        return {
+            'label_1': question.double_answer_label_1 or 'Answer 1',
+            'label_2': question.double_answer_label_2 or 'Answer 2',
+        }
+
+    @database_sync_to_async
     def get_current_question_correct_payload(self):
         try:
             quiz = Quiz.objects.select_related('current_question').get(room_code=self.room_code)
@@ -554,10 +570,19 @@ class QuizConsumer(AsyncWebsocketConsumer):
                 formatted = 'True' if val in ['true', 't', '1', 'yes'] else 'False'
             else:
                 formatted = (q.correct_answer or '').strip()
+            if q.question_type == 'double_answer':
+                label_1 = q.double_answer_label_1 or 'Answer 1'
+                label_2 = q.double_answer_label_2 or 'Answer 2'
+                first = (q.correct_answer or '').strip()
+                second = (q.correct_answer_2 or '').strip()
+                formatted = f"{label_1}: {first} | {label_2}: {second}"
             return {
                 'question_id': q.id,
                 'formatted_answer': formatted,
-                'raw': q.correct_answer,
+                'raw': {
+                    'answer_1': q.correct_answer,
+                    'answer_2': q.correct_answer_2,
+                } if q.question_type == 'double_answer' else q.correct_answer,
             }
         except Quiz.DoesNotExist:
             return None
@@ -635,17 +660,32 @@ class QuizConsumer(AsyncWebsocketConsumer):
                 else:
                     return None  # Already answered in this round
 
+            answer_to_store = answer_text
+            display_answer = answer_text
+            if quiz.current_question.question_type == 'double_answer':
+                parsed = answer_text if isinstance(answer_text, dict) else {}
+                if not isinstance(parsed, dict):
+                    parsed = {}
+                answer_1 = (parsed.get('answer_1') or '').strip()
+                answer_2 = (parsed.get('answer_2') or '').strip()
+                answer_to_store = json.dumps({
+                    'answer_1': answer_1,
+                    'answer_2': answer_2,
+                }, ensure_ascii=False)
+                label_1 = quiz.current_question.double_answer_label_1 or 'Answer 1'
+                label_2 = quiz.current_question.double_answer_label_2 or 'Answer 2'
+                display_answer = f"{label_1}: {answer_1} | {label_2}: {answer_2}"
+
             # Create new answer
             answer = QuizAnswer.objects.create(
                 quiz=quiz,
                 participant=participant,
                 question=quiz.current_question,
-                answer_text=answer_text,
+                answer_text=answer_to_store,
                 time_taken=time_taken
             )
 
             # Resolve key → full text for multiple choice
-            display_answer = answer_text
             if quiz.current_question.question_type == 'multiple_choice':
                 option_map = dict(quiz.current_question.get_options())
                 display_answer = option_map.get(answer_text.upper(), answer_text)

@@ -104,7 +104,7 @@ class WhoQuestion(SyncBase):
     
     def get_total_possible_points(self):
         """Return total possible points for this question"""
-        return len(self.people) * self.points
+        return len(self.get_liars())
     
     def get_liars(self):
         """Return list of people who are lying"""
@@ -115,24 +115,20 @@ class WhoQuestion(SyncBase):
         return [person for person in self.people if not person.get('is_lying', False)]
     
     def calculate_score(self, selected_liars):
-        """Calculate score based on user's selected liars"""
-        if not selected_liars or not self.people:
+        """+1 for correctly accused liar, -1 for false accusation."""
+        if not self.people:
             return 0
-        
-        correct_count = 0
-        total_people = len(self.people)
-        
+
+        score = 0
+        selected_set = set(selected_liars or [])
         for i, person in enumerate(self.people):
             is_actually_lying = person.get('is_lying', False)
-            is_selected_as_liar = i in selected_liars
-            
-            # Score for correct identification (both liars and truth-tellers)
-            if is_actually_lying == is_selected_as_liar:
-                correct_count += 1
-        
-        # Calculate points based on accuracy
-        accuracy = correct_count / total_people
-        return int(accuracy * self.get_total_possible_points())
+            is_selected_as_liar = i in selected_set
+            if is_selected_as_liar and is_actually_lying:
+                score += 1
+            elif is_selected_as_liar and not is_actually_lying:
+                score -= 1
+        return score
     
     def get_randomized_people(self, room_code=None):
         """Return people shuffled for gameplay"""

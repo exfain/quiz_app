@@ -217,6 +217,13 @@
                 </div>
             </div>
         </main>
+
+        <aside class="clue-history-box" id="clueHistoryBox">
+            <h6 class="mb-2">Punkteverlauf</h6>
+            <div id="clueHistoryList" class="clue-history-list">
+                <div class="text-muted small">Noch keine abgeschlossenen Fragen.</div>
+            </div>
+        </aside>
     </div>
 
     <!-- Bootstrap JS -->
@@ -233,6 +240,26 @@
             min-height: 100vh;
             display: flex;
             flex-direction: column;
+        }
+
+        .clue-history-box {
+            position: fixed;
+            right: 16px;
+            top: 110px;
+            width: 180px;
+            z-index: 90;
+            background: var(--bg-primary);
+            border: 1px solid var(--border-color);
+            border-radius: var(--border-radius-lg);
+            box-shadow: var(--shadow-md);
+            padding: 0.75rem;
+        }
+
+        .clue-history-list {
+            display: flex;
+            flex-direction: column;
+            gap: 0.35rem;
+            font-size: 0.875rem;
         }
 
         /* Header */
@@ -877,6 +904,7 @@
                     this.questionStartTime = null;
                     this.selectedAnswer = null;
                     this.hasAnswered = false;
+                    this.scoreHistory = [];
                     
                     this.init();
                 }
@@ -988,6 +1016,12 @@
 
                         case 'hide_leaderboard':
                             document.getElementById('leaderboardSidebar')?.classList.add('d-none');
+                            break;
+                        case 'answer_submitted':
+                            this.setScoreHistory(data.progress_history);
+                            break;
+                        case 'progress_history':
+                            this.setScoreHistory(data.history);
                             break;
 
                         default:
@@ -1291,6 +1325,27 @@
 
                 hideConnectionStatus() {
                     document.getElementById('connectionStatus').classList.add('d-none');
+                }
+
+                setScoreHistory(history) {
+                    this.scoreHistory = Array.isArray(history) ? history : [];
+                    this.renderScoreHistory();
+                }
+
+                renderScoreHistory() {
+                    const list = document.getElementById('clueHistoryList');
+                    if (!list) return;
+                    list.innerHTML = '';
+                    if (!this.scoreHistory.length) {
+                        list.innerHTML = '<div class="text-muted small">Noch keine abgeschlossenen Fragen.</div>';
+                        return;
+                    }
+                    this.scoreHistory.forEach((entry) => {
+                        const row = document.createElement('div');
+                        row.className = 'small';
+                        row.textContent = `(${entry.question_number}) ${entry.achieved_points}/${entry.max_points}`;
+                        list.appendChild(row);
+                    });
                 }
             }
 

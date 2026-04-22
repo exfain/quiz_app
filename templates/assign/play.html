@@ -267,6 +267,13 @@
                 </div>
             </div>
         </main>
+
+        <aside class="assign-history-box" id="assignHistoryBox">
+            <h6 class="mb-2">Fortschritt</h6>
+            <div id="assignHistoryList" class="assign-history-list">
+                <div class="text-muted small">Noch keine abgeschlossenen Sets.</div>
+            </div>
+        </aside>
     </div>
 
     <!-- Bootstrap JS -->
@@ -283,6 +290,26 @@
             min-height: 100vh;
             display: flex;
             flex-direction: column;
+        }
+
+        .assign-history-box {
+            position: fixed;
+            right: 16px;
+            top: 110px;
+            width: 180px;
+            z-index: 90;
+            background: var(--bg-primary);
+            border: 1px solid var(--border-color);
+            border-radius: var(--border-radius-lg);
+            box-shadow: var(--shadow-md);
+            padding: 0.75rem;
+        }
+
+        .assign-history-list {
+            display: flex;
+            flex-direction: column;
+            gap: 0.35rem;
+            font-size: 0.875rem;
         }
 
         /* Header */
@@ -999,6 +1026,7 @@
                     this.dropLocked = false;  // nach einem Drop gesperrt, bis Reset
                     this.accumulatedMatches = {};  // gesammelte Matches über alle Runden
                     this.currentQuestion = null;  // vollständige Frage-Daten
+                    this.progressHistory = [];
 
                     this.init();
                 }
@@ -1095,6 +1123,10 @@
                             document.getElementById('leaderboardSidebar')?.classList.add('d-none');
                             break;
 
+                        case 'progress_history':
+                            this.setProgressHistory(data.history);
+                            break;
+
                         default:
                             console.log('Unknown message type:', data.type);
                     }
@@ -1140,9 +1172,10 @@
                 onRoundAdvanced(data) {
                     if (this.eliminated) return;
 
-                    // Race-Condition: Teilnehmer hat bereits submitted (z.B. via onTimeUp),
-                    // aber round_checked ist noch nicht angekommen → puffern und warten
-                    if (this.roundSubmitted && this.lastRoundCorrect === null) {
+                    // Immer auf serverseitige Round-Auswertung warten, damit
+                    // auch nicht explizit eingeloggte, aber vorhandene Zuordnungen
+                    // konsistent berücksichtigt werden.
+                    if (this.lastRoundCorrect === null) {
                         this._bufferedRoundAdvanced = data;
                         return;
                     }
@@ -1151,14 +1184,10 @@
                 }
 
                 _applyRoundAdvanced(data) {
-                    this.userMatches = {};
-                    this.roundSubmitted = false;
-
                     clearInterval(this.questionTimer);
 
                     // Auswertung der vorherigen Runde
-                    if (this.lastRoundCorrect === false ||
-                        (this.lastRoundCorrect === null && !this.roundSubmitted)) {
+                    if (this.lastRoundCorrect === false) {
                         // Falsche Antwort oder keine Antwort gegeben → ausgeschieden
                         this._wrongEntry = this._pendingHistoryEntry;
                         this._pendingHistoryEntry = null;
@@ -1174,6 +1203,9 @@
                         this.roundHistory.push(this._pendingHistoryEntry);
                         this._pendingHistoryEntry = null;
                     }
+
+                    this.userMatches = {};
+                    this.roundSubmitted = false;
                     this.lastRoundCorrect = null;
 
                     // Nächste Runde laden
@@ -1239,7 +1271,7 @@
                     }
 
                     // Alle gesammelten Matches absenden
-                    if (Object.keys(this.accumulatedMatches).length > 0 && !this.hasAnswered) {
+                    if (!this.hasAnswered && this.currentQuestion) {
                         const timeTaken = (Date.now() - this.questionStartTime) / 1000;
                         this.websocket.send(JSON.stringify({
                             type: 'participant_submit_answer',
@@ -1478,24 +1510,15 @@
                         leftItemsList.appendChild(div);
                     });
 
-                    // Rechte Seite: zuerst abgeschlossene Zuordnungen aus Vorrunden anzeigen
-                    (this.roundHistory || []).forEach(({ leftText, rightText }) => {
-                        const completedZone = document.createElement('div');
-                        completedZone.className = 'drop-zone occupied completed-round';
-                        completedZone.innerHTML =
-                            `<div class="drop-zone-label">${rightText}</div>`
-                            + `<div class="dropped-item">${leftText}</div>`;
-                        zonesList.appendChild(completedZone);
-                    });
-
-                    // Bereits korrekt gematchte rechte Items ausfiltern (client-seitig, timing-sicher)
-                    const usedRightIndices = new Set(
-                        (this.roundHistory || []).map(h => h.rightIdx).filter(r => r !== undefined)
+                    const completedByRightIndex = new Map(
+                        (this.roundHistory || [])
+                            .filter(h => h && h.rightIdx !== undefined)
+                            .map(h => [h.rightIdx, h])
                     );
-                    const filteredNormRight = normRight.filter(item => !usedRightIndices.has(item.originalIndex));
 
-                    // Danach aktive Drop-Zones für die aktuelle Runde
-                    filteredNormRight.forEach((item) => {
+                    // Rechte Seite in stabiler Reihenfolge anzeigen; korrekt
+                    // zugeordnete Items bleiben an ihrer Position und werden nur markiert.
+                    normRight.forEach((item) => {
                         const dropZone = document.createElement('div');
                         dropZone.className = 'drop-zone';
                         dropZone.dataset.rightIndex = item.originalIndex;
@@ -1504,6 +1527,17 @@
                         label.className = 'drop-zone-label';
                         label.textContent = item.text;
                         dropZone.appendChild(label);
+
+                        const completed = completedByRightIndex.get(item.originalIndex);
+                        if (completed) {
+                            dropZone.classList.add('occupied', 'completed-round');
+                            const droppedItem = document.createElement('div');
+                            droppedItem.className = 'dropped-item';
+                            droppedItem.textContent = completed.leftText || '';
+                            dropZone.appendChild(droppedItem);
+                            zonesList.appendChild(dropZone);
+                            return;
+                        }
 
                         dropZone.addEventListener('dragover', (e) => {
                             if (this.dropLocked) return;
@@ -1562,6 +1596,12 @@
                     this.dropLocked = true;
 
                     this.userMatches = { [leftIndex]: rightIndex };
+                    this._pendingHistoryEntry = {
+                        leftIdx: leftIndex,
+                        leftText: itemText,
+                        rightText: dropZone?.querySelector('.drop-zone-label')?.textContent?.trim() || '',
+                        rightIdx: rightIndex,
+                    };
                     if (this.websocket && this.websocket.readyState === WebSocket.OPEN) {
                         this.websocket.send(JSON.stringify({
                             type: 'participant_update_selection',
@@ -1600,6 +1640,7 @@
                     const resetBtn = document.getElementById('resetRoundBtn');
                     if (resetBtn) resetBtn.classList.add('d-none');
                     this.userMatches = {};
+                    this._pendingHistoryEntry = null;
                     const logBtn = document.getElementById('logRoundBtn');
                     if (logBtn) logBtn.classList.add('d-none');
                     if (this.websocket && this.websocket.readyState === WebSocket.OPEN) {
@@ -1784,6 +1825,27 @@
                 hideConnectionStatus() {
                     document.getElementById('connectionStatus').classList.add('d-none');
                 }
+
+                setProgressHistory(history) {
+                    this.progressHistory = Array.isArray(history) ? history : [];
+                    this.renderProgressHistory();
+                }
+
+                renderProgressHistory() {
+                    const list = document.getElementById('assignHistoryList');
+                    if (!list) return;
+                    list.innerHTML = '';
+                    if (!this.progressHistory.length) {
+                        list.innerHTML = '<div class="text-muted small">Noch keine abgeschlossenen Sets.</div>';
+                        return;
+                    }
+                    this.progressHistory.forEach((entry) => {
+                        const row = document.createElement('div');
+                        row.className = 'small';
+                        row.textContent = `(${entry.question_number}) ${entry.survived_rounds}/${entry.max_rounds}`;
+                        list.appendChild(row);
+                    });
+                }
             }
 
             // Initialize Assign Player
@@ -1799,6 +1861,7 @@
                         document.getElementById('correctMatches').textContent = data.correct_matches;
                         document.getElementById('pointsEarned').textContent = data.points_earned;
                         document.getElementById('accuracyPercent').textContent = data.accuracy + '%';
+                        player.setProgressHistory(data.progress_history);
                     }
                     
                     // Call original handler

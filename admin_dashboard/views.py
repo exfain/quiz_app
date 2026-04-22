@@ -1434,7 +1434,6 @@ def manage_games(request):
                 'title': game.title,
                 'game_type': game_type,
                 'game_type_display': game_type_display,
-                'status': game.status,
                 'room_code': game.room_code,
                 'monitor_url_name': monitor_url_name,
                 'created_at': game.created_at,
@@ -2455,6 +2454,9 @@ def add_question(request):
         points = int(request.POST.get('points', 10))
         time_limit = int(request.POST.get('time_limit', 30))
         correct_answer = request.POST.get('correct_answer', '').strip()
+        correct_answer_2 = request.POST.get('correct_answer_2', '').strip()
+        double_answer_label_1 = request.POST.get('double_answer_label_1', '').strip()
+        double_answer_label_2 = request.POST.get('double_answer_label_2', '').strip()
         explanation = request.POST.get('explanation', '').strip()
         
         # Validate required fields
@@ -2462,6 +2464,11 @@ def add_question(request):
             return JsonResponse({
                 'success': False,
                 'error': 'Question text and correct answer are required.'
+            }, status=400)
+        if question_type == 'double_answer' and (not correct_answer_2 or not double_answer_label_1 or not double_answer_label_2):
+            return JsonResponse({
+                'success': False,
+                'error': 'Double Answer requires two labels and two correct answers.'
             }, status=400)
         
         # Create question
@@ -2471,6 +2478,9 @@ def add_question(request):
             points=points,
             time_limit=time_limit,
             correct_answer=correct_answer,
+            correct_answer_2=correct_answer_2 if question_type == 'double_answer' else '',
+            double_answer_label_1=double_answer_label_1 if question_type == 'double_answer' else '',
+            double_answer_label_2=double_answer_label_2 if question_type == 'double_answer' else '',
             explanation=explanation,
             created_by=request.user
         )
@@ -2519,6 +2529,9 @@ def get_quiz_question_detail(request, question_id):
             'option_c': question.option_c or '',
             'option_d': question.option_d or '',
             'correct_answer': question.correct_answer,
+            'correct_answer_2': question.correct_answer_2 or '',
+            'double_answer_label_1': question.double_answer_label_1 or '',
+            'double_answer_label_2': question.double_answer_label_2 or '',
             'explanation': question.explanation or '',
             'is_active': question.is_active,
         }
@@ -2544,16 +2557,24 @@ def update_quiz_question(request):
         points = int(request.POST.get('points', question.points))
         time_limit = int(request.POST.get('time_limit', question.time_limit))
         correct_answer = request.POST.get('correct_answer', question.correct_answer).strip()
+        correct_answer_2 = request.POST.get('correct_answer_2', question.correct_answer_2).strip()
+        double_answer_label_1 = request.POST.get('double_answer_label_1', question.double_answer_label_1).strip()
+        double_answer_label_2 = request.POST.get('double_answer_label_2', question.double_answer_label_2).strip()
         explanation = request.POST.get('explanation', question.explanation or '').strip()
 
         if not question_text or not correct_answer:
             return JsonResponse({'success': False, 'error': 'Question text and correct answer are required.'}, status=400)
+        if question_type == 'double_answer' and (not correct_answer_2 or not double_answer_label_1 or not double_answer_label_2):
+            return JsonResponse({'success': False, 'error': 'Double Answer requires two labels and two correct answers.'}, status=400)
 
         question.question_text = question_text
         question.question_type = question_type
         question.points = points
         question.time_limit = time_limit
         question.correct_answer = correct_answer
+        question.correct_answer_2 = correct_answer_2 if question_type == 'double_answer' else ''
+        question.double_answer_label_1 = double_answer_label_1 if question_type == 'double_answer' else ''
+        question.double_answer_label_2 = double_answer_label_2 if question_type == 'double_answer' else ''
         question.explanation = explanation
 
         if question_type == 'multiple_choice':
@@ -4873,10 +4894,17 @@ def estimation_management(request):
 def create_estimation_quiz(request):
     """Create a new estimation quiz via AJAX"""
     try:
+        data = {}
+        try:
+            data = json.loads(request.body or '{}')
+        except Exception:
+            data = {}
+        scoring_mode = (data.get('scoring_mode') or 'tolerance').strip()
         quiz = EstimationQuiz.objects.create(
             title="Estimation Quiz",
             creator=request.user,
-            status='waiting'
+            status='waiting',
+            scoring_mode='rank' if scoring_mode == 'rank' else 'tolerance',
         )
         
         # Create associated quiz session

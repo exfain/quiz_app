@@ -392,7 +392,23 @@ def submit_answer(request, room_code, participant_name):
             })
         
         data = json.loads(request.body)
-        answer_text = data.get('answer', '').strip()
+        answer_payload = data.get('answer', '')
+        if quiz.current_question.question_type == 'double_answer':
+            if not isinstance(answer_payload, dict):
+                answer_payload = {}
+            answer_1 = (answer_payload.get('answer_1') or '').strip()
+            answer_2 = (answer_payload.get('answer_2') or '').strip()
+            if not answer_1 or not answer_2:
+                return JsonResponse({
+                    'success': False,
+                    'error': 'Both answers are required.'
+                })
+            answer_text = json.dumps({
+                'answer_1': answer_1,
+                'answer_2': answer_2,
+            }, ensure_ascii=False)
+        else:
+            answer_text = (answer_payload or '').strip()
         time_taken = data.get('time_taken', 0)
         
         if not answer_text:
@@ -480,6 +496,11 @@ def get_quiz_status(request, room_code, participant_name):
                     {'key': 'True', 'text': 'True'},
                     {'key': 'False', 'text': 'False'}
                 ]
+            elif question.question_type == 'double_answer':
+                status_data['current_question']['double_answer_fields'] = {
+                    'label_1': question.double_answer_label_1 or 'Answer 1',
+                    'label_2': question.double_answer_label_2 or 'Answer 2',
+                }
             
             # Check if user has already answered
             has_answered = QuizAnswer.objects.filter(

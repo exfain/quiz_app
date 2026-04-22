@@ -105,33 +105,22 @@
                                         {% endif %}
                                     </div>
 
-                                    <!-- People Selection Interface -->
+                                    <!-- Single Person Interface -->
                                     <div class="people-interface" id="peopleInterface">
                                         <div class="selection-instructions">
-                                            <h4>Who is lying about this statement?</h4>
-                                            <p>Click on the people you think are <strong>lying</strong>. Leave unchecked those telling the truth.</p>
+                                            <h4>Nur der aktuelle Name ist aktiv</h4>
+                                            <p>Drücke <strong>„lügt“</strong>, wenn die gezeigte Person lügt. Sonst nicht drücken.</p>
                                         </div>
-                                        
-                                        <div class="people-grid" id="peopleGrid">
-                                            <!-- People will be populated dynamically -->
+
+                                        <div class="current-person-card text-center" id="currentPersonCard">
+                                            <div class="person-name" id="currentPersonName">-</div>
+                                            <button class="btn btn-danger btn-lg mt-3" id="accuseLiarBtn">lügt</button>
                                         </div>
-                                        
+
                                         <div class="selection-summary">
-                                            <div class="summary-text">
-                                                <span id="selectedCount">0</span> people selected as <span class="liars-text">liars</span>
-                                            </div>
-                                            <button class="btn btn-outline-secondary btn-sm" id="clearSelectionBtn">
-                                                <i data-lucide="x"></i>
-                                                Clear All
-                                            </button>
+                                            <div class="summary-text" id="personProgressText">Person 1/1</div>
                                         </div>
                                     </div>
-
-                                    <!-- Submit Button -->
-                                    <button class="btn btn-primary btn-lg w-100 submit-answer" id="submitAnswerBtn">
-                                        <i data-lucide="check-circle"></i>
-                                        Submit Answer
-                                    </button>
                                 </div>
                             </div>
                         </div>
@@ -228,6 +217,13 @@
                 </div>
             </div>
         </main>
+
+        <aside class="score-history-box">
+            <h6 class="mb-2">Set-Punkte</h6>
+            <div id="scoreHistoryList" class="score-history-list">
+                <div class="text-muted small">Noch keine abgeschlossenen Sets.</div>
+            </div>
+        </aside>
     </div>
 
     <!-- Bootstrap JS -->
@@ -244,6 +240,26 @@
             min-height: 100vh;
             display: flex;
             flex-direction: column;
+        }
+
+        .score-history-box {
+            position: fixed;
+            right: 16px;
+            top: 110px;
+            width: 180px;
+            z-index: 90;
+            background: var(--bg-primary);
+            border: 1px solid var(--border-color);
+            border-radius: var(--border-radius-lg);
+            box-shadow: var(--shadow-md);
+            padding: 0.75rem;
+        }
+
+        .score-history-list {
+            display: flex;
+            flex-direction: column;
+            gap: 0.35rem;
+            font-size: 0.875rem;
         }
 
         /* Header */
@@ -967,6 +983,11 @@
                     this.questionStartTime = null;
                     this.selectedPeople = new Set();
                     this.hasAnswered = false;
+                    this.peopleSequence = [];
+                    this.currentPersonPosition = 0;
+                    this.currentTimePerPerson = 60;
+                    this.currentQuestionIndex = 0;
+                    this.scoreHistory = [];
                     
                     this.init();
                 }
@@ -977,8 +998,8 @@
                     
                     // Start timer if there's an active question
                     {% if quiz.current_question %}
-                        this.startQuestionTimer({{ quiz.current_question.time_limit }});
                         this.loadCurrentQuestion();
+                        this.startQuestionTimer({{ quiz.current_question.time_limit }});
                     {% endif %}
                 }
 
@@ -1043,6 +1064,10 @@
                         case 'answer_submitted':
                             this.onAnswerSubmitted(data);
                             break;
+
+                        case 'time_per_person_updated':
+                            this.currentTimePerPerson = parseInt(data.time_per_person || this.currentTimePerPerson, 10) || this.currentTimePerPerson;
+                            break;
                             
                         case 'show_leaderboard':
                             window.showLeaderboard(this.hubSession);
@@ -1058,14 +1083,8 @@
                 }
 
                 bindEvents() {
-                    // Submit answer button
-                    document.getElementById('submitAnswerBtn').addEventListener('click', () => {
-                        this.submitAnswer();
-                    });
-                    
-                    // Clear selection button
-                    document.getElementById('clearSelectionBtn').addEventListener('click', () => {
-                        this.clearSelection();
+                    document.getElementById('accuseLiarBtn').addEventListener('click', () => {
+                        this.accuseCurrentPerson();
                     });
                 }
 
@@ -1077,23 +1096,22 @@
                     this.hasAnswered = false;
                     this.selectedPeople.clear();
                     this.questionStartTime = Date.now();
+                    this.currentQuestionIndex += 1;
+                    this.currentPersonPosition = 0;
                     
                     this.loadQuestion(question);
-                    this.startQuestionTimer(question.time_limit);
                     this.showState('questionState');
+                    this.startQuestionTimer(question.time_limit);
                 }
 
                 onQuestionEnded() {
                     clearInterval(this.questionTimer);
-                    
-                    if (this.hasAnswered) {
-                        // Stay on submitted state briefly, then return to waiting
-                        setTimeout(() => {
-                            this.showWaitingForNextQuestion();
-                        }, 1000);
-                    } else {
-                        this.showWaitingForNextQuestion();
+                    if (!this.hasAnswered) {
+                        this.submitAnswer();
                     }
+                    setTimeout(() => {
+                        this.showWaitingForNextQuestion();
+                    }, 1000);
                 }
 
                 onQuizEnded(data) {
@@ -1140,68 +1158,50 @@
 
                 loadQuestion(question) {
                     document.getElementById('statementText').textContent = question.statement;
-                    this.setupPeopleSelection(question.people);
+                    this.peopleSequence = Array.isArray(question.people) ? question.people : [];
+                    this.showCurrentPerson();
                 }
 
-                setupPeopleSelection(people) {
-                    const peopleGrid = document.getElementById('peopleGrid');
-                    
-                    // Clear previous content
-                    peopleGrid.innerHTML = '';
-                    
-                    // Create person cards
-                    people.forEach((person, index) => {
-                        const personDiv = document.createElement('div');
-                        personDiv.className = 'person-card';
-                        personDiv.dataset.personIndex = index;
-                        
-                        personDiv.innerHTML = `
-                            <div class="person-name">${person.name}</div>
-                            <div class="person-status">Click to select as liar</div>
-                        `;
-                        
-                        // Add click event listener
-                        personDiv.addEventListener('click', () => {
-                            this.togglePersonSelection(index, personDiv);
-                        });
-                        
-                        peopleGrid.appendChild(personDiv);
-                    });
-                    
-                    this.updateSelectionSummary();
-                }
-
-                togglePersonSelection(index, element) {
-                    if (this.selectedPeople.has(index)) {
-                        // Remove selection
-                        this.selectedPeople.delete(index);
-                        element.classList.remove('selected');
-                        element.querySelector('.person-status').textContent = 'Click to select as liar';
-                    } else {
-                        // Add selection
-                        this.selectedPeople.add(index);
-                        element.classList.add('selected');
-                        element.querySelector('.person-status').textContent = 'Selected as liar';
+                showCurrentPerson() {
+                    const current = this.peopleSequence[this.currentPersonPosition];
+                    const nameEl = document.getElementById('currentPersonName');
+                    const progressEl = document.getElementById('personProgressText');
+                    const accuseBtn = document.getElementById('accuseLiarBtn');
+                    if (!nameEl || !progressEl || !accuseBtn) return;
+                    if (!current) {
+                        nameEl.textContent = '-';
+                        progressEl.textContent = 'Person 0/0';
+                        accuseBtn.disabled = true;
+                        return;
                     }
-                    
-                    this.updateSelectionSummary();
+                    nameEl.textContent = current.name;
+                    progressEl.textContent = `Person ${this.currentPersonPosition + 1}/${this.peopleSequence.length}`;
+                    accuseBtn.disabled = this.selectedPeople.has(current.id);
                 }
 
-                clearSelection() {
-                    this.selectedPeople.clear();
-                    document.querySelectorAll('.person-card').forEach(card => {
-                        card.classList.remove('selected');
-                        card.querySelector('.person-status').textContent = 'Click to select as liar';
-                    });
-                    this.updateSelectionSummary();
+                accuseCurrentPerson() {
+                    if (this.hasAnswered) return;
+                    const current = this.peopleSequence[this.currentPersonPosition];
+                    if (!current) return;
+                    this.selectedPeople.add(current.id);
+                    const accuseBtn = document.getElementById('accuseLiarBtn');
+                    if (accuseBtn) accuseBtn.disabled = true;
                 }
 
-                updateSelectionSummary() {
-                    const selectedCount = document.getElementById('selectedCount');
-                    selectedCount.textContent = this.selectedPeople.size;
+                advanceToNextPerson() {
+                    if (this.hasAnswered) return;
+                    this.currentPersonPosition += 1;
+                    if (this.currentPersonPosition >= this.peopleSequence.length) {
+                        this.submitAnswer();
+                        return;
+                    }
+                    this.showCurrentPerson();
+                    this.startQuestionTimer(this.currentTimePerPerson);
                 }
 
                 startQuestionTimer(timeLimit) {
+                    clearInterval(this.questionTimer);
+                    this.currentTimePerPerson = timeLimit;
                     let timeLeft = timeLimit;
                     const timerElement = document.getElementById('playerTimeLeft');
                     const circleElement = document.getElementById('playerTimerCircle');
@@ -1236,7 +1236,7 @@
                         
                         if (timeLeft <= 0) {
                             clearInterval(this.questionTimer);
-                            this.onTimeUp();
+                            this.advanceToNextPerson();
                         }
                     }, 1000);
                 }
@@ -1247,13 +1247,8 @@
                     const timeTaken = (Date.now() - this.questionStartTime) / 1000;
                     const selectedLiars = Array.from(this.selectedPeople);
                     
-                    // Disable interface
-                    document.querySelectorAll('.person-card').forEach(card => {
-                        card.style.pointerEvents = 'none';
-                        card.style.opacity = '0.7';
-                    });
-                    
-                    document.getElementById('clearSelectionBtn').disabled = true;
+                    const accuseBtn = document.getElementById('accuseLiarBtn');
+                    if (accuseBtn) accuseBtn.disabled = true;
                     
                     // Send answer via WebSocket
                     this.websocket.send(JSON.stringify({
@@ -1272,18 +1267,12 @@
                     }, 500);
                 }
 
-                onTimeUp() {
-                    if (this.hasAnswered) return;
-                    
-                    // Auto-submit current selection
-                    this.submitAnswer();
-                }
-
                 onAnswerSubmitted(data) {
                     // Update submitted state with results
                     document.getElementById('correctIdentifications').textContent = data.correct_identifications;
                     document.getElementById('pointsEarned').textContent = data.points_earned;
                     document.getElementById('accuracyPercent').textContent = data.accuracy + '%';
+                    this.pushScoreHistory(parseInt(data.points_earned || 0, 10) || 0);
                     
                     // Show detailed breakdown
                     this.showResultsBreakdown(data.analysis);
@@ -1345,6 +1334,16 @@
                     if (waiting) {
                         try { lucide.createIcons(); } catch (e) { /* ignore */ }
                     }
+                }
+
+                pushScoreHistory(points) {
+                    const q = this.currentQuestionIndex || (this.scoreHistory.length + 1);
+                    this.scoreHistory.push({ question_number: q, points });
+                    const listEl = document.getElementById('scoreHistoryList');
+                    if (!listEl) return;
+                    listEl.innerHTML = this.scoreHistory
+                        .map(entry => `<div>(${entry.question_number}) ${entry.points}</div>`)
+                        .join('');
                 }
 
                 showState(stateId) {

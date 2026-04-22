@@ -248,6 +248,13 @@
                 </div>
             </div>
         </main>
+
+        <aside class="score-history-box" id="scoreHistoryBox">
+            <h6 class="mb-2">Punkteverlauf</h6>
+            <div id="scoreHistoryList" class="score-history-list">
+                <div class="text-muted small">Noch keine ausgewerteten Fragen.</div>
+            </div>
+        </aside>
     </div>
 
     <!-- Bootstrap JS -->
@@ -264,6 +271,26 @@
             min-height: 100vh;
             display: flex;
             flex-direction: column;
+        }
+
+        .score-history-box {
+            position: fixed;
+            right: 16px;
+            top: 110px;
+            width: 180px;
+            z-index: 90;
+            background: var(--bg-primary);
+            border: 1px solid var(--border-color);
+            border-radius: var(--border-radius-lg);
+            box-shadow: var(--shadow-md);
+            padding: 0.75rem;
+        }
+
+        .score-history-list {
+            display: flex;
+            flex-direction: column;
+            gap: 0.35rem;
+            font-size: 0.875rem;
         }
 
         /* Header */
@@ -1013,6 +1040,10 @@
                     this.questionStartTime = null;
                     this.hasAnswered = false;
                     this.currentUnit = '';
+                    this.currentQuestionIndex = 0;
+                    this.currentQuestionMaxPoints = 0;
+                    this.lastPointsEarned = 0;
+                    this.scoreHistory = [];
                     
                     this.init();
                 }
@@ -1132,6 +1163,10 @@
                     this.hasAnswered = false;
                     this.questionStartTime = Date.now();
                     this.currentUnit = question.unit_display || '';
+                    this.currentQuestionIndex += 1;
+                    this.currentQuestionMaxPoints = parseInt(question.max_points || 0, 10) || 0;
+                    const qn = document.getElementById('currentQuestionNumber');
+                    if (qn) qn.textContent = this.currentQuestionIndex;
                     
                     this.loadQuestion(question);
                     this.startQuestionTimer(question.time_limit || 90);
@@ -1145,12 +1180,20 @@
 
                 onQuestionEnded(data) {
                     clearInterval(this.questionTimer);
-                    
-                    if (data.correct_answer && this.hasAnswered) {
-                        this.showCorrectAnswer(data.correct_answer);
-                    } else {
-                        this.showWaitingForNextQuestion();
+
+                    let pointsForQuestion = this.hasAnswered ? this.lastPointsEarned : 0;
+                    if (Array.isArray(data.rank_results)) {
+                        const ownRankResult = data.rank_results.find(r => r.participant_name === this.participantName);
+                        if (ownRankResult && typeof ownRankResult.points_earned === 'number') {
+                            pointsForQuestion = ownRankResult.points_earned;
+                        }
                     }
+                    const maxPointsForHistory = Array.isArray(data.rank_results) && data.rank_results.length
+                        ? data.rank_results.length
+                        : (data.max_points || this.currentQuestionMaxPoints || 0);
+
+                    this.pushScoreHistory(pointsForQuestion, maxPointsForHistory);
+                    this.showCorrectAnswer(data.correct_answer, pointsForQuestion);
                 }
 
                 onQuizEnded(data) {
@@ -1306,6 +1349,7 @@
                     document.getElementById('submittedEstimate').textContent = data.user_answer + (this.currentUnit ? ' ' + this.currentUnit : '');
                     document.getElementById('pointsEarned').textContent = data.points_earned;
                     document.getElementById('accuracyPercent').textContent = data.accuracy_percentage + '%';
+                    this.lastPointsEarned = parseInt(data.points_earned || 0, 10) || 0;
                 }
 
                 onTimeUp() {
@@ -1320,15 +1364,17 @@
                     }
                 }
 
-                showCorrectAnswer(correctAnswerData) {
-                    document.getElementById('correctAnswerDisplay').textContent = correctAnswerData.formatted_answer;
+                showCorrectAnswer(correctAnswerData, pointsForQuestion = 0) {
+                    document.getElementById('correctAnswerDisplay').textContent = correctAnswerData?.formatted_answer || '-';
                     document.getElementById('userEstimateDisplay').textContent = document.getElementById('submittedEstimate').textContent;
-                    document.getElementById('correctAnswerComparison').textContent = correctAnswerData.formatted_answer;
+                    document.getElementById('correctAnswerComparison').textContent = correctAnswerData?.formatted_answer || '-';
                     
                     // Show explanation if available
-                    if (correctAnswerData.explanation) {
+                    if (correctAnswerData?.explanation) {
                         document.getElementById('explanationText').textContent = correctAnswerData.explanation;
                         document.getElementById('explanationText').style.display = 'block';
+                    } else {
+                        document.getElementById('explanationText').style.display = 'none';
                     }
                     
                     // Set performance badge
@@ -1338,16 +1384,16 @@
                     
                     if (accuracy >= 95) {
                         performanceBadge.className = 'performance-badge excellent';
-                        performanceText.textContent = 'Excellent Estimate!';
+                        performanceText.textContent = `Excellent Estimate! (${pointsForQuestion} pts)`;
                     } else if (accuracy >= 80) {
                         performanceBadge.className = 'performance-badge good';
-                        performanceText.textContent = 'Great Estimate!';
+                        performanceText.textContent = `Great Estimate! (${pointsForQuestion} pts)`;
                     } else if (accuracy >= 60) {
                         performanceBadge.className = 'performance-badge fair';
-                        performanceText.textContent = 'Good Try!';
+                        performanceText.textContent = `Good Try! (${pointsForQuestion} pts)`;
                     } else {
                         performanceBadge.className = 'performance-badge poor';
-                        performanceText.textContent = 'Keep Practicing!';
+                        performanceText.textContent = `Keep Practicing! (${pointsForQuestion} pts)`;
                     }
                     
                     this.showState('correctAnswerState');
@@ -1356,6 +1402,28 @@
                     setTimeout(() => {
                         this.showWaitingForNextQuestion();
                     }, 2000);
+                }
+
+                pushScoreHistory(points, maxPoints) {
+                    const questionNumber = this.currentQuestionIndex || (this.scoreHistory.length + 1);
+                    this.scoreHistory.push({
+                        question_number: questionNumber,
+                        points: parseInt(points || 0, 10) || 0,
+                        max_points: parseInt(maxPoints || 0, 10) || 0,
+                    });
+                    this.renderScoreHistory();
+                }
+
+                renderScoreHistory() {
+                    const listEl = document.getElementById('scoreHistoryList');
+                    if (!listEl) return;
+                    if (!this.scoreHistory.length) {
+                        listEl.innerHTML = '<div class="text-muted small">Noch keine ausgewerteten Fragen.</div>';
+                        return;
+                    }
+                    listEl.innerHTML = this.scoreHistory
+                        .map(entry => `<div>(${entry.question_number}) ${entry.points}/${entry.max_points}</div>`)
+                        .join('');
                 }
 
                 showWaitingForNextQuestion() {

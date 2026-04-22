@@ -47,6 +47,8 @@ class WhoConsumer(AsyncWebsocketConsumer):
                 await self.handle_admin_end_question(text_data_json)
             elif message_type == 'admin_end_quiz':
                 await self.handle_admin_end_quiz(text_data_json)
+            elif message_type == 'admin_set_time_per_person':
+                await self.handle_admin_set_time_per_person(text_data_json)
             elif message_type == 'participant_submit_answer':
                 await self.handle_participant_submit_answer(text_data_json)
             elif message_type == 'participant_join':
@@ -181,6 +183,21 @@ class WhoConsumer(AsyncWebsocketConsumer):
                 'message': 'Quiz has ended. Thank you for participating!',
                 'final_scores': final_scores
             })
+
+    async def handle_admin_set_time_per_person(self, data):
+        try:
+            seconds = int(data.get('time_per_person') or 0)
+        except (TypeError, ValueError):
+            return
+        if seconds <= 0:
+            return
+        await self.channel_layer.group_send(
+            self.room_group_name,
+            {
+                'type': 'time_per_person_updated',
+                'time_per_person': seconds,
+            }
+        )
 
     async def handle_participant_submit_answer(self, data):
         """Handle participant submitting their answer"""
@@ -318,6 +335,12 @@ class WhoConsumer(AsyncWebsocketConsumer):
         await self.send(text_data=json.dumps({
             'type': 'participant_joined',
             'participant': event['participant']
+        }))
+
+    async def time_per_person_updated(self, event):
+        await self.send(text_data=json.dumps({
+            'type': 'time_per_person_updated',
+            'time_per_person': event.get('time_per_person'),
         }))
 
     # Database operations

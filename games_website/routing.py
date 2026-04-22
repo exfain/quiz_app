@@ -19,6 +19,7 @@ from where_is_this.routing import websocket_urlpatterns as where_ws
 from who_is_lying.routing import websocket_urlpatterns as who_ws
 from who_is_that.routing import websocket_urlpatterns as who_that_ws
 from black_jack_quiz.routing import websocket_urlpatterns as blackjack_ws
+from clue_rush.routing import websocket_urlpatterns as clue_rush_ws
 from games_hub.routing import websocket_urlpatterns as hub_ws
 from sorting_ladder.routing import websocket_urlpatterns as sorting_ladder_ws
 
@@ -37,6 +38,7 @@ application = ProtocolTypeRouter({
                 + who_ws
                 + who_that_ws
                 + blackjack_ws
+                + clue_rush_ws
                 + hub_ws
                 + sorting_ladder_ws
             )

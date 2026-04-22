@@ -186,7 +186,12 @@ class EstimationQuestion(SyncBase):
         return unit_map.get(self.unit, '')
     
     def calculate_score(self, user_answer):
-        """Calculate score based on how close the user's answer is to the correct answer"""
+        """Tolerance-zone scoring.
+
+        Zone width = tolerance_percentage.
+        Zone 0 (<= tolerance) gets max_points, each additional zone loses 1 point.
+        >=100% deviation always yields 0 points.
+        """
         if user_answer is None:
             return 0
         
@@ -196,35 +201,22 @@ class EstimationQuestion(SyncBase):
             return 0
         
         if self.correct_answer == 0:
-            # Handle division by zero
-            if user_answer == 0:
-                return self.max_points
-            else:
-                return 0
+            return int(self.max_points) if user_answer == 0 else 0
         
         # Calculate percentage difference
         percentage_diff = abs((user_answer - self.correct_answer) / self.correct_answer) * 100
         
-        # If within tolerance, give full points
-        if percentage_diff <= self.tolerance_percentage:
-            return self.max_points
-        
-        # Calculate decreasing points based on distance
-        # Use exponential decay for scoring
-        max_reasonable_diff = 200  # 200% difference gives near 0 points
-        
-        if percentage_diff >= max_reasonable_diff:
-            return 1  # Minimum 1 point for any attempt
-        
-        # Exponential decay formula
-        decay_factor = 2.0
-        score_ratio = math.exp(-decay_factor * (percentage_diff - self.tolerance_percentage) / (max_reasonable_diff - self.tolerance_percentage))
-        
-        # Scale to remaining points after tolerance
-        remaining_points = self.max_points * 0.8  # 80% of points available after tolerance
-        calculated_score = remaining_points * score_ratio
-        
-        return max(1, int(calculated_score))  # Minimum 1 point
+        if percentage_diff >= 100:
+            return 0
+
+        zone_width = float(self.tolerance_percentage or 0)
+        if zone_width <= 0:
+            return 0
+
+        # 0..zone_width => zone_index 0, (zone_width..2*zone_width] => 1, etc.
+        zone_index = max(0, math.ceil(percentage_diff / zone_width) - 1)
+        points = int(self.max_points) - zone_index
+        return max(0, points)
     
     def get_accuracy_percentage(self, user_answer):
         """Get accuracy percentage for display purposes"""
