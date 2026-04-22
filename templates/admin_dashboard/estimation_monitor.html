@@ -41,6 +41,14 @@
                     </span>
                     {% if quiz.status == 'waiting' %}
                         <div class="d-flex align-items-center gap-3">
+                            <div class="d-flex align-items-center gap-2">
+                                <label for="scoringModeSelect" class="mb-0 small text-muted">Punkte-Modus</label>
+                                <select id="scoringModeSelect" class="form-select form-select-sm" style="width:auto;">
+                                    <option value="tolerance" {% if quiz.scoring_mode == 'tolerance' %}selected{% endif %}>Prozent-Zonen</option>
+                                    <option value="rank" {% if quiz.scoring_mode == 'rank' %}selected{% endif %}>Ranking</option>
+                                </select>
+                                <button class="btn btn-outline-secondary btn-sm" id="saveScoringModeBtn">Speichern</button>
+                            </div>
                             <div class="form-check form-switch mb-0">
                                 <input class="form-check-input" type="checkbox" id="showTutorialToggle" checked>
                                 <label class="form-check-label" for="showTutorialToggle">Tutorial anzeigen</label>
@@ -171,6 +179,7 @@
                                         <div class="scoring-value">
                                             {{ quiz.current_question.max_points }} pts max, 
                                             ±{{ quiz.current_question.tolerance_percentage }}% tolerance
+                                            {% if quiz.scoring_mode == 'rank' %}(Mode: Ranking){% else %}(Mode: Prozent-Zonen){% endif %}
                                         </div>
                                     </div>
                                 </div>
@@ -992,6 +1001,11 @@ document.addEventListener('DOMContentLoaded', function() {
                     this.resetSentStates();
                     location.reload(); // Refresh to show ended quiz
                     break;
+
+                case 'scoring_mode_updated':
+                    const modeSelect = document.getElementById('scoringModeSelect');
+                    if (modeSelect) modeSelect.value = data.scoring_mode || modeSelect.value;
+                    break;
                     
                 default:
                     console.log('Unknown message type:', data.type);
@@ -1002,6 +1016,15 @@ document.addEventListener('DOMContentLoaded', function() {
             // Start Quiz button
             document.getElementById('startQuizBtn')?.addEventListener('click', () => {
                 this.startQuiz();
+            });
+
+            document.getElementById('saveScoringModeBtn')?.addEventListener('click', () => {
+                if (!this.websocket || this.websocket.readyState !== WebSocket.OPEN) return;
+                const mode = document.getElementById('scoringModeSelect')?.value || 'tolerance';
+                this.websocket.send(JSON.stringify({
+                    type: 'admin_set_scoring_mode',
+                    scoring_mode: mode
+                }));
             });
             
             // End Quiz button

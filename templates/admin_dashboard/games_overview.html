@@ -54,7 +54,6 @@
                             <th style="width:36px;"><input type="checkbox" id="selectAllGames" title="Alle auswählen"></th>
                             <th>Name</th>
                             <th>Type</th>
-                            <th>Status</th>
                             <th>Questions</th>
                             <th>Created</th>
                             <th>Actions</th>
@@ -69,17 +68,6 @@
                             </td>
                             <td><strong>{{ game.title }}</strong></td>
                             <td><span class="badge bg-light text-dark border">{{ game.game_type_display }}</span></td>
-                            <td>
-                                {% if game.status == 'active' %}
-                                    <span class="badge bg-success">Active</span>
-                                {% elif game.status == 'waiting' %}
-                                    <span class="badge bg-warning text-dark">Waiting</span>
-                                {% elif game.status == 'ended' %}
-                                    <span class="badge bg-secondary">Ended</span>
-                                {% else %}
-                                    <span class="badge bg-light text-dark border">{{ game.status }}</span>
-                                {% endif %}
-                            </td>
                             <td>{{ game.question_count }}</td>
                             <td class="text-muted small">{{ game.created_at|date:"d.m.Y H:i" }}</td>
                             <td onclick="event.stopPropagation()">

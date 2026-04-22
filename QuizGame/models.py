@@ -72,6 +72,7 @@ class QuizQuestion(SyncBase):
         ('multiple_choice', 'Multiple Choice'),
         ('true_false', 'True/False'),
         ('short_answer', 'Short Answer'),
+        ('double_answer', 'Double Answer'),
     ]
     
     question_text = models.TextField()
@@ -86,6 +87,9 @@ class QuizQuestion(SyncBase):
     option_d = models.CharField(max_length=200, blank=True)
     
     correct_answer = models.CharField(max_length=500, help_text="For multiple choice: A, B, C, or D. For true/false: True or False. For short answer: the correct answer text.")
+    correct_answer_2 = models.CharField(max_length=500, blank=True, default='', help_text="For double answer: the correct answer text for field 2.")
+    double_answer_label_1 = models.CharField(max_length=120, blank=True, default='', help_text="For double answer: label for field 1.")
+    double_answer_label_2 = models.CharField(max_length=120, blank=True, default='', help_text="For double answer: label for field 2.")
     explanation = models.TextField(blank=True, help_text="Optional explanation for the answer")
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -107,6 +111,19 @@ class QuizQuestion(SyncBase):
         """Check if the provided answer is correct"""
         if self.question_type in ['multiple_choice', 'true_false']:
             return answer.upper().strip() == self.correct_answer.upper().strip()
+        elif self.question_type == 'double_answer':
+            import json
+            parsed = answer
+            if isinstance(answer, str):
+                try:
+                    parsed = json.loads(answer)
+                except (TypeError, ValueError):
+                    parsed = {}
+            if not isinstance(parsed, dict):
+                return False
+            first = (parsed.get('answer_1') or '').strip().lower()
+            second = (parsed.get('answer_2') or '').strip().lower()
+            return first == (self.correct_answer or '').strip().lower() and second == (self.correct_answer_2 or '').strip().lower()
         else:  # short_answer
             return answer.lower().strip() == self.correct_answer.lower().strip()
     

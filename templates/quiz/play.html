@@ -1090,6 +1090,7 @@
                     this.questionStartTime = null;
                     this.selectedAnswer = null;
                     this.hasAnswered = false;
+                    this.currentQuestion = null;
                     
                     this.init();
                 }
@@ -1238,6 +1239,7 @@
                 onQuestionStarted(question, timeLimit) {
                     this.hasAnswered = false;
                     this.selectedAnswer = null;
+                    this.currentQuestion = question;
                     this.questionStartTime = Date.now();
                     
                     this.loadQuestion(question);
@@ -1291,6 +1293,10 @@
                         id: {{ quiz.current_question.id }},
                         question_text: '{{ quiz.current_question.question_text|escapejs }}',
                         question_type: '{{ quiz.current_question.question_type }}',
+                        double_answer_fields: {
+                            label_1: '{{ quiz.current_question.double_answer_label_1|default:"Answer 1"|escapejs }}',
+                            label_2: '{{ quiz.current_question.double_answer_label_2|default:"Answer 2"|escapejs }}',
+                        },
                         options: [
                             {% for key, text in quiz.current_question.get_options %}
                             { key: '{{ key }}', text: '{{ text|escapejs }}' },
@@ -1327,6 +1333,46 @@
                             document.getElementById('submitAnswerBtn').disabled = !this.selectedAnswer;
                         });
                         optionsContainer.appendChild(input);
+                    } else if (question.question_type === 'double_answer') {
+                        const labels = question.double_answer_fields || {};
+
+                        const wrapper1 = document.createElement('div');
+                        wrapper1.className = 'mb-3';
+                        const label1 = document.createElement('label');
+                        label1.className = 'form-label fw-semibold';
+                        label1.textContent = labels.label_1 || 'Answer 1';
+                        const input1 = document.createElement('input');
+                        input1.type = 'text';
+                        input1.className = 'short-answer-input';
+                        input1.placeholder = label1.textContent;
+                        input1.id = 'doubleAnswerInput1';
+                        wrapper1.appendChild(label1);
+                        wrapper1.appendChild(input1);
+
+                        const wrapper2 = document.createElement('div');
+                        wrapper2.className = 'mb-3';
+                        const label2 = document.createElement('label');
+                        label2.className = 'form-label fw-semibold';
+                        label2.textContent = labels.label_2 || 'Answer 2';
+                        const input2 = document.createElement('input');
+                        input2.type = 'text';
+                        input2.className = 'short-answer-input';
+                        input2.placeholder = label2.textContent;
+                        input2.id = 'doubleAnswerInput2';
+                        wrapper2.appendChild(label2);
+                        wrapper2.appendChild(input2);
+
+                        const onInput = () => {
+                            const answer1 = input1.value.trim();
+                            const answer2 = input2.value.trim();
+                            this.selectedAnswer = { answer_1: answer1, answer_2: answer2 };
+                            document.getElementById('submitAnswerBtn').disabled = !(answer1 && answer2);
+                        };
+                        input1.addEventListener('input', onInput);
+                        input2.addEventListener('input', onInput);
+
+                        optionsContainer.appendChild(wrapper1);
+                        optionsContainer.appendChild(wrapper2);
                     }
 
                     document.getElementById('submitAnswerBtn').disabled = true;
@@ -1405,6 +1451,17 @@
                     
                     const timeTaken = (Date.now() - this.questionStartTime) / 1000;
                     
+                    let answerPayload = this.selectedAnswer;
+                    let submittedAnswerDisplay = this.selectedAnswer;
+                    if (this.currentQuestion && this.currentQuestion.question_type === 'double_answer') {
+                        const labels = this.currentQuestion.double_answer_fields || {};
+                        const answer1 = (this.selectedAnswer.answer_1 || '').trim();
+                        const answer2 = (this.selectedAnswer.answer_2 || '').trim();
+                        if (!answer1 || !answer2) return;
+                        answerPayload = { answer_1: answer1, answer_2: answer2 };
+                        submittedAnswerDisplay = `${labels.label_1 || 'Answer 1'}: ${answer1} | ${labels.label_2 || 'Answer 2'}: ${answer2}`;
+                    }
+
                     // Disable all options
                     document.querySelectorAll('.answer-option').forEach(option => {
                         option.classList.add('disabled');
@@ -1415,13 +1472,17 @@
                     if (shortAnswerInput) {
                         shortAnswerInput.disabled = true;
                     }
+                    const doubleAnswerInput1 = document.getElementById('doubleAnswerInput1');
+                    const doubleAnswerInput2 = document.getElementById('doubleAnswerInput2');
+                    if (doubleAnswerInput1) doubleAnswerInput1.disabled = true;
+                    if (doubleAnswerInput2) doubleAnswerInput2.disabled = true;
                     
                     // Send answer via WebSocket
                     this.websocket.send(JSON.stringify({
                         type: 'participant_submit_answer',
                         participant_name: this.participantName,
                         hub_session: this.hubSession,
-                        answer: this.selectedAnswer,
+                        answer: answerPayload,
                         time_taken: timeTaken
                     }));
                     
@@ -1429,7 +1490,7 @@
                     
                     // Show submitted state
                     setTimeout(() => {
-                        document.getElementById('submittedAnswerText').textContent = this.selectedAnswer;
+                        document.getElementById('submittedAnswerText').textContent = submittedAnswerDisplay;
                         document.getElementById('submittedTime').textContent = timeTaken.toFixed(1);
                         this.showState('answerSubmittedState');
                     }, 500);

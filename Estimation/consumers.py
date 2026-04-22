@@ -47,6 +47,8 @@ class EstimationConsumer(AsyncWebsocketConsumer):
                 await self.handle_admin_end_question(text_data_json)
             elif message_type == 'admin_end_quiz':
                 await self.handle_admin_end_quiz(text_data_json)
+            elif message_type == 'admin_set_scoring_mode':
+                await self.handle_admin_set_scoring_mode(text_data_json)
             elif message_type == 'participant_submit_answer':
                 await self.handle_participant_submit_answer(text_data_json)
             elif message_type == 'participant_join':
@@ -145,6 +147,7 @@ class EstimationConsumer(AsyncWebsocketConsumer):
         if quiz:
             # Get the correct answer and, if rank mode, compute rankings before clearing
             correct_answer_data = await self.get_current_question_answer(quiz)
+            max_points = await self.get_current_question_max_points(quiz)
             rank_results = None
             if getattr(quiz, 'scoring_mode', 'tolerance') == 'rank':
                 rank_results = await self.compute_rank_points_for_current_question(quiz.id)
@@ -156,11 +159,32 @@ class EstimationConsumer(AsyncWebsocketConsumer):
             payload = {
                 'type': 'question_ended',
                 'message': 'Time\'s up!',
-                'correct_answer': correct_answer_data
+                'correct_answer': correct_answer_data,
+                'max_points': max_points,
             }
             if rank_results is not None:
                 payload['rank_results'] = rank_results
             await self.channel_layer.group_send(self.room_group_name, payload)
+
+    async def handle_admin_set_scoring_mode(self, data):
+        quiz = await self.get_quiz()
+        if not quiz:
+            return
+        scoring_mode = (data.get('scoring_mode') or '').strip()
+        updated = await self.set_scoring_mode_if_waiting(quiz.id, scoring_mode)
+        if not updated:
+            await self.send(text_data=json.dumps({
+                'type': 'error',
+                'message': 'Scoring mode can only be changed before the quiz starts.'
+            }))
+            return
+        await self.channel_layer.group_send(
+            self.room_group_name,
+            {
+                'type': 'scoring_mode_updated',
+                'scoring_mode': scoring_mode,
+            }
+        )
 
     async def handle_admin_end_quiz(self, data):
         """Handle admin ending the quiz"""
@@ -306,7 +330,15 @@ class EstimationConsumer(AsyncWebsocketConsumer):
         await self.send(text_data=json.dumps({
             'type': 'question_ended',
             'message': event['message'],
-            'correct_answer': event.get('correct_answer')
+            'correct_answer': event.get('correct_answer'),
+            'rank_results': event.get('rank_results'),
+            'max_points': event.get('max_points'),
+        }))
+
+    async def scoring_mode_updated(self, event):
+        await self.send(text_data=json.dumps({
+            'type': 'scoring_mode_updated',
+            'scoring_mode': event.get('scoring_mode'),
         }))
 
     async def quiz_ended(self, event):
@@ -413,6 +445,26 @@ class EstimationConsumer(AsyncWebsocketConsumer):
             pass
 
     @database_sync_to_async
+    def get_current_question_max_points(self, quiz):
+        if quiz.current_question:
+            return int(getattr(quiz.current_question, 'max_points', 0) or 0)
+        return 0
+
+    @database_sync_to_async
+    def set_scoring_mode_if_waiting(self, quiz_id, scoring_mode):
+        if scoring_mode not in ('tolerance', 'rank'):
+            return False
+        try:
+            quiz = EstimationQuiz.objects.get(id=quiz_id)
+        except EstimationQuiz.DoesNotExist:
+            return False
+        if quiz.status != 'waiting':
+            return False
+        quiz.scoring_mode = scoring_mode
+        quiz.save(update_fields=['scoring_mode'])
+        return True
+
+    @database_sync_to_async
     def get_current_question_answer(self, quiz):
         """Get the correct answer for the current question"""
         if quiz.current_question:
@@ -448,12 +500,12 @@ class EstimationConsumer(AsyncWebsocketConsumer):
 
             answers.sort(key=sort_key)
 
-            max_points = int(getattr(question, 'max_points', 100) or 100)
+            participant_count = len(answers)
 
             results = []
             for idx, ans in enumerate(answers):
-                # Descending points from max_points; minimum 1 point
-                points = max(1, max_points - idx)
+                # Descending points from participant count to 1
+                points = max(1, participant_count - idx)
                 # Update and save; this recalculates participant total via model's save
                 ans.points_earned = points
                 ans.save()

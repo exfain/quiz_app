@@ -141,7 +141,7 @@
                         </div>
                     {% else %}
                         <!-- Active Question Display -->
-                        <div id="activeQuestion">
+                        <div id="activeQuestion" data-total-rounds="{{ quiz.current_question.elements.count|add:'-1' }}">
                             <div class="active-question-header">
                                 <h6>Current Question</h6>
                             </div>
@@ -886,6 +886,11 @@ document.addEventListener('DOMContentLoaded', function() {
             this.isActive = '{{ quiz.status }}' === 'active';
             this.liveResponseState = new Map();
             this.currentPhaseLabel = 'Warte auf Antworten';
+            this.totalRoundsForQuestion = parseInt(document.getElementById('activeQuestion')?.dataset?.totalRounds || '0', 10) || 0;
+            this.currentRoundNumber = 0;
+            this.nextRoundEnabled = true;
+            this.allAnswersInRound = false;
+            this.roundTimerExpired = false;
             this.init();
         }
 
@@ -1021,19 +1026,31 @@ document.addEventListener('DOMContentLoaded', function() {
                     this.resetLiveResponseStateForQuestion();
                     this.setNextRoundButtonEnabled(true);
                     this.currentPhaseLabel = 'Runde läuft';
+                    this.currentRoundNumber = 1;
+                    this.allAnswersInRound = false;
+                    this.roundTimerExpired = false;
+                    this.updateQuestionActionLabels();
                     this.updateMonitorPhase();
                     console.log('Question started');
                     location.reload();
                     break;
 
+                case 'round_started':
+                    this.onRoundStarted(data.round);
+                    break;
+
                 case 'round_ended':
                     this.setNextRoundButtonEnabled(!!data.has_next_round);
+                    this.roundTimerExpired = !data.has_next_round;
+                    this.updateQuestionActionLabels();
                     this.currentPhaseLabel = data.has_next_round ? 'Runde beendet' : 'Letzte Runde beendet';
                     this.updateMonitorPhase();
                     break;
 
                 case 'no_more_rounds':
                     this.setNextRoundButtonEnabled(false);
+                    this.roundTimerExpired = true;
+                    this.updateQuestionActionLabels();
                     this.currentPhaseLabel = 'Runden abgeschlossen';
                     this.updateMonitorPhase();
                     break;
@@ -1245,6 +1262,10 @@ document.addEventListener('DOMContentLoaded', function() {
 
         startNextRound() {
             if (this.websocket && this.websocket.readyState === WebSocket.OPEN) {
+                if (!this.allAnswersInRound) {
+                    const proceed = confirm('Not all participants have answered yet. Ending the round early will eliminate missing answers. Continue?');
+                    if (!proceed) return;
+                }
                 this.websocket.send(JSON.stringify({
                     type: 'admin_start_round'
                 }));
@@ -1252,12 +1273,40 @@ document.addEventListener('DOMContentLoaded', function() {
         }
 
         setNextRoundButtonEnabled(enabled) {
+            this.nextRoundEnabled = !!enabled;
             const btn = document.getElementById('startNextRoundBtn');
             if (!btn) return;
-            btn.disabled = !enabled;
-            btn.classList.toggle('disabled', !enabled);
-            btn.title = enabled ? '' : 'Alle Runden dieses Sets sind abgeschlossen';
+            const isLastRound = this.totalRoundsForQuestion > 0 && this.currentRoundNumber >= this.totalRoundsForQuestion;
+            if (isLastRound) {
+                btn.classList.add('d-none');
+                return;
+            }
+            btn.classList.remove('d-none');
+            btn.disabled = !this.nextRoundEnabled;
+            btn.classList.toggle('disabled', !this.nextRoundEnabled);
+            btn.title = this.nextRoundEnabled ? '' : 'Alle Runden dieses Sets sind abgeschlossen';
             this.updateMonitorPhase();
+        }
+
+        onRoundStarted(roundData) {
+            const roundNumber = parseInt(roundData?.round_number || '0', 10);
+            if (!isNaN(roundNumber) && roundNumber > 0) {
+                this.currentRoundNumber = roundNumber;
+            }
+            this.allAnswersInRound = false;
+            this.roundTimerExpired = false;
+            this.setNextRoundButtonEnabled(true);
+            this.updateQuestionActionLabels();
+        }
+
+        updateQuestionActionLabels() {
+            const endBtn = document.getElementById('endQuestionBtn');
+            if (!endBtn) return;
+            const icon = endBtn.querySelector('i');
+            const isLastRound = this.totalRoundsForQuestion > 0 && this.currentRoundNumber >= this.totalRoundsForQuestion;
+            const shouldUseFinalLabel = isLastRound && (this.roundTimerExpired || this.allAnswersInRound || !this.nextRoundEnabled);
+            endBtn.innerHTML = `${icon ? icon.outerHTML : '<i data-lucide="skip-forward"></i>'} ${shouldUseFinalLabel ? 'End Question' : 'End Question Early'}`;
+            try { lucide.createIcons(); } catch(_) {}
         }
 
         renderRoundAnswerStatus(data) {
@@ -1283,6 +1332,8 @@ document.addEventListener('DOMContentLoaded', function() {
             });
             container.innerHTML = rows.join('');
             if (responseCount) responseCount.textContent = `${answeredCount}/${statuses.length}`;
+            this.allAnswersInRound = answeredCount === statuses.length;
+            this.updateQuestionActionLabels();
             this.currentPhaseLabel = answeredCount === statuses.length ? 'Alle Antworten eingegangen' : 'Warte auf Antworten';
             this.updateMonitorPhase();
         }

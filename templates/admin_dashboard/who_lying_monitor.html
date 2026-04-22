@@ -187,6 +187,10 @@
                                 </div>
                                 
                                 <div class="question-actions">
+                                    <div class="d-flex align-items-center gap-2">
+                                        <input type="number" min="3" step="1" class="form-control form-control-sm" id="timePerPersonInput" value="{{ quiz.current_question.time_limit }}" style="max-width:120px;">
+                                        <button class="btn btn-outline-secondary btn-sm" id="updateTimePerPersonBtn">Zeit/Name setzen</button>
+                                    </div>
                                     <button class="btn btn-warning" id="endQuestionBtn">
                                         <i data-lucide="skip-forward"></i>
                                         End Question Early
@@ -1066,6 +1070,17 @@ document.addEventListener('DOMContentLoaded', function() {
             // End Question button
             document.getElementById('endQuestionBtn')?.addEventListener('click', () => {
                 this.endCurrentQuestion();
+            });
+
+            document.getElementById('updateTimePerPersonBtn')?.addEventListener('click', () => {
+                if (!this.websocket || this.websocket.readyState !== WebSocket.OPEN) return;
+                const raw = document.getElementById('timePerPersonInput')?.value;
+                const v = parseInt(raw || '0', 10);
+                if (isNaN(v) || v <= 0) return;
+                this.websocket.send(JSON.stringify({
+                    type: 'admin_set_time_per_person',
+                    time_per_person: v
+                }));
             });
             
             // Leaderboard ein-/ausblenden (Toggle)

@@ -24,7 +24,7 @@ class AssignConsumer(AsyncWebsocketConsumer):
     _channel_hub_sessions: dict[str, str] = {}
     # Effektives Zeit-Limit pro Raum (kann vom gespeicherten Wert abweichen)
     _effective_time_limits: dict[str, int] = {}
-    # Tracks eliminated participant channels per room
+    # Tracks eliminated participants per room (stable participant keys, not channels)
     _eliminated_participants: dict[str, set] = {}
     # Tracks original right-item indices that were correctly matched per room
     _room_matched_originals: dict[str, set] = {}
@@ -53,18 +53,27 @@ class AssignConsumer(AsyncWebsocketConsumer):
             self.room_group_name,
             self.channel_name
         )
-        # Remove this channel from any round-submission tracking
+        # Remove this channel from any round-related in-memory tracking
         for key in list(self.__class__._round_submissions):
             self.__class__._round_submissions[key].discard(self.channel_name)
+            if not self.__class__._round_submissions[key]:
+                del self.__class__._round_submissions[key]
+        for key in list(self.__class__._round_logged):
+            self.__class__._round_logged[key].discard(self.channel_name)
+            if not self.__class__._round_logged[key]:
+                del self.__class__._round_logged[key]
+        for key in list(self.__class__._round_selections):
+            self.__class__._round_selections[key].pop(self.channel_name, None)
+            if not self.__class__._round_selections[key]:
+                del self.__class__._round_selections[key]
         # Teilnehmer-Channel entfernen
         if self.room_code in self.__class__._participant_channels:
             self.__class__._participant_channels[self.room_code].discard(self.channel_name)
         # Teilnehmer-Name-Mapping entfernen
         self.__class__._channel_participants.pop(self.channel_name, None)
         self.__class__._channel_hub_sessions.pop(self.channel_name, None)
-        # Eliminated-Tracking bereinigen
-        if self.room_code in self.__class__._eliminated_participants:
-            self.__class__._eliminated_participants[self.room_code].discard(self.channel_name)
+        # Eliminated-Status wird absichtlich NICHT beim Disconnect entfernt:
+        # Elimination ist fachlich pro Frage/Spieler gültig und soll Reconnect überleben.
 
     # Receive message from WebSocket
     async def receive(self, text_data):
@@ -337,7 +346,8 @@ class AssignConsumer(AsyncWebsocketConsumer):
 
     async def handle_participant_update_selection(self, data):
         """Store participant's temporary current selection for this round."""
-        if self.channel_name in self.__class__._eliminated_participants.get(self.room_code, set()):
+        participant_key = self.get_participant_key_for_channel(self.channel_name)
+        if participant_key in self.__class__._eliminated_participants.get(self.room_code, set()):
             return
         round_index = data.get('round_index', 0)
         key = (self.room_code, round_index)
@@ -352,7 +362,8 @@ class AssignConsumer(AsyncWebsocketConsumer):
 
     async def handle_participant_log_round(self, data):
         """Participant explicitly logs/finalizes answer for this round."""
-        if self.channel_name in self.__class__._eliminated_participants.get(self.room_code, set()):
+        participant_key = self.get_participant_key_for_channel(self.channel_name)
+        if participant_key in self.__class__._eliminated_participants.get(self.room_code, set()):
             return
         round_index = data.get('round_index', 0)
         key = (self.room_code, round_index)
@@ -392,7 +403,8 @@ class AssignConsumer(AsyncWebsocketConsumer):
                 'points_earned': answer['points_earned'],
                 'correct_matches': answer['correct_matches'],
                 'total_matches': answer['total_matches'],
-                'accuracy': answer['accuracy']
+                'accuracy': answer['accuracy'],
+                'progress_history': answer.get('progress_history', [])
             }))
 
             await self.channel_layer.group_send(
@@ -449,6 +461,11 @@ class AssignConsumer(AsyncWebsocketConsumer):
 
             # If quiz is already active, send quiz_started directly to this participant
             quiz = await self.get_quiz()
+            progress_history = await self.get_participant_progress_history(participant_name, hub_session)
+            await self.send(text_data=json.dumps({
+                'type': 'progress_history',
+                'history': progress_history,
+            }))
             if quiz and quiz.status == 'active':
                 await self.send(text_data=json.dumps({
                     'type': 'quiz_started',
@@ -825,7 +842,10 @@ class AssignConsumer(AsyncWebsocketConsumer):
     async def get_relevant_active_channels(self):
         channels = self.__class__._participant_channels.get(self.room_code, set())
         eliminated = self.__class__._eliminated_participants.get(self.room_code, set())
-        active_channels = channels - eliminated
+        active_channels = {
+            channel for channel in channels
+            if self.get_participant_key_for_channel(channel) not in eliminated
+        }
 
         session_code = await self._get_hub_session_code_for_room()
         if not session_code:
@@ -839,8 +859,9 @@ class AssignConsumer(AsyncWebsocketConsumer):
     async def maybe_auto_advance_if_all_logged(self, round_index: int):
         key = (self.room_code, round_index)
         logged = self.__class__._round_logged.get(key, set())
-        active_count = await self.get_active_participant_count()
-        logged_count = len(logged)
+        active_channels = await self.get_relevant_active_channels()
+        active_count = len(active_channels)
+        logged_count = len(logged.intersection(active_channels))
         advance_key = f'{self.room_code}_{round_index}'
         if active_count > 0 and logged_count >= active_count and advance_key not in self.__class__._auto_advancing:
             self.__class__._auto_advancing.add(advance_key)
@@ -891,7 +912,8 @@ class AssignConsumer(AsyncWebsocketConsumer):
             is_correct, original_right_idx = await self.check_round_answer(quiz.current_question, left_item_index, user_match)
 
             if not is_correct:
-                self.__class__._eliminated_participants.setdefault(self.room_code, set()).add(channel)
+                participant_key = self.get_participant_key_for_channel(channel)
+                self.__class__._eliminated_participants.setdefault(self.room_code, set()).add(participant_key)
             elif original_right_idx is not None:
                 self.__class__._room_matched_originals.setdefault(self.room_code, set()).add(original_right_idx)
 
@@ -923,6 +945,12 @@ class AssignConsumer(AsyncWebsocketConsumer):
         self.__class__._round_logged.pop(key, None)
         self.__class__._round_selections.pop(key, None)
         self.__class__._round_submissions.pop(key, None)
+
+    def get_participant_key_for_channel(self, channel: str) -> str:
+        """Stable participant identity key for room-scoped transient state."""
+        name = (self.__class__._channel_participants.get(channel) or '').strip().lower()
+        hub_session = (self.__class__._channel_hub_sessions.get(channel) or '').strip().lower()
+        return f"{hub_session}::{name}"
 
     @database_sync_to_async
     def get_final_scores(self):
@@ -991,8 +1019,36 @@ class AssignConsumer(AsyncWebsocketConsumer):
                 'points_earned': answer.points_earned,
                 'correct_matches': answer.get_correct_matches_count(),
                 'total_matches': answer.get_total_matches_count(),
-                'accuracy': answer.get_accuracy_percentage()
+                'accuracy': answer.get_accuracy_percentage(),
+                'progress_history': self._build_progress_history(quiz, participant),
             }
 
         except (AssignQuiz.DoesNotExist, AssignParticipant.DoesNotExist):
             return None
+
+    def _build_progress_history(self, quiz, participant):
+        answers = list(
+            AssignAnswer.objects
+            .filter(quiz=quiz, participant=participant)
+            .select_related('question')
+            .order_by('submitted_at', 'id')
+        )
+        history = []
+        for idx, answer in enumerate(answers, start=1):
+            max_rounds = len(answer.question.left_items or [])
+            survived_rounds = answer.get_correct_matches_count()
+            history.append({
+                'question_number': idx,
+                'survived_rounds': survived_rounds,
+                'max_rounds': max_rounds,
+            })
+        return history
+
+    @database_sync_to_async
+    def get_participant_progress_history(self, participant_name, hub_session):
+        try:
+            quiz = AssignQuiz.objects.get(room_code=self.room_code)
+            participant = quiz.participants.get(name=participant_name, hub_session_code=hub_session)
+            return self._build_progress_history(quiz, participant)
+        except (AssignQuiz.DoesNotExist, AssignParticipant.DoesNotExist):
+            return []

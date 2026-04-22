@@ -167,10 +167,15 @@
                                 <td><code>{{ session.code }}</code></td>
                                 <td><strong>{{ session.name }}</strong></td>
                                 <td>{% if session.started_at %}{{ session.started_at|timesince }} ago{% else %}&mdash;{% endif %}</td>
-                                <td>
+                                <td onclick="event.stopPropagation()">
                                     <a href="{% url 'games_hub:monitor' session.code %}" class="btn btn-sm btn-outline-primary">
                                         <i data-lucide="power" style="width:14px;height:14px;"></i> Activate
                                     </a>
+                                    <button class="btn btn-sm btn-outline-danger end-session-btn ms-1"
+                                            data-session-code="{{ session.code }}"
+                                            data-session-name="{{ session.name }}">
+                                        <i data-lucide="stop-circle" style="width:14px;height:14px;"></i> End
+                                    </button>
                                 </td>
                             </tr>
                             {% empty %}

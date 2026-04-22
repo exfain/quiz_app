@@ -501,9 +501,13 @@
         const pagination = document.getElementById('pagination');
         const questionType = document.getElementById('questionType');
         const multipleChoiceOptions = document.getElementById('multipleChoiceOptions');
+        const doubleAnswerFields = document.getElementById('doubleAnswerFields');
         const correctAnswer = document.getElementById('correctAnswer');
         const correctAnswerSelect = document.getElementById('correctAnswerSelect');
         const answerHelp = document.getElementById('answerHelp');
+        const correctAnswer2 = document.getElementById('correctAnswer2');
+        const doubleAnswerLabel1 = document.getElementById('doubleAnswerLabel1');
+        const doubleAnswerLabel2 = document.getElementById('doubleAnswerLabel2');
         const submitQuestionBtn = document.getElementById('submitQuestionBtn');
         const confirmDeleteBtn = document.getElementById('confirmDeleteBtn');
 
@@ -558,16 +562,21 @@
             const type = this.value;
             if (!type) {
                 multipleChoiceOptions.style.display = 'none';
+                doubleAnswerFields.style.display = 'none';
                 correctAnswerSelect.style.display = 'none';
                 correctAnswerSelect.required = false;
                 correctAnswerSelect.removeAttribute('name');
                 correctAnswer.style.display = 'none';
                 correctAnswer.required = false;
                 correctAnswer.removeAttribute('name');
+                correctAnswer2.required = false;
+                doubleAnswerLabel1.required = false;
+                doubleAnswerLabel2.required = false;
                 return;
             }
             if (type === 'multiple_choice') {
                 multipleChoiceOptions.style.display = 'block';
+                doubleAnswerFields.style.display = 'none';
                 updateCorrectAnswerSelect();
                 correctAnswerSelect.style.display = 'block';
                 correctAnswerSelect.required = true;
@@ -575,9 +584,13 @@
                 correctAnswer.style.display = 'none';
                 correctAnswer.required = false;
                 correctAnswer.removeAttribute('name');
+                correctAnswer2.required = false;
+                doubleAnswerLabel1.required = false;
+                doubleAnswerLabel2.required = false;
                 answerHelp.textContent = 'Wähle die richtige Antwort aus den befüllten Optionen.';
             } else if (type === 'true_false') {
                 multipleChoiceOptions.style.display = 'none';
+                doubleAnswerFields.style.display = 'none';
                 correctAnswerSelect.innerHTML = '<option value="True">True</option><option value="False">False</option>';
                 correctAnswerSelect.style.display = 'block';
                 correctAnswerSelect.required = true;
@@ -585,9 +598,27 @@
                 correctAnswer.style.display = 'none';
                 correctAnswer.required = false;
                 correctAnswer.removeAttribute('name');
+                correctAnswer2.required = false;
+                doubleAnswerLabel1.required = false;
+                doubleAnswerLabel2.required = false;
                 answerHelp.textContent = '';
+            } else if (type === 'double_answer') {
+                multipleChoiceOptions.style.display = 'none';
+                doubleAnswerFields.style.display = 'block';
+                correctAnswerSelect.style.display = 'none';
+                correctAnswerSelect.required = false;
+                correctAnswerSelect.removeAttribute('name');
+                correctAnswer.style.display = 'block';
+                correctAnswer.required = true;
+                correctAnswer.name = 'correct_answer';
+                correctAnswer.placeholder = 'Enter correct answer for field 1';
+                correctAnswer2.required = true;
+                doubleAnswerLabel1.required = true;
+                doubleAnswerLabel2.required = true;
+                answerHelp.textContent = 'Double Answer: beide Felder müssen korrekt sein (Groß-/Kleinschreibung wird ignoriert).';
             } else {
                 multipleChoiceOptions.style.display = 'none';
+                doubleAnswerFields.style.display = 'none';
                 correctAnswerSelect.style.display = 'none';
                 correctAnswerSelect.required = false;
                 correctAnswerSelect.removeAttribute('name');
@@ -595,6 +626,9 @@
                 correctAnswer.required = true;
                 correctAnswer.name = 'correct_answer';
                 correctAnswer.placeholder = 'Enter correct answer';
+                correctAnswer2.required = false;
+                doubleAnswerLabel1.required = false;
+                doubleAnswerLabel2.required = false;
                 answerHelp.textContent = 'For short answer: enter the exact answer text (case-insensitive).';
             }
         });
@@ -691,6 +725,9 @@
                 document.getElementById('optionC').value = question.option_c || '';
                 document.getElementById('optionD').value = question.option_d || '';
                 document.getElementById('correctAnswer').value = question.correct_answer || '';
+                document.getElementById('correctAnswer2').value = question.correct_answer_2 || '';
+                document.getElementById('doubleAnswerLabel1').value = question.double_answer_label_1 || '';
+                document.getElementById('doubleAnswerLabel2').value = question.double_answer_label_2 || '';
                 document.getElementById('explanation').value = question.explanation || '';
                 questionType.dispatchEvent(new Event('change'));
                 if (question.question_type === 'multiple_choice') {
@@ -997,6 +1034,7 @@
                                     <option value="multiple_choice">Multiple Choice</option>
                                     <option value="true_false">True/False</option>
                                     <option value="short_answer">Short Answer</option>
+                                    <option value="double_answer">Double Answer</option>
                                 </select>
                             </div>
                         </div>
@@ -1059,6 +1097,27 @@
                         <small class="form-text text-muted" id="answerHelp">
                             For Multiple Choice: A, B, C or D. For True/False: True or False.
                         </small>
+                    </div>
+                    <div id="doubleAnswerFields" style="display:none;">
+                        <h6 class="mb-3">Double Answer Einstellungen</h6>
+                        <div class="row">
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <label for="doubleAnswerLabel1" class="form-label">Label Feld 1</label>
+                                    <input type="text" class="form-control" id="doubleAnswerLabel1" name="double_answer_label_1" placeholder="z. B. Land">
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <label for="doubleAnswerLabel2" class="form-label">Label Feld 2</label>
+                                    <input type="text" class="form-control" id="doubleAnswerLabel2" name="double_answer_label_2" placeholder="z. B. Hauptstadt">
+                                </div>
+                            </div>
+                        </div>
+                        <div class="mb-3">
+                            <label for="correctAnswer2" class="form-label">Correct Answer Feld 2</label>
+                            <input type="text" class="form-control" id="correctAnswer2" name="correct_answer_2" placeholder="Enter correct answer for field 2">
+                        </div>
                     </div>
                 </form>
             </div>
