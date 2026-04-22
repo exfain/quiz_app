@@ -1654,7 +1654,7 @@
 
                     const resultRound = Number(data.round_number || 0);
                     if (resultRound > 0 && resultRound < this.currentRound) {
-                        this.applyRoundResult(data);
+                        this.applyRoundResult(data, true);
                         this.pendingRoundResult = null;
                         if (!this.isEliminated && this.moreRoundsInQuestion) {
                             this.showState('topicState');
@@ -1681,8 +1681,11 @@
                     const justFinishedRound = Math.max(nextRoundNumber - 1, 0);
 
                     if (this.pendingRoundResult && Number(this.pendingRoundResult.round_number || 0) === justFinishedRound) {
-                        this.applyRoundResult(this.pendingRoundResult);
+                        this.applyRoundResult(this.pendingRoundResult, true);
                         this.pendingRoundResult = null;
+                        if (this.isEliminated) {
+                            return;
+                        }
                     }
 
                     this.showState('topicState');
@@ -1718,7 +1721,25 @@
                     }
                 }
 
-                applyRoundResult(data) {
+                showEliminatedTransition() {
+                    const resultTitle = document.getElementById('roundResultTitle');
+                    const resultText = document.getElementById('roundResultText');
+                    const iconSuccess = document.getElementById('roundResultIconSuccess');
+                    const iconFail = document.getElementById('roundResultIconFail');
+
+                    if (iconSuccess) iconSuccess.classList.add('d-none');
+                    if (iconFail) iconFail.classList.remove('d-none');
+                    if (resultTitle) resultTitle.textContent = 'Ausgeschieden';
+                    if (resultText) resultText.textContent = 'Du bist für dieses Set ausgeschieden.';
+                    this.showState('roundResultState');
+
+                    setTimeout(() => {
+                        this.showState('topicState');
+                        this.setInteractionLock(true, 'Eliminated for this set. Waiting for next question...');
+                    }, 900);
+                }
+
+                applyRoundResult(data, fromRoundStart = false) {
                     if (data.participant_name !== this.participantName) {
                         return;
                     }
@@ -1767,8 +1788,12 @@
                         this.showState('topicState');
                         this.setInteractionLock(true, 'Waiting for host to start next round...');
                     } else {
-                        this.showState('topicState');
-                        this.setInteractionLock(true, 'Eliminated for this set. Waiting for next question...');
+                        if (data.has_more_rounds && this.isEliminated && fromRoundStart) {
+                            this.showEliminatedTransition();
+                        } else {
+                            this.showState('topicState');
+                            this.setInteractionLock(true, 'Eliminated for this set. Waiting for next question...');
+                        }
                         if (!data.has_more_rounds) {
                             this.renderFinalOrder();
                             this.showState('finalOrderState');
