@@ -1097,6 +1097,7 @@
                     this.pendingRoundResult = null;
                     this.pendingRoundStart = null;
                     this.latestResolvedRound = 0;
+                    this.lastSubmitWasTimeout = false;
                     this.roundTimerEnded = false;
                     this.isInputLocked = false;
                     
@@ -1202,6 +1203,10 @@
                             this.onQuizEnded(data);
                             break;
                         case 'round_submission_rejected':
+                            if (this.lastSubmitWasTimeout || this.isInputLocked || this.isEliminated || !this.moreRoundsInQuestion) {
+                                this.lastSubmitWasTimeout = false;
+                                break;
+                            }
                             this.hasSubmittedMove = false;
                             this.setInteractionLock(false);
                             this.showState('topicState');
@@ -1339,6 +1344,7 @@
                     this.roundTimeLeft = seconds;
                     // Reset per-round submission state
                     this.hasSubmittedMove = false;
+                    this.lastSubmitWasTimeout = false;
                     this.roundTimerEnded = false;
                     this.pendingRoundResult = null;
                     this.setInteractionLock(false);
@@ -1632,6 +1638,7 @@
                     // Mark that this player has submitted for this round so we
                     // don't auto-submit again on timer expiry.
                     this.hasSubmittedMove = true;
+                    this.lastSubmitWasTimeout = !!roundTimeOut;
 
                     const payload = {
                         type: 'participant_submit_round',
@@ -1761,6 +1768,7 @@
                     this.renderRoundIndicators();
 
                     this.isEliminated = !!data.is_eliminated;
+                    this.lastSubmitWasTimeout = false;
 
                     // Reorder ladderItems to the correct order returned by the
                     // server (moves misplaced item to its correct ladder
@@ -1792,14 +1800,7 @@
                             this.showEliminatedTransition();
                         } else {
                             this.showState('topicState');
-                            this.setInteractionLock(true, 'Eliminated for this set. Waiting for next question...');
-                        }
-                        if (!data.has_more_rounds) {
-                            this.renderFinalOrder();
-                            this.showState('finalOrderState');
-                            clearInterval(this.roundTimer);
-                            this.moreRoundsInQuestion = false;
-                            this.setInteractionLock(false);
+                            this.setInteractionLock(true, 'Waiting for host to end and reveal this question...');
                         }
                     }
                 }
@@ -1848,7 +1849,22 @@
                 }
 
                 onQuestionEnded(data) {
-                    this.showWaitingForNextQuestion();
+                    if (Array.isArray(data?.correct_order_ids) && data.correct_order_ids.length) {
+                        const byId = new Map(this.shuffledItems.map(it => [it.id, it]));
+                        const ordered = [];
+                        data.correct_order_ids.forEach((id) => {
+                            const item = byId.get(id);
+                            if (item) ordered.push(item);
+                        });
+                        if (ordered.length) {
+                            this.ladderItems = ordered;
+                        }
+                    }
+                    this.renderFinalOrder();
+                    this.showState('finalOrderState');
+                    if (this.roundTimer) clearInterval(this.roundTimer);
+                    this.moreRoundsInQuestion = false;
+                    this.setInteractionLock(false);
                 }
 
                 showCorrectAnswer(correctAnswerData) {

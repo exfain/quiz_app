@@ -290,13 +290,15 @@ class SortingLadderGameConsumer(AsyncWebsocketConsumer):
         if not quiz:
             return
 
-        await self.end_question_db(quiz.id)
+        end_payload = await self.end_question_db(quiz.id)
 
         await self.channel_layer.group_send(
             self.room_group_name,
             {
                 'type': 'question_ended',
                 'message': 'Question has ended.',
+                'reveal_solution': True,
+                'correct_order_ids': (end_payload or {}).get('correct_order_ids', []),
             }
         )
 
@@ -567,6 +569,8 @@ class SortingLadderGameConsumer(AsyncWebsocketConsumer):
         await self.send(text_data=json.dumps({
             'type': 'question_ended',
             'message': event.get('message', ''),
+            'reveal_solution': bool(event.get('reveal_solution')),
+            'correct_order_ids': event.get('correct_order_ids', []),
         }))
 
     async def round_result(self, event):
@@ -934,6 +938,14 @@ class SortingLadderGameConsumer(AsyncWebsocketConsumer):
         except (SortingLadderGame.DoesNotExist, SortingLadderSession.DoesNotExist, AttributeError):
             return
 
+        correct_order_ids = []
+        if quiz.current_question:
+            correct_order_ids = list(
+                SortingItem.objects.filter(topic=quiz.current_question)
+                .order_by('correct_rank')
+                .values_list('id', flat=True)
+            )
+
         # Reset current question to None
         quiz.current_question = None
         quiz.save()
@@ -941,6 +953,10 @@ class SortingLadderGameConsumer(AsyncWebsocketConsumer):
         session.is_round_active = False
         session.round_end_time = timezone.now()
         session.save(update_fields=['is_round_active', 'round_end_time'])
+
+        return {
+            'correct_order_ids': correct_order_ids,
+        }
 
     @database_sync_to_async
     def get_or_create_participant(self, name, hub_session_code):
