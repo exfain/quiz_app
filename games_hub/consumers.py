@@ -54,6 +54,8 @@ class HubConsumer(AsyncWebsocketConsumer):
             await self.handle_toggle_scoreboard()
         elif msg_type == 'vote':
             await self.handle_vote(data)
+        elif msg_type == 'get_state':
+            await self.send_state()
         elif msg_type == 'ping':
             await self.send_json({'type': 'pong'})
 

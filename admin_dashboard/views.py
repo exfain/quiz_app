@@ -1434,7 +1434,6 @@ def manage_games(request):
                 'title': game.title,
                 'game_type': game_type,
                 'game_type_display': game_type_display,
-                'status': game.status,
                 'room_code': game.room_code,
                 'monitor_url_name': monitor_url_name,
                 'created_at': game.created_at,

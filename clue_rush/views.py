@@ -4,7 +4,7 @@ from django.views.decorators.http import require_http_methods, require_POST
 from django.views.decorators.csrf import csrf_exempt
 from django.utils import timezone
 import json
-from .models import ClueRushGame, ClueRushParticipant
+from .models import ClueRushGame, ClueRushParticipant, ClueAnswer
 
 
 def join_view(request):
@@ -143,7 +143,7 @@ def result(request, room_code, participant_name):
 @require_POST
 @csrf_exempt
 def submit_guess(request, room_code, participant_name):
-    """Submit a single guess. Points follow: total_clues - current_round + 1 when correct."""
+    """Submit a single guess for the current active question."""
     try:
         session_code = request.GET.get('hub_session')
         quiz = get_object_or_404(ClueRushGame, room_code=room_code)
@@ -157,7 +157,15 @@ def submit_guess(request, room_code, participant_name):
         if quiz.status != 'active':
             return JsonResponse({'success': False, 'error': 'No active quiz.'})
 
-        if participant.has_guessed:
+        if not quiz.current_question:
+            return JsonResponse({'success': False, 'error': 'No active question.'})
+
+        existing_answer = ClueAnswer.objects.filter(
+            quiz=quiz,
+            participant=participant,
+            question=quiz.current_question
+        ).first()
+        if existing_answer:
             return JsonResponse({'success': False, 'error': 'You have already submitted your guess.'})
 
         data = json.loads(request.body)
@@ -165,19 +173,20 @@ def submit_guess(request, room_code, participant_name):
         if not guess_text:
             return JsonResponse({'success': False, 'error': 'Guess cannot be empty.'})
 
-        participant.has_guessed = True
-        participant.guess_text = guess_text
-        correct = guess_text.lower() == quiz.answer_text.strip().lower()
-        participant.guess_correct = correct
-        points = 0
-        if correct:
-            points = max(0, quiz.clues.count() - quiz.current_round + 1)
-            participant.points_earned = points
-            participant.total_score += points
+        answer = ClueAnswer.objects.create(
+            quiz=quiz,
+            participant=participant,
+            question=quiz.current_question,
+            answer_text=guess_text,
+        )
         participant.last_activity = timezone.now()
-        participant.save()
+        participant.save(update_fields=['last_activity'])
 
-        return JsonResponse({'success': True, 'correct': correct, 'points_earned': points})
+        return JsonResponse({
+            'success': True,
+            'correct': answer.is_correct,
+            'points_earned': answer.points_earned
+        })
 
     except json.JSONDecodeError:
         return JsonResponse({'success': False, 'error': 'Invalid request format.'})
@@ -198,14 +207,34 @@ def get_game_status(request, room_code, participant_name):
         )
 
         participant.last_activity = timezone.now()
-        participant.save()
+        participant.save(update_fields=['last_activity'])
+
+        current_question = quiz.current_question
+        if current_question:
+            has_guessed = ClueAnswer.objects.filter(
+                quiz=quiz,
+                participant=participant,
+                question=current_question
+            ).exists()
+            total_clues = current_question.clues.count()
+        else:
+            has_guessed = False
+            total_clues = 0
+
+        current_round = 0
+        try:
+            session = quiz.session
+            if session:
+                current_round = session.current_clue_number
+        except Exception:
+            current_round = 0
 
         status_data = {
             'game_status': quiz.status,
-            'current_round': quiz.current_round,
-            'total_clues': quiz.clues.count(),
+            'current_round': current_round,
+            'total_clues': total_clues,
             'participant_score': participant.total_score,
-            'has_guessed': participant.has_guessed,
+            'has_guessed': has_guessed,
         }
 
         return JsonResponse({'success': True, **status_data})
@@ -235,15 +264,22 @@ def api_participants(request, room_code):
     try:
         quiz = get_object_or_404(ClueRushGame, room_code=room_code)
         participants = quiz.participants.filter(is_active=True).order_by('-total_score', 'name')
-        data = [
-            {
+        current_question = quiz.current_question
+        data = []
+        for p in participants:
+            latest_answer = None
+            if current_question:
+                latest_answer = ClueAnswer.objects.filter(
+                    quiz=quiz,
+                    participant=p,
+                    question=current_question
+                ).first()
+            data.append({
                 'name': p.name,
                 'total_score': p.total_score,
-                'has_guessed': p.has_guessed,
-                'points_earned': p.points_earned,
-            }
-            for p in participants
-        ]
+                'has_guessed': bool(latest_answer),
+                'points_earned': latest_answer.points_earned if latest_answer else 0,
+            })
         return JsonResponse({'success': True, 'participants': data, 'count': len(data)})
     except ClueRushGame.DoesNotExist:
         return JsonResponse({'success': False, 'error': 'Game not found.'})
@@ -253,16 +289,23 @@ def api_leaderboard(request, room_code):
     try:
         quiz = get_object_or_404(ClueRushGame, room_code=room_code)
         participants = quiz.participants.all().order_by('-total_score', 'name')[:10]
-        data = [
-            {
+        current_question = quiz.current_question
+        data = []
+        for idx, p in enumerate(participants, 1):
+            latest_answer = None
+            if current_question:
+                latest_answer = ClueAnswer.objects.filter(
+                    quiz=quiz,
+                    participant=p,
+                    question=current_question
+                ).first()
+            data.append({
                 'rank': idx,
                 'name': p.name,
                 'total_score': p.total_score,
-                'has_guessed': p.has_guessed,
-                'points_earned': p.points_earned,
-            }
-            for idx, p in enumerate(participants, 1)
-        ]
+                'has_guessed': bool(latest_answer),
+                'points_earned': latest_answer.points_earned if latest_answer else 0,
+            })
         return JsonResponse({'success': True, 'leaderboard': data})
     except ClueRushGame.DoesNotExist:
         return JsonResponse({'success': False, 'error': 'Game not found.'})
