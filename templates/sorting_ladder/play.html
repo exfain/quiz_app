@@ -1096,6 +1096,7 @@
                     this.moreRoundsInQuestion = false;
                     this.pendingRoundResult = null;
                     this.pendingRoundStart = null;
+                    this.latestResolvedRound = 0;
                     this.roundTimerEnded = false;
                     this.isInputLocked = false;
                     
@@ -1651,39 +1652,61 @@
                         return;
                     }
 
+                    const resultRound = Number(data.round_number || 0);
+                    if (resultRound > 0 && resultRound < this.currentRound) {
+                        this.applyRoundResult(data);
+                        this.pendingRoundResult = null;
+                        if (!this.isEliminated && this.moreRoundsInQuestion) {
+                            this.showState('topicState');
+                            this.setInteractionLock(false);
+                        }
+                        return;
+                    }
+
                     this.pendingRoundResult = data;
                     this.roundTimerEnded = true;
                     if (this.roundTimer) {
                         clearInterval(this.roundTimer);
                     }
-                    this.applyRoundResult(data);
+                    this.showState('topicState');
+                    this.setInteractionLock(true, 'Waiting for next round...');
                 }
 
                 onRoundStarted(roundData) {
-                    if (this.isEliminated || !this.moreRoundsInQuestion) return;
-                    if (this.hasSubmittedMove && !this.pendingRoundResult) {
-                        this.pendingRoundStart = roundData;
-                        return;
+                    if (!this.moreRoundsInQuestion) return;
+
+                    const nextRoundNumber = (roundData && typeof roundData.round_number === 'number')
+                        ? roundData.round_number
+                        : (this.currentRound + 1);
+                    const justFinishedRound = Math.max(nextRoundNumber - 1, 0);
+
+                    if (this.pendingRoundResult && Number(this.pendingRoundResult.round_number || 0) === justFinishedRound) {
+                        this.applyRoundResult(this.pendingRoundResult);
+                        this.pendingRoundResult = null;
                     }
 
                     this.showState('topicState');
                     this.hasSubmittedMove = false;
-                    this.pendingRoundResult = null;
+                    this.pendingRoundStart = null;
+
+                    const timeLimit = roundData?.time_limit_seconds || this.currentQuestion?.round_time_limit || 0;
+                    this.roundTimerEnded = (timeLimit <= 0);
+
+                    this.currentRound = nextRoundNumber;
+
+                    if (this.isEliminated) {
+                        this.setInteractionLock(true, 'Eliminated for this set. Waiting for next question...');
+                        this.renderCurrentRound();
+                        return;
+                    }
+
                     // Freeze already placed items and open the next round.
                     this.lockedIds = new Set(this.ladderItems.map(it => it.id));
                     this.currentRoundItemId = null;
                     this.containerItems = this.shuffledItems.filter(it => !this.lockedIds.has(it.id));
                     this.setInteractionLock(false);
 
-                    const timeLimit = roundData?.time_limit_seconds || this.currentQuestion?.round_time_limit || 0;
-                    this.roundTimerEnded = (timeLimit <= 0);
                     this.startPlayerTimer(timeLimit);
-
-                    if (roundData && typeof roundData.round_number === 'number') {
-                        this.currentRound = roundData.round_number;
-                    } else {
-                        this.currentRound += 1;
-                    }
                     this.renderCurrentRound();
                 }
 
@@ -1699,68 +1722,30 @@
                     if (data.participant_name !== this.participantName) {
                         return;
                     }
-                    this.isEliminated = !!data.is_eliminated;
-
-                    const resultTitle = document.getElementById('roundResultTitle');
-                    const resultText = document.getElementById('roundResultText');
+                    const resolvedRound = Number(data.round_number || this.currentRound || 0);
+                    if (resolvedRound > this.latestResolvedRound) {
+                        this.latestResolvedRound = resolvedRound;
+                    }
 
                     // Track latest total rounds survived across the entire quiz (for end screen)
                     if (typeof data.rounds_survived === 'number') {
                         this.currentTotalRoundsSurvived = data.rounds_survived;
                     }
 
-                    // Icons for success/failure
-                    const iconSuccess = document.getElementById('roundResultIconSuccess');
-                    const iconFail = document.getElementById('roundResultIconFail');
-
                     // Track per-round status locally
-                    const roundIndex = Math.max(this.currentRound - 1, 0);
+                    const roundIndex = Math.max(resolvedRound - 1, 0);
                     if (roundIndex < this.roundStatuses.length) {
                         this.roundStatuses[roundIndex] = data.is_correct ? 'success' : 'fail';
                     }
                     this.renderRoundIndicators();
 
-                    if (data.is_correct) {
-                        if (iconSuccess) iconSuccess.classList.remove('d-none');
-                        if (iconFail) iconFail.classList.add('d-none');
-
-                        const roundsForQuestion = typeof data.per_question_rounds === 'number'
-                            ? data.per_question_rounds
-                            : (data.rounds_survived || 0);
-
-                        if (resultTitle) resultTitle.textContent = 'Correct!';
-                        if (resultText) {
-                            resultText.textContent = `You have survived ${roundsForQuestion} round(s) for this question and earned ${data.points} point(s) so far.`;
-                        }
-                    } else {
-                        if (iconSuccess) iconSuccess.classList.add('d-none');
-                        if (iconFail) iconFail.classList.remove('d-none');
-
-                        if (resultTitle) resultTitle.textContent = 'Round Failed';
-
-                        const roundsCompletedForQuestion = typeof data.per_question_rounds === 'number'
-                            ? data.per_question_rounds
-                            : (data.rounds_survived || 0);
-                        const totalPossibleRoundsForQuestion = Math.max((this.shuffledItems || []).length - 1, 1);
-
-                        if (resultText) {
-                            resultText.textContent = `You have completed ${roundsCompletedForQuestion} successful round(s) out of ${totalPossibleRoundsForQuestion} and earned ${data.points} point(s) so far. You are eliminated for this question.`;
-                        }
-                    }
-
-                    // Always show round result state briefly
-                    this.showState('roundResultState');
+                    this.isEliminated = !!data.is_eliminated;
 
                     // Reorder ladderItems to the correct order returned by the
                     // server (moves misplaced item to its correct ladder
                     // position).
-                    console.log("DATA ", data)
-                    console.log("Correct Order IDs ", data.correct_order_ids)
-                    console.log("Correct Order IDs Array ", Array.isArray(data.correct_order_ids))
-                    console.log("length ", data.correct_order_ids.length)
                     if (Array.isArray(data.correct_order_ids) && data.correct_order_ids.length) {
                         const byId = new Map(this.shuffledItems.map(it => [it.id, it]));
-                        console.log("By ID ", byId)
                         const ordered = [];
                         data.correct_order_ids.forEach(id => {
                             const item = byId.get(id);
@@ -1769,9 +1754,6 @@
                             }
                         });
                         this.ladderItems = ordered;
-                        console.log("Ladder Items ",this.ladderItems)
-                    }else{
-                        console.log("No correct order IDs")
                     }
 
                     // Lock all current ladder items for subsequent rounds and
@@ -1782,25 +1764,18 @@
                     this.renderCurrentRound();
 
                     if (data.has_more_rounds && !this.isEliminated) {
-                        if (this.pendingRoundStart) {
-                            const bufferedRound = this.pendingRoundStart;
-                            this.pendingRoundStart = null;
-                            this.onRoundStarted(bufferedRound);
-                            return;
-                        }
-                        setTimeout(() => {
-                            this.showState('topicState');
-                            this.setInteractionLock(true, 'Waiting for host to start next round...');
-                        }, 1500);
+                        this.showState('topicState');
+                        this.setInteractionLock(true, 'Waiting for host to start next round...');
                     } else {
-                        // Final state: show full correct order with arrows and question
-                        setTimeout(() => {
+                        this.showState('topicState');
+                        this.setInteractionLock(true, 'Eliminated for this set. Waiting for next question...');
+                        if (!data.has_more_rounds) {
                             this.renderFinalOrder();
                             this.showState('finalOrderState');
                             clearInterval(this.roundTimer);
                             this.moreRoundsInQuestion = false;
                             this.setInteractionLock(false);
-                        }, 1500);
+                        }
                     }
                 }
 

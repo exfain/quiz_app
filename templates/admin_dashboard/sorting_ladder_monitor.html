@@ -1262,6 +1262,10 @@ document.addEventListener('DOMContentLoaded', function() {
 
         startNextRound() {
             if (this.websocket && this.websocket.readyState === WebSocket.OPEN) {
+                if (!this.allAnswersInRound) {
+                    const proceed = confirm('Not all participants have answered yet. Ending the round early will eliminate missing answers. Continue?');
+                    if (!proceed) return;
+                }
                 this.websocket.send(JSON.stringify({
                     type: 'admin_start_round'
                 }));

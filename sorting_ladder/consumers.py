@@ -573,6 +573,7 @@ class SortingLadderGameConsumer(AsyncWebsocketConsumer):
         await self.send(text_data=json.dumps({
             'type': 'round_result',
             'participant_name': event['participant_name'],
+            'round_number': event.get('round_number'),
             'is_correct': event['is_correct'],
             'rounds_survived': event['rounds_survived'],
             'is_eliminated': event['is_eliminated'],
@@ -781,6 +782,33 @@ class SortingLadderGameConsumer(AsyncWebsocketConsumer):
             max_rounds = max(len(shuffled_ids) - 1, 0)
             if session.current_round >= max_rounds:
                 return None
+
+            # Manual early transition: participants who have not submitted for
+            # the current round are eliminated for this question.
+            current_round = max(int(session.current_round or 0), 1)
+            active_participants = list(
+                quiz.participants.filter(is_active=True, is_eliminated=False)
+            )
+            for participant in active_participants:
+                submitted_count = RoundSubmission.objects.filter(
+                    quiz=quiz,
+                    participant=participant,
+                    question=topic,
+                ).count()
+                if submitted_count >= current_round:
+                    continue
+                RoundSubmission.objects.create(
+                    quiz=quiz,
+                    participant=participant,
+                    question=topic,
+                    all_elements=[],
+                )
+                participant.is_eliminated = True
+                participant.save(update_fields=['is_eliminated'])
+                try:
+                    participant.calculate_total_score()
+                except Exception:
+                    pass
 
             session.current_round += 1
             session.is_round_active = True
@@ -1011,6 +1039,7 @@ class SortingLadderGameConsumer(AsyncWebsocketConsumer):
             )
 
             latest_round_result = {
+                'round_number': len(submissions),
                 'is_correct': latest.is_correct,
                 'rounds_survived': participant.rounds_survived,
                 'is_eliminated': participant.is_eliminated,
@@ -1094,6 +1123,12 @@ class SortingLadderGameConsumer(AsyncWebsocketConsumer):
         # without requiring any ordered_item_ids and without modifying the
         # shuffled order.
         if round_time_out:
+            played_rounds = RoundSubmission.objects.filter(
+                quiz=quiz,
+                participant=participant,
+                question=question,
+            ).count()
+            round_number = played_rounds + 1
             submission = RoundSubmission.objects.create(
                 quiz=quiz,
                 participant=participant,
@@ -1144,6 +1179,7 @@ class SortingLadderGameConsumer(AsyncWebsocketConsumer):
             full_sorted_ids = [item.id for item in full_sorted_ids]
 
             return {
+                'round_number': round_number,
                 'is_correct': False,
                 'rounds_survived': participant.rounds_survived,
                 'is_eliminated': participant.is_eliminated,
@@ -1294,6 +1330,7 @@ class SortingLadderGameConsumer(AsyncWebsocketConsumer):
         )
 
         return {
+            'round_number': expected_round,
             'is_correct': submission.is_correct,
             'rounds_survived': participant.rounds_survived,
             'is_eliminated': participant.is_eliminated,
