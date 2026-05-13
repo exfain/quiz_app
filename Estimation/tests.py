@@ -1,0 +1,829 @@
+import json
+
+from asgiref.sync import async_to_sync
+from django.contrib.auth.models import User
+from django.test import TestCase, TransactionTestCase
+from django.urls import reverse
+from games_hub.models import HubGameStep, HubSession
+
+from .consumers import EstimationConsumer
+from .models import EstimationAnswer, EstimationParticipant, EstimationQuestion, EstimationQuiz
+
+
+class FakeChannelLayer:
+    def __init__(self):
+        self.group_messages = []
+
+    async def group_send(self, group, message):
+        self.group_messages.append((group, message))
+
+
+class EstimationStartSyncTests(TransactionTestCase):
+    def make_consumer(self, quiz):
+        consumer = EstimationConsumer()
+        consumer.room_code = quiz.room_code
+        consumer.room_group_name = f'estimation_{quiz.room_code}'
+        consumer.channel_layer = FakeChannelLayer()
+        sent_messages = []
+
+        async def fake_send(text_data=None, **kwargs):
+            sent_messages.append(json.loads(text_data))
+
+        consumer.send = fake_send
+        return consumer, sent_messages
+
+    def test_host_start_broadcasts_quiz_started_to_waiting_clients(self):
+        user = User.objects.create_user(username='estimation-host')
+        quiz = EstimationQuiz.objects.create(
+            title='Sync Estimation',
+            room_code='9101',
+            creator=user,
+            status='waiting',
+        )
+        session = HubSession.objects.create(code='HUBSTART', name='Hub Start')
+        HubGameStep.objects.create(
+            session=session,
+            order=0,
+            game_key='estimation',
+            room_code=quiz.room_code,
+        )
+        consumer, _ = self.make_consumer(quiz)
+
+        async_to_sync(consumer.handle_admin_start_quiz)({})
+
+        quiz.refresh_from_db()
+        self.assertEqual(quiz.status, 'active')
+        self.assertEqual(
+            consumer.channel_layer.group_messages[0],
+            (
+                f'estimation_{quiz.room_code}',
+                {
+                    'type': 'quiz_started',
+                    'message': 'Estimation Quiz has started!'
+                }
+            )
+        )
+        self.assertEqual(consumer.channel_layer.group_messages[1][0], 'hub_HUBSTART')
+        self.assertEqual(
+            consumer.channel_layer.group_messages[1][1]['event'],
+            {
+                'type': 'quiz_started',
+                'final_scores': [],
+                'room_code': quiz.room_code,
+                'game_key': 'estimation',
+                'message': 'Estimation Quiz has started!',
+            }
+        )
+
+    def test_active_current_question_is_sent_on_participant_join(self):
+        user = User.objects.create_user(username='estimation-player')
+        question = EstimationQuestion.objects.create(
+            question_text='How many people live in Paris?',
+            correct_answer=2148000,
+            unit='people',
+            max_points=42,
+            zone_count=42,
+            hint_text='City proper',
+            created_by=user,
+        )
+        quiz = EstimationQuiz.objects.create(
+            title='Active Estimation',
+            room_code='9102',
+            creator=user,
+            status='active',
+            current_question=question,
+        )
+        EstimationParticipant.objects.create(
+            quiz=quiz,
+            name='Ada',
+            hub_session_code='HUB1',
+        )
+        consumer, sent_messages = self.make_consumer(quiz)
+
+        async_to_sync(consumer.handle_participant_join)({
+            'participant_name': 'Ada',
+            'hub_session': 'HUB1',
+        })
+
+        self.assertEqual([message['type'] for message in sent_messages], ['quiz_started', 'question_started'])
+        self.assertEqual(sent_messages[1]['question']['id'], question.id)
+        self.assertEqual(sent_messages[1]['question']['question_text'], question.question_text)
+        self.assertEqual(sent_messages[1]['question']['unit'], 'people')
+        self.assertEqual(sent_messages[1]['question']['unit_display'], 'people')
+        self.assertEqual(sent_messages[1]['question']['question_number'], 1)
+        self.assertEqual(sent_messages[1]['question']['max_points'], 42)
+        self.assertEqual(sent_messages[1]['question']['time_limit'], 90)
+
+    def test_admin_send_question_uses_actual_send_order_for_question_number(self):
+        user = User.objects.create_user(username='estimation-send-order')
+        first_question = EstimationQuestion.objects.create(
+            question_text='First',
+            correct_answer=10,
+            unit='number',
+            max_points=5,
+            zone_count=5,
+            created_by=user,
+        )
+        second_question = EstimationQuestion.objects.create(
+            question_text='Second',
+            correct_answer=20,
+            unit='number',
+            max_points=5,
+            zone_count=5,
+            created_by=user,
+        )
+        third_question = EstimationQuestion.objects.create(
+            question_text='Third',
+            correct_answer=30,
+            unit='number',
+            max_points=5,
+            zone_count=5,
+            created_by=user,
+        )
+        quiz = EstimationQuiz.objects.create(
+            title='Out of Order Estimation',
+            room_code='9105',
+            creator=user,
+            status='active',
+            question_order=[first_question.id, second_question.id, third_question.id],
+        )
+        quiz.selected_questions.set([first_question, second_question, third_question])
+        consumer, _ = self.make_consumer(quiz)
+
+        async_to_sync(consumer.handle_admin_send_question)({'question_id': first_question.id})
+        async_to_sync(consumer.handle_admin_send_question)({'question_id': third_question.id})
+
+        first_payload = consumer.channel_layer.group_messages[0][1]
+        second_payload = consumer.channel_layer.group_messages[1][1]
+        self.assertEqual(first_payload['question']['question_number'], 1)
+        self.assertEqual(second_payload['question']['question_number'], 2)
+
+    def test_zone_mode_reveal_payload_includes_zone_scoring_breakdown(self):
+        user = User.objects.create_user(username='zone-reveal-host')
+        question = EstimationQuestion.objects.create(
+            question_text='Estimate 100',
+            correct_answer=100,
+            tolerance_percentage=10,
+            zone_count=3,
+            max_points=3,
+            created_by=user,
+        )
+        quiz = EstimationQuiz.objects.create(
+            title='Zone Reveal Estimation',
+            room_code='9103',
+            creator=user,
+            status='active',
+            scoring_mode='zones',
+            current_question=question,
+        )
+        consumer, _ = self.make_consumer(quiz)
+
+        payload = async_to_sync(consumer.get_current_question_answer)(quiz)
+
+        self.assertEqual(payload['scoring_mode'], 'zones')
+        self.assertIsNotNone(payload['zone_scoring'])
+        self.assertEqual(payload['zone_scoring']['outside_points'], 0)
+        self.assertEqual(
+            payload['zone_scoring']['zones'],
+            [
+                {
+                    'zone_number': 1,
+                    'min_percentage': 0.0,
+                    'max_percentage': 10.0,
+                    'absolute_min_value': 90,
+                    'absolute_max_value': 110,
+                    'absolute_range_display': '90-110',
+                    'points': 3,
+                },
+                {
+                    'zone_number': 2,
+                    'min_percentage': 10.0,
+                    'max_percentage': 20.0,
+                    'absolute_min_value': 80,
+                    'absolute_max_value': 120,
+                    'absolute_range_display': '80-120',
+                    'points': 2,
+                },
+                {
+                    'zone_number': 3,
+                    'min_percentage': 20.0,
+                    'max_percentage': 30.0,
+                    'absolute_min_value': 70,
+                    'absolute_max_value': 130,
+                    'absolute_range_display': '70-130',
+                    'points': 1,
+                },
+            ]
+        )
+
+    def test_rank_mode_question_end_payload_hides_other_answer_values(self):
+        user = User.objects.create_user(username='rank-payload-host')
+        question = EstimationQuestion.objects.create(
+            question_text='Estimate 100 rank payload',
+            correct_answer=100,
+            created_by=user,
+        )
+        quiz = EstimationQuiz.objects.create(
+            title='Rank Payload Estimation',
+            room_code='9104',
+            creator=user,
+            status='active',
+            scoring_mode='rank',
+            current_question=question,
+        )
+        participants = [
+            EstimationParticipant.objects.create(quiz=quiz, name='Exact'),
+            EstimationParticipant.objects.create(quiz=quiz, name='Close'),
+        ]
+        for participant, user_answer in zip(participants, [100, 103]):
+            EstimationAnswer.objects.create(
+                quiz=quiz,
+                participant=participant,
+                question=question,
+                user_answer=user_answer,
+            )
+
+        consumer, _ = self.make_consumer(quiz)
+
+        async_to_sync(consumer.handle_admin_end_question)({})
+
+        payload = consumer.channel_layer.group_messages[-1][1]
+        self.assertEqual(payload['type'], 'question_ended')
+        self.assertIn('rank_results', payload)
+        self.assertEqual(
+            payload['rank_results'][0],
+            {
+                'participant_name': 'Exact',
+                'points_earned': 2,
+                'rank_position': 1,
+            },
+        )
+        self.assertNotIn('user_answer', payload['rank_results'][0])
+        self.assertNotIn('formatted_answer', payload['rank_results'][0])
+        self.assertNotIn('accuracy_percentage', payload['rank_results'][0])
+
+
+class EstimationScoringTests(TransactionTestCase):
+    def make_consumer(self, quiz):
+        consumer = EstimationConsumer()
+        consumer.room_code = quiz.room_code
+        consumer.room_group_name = f'estimation_{quiz.room_code}'
+        consumer.channel_layer = FakeChannelLayer()
+        return consumer
+
+    def test_zone_scoring_uses_percentage_zones_and_zone_count_as_max_points(self):
+        user = User.objects.create_user(username='zones-host')
+        question = EstimationQuestion.objects.create(
+            question_text='Estimate 100',
+            correct_answer=100,
+            tolerance_percentage=10,
+            zone_count=5,
+            max_points=100,
+            created_by=user,
+        )
+
+        self.assertEqual(question.calculate_score(100), 5)
+        self.assertEqual(question.calculate_score(110), 5)
+        self.assertEqual(question.calculate_score(80), 4)
+        self.assertEqual(question.calculate_score(70), 3)
+        self.assertEqual(question.calculate_score(50), 1)
+        self.assertEqual(question.calculate_score(49), 0)
+
+    def test_manual_zone_points_use_max_points_as_inner_zone_value(self):
+        user = User.objects.create_user(username='manual-zones-host')
+        question = EstimationQuestion.objects.create(
+            question_text='Estimate 100 manual',
+            correct_answer=100,
+            tolerance_percentage=10,
+            zone_count=5,
+            max_points=8,
+            use_manual_points=True,
+            created_by=user,
+        )
+
+        self.assertEqual(question.get_max_points_for_mode('zones'), 8)
+        self.assertEqual(question.calculate_score(100), 8)
+        self.assertEqual(question.calculate_score(110), 8)
+        self.assertEqual(question.calculate_score(80), 7)
+        self.assertEqual(question.calculate_score(70), 6)
+        self.assertEqual(question.calculate_score(50), 4)
+        self.assertEqual(question.calculate_score(49), 0)
+
+    def test_zone_reveal_data_includes_rounded_absolute_ranges(self):
+        user = User.objects.create_user(username='zone-range-host')
+        question = EstimationQuestion.objects.create(
+            question_text='Estimate 12.34',
+            correct_answer=12.34,
+            tolerance_percentage=10,
+            zone_count=2,
+            max_points=2,
+            created_by=user,
+        )
+
+        zone_data = question.get_zone_reveal_data()
+
+        self.assertEqual(
+            zone_data['zones'],
+            [
+                {
+                    'zone_number': 1,
+                    'min_percentage': 0.0,
+                    'max_percentage': 10.0,
+                    'absolute_min_value': 11,
+                    'absolute_max_value': 14,
+                    'absolute_range_display': '11-14',
+                    'points': 2,
+                },
+                {
+                    'zone_number': 2,
+                    'min_percentage': 10.0,
+                    'max_percentage': 20.0,
+                    'absolute_min_value': 10,
+                    'absolute_max_value': 15,
+                    'absolute_range_display': '10-15',
+                    'points': 1,
+                },
+            ],
+        )
+
+    def test_legacy_tolerance_mode_is_treated_as_zone_mode_when_saving_answer(self):
+        user = User.objects.create_user(username='legacy-zones-host')
+        question = EstimationQuestion.objects.create(
+            question_text='Estimate 100 legacy',
+            correct_answer=100,
+            tolerance_percentage=10,
+            zone_count=5,
+            max_points=100,
+            created_by=user,
+        )
+        quiz = EstimationQuiz.objects.create(
+            title='Legacy Zone Estimation',
+            room_code='9301',
+            creator=user,
+            status='active',
+            scoring_mode='tolerance',
+            current_question=question,
+        )
+        participant = EstimationParticipant.objects.create(quiz=quiz, name='Ada')
+
+        answer = EstimationAnswer.objects.create(
+            quiz=quiz,
+            participant=participant,
+            question=question,
+            user_answer=120,
+        )
+
+        self.assertEqual(answer.points_earned, 4)
+
+    def test_ranking_scores_by_absolute_deviation_descending_from_participant_count(self):
+        user = User.objects.create_user(username='rank-host')
+        question = EstimationQuestion.objects.create(
+            question_text='Estimate 100 ranking',
+            correct_answer=100,
+            created_by=user,
+        )
+        quiz = EstimationQuiz.objects.create(
+            title='Rank Estimation',
+            room_code='9302',
+            creator=user,
+            status='active',
+            scoring_mode='rank',
+            current_question=question,
+        )
+        participants = [
+            EstimationParticipant.objects.create(quiz=quiz, name='Exact'),
+            EstimationParticipant.objects.create(quiz=quiz, name='Close'),
+            EstimationParticipant.objects.create(quiz=quiz, name='Far'),
+            EstimationParticipant.objects.create(quiz=quiz, name='Farthest'),
+        ]
+        for participant, user_answer in zip(participants, [100, 98, 90, 130]):
+            EstimationAnswer.objects.create(
+                quiz=quiz,
+                participant=participant,
+                question=question,
+                user_answer=user_answer,
+            )
+        consumer = self.make_consumer(quiz)
+
+        results = async_to_sync(consumer.compute_rank_points_for_current_question)(quiz.id)
+
+        self.assertEqual(
+            [(result['participant_name'], result['points_earned']) for result in results],
+            [('Exact', 4), ('Close', 3), ('Far', 2), ('Farthest', 1)],
+        )
+        for participant in participants:
+            participant.refresh_from_db()
+        self.assertEqual([participant.total_score for participant in participants], [4, 3, 2, 1])
+
+
+class EstimationRevealRenderTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username='estimation-reveal-player')
+        self.quiz = EstimationQuiz.objects.create(
+            title='Reveal Estimation',
+            room_code='9401',
+            creator=self.user,
+            status='active',
+            scoring_mode='zones',
+        )
+        self.participant = EstimationParticipant.objects.create(
+            quiz=self.quiz,
+            name='Ada',
+            hub_session_code=None,
+        )
+
+    def test_estimation_play_page_contains_zone_reveal_explanation_hooks(self):
+        response = self.client.get(reverse('estimation:play', args=[self.quiz.room_code, self.participant.name]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'id="zoneExplanationCard"')
+        self.assertContains(response, 'id="zoneExplanationSummary"')
+        self.assertContains(response, 'id="zoneRangeList"')
+        self.assertContains(response, 'renderZoneScoringExplanation')
+        self.assertContains(response, 'zone.absolute_range_display')
+        self.assertContains(response, 'Approx. values:')
+
+    def test_zone_mode_submit_stays_on_question_screen_with_waiting_hint(self):
+        response = self.client.get(reverse('estimation:play', args=[self.quiz.room_code, self.participant.name]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "this.scoringMode = 'zones';")
+        self.assertContains(response, "this.showSubmittedWaitingState(userAnswer);")
+        self.assertContains(response, 'id="zoneSubmitFeedback"')
+        self.assertContains(response, 'id="zoneSubmittedEstimate"')
+        self.assertContains(response, 'Waiting for the other participants...')
+        self.assertContains(response, "submitBtn.classList.add('d-none');")
+
+    def test_rank_mode_submit_uses_waiting_hint_and_reveal_ranking(self):
+        self.quiz.scoring_mode = 'rank'
+        self.quiz.save(update_fields=['scoring_mode'])
+
+        response = self.client.get(reverse('estimation:play', args=[self.quiz.room_code, self.participant.name]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "this.scoringMode = 'rank';")
+        self.assertContains(response, "this.showSubmittedWaitingState(userAnswer);")
+        self.assertContains(response, 'id="rankResultsCard"')
+        self.assertContains(response, 'id="rankResultsList"')
+        self.assertContains(response, 'renderRankResults(rankResults)')
+        self.assertContains(response, "performanceText.textContent = `Rank #${ownRankPosition} (${pointsForQuestion} pts)`;")
+
+
+class EstimationScoreBoxViewTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username='estimation-scorebox-user')
+        self.quiz = EstimationQuiz.objects.create(
+            title='Score Box Estimation',
+            room_code='9402',
+            creator=self.user,
+            status='waiting',
+            scoring_mode='zones',
+        )
+        self.participant = EstimationParticipant.objects.create(
+            quiz=self.quiz,
+            name='Ada',
+            hub_session_code='HUB1',
+        )
+
+    def _create_question(self, text, answer, max_points=5, zone_count=5):
+        return EstimationQuestion.objects.create(
+            question_text=text,
+            correct_answer=answer,
+            unit='number',
+            max_points=max_points,
+            zone_count=zone_count,
+            tolerance_percentage=10,
+            created_by=self.user,
+        )
+
+    def test_estimation_play_builds_hydrated_scoreboard_from_start(self):
+        question_one = self._create_question('Question one', 100, max_points=4, zone_count=4)
+        question_two = self._create_question('Question two', 200, max_points=6, zone_count=6)
+        self.quiz.selected_questions.set([question_one, question_two])
+        self.quiz.question_order = [question_two.id, question_one.id]
+        self.quiz.current_question = None
+        self.quiz.save(update_fields=['question_order', 'current_question'])
+
+        response = self.client.get(
+            reverse('estimation:play', args=[self.quiz.room_code, self.participant.name]),
+            {'hub_session': self.participant.hub_session_code},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.context['question_scoreboard'],
+            [
+                {
+                    'id': question_two.id,
+                    'number': 1,
+                    'earned_points': None,
+                    'max_points': None,
+                    'status': 'current',
+                },
+                {
+                    'id': question_one.id,
+                    'number': 2,
+                    'earned_points': None,
+                    'max_points': None,
+                    'status': 'upcoming',
+                },
+            ],
+        )
+        self.assertEqual(response.context['initial_progress_history'], [])
+        self.assertContains(response, 'scoreHistoryTotal')
+        self.assertContains(response, 'estimationQuestionScoreboardData')
+        self.assertContains(response, 'estimationInitialProgressData')
+        self.assertContains(response, 'score-history-empty score-box__empty')
+
+    def test_estimation_rank_mode_uses_awarded_max_points_for_played_question(self):
+        self.quiz.scoring_mode = 'rank'
+        self.quiz.save(update_fields=['scoring_mode'])
+        question_one = self._create_question('Question one', 100, max_points=8, zone_count=8)
+        question_two = self._create_question('Question two', 200, max_points=8, zone_count=8)
+        self.quiz.selected_questions.set([question_one, question_two])
+        self.quiz.question_order = [question_one.id, question_two.id]
+        self.quiz.current_question = question_two
+        self.quiz.save(update_fields=['question_order', 'current_question'])
+
+        second_participant = EstimationParticipant.objects.create(
+            quiz=self.quiz,
+            name='Grace',
+            hub_session_code='HUB1',
+        )
+        third_participant = EstimationParticipant.objects.create(
+            quiz=self.quiz,
+            name='Linus',
+            hub_session_code='HUB1',
+        )
+
+        own_answer = EstimationAnswer.objects.create(
+            quiz=self.quiz,
+            participant=self.participant,
+            question=question_one,
+            user_answer=110,
+            time_taken=1.0,
+        )
+        own_answer.points_earned = 2
+        own_answer.save(update_fields=['points_earned'])
+
+        top_answer = EstimationAnswer.objects.create(
+            quiz=self.quiz,
+            participant=second_participant,
+            question=question_one,
+            user_answer=100,
+            time_taken=1.0,
+        )
+        top_answer.points_earned = 3
+        top_answer.save(update_fields=['points_earned'])
+
+        response = self.client.get(
+            reverse('estimation:play', args=[self.quiz.room_code, self.participant.name]),
+            {'hub_session': self.participant.hub_session_code},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.context['question_scoreboard'][0],
+            {
+                'id': question_one.id,
+                'number': 1,
+                'earned_points': 2,
+                'max_points': 3,
+                'status': 'played',
+            },
+        )
+        self.assertEqual(
+            response.context['initial_progress_history'],
+            [
+                {
+                    'question_id': question_one.id,
+                    'question_number': 1,
+                    'points': 2,
+                    'max_points': 3,
+                }
+            ],
+        )
+        self.assertEqual(response.context['current_question_max_points'], 3)
+        self.assertContains(response, 'score-box__row')
+
+    def test_estimation_play_uses_actual_send_order_for_out_of_order_current_question(self):
+        question_one = self._create_question('Question one', 100, max_points=4, zone_count=4)
+        question_two = self._create_question('Question two', 200, max_points=6, zone_count=6)
+        question_three = self._create_question('Question three', 300, max_points=8, zone_count=8)
+        self.quiz.selected_questions.set([question_one, question_two, question_three])
+        self.quiz.question_order = [question_one.id, question_two.id, question_three.id]
+        self.quiz.current_question = question_three
+        self.quiz.save(update_fields=['question_order', 'current_question'])
+
+        EstimationAnswer.objects.create(
+            quiz=self.quiz,
+            participant=self.participant,
+            question=question_one,
+            user_answer=100,
+            time_taken=1.0,
+        )
+
+        response = self.client.get(
+            reverse('estimation:play', args=[self.quiz.room_code, self.participant.name]),
+            {'hub_session': self.participant.hub_session_code},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            [entry['id'] for entry in response.context['question_scoreboard']],
+            [question_one.id, question_three.id, question_two.id],
+        )
+        self.assertEqual(response.context['current_question_number'], 2)
+        self.assertContains(response, 'moveQuestionToNextFreeScoreSlot(question.id, question.max_points);')
+
+    def test_estimation_play_renders_current_question_unit_directly_next_to_input(self):
+        question = EstimationQuestion.objects.create(
+            question_text='How tall is the tower?',
+            correct_answer=324,
+            unit='meters',
+            max_points=5,
+            zone_count=5,
+            tolerance_percentage=10,
+            created_by=self.user,
+        )
+        self.quiz.current_question = question
+        self.quiz.save(update_fields=['current_question'])
+
+        response = self.client.get(
+            reverse('estimation:play', args=[self.quiz.room_code, self.participant.name]),
+            {'hub_session': self.participant.hub_session_code},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'class="unit-display" id="unitDisplay">m</span>', html=False)
+        self.assertNotContains(response, 'class="unit-display d-none" id="unitDisplay"', html=False)
+
+    def test_estimation_play_hides_unit_slot_when_question_has_no_unit(self):
+        question = EstimationQuestion.objects.create(
+            question_text='How many items?',
+            correct_answer=42,
+            unit='number',
+            max_points=5,
+            zone_count=5,
+            tolerance_percentage=10,
+            created_by=self.user,
+        )
+        self.quiz.current_question = question
+        self.quiz.save(update_fields=['current_question'])
+
+        response = self.client.get(
+            reverse('estimation:play', args=[self.quiz.room_code, self.participant.name]),
+            {'hub_session': self.participant.hub_session_code},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'class="unit-display d-none" id="unitDisplay"></span>', html=False)
+
+    def test_estimation_play_keeps_legacy_unit_values_visible(self):
+        question = EstimationQuestion.objects.create(
+            question_text='What does it cost?',
+            correct_answer=42,
+            unit='EUR',
+            max_points=5,
+            zone_count=5,
+            tolerance_percentage=10,
+            created_by=self.user,
+        )
+        self.quiz.current_question = question
+        self.quiz.save(update_fields=['current_question'])
+
+        response = self.client.get(
+            reverse('estimation:play', args=[self.quiz.room_code, self.participant.name]),
+            {'hub_session': self.participant.hub_session_code},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'id="unitDisplay">\u20ac</span>', html=False)
+        self.assertNotContains(response, 'class="unit-display d-none" id="unitDisplay"', html=False)
+
+
+class EstimationUnitAdminFlowTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(
+            username='estimation-admin-unit',
+            password='secret',
+            is_staff=True,
+        )
+        self.client.force_login(self.user)
+
+    def test_manage_games_estimation_unit_select_uses_model_values(self):
+        response = self.client.get(reverse('admin_dashboard:create_game'))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, '<option value="meters">m</option>', html=False)
+        self.assertContains(response, '<option value="euros">€</option>', html=False)
+        self.assertContains(response, '<option value="years">Jahre</option>', html=False)
+        self.assertNotContains(response, '<option value="m">m</option>', html=False)
+        self.assertNotContains(response, '<option value="EUR">EUR</option>', html=False)
+        self.assertNotContains(response, '<option value="year">Jahr</option>', html=False)
+
+    def test_add_estimation_question_stores_model_conform_unit_values(self):
+        response = self.client.post(
+            reverse('admin_dashboard:add_estimation_question'),
+            data=json.dumps({
+                'question_text': 'How tall is the tower?',
+                'correct_answer': 324,
+                'unit': 'meters',
+                'zone_count': 5,
+                'tolerance_percentage': 10,
+            }),
+            content_type='application/json',
+        )
+
+        self.assertEqual(response.status_code, 200)
+        question = EstimationQuestion.objects.get(question_text='How tall is the tower?')
+        self.assertEqual(question.unit, 'meters')
+
+    def test_add_and_edit_estimation_question_normalize_legacy_unit_values(self):
+        create_response = self.client.post(
+            reverse('admin_dashboard:add_estimation_question'),
+            data=json.dumps({
+                'question_text': 'Legacy unit question',
+                'correct_answer': 7,
+                'unit': 'm',
+                'zone_count': 5,
+                'tolerance_percentage': 10,
+            }),
+            content_type='application/json',
+        )
+
+        self.assertEqual(create_response.status_code, 200)
+        question = EstimationQuestion.objects.get(question_text='Legacy unit question')
+        self.assertEqual(question.unit, 'meters')
+
+        legacy_question = EstimationQuestion.objects.create(
+            question_text='What does it cost?',
+            correct_answer=12,
+            unit='EUR',
+            zone_count=5,
+            tolerance_percentage=10,
+            created_by=self.user,
+        )
+
+        detail_response = self.client.get(
+            reverse('admin_dashboard:get_estimation_question_detail', args=[legacy_question.id])
+        )
+        self.assertEqual(detail_response.status_code, 200)
+        self.assertEqual(detail_response.json()['question']['unit'], 'euros')
+
+        update_response = self.client.post(
+            reverse('admin_dashboard:update_estimation_question'),
+            data=json.dumps({
+                'question_id': legacy_question.id,
+                'unit': 'year',
+            }),
+            content_type='application/json',
+        )
+
+        self.assertEqual(update_response.status_code, 200)
+        legacy_question.refresh_from_db()
+        self.assertEqual(legacy_question.unit, 'years')
+
+
+class EstimationUnitDisplayTests(TestCase):
+    def test_estimation_question_returns_expected_special_unit_symbols(self):
+        user = User.objects.create_user(username='estimation-unit-user')
+
+        euro_question = EstimationQuestion.objects.create(
+            question_text='What does it cost?',
+            correct_answer=12,
+            unit='euros',
+            created_by=user,
+        )
+        degree_question = EstimationQuestion.objects.create(
+            question_text='How warm is it?',
+            correct_answer=20,
+            unit='celsius',
+            created_by=user,
+        )
+
+        self.assertEqual(euro_question.get_unit_display_text(), '€')
+        self.assertEqual(degree_question.get_unit_display_text(), '°C')
+        return
+
+        self.assertEqual(euro_question.get_unit_display_text(), '€')
+        self.assertEqual(degree_question.get_unit_display_text(), '°C')
+class EstimationLegacyUnitDisplayTests(TestCase):
+    def test_estimation_question_normalizes_legacy_unit_symbols(self):
+        user = User.objects.create_user(username='estimation-legacy-unit-user')
+
+        meter_question = EstimationQuestion.objects.create(
+            question_text='How high?',
+            correct_answer=12,
+            unit='m',
+            created_by=user,
+        )
+        euro_question = EstimationQuestion.objects.create(
+            question_text='How expensive?',
+            correct_answer=12,
+            unit='EUR',
+            created_by=user,
+        )
+
+        self.assertEqual(meter_question.get_unit_display_text(), 'm')
+        self.assertEqual(euro_question.get_unit_display_text(), '\u20ac')

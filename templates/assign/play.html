@@ -1,0 +1,2305 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Drag & Drop Quiz: {{ quiz.room_code }} - QuizMaster</title>
+    
+    <!-- Bootstrap 5 CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
+    
+    <!-- Custom Theme CSS -->
+    <link rel="stylesheet" href="{% static 'theme.css' %}">
+    
+    <!-- Inter Font -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body class="assign-play-page">
+    <div class="play-container">
+        <!-- Header -->
+        <header class="quiz-header">
+            <div class="container">
+                <div class="header-content">
+                    <div class="quiz-info">
+                        <!-- <div class="room-code">
+                            <i data-lucide="hash"></i>
+                            {{ quiz.room_code }}
+                        </div> -->
+                        <h1 class="quiz-title">{{ quiz.title }}</h1>
+                    </div>
+                    <div class="participant-info">
+                        <div class="participant-avatar">
+                            {{ participant.name|first|upper }}
+                        </div>
+                        <div class="participant-details">
+                            <span class="participant-name">{{ participant.name }}</span>
+                            <!-- <span class="participant-score">{{ participant.total_score }} pts</span> -->
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </header>
+
+        <!-- Main Content -->
+        <main class="quiz-main">
+            <div class="container">
+                <div class="assign-play-layout">
+                    <div class="assign-main-column">
+                        <!-- Waiting State -->
+                        <div id="waitingQuizState" class="game-state {% if quiz.status != 'waiting' %}d-none{% endif %}">
+                            <div class="waiting-card">
+                                <div class="waiting-animation">
+                                    <div class="pulse-ring"></div>
+                                    <div class="pulse-ring delay-1"></div>
+                                    <div class="pulse-ring delay-2"></div>
+                                    <i data-lucide="move"></i>
+                                </div>
+                                <h2>Waiting for Drag & Drop Quiz to Start</h2>
+                                <p>Get ready to drag and drop! The quiz host will start the session shortly.</p>
+                                <div class="participants-count">
+                                    <i data-lucide="users"></i>
+                                    <span id="waitingParticipantCount">{{ participant_count }}</span> participants joined
+                                </div>
+                            </div>
+                        </div>
+
+                        <div id="waitingQuestionState" class="game-state d-none">
+                            <div class="waiting-card">
+                                <div class="waiting-animation">
+                                    <div class="pulse-ring"></div>
+                                    <div class="pulse-ring delay-1"></div>
+                                    <div class="pulse-ring delay-2"></div>
+                                    <i data-lucide="clock"></i>
+                                </div>
+                                <h2>Waiting for Next Question</h2>
+                                <p>Get ready for the next challenge!</p>
+                            </div>
+                        </div>
+
+                        <!-- Question State -->
+                        <div id="questionState" class="game-state {% if not quiz.current_question %}d-none{% endif %}">
+                            <div class="question-card">
+                                <!-- Question Header -->
+                                <div class="question-header">
+                                    <div class="question-number" id="questionNumberDisplay">
+                                        Frage <span id="currentQuestionNumber">1</span>
+                                    </div>
+                                    <div class="question-timer">
+                                        <div class="timer-circle" id="playerTimerCircle">
+                                            <span id="playerTimeLeft">60</span>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <!-- Runden-Fortschritt (nur im rundenbasierten Modus) -->
+                                <div id="roundProgressBar" class="round-progress d-none">
+                                    <div class="round-progress-inner">
+                                        <span id="roundProgressText">Runde 1 von 3</span>
+                                        <div class="round-dots" id="roundDots"></div>
+                                    </div>
+                                </div>
+
+                                <!-- Question Content -->
+                                <div class="question-content">
+                                    <div class="question-text" id="questionText">
+                                        {% if quiz.current_question %}
+                                            {{ quiz.current_question.question_text }}
+                                        {% endif %}
+                                    </div>
+
+                                    <!-- Drag Drop Interface -->
+                                    <div class="drag-drop-interface" id="dragDropInterface">
+                                        <div class="drag-drop-container">
+                                            <div class="left-items" id="leftItems">
+                                                <h4 id="leftItemsHeader">Ziehe von hier</h4>
+                                                <div class="items-list" id="leftItemsList">
+                                                    <!-- Items will be populated dynamically -->
+                                                </div>
+                                            </div>
+
+                                            <div class="drop-zones" id="dropZones">
+                                                <h4>Lege hier ab</h4>
+                                                <div class="zones-list" id="zonesList">
+                                                    <!-- Drop zones will be populated dynamically -->
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <!-- Warte-Nachricht nach Runden-Submit -->
+                                    <div id="roundSubmittedMessage" class="d-none text-center py-3">
+                                        <i data-lucide="check-circle" style="color:var(--success-500);width:28px;height:28px;"></i>
+                                        <p class="mt-2 mb-0 fw-semibold">Antwort gespeichert!</p>
+                                        <p class="text-muted small">Warte auf nächste Runde...</p>
+                                    </div>
+
+                                    <!-- Zurücksetzen Button (nach Drop sichtbar) -->
+                                    <button class="btn btn-outline-secondary w-100 mb-2 d-none" id="resetRoundBtn">
+                                        <i data-lucide="rotate-ccw"></i>
+                                        Zurücksetzen
+                                    </button>
+                                    <button class="btn btn-primary w-100 mb-2 d-none" id="logRoundBtn">
+                                        <i data-lucide="check-circle"></i>
+                                        Antwort einloggen
+                                    </button>
+
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Answer Submitted State -->
+                        <div id="answerSubmittedState" class="game-state d-none">
+                            <div class="submitted-card">
+                                <div class="question-timer submitted-timer">
+                                    <div class="timer-circle" id="playerTimerCircleSubmitted">
+                                        <span id="playerTimeLeftSubmitted">60</span>
+                                    </div>
+                                </div>
+                                <div class="submitted-animation">
+                                    <div class="check-animation">
+                                        <i data-lucide="check-circle" class="check-icon"></i>
+                                    </div>
+                                </div>
+                                <h2>Answer Submitted!</h2>
+                                <p>Waiting for other participants and the next question...</p>
+                                <div class="submitted-details">
+                                    <div class="score-breakdown">
+                                        <div class="score-item">
+                                            <span class="score-label">Correct Matches:</span>
+                                            <span class="score-value" id="correctMatches">0</span>
+                                        </div>
+                                        <div class="score-item">
+                                            <span class="score-label">Points Earned:</span>
+                                            <span class="score-value" id="pointsEarned">0</span>
+                                        </div>
+                                        <div class="score-item">
+                                            <span class="score-label">Accuracy:</span>
+                                            <span class="score-value" id="accuracyPercent">0%</span>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Eliminated State (falsche Zuordnung) -->
+                        <div id="eliminatedState" class="game-state d-none">
+                            <div class="waiting-card">
+                                <div class="waiting-animation">
+                                    <i data-lucide="x-circle" style="width:48px;height:48px;color:var(--danger-500,#ef4444);"></i>
+                                </div>
+                                <h2>Leider ausgeschieden!</h2>
+                                <p>Die vorherige Zuweisung war falsch. Du bist leider ausgeschieden.</p>
+                            </div>
+                        </div>
+
+                        <!-- Warte auf Auflösung State -->
+                        <div id="waitingSolutionState" class="game-state d-none">
+                            <div class="waiting-card">
+                                <div class="waiting-animation">
+                                    <div class="pulse-ring"></div>
+                                    <div class="pulse-ring delay-1"></div>
+                                    <div class="pulse-ring delay-2"></div>
+                                    <i data-lucide="loader"></i>
+                                </div>
+                                <h2>Auswertung läuft...</h2>
+                                <p>Bitte warte, der Host wertet die Ergebnisse aus.</p>
+                            </div>
+                        </div>
+
+                        <!-- Auflösung State -->
+                        <div id="solutionState" class="game-state d-none">
+                            <div class="waiting-card">
+                                <h2>Auflösung</h2>
+                                <div class="row g-3 mt-1">
+                                    <div class="col-6">
+                                        <h6 class="fw-bold text-success text-center mb-2">Richtige Zuordnung</h6>
+                                        <div id="correctSolutionList"></div>
+                                    </div>
+                                    <div class="col-6">
+                                        <h6 class="fw-bold text-center mb-2">Deine Zuordnung</h6>
+                                        <div id="userSolutionList"></div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Quiz Ended State -->
+                        <div id="quizEndedState" class="game-state d-none">
+                            <div class="ended-card">
+                                <div class="ended-animation">
+                                    <i data-lucide="trophy" class="trophy-icon"></i>
+                                </div>
+                                <h2>Drag & Drop Quiz Completed!</h2>
+                                <p>Great job with all that dragging and dropping!</p>
+                                <div class="final-score">
+                                    <div class="score-circle">
+                                        <span class="score-value">{{ participant.total_score }}</span>
+                                        <span class="score-label">points</span>
+                                    </div>
+                                </div>
+                                <!-- <div class="quiz-actions">
+                                    <a href="/assign/result/{{ quiz.room_code }}/{{ participant.name }}/" class="btn btn-primary btn-lg">
+                                        <i data-lucide="bar-chart-3"></i>
+                                        View Detailed Results
+                                    </a>
+                                    <a href="/assign/join/" class="btn btn-outline btn-lg">
+                                        <i data-lucide="play"></i>
+                                        Join Another Quiz
+                                    </a>
+                                </div> -->
+                            </div>
+                        </div>
+
+                        <!-- Connection Status -->
+                        <div id="connectionStatus" class="connection-status d-none">
+                            <div class="status-indicator">
+                                <i data-lucide="wifi-off"></i>
+                                <span>Reconnecting...</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <aside class="assign-score-box score-box" id="assignScoreBox">
+                        <h6 class="mb-2 score-box__title">Punkte</h6>
+                        <div id="assignScoreList" class="assign-score-list score-box__list">
+                            {% for question in question_scoreboard %}
+                                <div class="assign-score-row score-box__row is-{{ question.status }}" data-question-number="{{ question.number }}" data-question-id="{{ question.id }}">
+                                    <div class="assign-score-badge score-box__badge">{{ question.number }}</div>
+                                    <div class="assign-score-value score-box__value">
+                                        {% if question.earned_points is not None %}
+                                            <span>{{ question.earned_points }}</span>
+                                            {% if question.max_points is not None %}
+                                                <span class="assign-score-separator score-box__separator">/</span>
+                                                <span>{{ question.max_points }}</span>
+                                            {% endif %}
+                                        {% elif question.max_points is not None %}
+                                            <span class="assign-score-empty score-box__empty">__</span>
+                                            <span class="assign-score-separator score-box__separator">/</span>
+                                            <span>{{ question.max_points }}</span>
+                                        {% else %}
+                                            <span class="assign-score-empty score-box__empty">____</span>
+                                        {% endif %}
+                                    </div>
+                                </div>
+                            {% empty %}
+                                <div class="text-muted small">Noch keine Fragen verfügbar.</div>
+                            {% endfor %}
+                        </div>
+                        <div class="assign-score-total" id="assignScoreTotal">{{ score_total_earned }}/{{ score_total_max }}</div>
+                    </aside>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    {{ question_scoreboard|json_script:"assignScoreboardData" }}
+    {{ initial_progress_history|json_script:"assignInitialProgressData" }}
+    {{ current_question_id|json_script:"assignCurrentQuestionId" }}
+
+    <!-- Bootstrap JS -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+
+    <style>
+        /* Assign Play Page Styles */
+        .assign-play-page {
+            min-height: 100vh;
+            background: linear-gradient(135deg, var(--bg-secondary) 0%, var(--secondary-50) 100%);
+        }
+
+        .play-container {
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .assign-play-layout {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) 260px;
+            gap: 1.5rem;
+            align-items: start;
+        }
+
+        .assign-main-column {
+            min-width: 0;
+        }
+
+        .assign-score-box {
+            position: sticky;
+            top: 110px;
+            background: var(--bg-primary);
+            border: 1px solid var(--border-color);
+            border-radius: var(--border-radius-lg);
+            box-shadow: var(--shadow-md);
+            padding: 0.75rem;
+        }
+
+        .assign-score-list {
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+            font-size: 0.875rem;
+        }
+
+        .assign-score-row {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            padding: 0.5rem 0.625rem;
+            border: 1px solid transparent;
+            border-radius: var(--border-radius-md);
+            background: var(--bg-secondary);
+        }
+
+        .assign-score-row.is-upcoming {
+            border-color: #d1d5db;
+            background: #f3f4f6;
+        }
+
+        .assign-score-row.is-current {
+            border-color: #86efac;
+            background: #f0fdf4;
+        }
+
+        .assign-score-row.is-played {
+            border-color: #bfdbfe;
+            background: #eff6ff;
+        }
+
+        .assign-score-badge {
+            width: 32px;
+            height: 32px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+            font-weight: 700;
+            color: #4b5563;
+            background: #d1d5db;
+        }
+
+        .assign-score-row.is-current .assign-score-badge {
+            color: #ffffff;
+            background: #22c55e;
+        }
+
+        .assign-score-row.is-played .assign-score-badge {
+            color: #ffffff;
+            background: #3b82f6;
+        }
+
+        .assign-score-value {
+            margin-left: auto;
+            font-family: var(--font-family-mono);
+            font-weight: 700;
+            color: var(--text-primary);
+            display: flex;
+            align-items: center;
+            gap: 0.35rem;
+        }
+
+        .assign-score-empty {
+            color: var(--text-muted);
+            letter-spacing: 0.05em;
+        }
+
+        .assign-score-separator {
+            color: var(--text-muted);
+        }
+
+        .assign-score-total {
+            margin-top: 0.75rem;
+            padding-top: 0.75rem;
+            border-top: 1px solid var(--border-color);
+            font-weight: 700;
+            text-align: right;
+        }
+
+        /* Header */
+        .quiz-header {
+            background: var(--bg-primary);
+            border-bottom: 1px solid var(--border-color);
+            box-shadow: var(--shadow-sm);
+            padding: 1rem 0;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }
+
+        .header-content {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 1rem;
+        }
+
+        .quiz-info {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+        }
+
+        .room-code {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            background-color: var(--secondary-100);
+            color: var(--secondary-700);
+            padding: 0.5rem 1rem;
+            border-radius: var(--border-radius-xl);
+            font-family: var(--font-family-mono);
+            font-weight: 700;
+            font-size: 0.875rem;
+        }
+
+        .room-code i {
+            width: 16px;
+            height: 16px;
+        }
+
+        .quiz-title {
+            font-size: 1.5rem;
+            font-weight: 700;
+            color: var(--text-primary);
+            margin: 0;
+        }
+
+        .participant-info {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+        }
+
+        .participant-avatar {
+            width: 48px;
+            height: 48px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, var(--secondary-500) 0%, var(--secondary-600) 100%);
+            color: var(--text-white);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 700;
+            font-size: 1.25rem;
+        }
+
+        .participant-details {
+            display: flex;
+            flex-direction: column;
+        }
+
+        .participant-name {
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+
+        .participant-score {
+            color: var(--color-success);
+            font-size: 0.875rem;
+            font-weight: 500;
+        }
+
+        /* Main Content */
+        .quiz-main {
+            flex: 1;
+            display: flex;
+            align-items: center;
+            padding: 2rem 0;
+        }
+
+        .game-state {
+            animation: fadeIn 0.5s ease-out;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(20px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        /* Waiting State */
+        .waiting-card {
+            text-align: center;
+            padding: 3rem 2rem;
+            background: var(--bg-primary);
+            border-radius: var(--border-radius-xl);
+            box-shadow: var(--shadow-lg);
+        }
+
+        .waiting-animation {
+            position: relative;
+            width: 120px;
+            height: 120px;
+            margin: 0 auto 2rem;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .pulse-ring {
+            position: absolute;
+            width: 100%;
+            height: 100%;
+            border: 2px solid var(--color-secondary);
+            border-radius: 50%;
+            animation: pulse 2s cubic-bezier(0.455, 0.03, 0.515, 0.955) infinite;
+            opacity: 0;
+        }
+
+        .delay-1 { animation-delay: 0.5s; }
+        .delay-2 { animation-delay: 1s; }
+
+        @keyframes pulse {
+            0% { transform: scale(0.8); opacity: 1; }
+            100% { transform: scale(1.4); opacity: 0; }
+        }
+
+        .waiting-animation i {
+            width: 48px;
+            height: 48px;
+            color: var(--color-secondary);
+            z-index: 2;
+        }
+
+        .waiting-card h2 {
+            font-size: 1.75rem;
+            font-weight: 700;
+            color: var(--text-primary);
+            margin-bottom: 1rem;
+        }
+
+        .waiting-card p {
+            color: var(--text-secondary);
+            font-size: 1.125rem;
+            margin-bottom: 2rem;
+        }
+
+        .participants-count {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            background-color: var(--bg-secondary);
+            padding: 0.75rem 1.5rem;
+            border-radius: var(--border-radius-xl);
+            color: var(--text-primary);
+            font-weight: 600;
+        }
+
+        .participants-count i {
+            width: 20px;
+            height: 20px;
+            color: var(--color-secondary);
+        }
+
+        /* Question State */
+        .question-card {
+            background: var(--bg-primary);
+            border-radius: var(--border-radius-xl);
+            box-shadow: var(--shadow-lg);
+            overflow: hidden;
+        }
+
+        .question-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 1.5rem 2rem;
+            background: linear-gradient(135deg, var(--secondary-50) 0%, var(--primary-50) 100%);
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .question-number {
+            font-size: 1.125rem;
+            font-weight: 700;
+            color: var(--text-primary);
+        }
+
+        .timer-circle {
+            width: 60px;
+            height: 60px;
+            border: 4px solid var(--success-300);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 700;
+            color: var(--success-600);
+            background: var(--bg-primary);
+            position: relative;
+        }
+
+        .timer-circle.warning {
+            border-color: var(--warning-300);
+            color: var(--warning-600);
+        }
+
+        .timer-circle.danger {
+            border-color: var(--error-300);
+            color: var(--error-600);
+            animation: shake 0.5s infinite;
+        }
+
+        @keyframes shake {
+            0%, 100% { transform: translateX(0); }
+            25% { transform: translateX(-2px); }
+            75% { transform: translateX(2px); }
+        }
+
+        .question-content {
+            padding: 2rem;
+        }
+
+        .question-text {
+            font-size: 1.25rem;
+            font-weight: 600;
+            color: var(--text-primary);
+            line-height: 1.6;
+            margin-bottom: 2rem;
+            text-align: center;
+        }
+
+        /* Drag Drop Interface */
+        .drag-drop-interface {
+            margin-bottom: 2rem;
+        }
+
+        .drag-drop-container {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 2rem;
+            min-height: 400px;
+        }
+
+        .drag-drop-container.three-col {
+            grid-template-columns: 1fr 1fr 1fr;
+        }
+
+        .left-items, .drop-zones, .matched-panel {
+            background: var(--bg-secondary);
+            border-radius: var(--border-radius-lg);
+            padding: 1.5rem;
+            border: 2px dashed var(--border-color);
+        }
+
+        .matched-panel {
+            border-style: solid;
+            border-color: var(--secondary-300, #adb5bd);
+        }
+
+        .matched-list .matched-row {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.5rem 0.75rem;
+            margin-bottom: 0.5rem;
+            background: var(--bg-primary);
+            border-radius: var(--border-radius);
+            font-size: 0.875rem;
+        }
+
+        .matched-row .arrow {
+            flex-shrink: 0;
+            color: var(--text-muted);
+        }
+
+        .matched-row span {
+            flex: 1;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .left-items h4, .drop-zones h4, .matched-panel h4 {
+            text-align: center;
+            margin-bottom: 1.5rem;
+            color: var(--text-primary);
+            font-size: 1rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .items-list, .zones-list {
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+            min-height: 300px;
+        }
+
+        /* Draggable Items */
+        .draggable-item {
+            padding: 1rem;
+            background: var(--bg-primary);
+            border: 2px solid var(--border-color);
+            border-radius: var(--border-radius);
+            cursor: grab;
+            transition: all var(--transition-fast);
+            user-select: none;
+            position: relative;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 500;
+            text-align: center;
+        }
+
+        .draggable-item:hover {
+            border-color: var(--color-secondary);
+            box-shadow: var(--shadow-md);
+        }
+
+        .draggable-item.dragging {
+            opacity: 0.5;
+            cursor: grabbing;
+            z-index: 1000;
+        }
+
+        .draggable-item.matched {
+            background: var(--success-50);
+            border-color: var(--success-200);
+            color: var(--success-700);
+            cursor: default;
+        }
+
+        /* Abgeschlossene Runde links: nur ausgegraut, keine Zuordnungsanzeige */
+        .draggable-item.matched-done {
+            background: var(--success-50);
+            border-color: var(--success-200);
+            color: var(--success-700);
+            cursor: default;
+            opacity: 0.75;
+        }
+
+        /* Abgeschlossene Zuordnung rechts: gesperrt, zeigt gematchtes linkes Item */
+        .drop-zone.completed-round {
+            cursor: default;
+            pointer-events: none;
+            opacity: 0.8;
+        }
+
+        /* Noch nicht dran: ausgegraut */
+        .draggable-item.upcoming {
+            opacity: 0.4;
+            cursor: default;
+        }
+
+        .draggable-item.inactive-item {
+            opacity: 0.35;
+            cursor: not-allowed;
+        }
+
+        /* Drop Zones */
+        .drop-zone {
+            padding: 1rem;
+            background: var(--bg-primary);
+            border: 2px dashed var(--border-color);
+            border-radius: var(--border-radius);
+            min-height: 60px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all var(--transition-fast);
+            position: relative;
+        }
+
+        .drop-zone.drag-over {
+            border-color: var(--color-secondary);
+            background: var(--secondary-50);
+        }
+
+        .drop-zone.occupied {
+            border-color: var(--success-200);
+            background: var(--success-50);
+        }
+
+        .drop-zone-label {
+            font-weight: 500;
+            color: var(--text-secondary);
+            position: absolute;
+            top: -1.5rem;
+            left: 0;
+            right: 0;
+            text-align: center;
+            font-size: 0.875rem;
+            background: var(--bg-secondary);
+            padding: 0 0.5rem;
+            border-radius: var(--border-radius-sm);
+        }
+
+        .dropped-item {
+            padding: 0.75rem;
+            background: var(--secondary-100);
+            border: 1px solid var(--secondary-200);
+            border-radius: var(--border-radius);
+            color: var(--secondary-700);
+            font-weight: 500;
+            cursor: pointer;
+            text-align: center;
+            transition: all var(--transition-fast);
+            width: 100%;
+        }
+
+        .dropped-item:hover {
+            background: var(--secondary-200);
+        }
+
+
+        /* Answer Submitted State */
+        .submitted-card {
+            text-align: center;
+            padding: 3rem 2rem;
+            background: var(--bg-primary);
+            border-radius: var(--border-radius-xl);
+            box-shadow: var(--shadow-lg);
+            position: relative;
+        }
+
+        .submitted-timer {
+            position: absolute;
+            top: 1.5rem;
+            right: 1.5rem;
+        }
+
+        .submitted-animation {
+            margin-bottom: 2rem;
+        }
+
+        .check-animation {
+            width: 120px;
+            height: 120px;
+            margin: 0 auto;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .check-icon {
+            width: 64px;
+            height: 64px;
+            color: var(--color-success);
+            animation: checkPop 0.6s ease-out;
+        }
+
+        @keyframes checkPop {
+            0% { transform: scale(0); }
+            50% { transform: scale(1.2); }
+            100% { transform: scale(1); }
+        }
+
+        .submitted-details {
+            background-color: var(--bg-secondary);
+            padding: 1.5rem;
+            border-radius: var(--border-radius-lg);
+            margin-top: 2rem;
+        }
+
+        .score-breakdown {
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+        }
+
+        .score-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .score-label {
+            color: var(--text-secondary);
+            font-weight: 500;
+        }
+
+        .score-value {
+            color: var(--text-primary);
+            font-weight: 700;
+        }
+
+        /* Quiz Ended State */
+        .ended-card {
+            text-align: center;
+            padding: 3rem 2rem;
+            background: var(--bg-primary);
+            border-radius: var(--border-radius-xl);
+            box-shadow: var(--shadow-lg);
+        }
+
+        .ended-animation {
+            margin-bottom: 2rem;
+        }
+
+        .trophy-icon {
+            width: 80px;
+            height: 80px;
+            color: var(--warning-500);
+            animation: trophy 1s ease-out;
+        }
+
+        @keyframes trophy {
+            0% { transform: scale(0) rotate(-180deg); opacity: 0; }
+            50% { transform: scale(1.1) rotate(-10deg); opacity: 1; }
+            100% { transform: scale(1) rotate(0deg); opacity: 1; }
+        }
+
+        .final-score {
+            margin: 2rem 0;
+        }
+
+        .score-circle {
+            width: 120px;
+            height: 120px;
+            margin: 0 auto;
+            border: 4px solid var(--color-success);
+            border-radius: 50%;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            background: linear-gradient(135deg, var(--success-50) 0%, var(--success-100) 100%);
+        }
+
+        .score-value {
+            font-size: 2rem;
+            font-weight: 700;
+            color: var(--success-700);
+        }
+
+        .score-label {
+            font-size: 0.875rem;
+            color: var(--success-600);
+            font-weight: 500;
+        }
+
+        .quiz-actions {
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+            max-width: 300px;
+            margin: 0 auto;
+        }
+
+        /* Runden-Fortschritt */
+        .round-progress {
+            background: linear-gradient(135deg, var(--secondary-50) 0%, var(--primary-50) 100%);
+            border-bottom: 1px solid var(--border-color);
+            padding: 0.75rem 2rem;
+        }
+
+        .round-progress-inner {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 1rem;
+        }
+
+        #roundProgressText {
+            font-weight: 600;
+            color: var(--color-secondary);
+            font-size: 0.9rem;
+            white-space: nowrap;
+        }
+
+        .round-dots {
+            display: flex;
+            gap: 0.4rem;
+        }
+
+        .round-dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            background: var(--border-color);
+            transition: background 0.3s;
+        }
+
+        .round-dot.done {
+            background: var(--color-success);
+        }
+
+        .round-dot.active {
+            background: var(--color-secondary);
+            box-shadow: 0 0 0 3px rgba(6,182,212,0.25);
+        }
+
+        /* Connection Status */
+        .connection-status {
+            position: fixed;
+            bottom: 2rem;
+            right: 2rem;
+            z-index: 1000;
+        }
+
+        .status-indicator {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            background-color: var(--error-500);
+            color: var(--text-white);
+            padding: 0.75rem 1rem;
+            border-radius: var(--border-radius-xl);
+            box-shadow: var(--shadow-lg);
+            font-weight: 500;
+            animation: slideIn 0.3s ease-out;
+        }
+
+        .status-indicator i {
+            width: 20px;
+            height: 20px;
+        }
+
+        /* Responsive Design */
+        @media (max-width: 1199px) {
+            .assign-play-layout {
+                grid-template-columns: minmax(0, 1fr);
+            }
+
+            .assign-score-box {
+                position: static;
+                order: -1;
+            }
+        }
+
+        @media (max-width: 768px) {
+            .header-content {
+                flex-direction: column;
+                text-align: center;
+                gap: 1rem;
+            }
+
+            .quiz-title {
+                font-size: 1.25rem;
+            }
+
+            .question-header {
+                padding: 1rem 1.5rem;
+            }
+
+            .question-content {
+                padding: 1.5rem;
+            }
+
+            .question-text {
+                font-size: 1.125rem;
+            }
+
+            .drag-drop-container,
+            .drag-drop-container.three-col {
+                grid-template-columns: 1fr;
+                gap: 1rem;
+            }
+
+            .quiz-actions {
+                max-width: 100%;
+            }
+
+            .waiting-card,
+            .submitted-card,
+            .ended-card {
+                padding: 2rem 1.5rem;
+                margin: 1rem;
+            }
+        }
+
+        @media (max-width: 576px) {
+            .quiz-main {
+                padding: 1rem 0;
+            }
+
+            .left-items, .drop-zones {
+                padding: 1rem;
+            }
+
+            .items-list, .zones-list {
+                min-height: 200px;
+            }
+
+            .timer-circle {
+                width: 50px;
+                height: 50px;
+                font-size: 0.875rem;
+            }
+        }
+    </style>
+
+    {% include 'includes/_hub_return_to_lobby_player.html' %}
+    {% include 'includes/_game_tutorial_overlay.html' %}
+<script>
+        document.addEventListener('DOMContentLoaded', function() {
+            lucide.createIcons();
+
+            // Quiz Player Class
+            class AssignPlayer {
+                constructor() {
+                    this.roomCode = '{{ quiz.room_code }}';
+                    this.participantName = '{{ participant.name }}';
+                    this.hubSession = '{{ hub_session }}';
+                    this.websocket = null;
+                    this.questionTimer = null;
+                    this.questionStartTime = null;
+                    this.userMatches = {};  // aktuell gematchte Items (aktuelle Runde)
+                    this.hasAnswered = false;
+                    this.currentRoundIndex = 0;
+                    this.totalRounds = 0;
+                    this.dropLocked = false;  // nach einem Drop gesperrt, bis Reset
+                    this.accumulatedMatches = {};  // gesammelte Matches über alle Runden
+                    this.solvedPairs = [];
+                    this.currentQuestion = null;  // vollständige Frage-Daten
+                    this.scoreboardQuestions = this.readJsonScript('assignScoreboardData', []);
+                    this.progressHistory = this.readJsonScript('assignInitialProgressData', []);
+                    this.currentQuestionId = this.readJsonScript('assignCurrentQuestionId', null);
+
+                    this.init();
+                }
+
+                init() {
+                    this.connectWebSocket();
+                    this.bindEvents();
+                    this.renderProgressHistory();
+                    
+                    // Die aktuelle Runde wird via WebSocket in handle_participant_join geliefert
+                }
+
+                connectWebSocket() {
+                    const wsScheme = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+                    const wsUrl = `${wsScheme}//${window.location.host}/ws/assign/${this.roomCode}/`;
+                    
+                    this.websocket = new WebSocket(wsUrl);
+                    
+                    this.websocket.onopen = () => {
+                        console.log('WebSocket connected');
+                        this.hideConnectionStatus();
+                        
+                        // Send join message
+                        this.websocket.send(JSON.stringify({
+                            type: 'participant_join',
+                            participant_name: this.participantName,
+                            hub_session: this.hubSession
+                        }));
+                    };
+                    
+                    this.websocket.onmessage = (event) => {
+                        const data = JSON.parse(event.data);
+                        this.handleWebSocketMessage(data);
+                    };
+                    
+                    this.websocket.onclose = () => {
+                        console.log('WebSocket disconnected');
+                        this.showConnectionStatus();
+                        // Attempt to reconnect after 3 seconds
+                        setTimeout(() => this.connectWebSocket(), 3000);
+                    };
+                    
+                    this.websocket.onerror = (error) => {
+                        console.error('WebSocket error:', error);
+                        this.showConnectionStatus();
+                    };
+                }
+
+                handleWebSocketMessage(data) {
+                    switch(data.type) {
+                        case 'quiz_started':
+                            this.onQuizStarted();
+                            break;
+
+                        case 'tutorial_start':
+                            window.gameTutorial?.showFromPayload(data);
+                            break;
+
+                        case 'question_started':
+                            window.gameTutorial?.forceClose();
+                            this.onQuestionStarted(data.question);
+                            break;
+
+                        case 'round_advanced':
+                            this.onRoundAdvanced(data);
+                            break;
+
+                        case 'question_ended':
+                            this.onQuestionEnded();
+                            break;
+
+                        case 'quiz_ended':
+                            window.gameTutorial?.forceClose();
+                            this.onQuizEnded(data);
+                            break;
+
+                        case 'participant_count_updated':
+                            this.updateParticipantCount(data.count);
+                            break;
+
+                        case 'round_checked':
+                            this.onRoundChecked(data);
+                            break;
+                        case 'round_logged':
+                            this.onRoundLogged();
+                            break;
+
+                        case 'question_rounds_complete':
+                            this.onQuestionRoundsComplete(data);
+                            break;
+
+                        case 'show_solution':
+                            this.onShowSolution(data);
+                            break;
+
+                        case 'show_leaderboard':
+                            window.showLeaderboard(this.hubSession);
+                            break;
+
+                        case 'hide_leaderboard':
+                            document.getElementById('leaderboardSidebar')?.classList.add('d-none');
+                            break;
+
+                        case 'progress_history':
+                            this.setProgressHistory(data.history);
+                            break;
+
+                        default:
+                            console.log('Unknown message type:', data.type);
+                    }
+                }
+
+                bindEvents() {
+                    // Zurücksetzen button
+                    document.getElementById('resetRoundBtn')?.addEventListener('click', () => {
+                        this.resetRoundDrop();
+                    });
+                    document.getElementById('logRoundBtn')?.addEventListener('click', () => {
+                        this.logCurrentRound();
+                    });
+                }
+
+                readJsonScript(elementId, fallbackValue) {
+                    const element = document.getElementById(elementId);
+                    if (!element) return fallbackValue;
+                    try {
+                        return JSON.parse(element.textContent);
+                    } catch (error) {
+                        console.warn(`Unable to parse ${elementId}:`, error);
+                        return fallbackValue;
+                    }
+                }
+
+                getCurrentQuestionNumber() {
+                    const normalizedQuestionId = Number(this.currentQuestionId);
+                    if (!Number.isNaN(normalizedQuestionId)) {
+                        const index = (this.scoreboardQuestions || []).findIndex((question) => Number(question?.id) === normalizedQuestionId);
+                        if (index >= 0) {
+                            return index + 1;
+                        }
+                    }
+
+                    const playedQuestions = new Set(
+                        (this.progressHistory || [])
+                            .map((entry) => Number(entry?.question_number))
+                            .filter((questionNumber) => !Number.isNaN(questionNumber))
+                    );
+
+                    for (let index = 0; index < (this.scoreboardQuestions || []).length; index += 1) {
+                        const questionNumber = Number(this.scoreboardQuestions[index]?.number) || index + 1;
+                        if (!playedQuestions.has(questionNumber)) {
+                            return questionNumber;
+                        }
+                    }
+
+                    return null;
+                }
+
+                setCurrentQuestion(questionId) {
+                    if (questionId === null || questionId === undefined || questionId === '') {
+                        this.currentQuestionId = null;
+                    } else {
+                        const normalizedQuestionId = Number(questionId);
+                        this.currentQuestionId = Number.isNaN(normalizedQuestionId) ? null : normalizedQuestionId;
+                    }
+                    this.renderProgressHistory();
+                }
+
+                moveQuestionToNextFreeScoreSlot(questionId, maxPoints = null) {
+                    const normalizedQuestionId = Number(questionId);
+                    if (Number.isNaN(normalizedQuestionId) || !(this.scoreboardQuestions || []).length) {
+                        return null;
+                    }
+
+                    const currentIndex = this.scoreboardQuestions.findIndex(
+                        (question) => Number(question?.id) === normalizedQuestionId
+                    );
+                    if (currentIndex === -1) {
+                        return null;
+                    }
+
+                    const [currentEntry] = this.scoreboardQuestions.splice(currentIndex, 1);
+                    if (maxPoints !== null && maxPoints !== undefined) {
+                        currentEntry.max_points = maxPoints;
+                    }
+
+                    const playedCount = Array.isArray(this.progressHistory) ? this.progressHistory.length : 0;
+                    const targetIndex = Math.min(playedCount, this.scoreboardQuestions.length);
+                    this.scoreboardQuestions.splice(targetIndex, 0, currentEntry);
+
+                    this.scoreboardQuestions = this.scoreboardQuestions.map((question, index) => ({
+                        ...question,
+                        number: index + 1,
+                    }));
+
+                    return this.scoreboardQuestions[targetIndex] || null;
+                }
+
+                onQuizStarted() {
+                    this.showState('waitingQuizState');
+                }
+
+                syncSolvedPairs(solvedPairs) {
+                    const normalizedPairs = Array.isArray(solvedPairs)
+                        ? solvedPairs
+                            .map((pair) => ({
+                                leftIdx: Number(pair?.left_index),
+                                leftText: pair?.left_text || '',
+                                rightIdx: Number(pair?.right_position),
+                                rightText: pair?.right_text || '',
+                            }))
+                            .filter((pair) => !Number.isNaN(pair.leftIdx) && !Number.isNaN(pair.rightIdx))
+                        : [];
+
+                    this.solvedPairs = normalizedPairs;
+                    this.accumulatedMatches = {};
+                    this.roundHistory = normalizedPairs.map((pair) => {
+                        this.accumulatedMatches[pair.leftIdx] = pair.rightIdx;
+                        return {
+                            leftIdx: pair.leftIdx,
+                            leftText: pair.leftText,
+                            rightText: pair.rightText,
+                            rightIdx: pair.rightIdx,
+                        };
+                    });
+                }
+
+                onQuestionStarted(question) {
+                    this.hasAnswered = false;
+                    this.eliminated = false;
+                    this.lastRoundCorrect = null;
+                    this._pendingHistoryEntry = null;
+                    this._wrongEntry = null;
+                    this._bufferedRoundsComplete = null;
+                    this._bufferedRoundAdvanced = null;
+                    this.userMatches = {};
+                    this.questionStartTime = Date.now();
+                    this.currentQuestion = {
+                        ...question,
+                        all_right_items: question.all_right_items || question.right_items || [],
+                    };
+                    this.moveQuestionToNextFreeScoreSlot(question.id, question.total_possible_points);
+                    this.setCurrentQuestion(question.id);
+
+                    this.totalRounds = question.total_rounds;
+                    this.roundSubmitted = false;
+                    this.syncSolvedPairs(question.solved_pairs || []);
+                    this.loadRound(
+                        question.round_index,
+                        question.current_left_item,
+                        question.right_items,
+                        this.currentQuestion.all_right_items
+                    );
+                    this.showRoundProgress(true);
+
+                    this.startQuestionTimer(question.time_limit);
+                    this.showState('questionState');
+                }
+
+                onRoundAdvanced(data) {
+                    if (this.eliminated) return;
+
+                    // Immer auf serverseitige Round-Auswertung warten, damit
+                    // auch nicht explizit eingeloggte, aber vorhandene Zuordnungen
+                    // konsistent berücksichtigt werden.
+                    if (this.lastRoundCorrect === null) {
+                        this._bufferedRoundAdvanced = data;
+                        if (totalElement) {
+                            totalElement.textContent = '0/0';
+                        }
+                        return;
+                    }
+
+                    this._applyRoundAdvanced(data);
+                }
+
+                _applyRoundAdvanced(data) {
+                    clearInterval(this.questionTimer);
+
+                    // Auswertung der vorherigen Runde
+                    if (this.lastRoundCorrect === false) {
+                        // Falsche Antwort oder keine Antwort gegeben → ausgeschieden
+                        this._wrongEntry = this._pendingHistoryEntry;
+                        this._pendingHistoryEntry = null;
+                        this.eliminated = true;
+                        this.showState('eliminatedState');
+                        try { lucide.createIcons(); } catch(_) {}
+                        return;
+                    }
+
+                    // Richtige Antwort: History übernehmen
+                    if (this._pendingHistoryEntry) {
+                        if (!this.roundHistory) this.roundHistory = [];
+                        this.roundHistory.push(this._pendingHistoryEntry);
+                        this._pendingHistoryEntry = null;
+                    }
+                    this.currentQuestion = {
+                        ...(this.currentQuestion || {}),
+                        all_right_items: data.all_right_items || this.currentQuestion?.all_right_items || data.right_items || [],
+                    };
+                    this.syncSolvedPairs(data.solved_pairs || this.solvedPairs);
+
+                    this.userMatches = {};
+                    this.roundSubmitted = false;
+                    this.lastRoundCorrect = null;
+
+                    // Nächste Runde laden
+                    const timeLimit = data.time_limit || (this.currentQuestion ? this.currentQuestion.time_limit : 60);
+                    this.startQuestionTimer(timeLimit);
+                    this.loadRound(
+                        data.round_index,
+                        data.current_left_item,
+                        data.right_items,
+                        this.currentQuestion?.all_right_items || data.all_right_items || data.right_items
+                    );
+                    this.showState('questionState');
+                }
+
+                onRoundLogged() {
+                    this.roundSubmitted = true;
+                    document.querySelectorAll('.draggable-item').forEach(el => { el.draggable = false; el.style.cursor = 'default'; });
+                    const resetBtn = document.getElementById('resetRoundBtn');
+                    if (resetBtn) resetBtn.classList.add('d-none');
+                    const logBtn = document.getElementById('logRoundBtn');
+                    if (logBtn) logBtn.classList.add('d-none');
+                    const waitMsg = document.getElementById('roundSubmittedMessage');
+                    if (waitMsg) { waitMsg.classList.remove('d-none'); try { lucide.createIcons(); } catch(_) {} }
+                }
+
+                onRoundChecked(data) {
+                    this.lastRoundCorrect = data.is_correct;
+
+                    if (!data.is_correct) {
+                        // Falschen Eintrag retten bevor _pendingHistoryEntry genullt wird
+                        this._wrongEntry = this._pendingHistoryEntry;
+                        this._pendingHistoryEntry = null;
+                        // Sofort ausscheiden – nicht auf round_advanced warten
+                        this.eliminated = true;
+                        this._bufferedRoundAdvanced = null;
+                        this._bufferedRoundsComplete = null;
+                        this.showState('eliminatedState');
+                        try { lucide.createIcons(); } catch(_) {}
+                        return;
+                    }
+
+                    const waitMsg = document.getElementById('roundSubmittedMessage');
+                    if (waitMsg) { waitMsg.classList.remove('d-none'); try { lucide.createIcons(); } catch(_) {} }
+
+                    // Falls question_rounds_complete gepuffert → jetzt verarbeiten
+                    if (this._bufferedRoundsComplete) {
+                        const buffered = this._bufferedRoundsComplete;
+                        this._bufferedRoundsComplete = null;
+                        this.onQuestionRoundsComplete(buffered);
+                        return;
+                    }
+
+                    // Falls round_advanced gepuffert wurde (auto-submit ausgelöst) → jetzt verarbeiten
+                    if (this._bufferedRoundAdvanced) {
+                        const buffered = this._bufferedRoundAdvanced;
+                        this._bufferedRoundAdvanced = null;
+                        this._applyRoundAdvanced(buffered);
+                    }
+                }
+
+                onQuestionEnded() {
+                    clearInterval(this.questionTimer);
+
+                    // Letzten Runden-Match einsammeln (wenn noch nicht manuell bestätigt)
+                    if (!this.roundSubmitted && this.userMatches && Object.keys(this.userMatches).length > 0) {
+                        const leftIdx = parseInt(Object.keys(this.userMatches)[0]);
+                        const rightIdx = this.userMatches[leftIdx];
+                        this.accumulatedMatches[leftIdx] = rightIdx;
+                    }
+
+                    // Alle gesammelten Matches absenden
+                    if (!this.hasAnswered && this.currentQuestion) {
+                        const timeTaken = (Date.now() - this.questionStartTime) / 1000;
+                        this.websocket.send(JSON.stringify({
+                            type: 'participant_submit_answer',
+                            participant_name: this.participantName,
+                            hub_session: this.hubSession,
+                            user_matches: this.accumulatedMatches,
+                            time_taken: timeTaken,
+                            question_id: this.currentQuestion ? this.currentQuestion.id : null,
+                        }));
+                        this.hasAnswered = true;
+                    }
+
+                    this.showRoundProgress(false);
+                }
+
+                onQuizEnded(data) {
+                    clearInterval(this.questionTimer);
+                    this.setCurrentQuestion(null);
+                    // If final scores are provided, update the displayed score for this participant
+                    try {
+                        if (data && Array.isArray(data.final_scores)) {
+                            const me = data.final_scores.find(p => p.name === this.participantName);
+                            if (me && typeof me.total_score === 'number') {
+                                const scoreEl = document.querySelector('#quizEndedState .score-value');
+                                if (scoreEl) scoreEl.textContent = me.total_score;
+                            }
+                        }
+                    } catch (e) { console.warn('Unable to update final score:', e); }
+                    this.showState('quizEndedState');
+                }
+
+                onQuestionRoundsComplete(data = {}) {
+                    if (this.eliminated) return;
+                    clearInterval(this.questionTimer);
+
+                    // Race-Condition: bereits submitted (z.B. via onTimeUp) aber round_checked noch ausstehend
+                    if (this.roundSubmitted && this.lastRoundCorrect === null) {
+                        this._bufferedRoundsComplete = data;
+                        return;
+                    }
+
+                    // Keine Zuordnung gemacht → ausgeschieden
+                    if (!this.roundSubmitted && this.lastRoundCorrect === null) {
+                        this._wrongEntry = null;
+                        this.eliminated = true;
+                        this.showRoundProgress(false);
+                        this.showState('eliminatedState');
+                        try { lucide.createIcons(); } catch(_) {}
+                        return;
+                    }
+
+                    // Letzten korrekten Eintrag in History übernehmen (kein round_advanced mehr danach)
+                    if (this._pendingHistoryEntry) {
+                        if (!this.roundHistory) this.roundHistory = [];
+                        this.roundHistory.push(this._pendingHistoryEntry);
+                        this._pendingHistoryEntry = null;
+                    }
+                    this.syncSolvedPairs(data.solved_pairs || this.solvedPairs);
+                    this.showRoundProgress(false);
+                }
+
+                onShowSolution(data) {
+                    const correctList = document.getElementById('correctSolutionList');
+                    const userList = document.getElementById('userSolutionList');
+                    if (!correctList || !userList) return;
+                    correctList.innerHTML = '';
+                    userList.innerHTML = '';
+
+                    const leftItems = data.left_items || [];
+                    const rightItems = data.right_items || [];
+                    const correctMatches = data.correct_matches || {};
+
+                    // Teilnehmer-Antworten aufbauen: leftIdx → {rightText, correct}
+                    const participantAnswers = {};
+                    (this.roundHistory || []).forEach(entry => {
+                        participantAnswers[entry.leftIdx] = { rightText: entry.rightText, correct: true };
+                    });
+                    if (this._wrongEntry) {
+                        participantAnswers[this._wrongEntry.leftIdx] = { rightText: this._wrongEntry.rightText, correct: false };
+                    }
+
+                    leftItems.forEach((leftItem, idx) => {
+                        const correctRightIdx = correctMatches[String(idx)];
+                        const correctRightText = correctRightIdx !== undefined ? rightItems[correctRightIdx] : null;
+                        const answer = participantAnswers[idx];
+
+                        // Linkes Panel: Richtige Zuordnung
+                        const correctDiv = document.createElement('div');
+                        correctDiv.className = 'py-1 border-bottom';
+                        if (correctRightText !== null && correctRightText !== undefined) {
+                            correctDiv.innerHTML = `<span class="badge bg-success">${leftItem}</span> → <span class="badge bg-success">${correctRightText}</span>`;
+                        } else {
+                            correctDiv.innerHTML = `<span class="badge bg-secondary">${leftItem}</span> <span class="text-muted small">kein Match</span>`;
+                        }
+                        correctList.appendChild(correctDiv);
+
+                        // Rechtes Panel: Eigene Zuordnung
+                        const userDiv = document.createElement('div');
+                        userDiv.className = 'py-1 border-bottom';
+                        if (correctRightText === null || correctRightText === undefined) {
+                            // Distractor – kein Match nötig
+                            userDiv.innerHTML = `<span class="badge bg-secondary">${leftItem}</span> <span class="text-muted small">kein Match nötig</span>`;
+                        } else if (answer) {
+                            const bgClass = answer.correct ? 'bg-success' : 'bg-danger';
+                            const icon = answer.correct ? '✓' : '✗';
+                            userDiv.innerHTML = `<span class="badge ${bgClass}">${icon} ${leftItem}</span> → <span class="badge ${bgClass}">${answer.rightText}</span>`;
+                        } else {
+                            // Nicht beantwortet
+                            userDiv.innerHTML = `<span class="badge bg-warning text-dark">${leftItem}</span> <span class="text-muted small">nicht beantwortet</span>`;
+                        }
+                        userList.appendChild(userDiv);
+                    });
+
+                    this.showState('solutionState');
+                    try { lucide.createIcons(); } catch(_) {}
+                }
+
+                loadRound(roundIndex, currentLeftItem, openRightItems, allRightItems) {
+                    this.currentRoundIndex = roundIndex;
+                    this.roundSubmitted = false;
+                    this.dropLocked = false;
+
+                    // Fragetext setzen
+                    if (this.currentQuestion) {
+                        document.getElementById('questionText').textContent = this.currentQuestion.question_text;
+                    }
+
+                    // Submit-Button einblenden (deaktiviert bis eine Zuordnung gemacht wurde)
+                    // Reset-Button ausblenden (neue Runde = kein Drop vorhanden)
+                    const resetBtn = document.getElementById('resetRoundBtn');
+                    if (resetBtn) resetBtn.classList.add('d-none');
+                    const logBtn = document.getElementById('logRoundBtn');
+                    if (logBtn) logBtn.classList.add('d-none');
+
+                    // Warte-Nachricht ausblenden
+                    const waitMsg = document.getElementById('roundSubmittedMessage');
+                    if (waitMsg) waitMsg.classList.add('d-none');
+
+                    // Drag-Drop wieder aktivieren
+                    document.querySelectorAll('.draggable-item').forEach(el => { el.draggable = true; el.style.cursor = ''; });
+                    document.querySelectorAll('.drop-zone').forEach(el => { el.style.pointerEvents = ''; });
+
+                    // Runden-Fortschritt aktualisieren
+                    this.updateRoundProgress(roundIndex, this.totalRounds);
+
+                    // Drag-Drop für dieses eine linke Item + (N+1) rechte Items
+                    const leftText = typeof currentLeftItem === 'string' ? currentLeftItem : (currentLeftItem.text || String(currentLeftItem));
+                    const displayRightItems = (allRightItems && allRightItems.length)
+                        ? allRightItems
+                        : openRightItems;
+                    this.setupRoundDragDrop(roundIndex, leftText, displayRightItems);
+                }
+
+                updateRoundProgress(roundIndex, totalRounds) {
+                    const progressText = document.getElementById('roundProgressText');
+                    if (progressText) progressText.textContent = `Runde ${roundIndex + 1} von ${totalRounds}`;
+
+                    const dotsContainer = document.getElementById('roundDots');
+                    if (dotsContainer) {
+                        dotsContainer.innerHTML = '';
+                        for (let i = 0; i < totalRounds; i++) {
+                            const dot = document.createElement('div');
+                            dot.className = 'round-dot';
+                            if (i < roundIndex) dot.classList.add('done');
+                            else if (i === roundIndex) dot.classList.add('active');
+                            dotsContainer.appendChild(dot);
+                        }
+                    }
+
+                    const qNumEl = document.getElementById('questionNumberDisplay');
+                    if (qNumEl) qNumEl.textContent = `Runde ${roundIndex + 1} von ${totalRounds}`;
+                }
+
+                showRoundProgress(visible) {
+                    const bar = document.getElementById('roundProgressBar');
+                    if (bar) {
+                        if (visible) bar.classList.remove('d-none');
+                        else bar.classList.add('d-none');
+                    }
+                }
+
+                setupRoundDragDrop(roundIndex, currentLeftText, allRightItems) {
+                    const leftItemsList = document.getElementById('leftItemsList');
+                    const zonesList = document.getElementById('zonesList');
+
+                    leftItemsList.innerHTML = '';
+                    zonesList.innerHTML = '';
+
+                    // Normalisierung der rechten Items – originalIndex = item.id (Position im vollen Array)
+                    const normRight = (allRightItems || []).map((it, i) => ({
+                        text: typeof it === 'string' ? it : (it.text || String(it)),
+                        originalIndex: (typeof it === 'object' && it !== null && it.id !== undefined) ? it.id : i
+                    }));
+                    // Alphabetisch sortieren (originalIndex bleibt korrekt)
+                    normRight.sort((a, b) => a.text.localeCompare(b.text));
+
+                    // Alle offenen linken Items anzeigen; gelöste Items bleiben aus der freien Auswahl entfernt.
+                    const completedIndices = new Set((this.solvedPairs || []).map((pair) => Number(pair.leftIdx)));
+                    const allLeftRaw = this.currentQuestion
+                        ? this.currentQuestion.left_items.map((it, idx) => ({
+                            text: typeof it === 'string' ? it : (it.text || String(it)),
+                            roundIdx: idx
+                          }))
+                        : [{ text: currentLeftText, roundIdx: roundIndex }];
+                    const allLeft = [...allLeftRaw].sort((a, b) => a.text.localeCompare(b.text));
+
+                    allLeft.forEach(({ text: leftText, roundIdx: idx }) => {
+                        if (completedIndices.has(idx)) return;
+
+                        const div = document.createElement('div');
+                        div.className = 'draggable-item';
+                        div.draggable = true;
+                        div.textContent = leftText;
+                        div.dataset.leftIndex = idx;
+                        div.addEventListener('dragstart', (e) => {
+                            e.dataTransfer.setData('text/plain', String(idx));
+                            div.classList.add('dragging');
+                        });
+                        div.addEventListener('dragend', () => {
+                            div.classList.remove('dragging');
+                        });
+                        leftItemsList.appendChild(div);
+                    });
+
+                    const completedByRightIndex = new Map(
+                        (this.solvedPairs || [])
+                            .filter((pair) => pair && pair.rightIdx !== undefined)
+                            .map((pair) => [pair.rightIdx, pair])
+                    );
+
+                    // Rechte Seite in stabiler Reihenfolge anzeigen; korrekt
+                    // zugeordnete Items bleiben an ihrer Position und werden nur markiert.
+                    normRight.forEach((item) => {
+                        const dropZone = document.createElement('div');
+                        dropZone.className = 'drop-zone';
+                        dropZone.dataset.rightIndex = item.originalIndex;
+
+                        const label = document.createElement('div');
+                        label.className = 'drop-zone-label';
+                        label.textContent = item.text;
+                        dropZone.appendChild(label);
+
+                        const completed = completedByRightIndex.get(item.originalIndex);
+                        if (completed) {
+                            dropZone.classList.add('occupied', 'completed-round');
+                            const droppedItem = document.createElement('div');
+                            droppedItem.className = 'dropped-item';
+                            droppedItem.textContent = completed.leftText || '';
+                            dropZone.appendChild(droppedItem);
+                            zonesList.appendChild(dropZone);
+                            return;
+                        }
+
+                        dropZone.addEventListener('dragover', (e) => {
+                            if (this.dropLocked) return;
+                            e.preventDefault();
+                            dropZone.classList.add('drag-over');
+                        });
+                        dropZone.addEventListener('dragleave', () => {
+                            dropZone.classList.remove('drag-over');
+                        });
+                        dropZone.addEventListener('drop', (e) => {
+                            if (this.dropLocked) return;
+                            e.preventDefault();
+                            dropZone.classList.remove('drag-over');
+                            const leftIndex = parseInt(e.dataTransfer.getData('text/plain'));
+                            const draggedEl = document.querySelector(`.draggable-item[data-left-index="${leftIndex}"]`);
+                            const draggedText = draggedEl?.textContent?.trim() || '';
+                            this.handleRoundDrop(leftIndex, item.originalIndex, dropZone, draggedText);
+                        });
+
+                        zonesList.appendChild(dropZone);
+                    });
+                }
+
+                handleRoundDrop(leftIndex, rightIndex, dropZone, itemText) {
+                    // Vorherigen Match dieser Runde entfernen (nur aktive Zones, nicht abgeschlossene)
+                    document.querySelectorAll('.drop-zone:not(.completed-round)').forEach(zone => {
+                        const prev = zone.querySelector('.dropped-item');
+                        if (prev) { prev.remove(); zone.classList.remove('occupied'); }
+                    });
+                    // Vorheriges matched-Item wieder freigeben (falls Nutzer Item wechselt)
+                    const prevMatched = document.querySelector('.draggable-item.matched');
+                    if (prevMatched) { prevMatched.classList.remove('matched'); prevMatched.draggable = true; }
+
+                    // Neues dropped-item erstellen (kein Click-to-undo — nur Reset-Button)
+                    const droppedItem = document.createElement('div');
+                    droppedItem.className = 'dropped-item';
+                    droppedItem.textContent = itemText;
+                    droppedItem.dataset.leftIndex = leftIndex;
+
+                    dropZone.appendChild(droppedItem);
+                    dropZone.classList.add('occupied');
+
+                    // Das konkret gezogene Item sperren, alle anderen ausgrauen
+                    document.querySelectorAll('.draggable-item:not(.matched)').forEach(el => {
+                        el.classList.add('inactive-item');
+                        el.draggable = false;
+                    });
+                    const draggableItem = document.querySelector(`.draggable-item[data-left-index="${leftIndex}"]`);
+                    if (draggableItem) {
+                        draggableItem.classList.remove('inactive-item');
+                        draggableItem.classList.add('matched');
+                        draggableItem.draggable = false;
+                    }
+
+                    // Drop sperren: alle weiteren Drops in dieser Runde verhindern
+                    this.dropLocked = true;
+
+                    this.userMatches = { [leftIndex]: rightIndex };
+                    this._pendingHistoryEntry = {
+                        leftIdx: leftIndex,
+                        leftText: itemText,
+                        rightText: dropZone?.querySelector('.drop-zone-label')?.textContent?.trim() || '',
+                        rightIdx: rightIndex,
+                    };
+                    if (this.websocket && this.websocket.readyState === WebSocket.OPEN) {
+                        this.websocket.send(JSON.stringify({
+                            type: 'participant_update_selection',
+                            round_index: this.currentRoundIndex,
+                            left_item_index: leftIndex,
+                            user_match: { [leftIndex]: rightIndex },
+                        }));
+                    }
+
+                    // Reset-Button einblenden
+                    const resetBtn = document.getElementById('resetRoundBtn');
+                    if (resetBtn) resetBtn.classList.remove('d-none');
+                    const logBtn = document.getElementById('logRoundBtn');
+                    if (logBtn) logBtn.classList.remove('d-none');
+                }
+
+                resetRoundDrop() {
+                    this.dropLocked = false;
+                    // Nur aktive Drop-Zone der aktuellen Runde zurücksetzen (abgeschlossene bleiben)
+                    document.querySelectorAll('.drop-zone:not(.completed-round)').forEach(zone => {
+                        const prev = zone.querySelector('.dropped-item');
+                        if (prev) prev.remove();
+                        zone.classList.remove('occupied');
+                    });
+                    // Das gematchte Item wieder freigeben, ausgegra ute Items reaktivieren
+                    const draggableItem = document.querySelector('.draggable-item.matched');
+                    if (draggableItem) {
+                        draggableItem.classList.remove('matched');
+                        draggableItem.draggable = true;
+                    }
+                    document.querySelectorAll('.draggable-item.inactive-item').forEach(el => {
+                        el.classList.remove('inactive-item');
+                        el.draggable = true;
+                    });
+                    // Reset ausblenden
+                    const resetBtn = document.getElementById('resetRoundBtn');
+                    if (resetBtn) resetBtn.classList.add('d-none');
+                    this.userMatches = {};
+                    this._pendingHistoryEntry = null;
+                    const logBtn = document.getElementById('logRoundBtn');
+                    if (logBtn) logBtn.classList.add('d-none');
+                    if (this.websocket && this.websocket.readyState === WebSocket.OPEN) {
+                        this.websocket.send(JSON.stringify({
+                            type: 'participant_update_selection',
+                            round_index: this.currentRoundIndex,
+                            left_item_index: this.currentRoundIndex,
+                            user_match: {},
+                        }));
+                    }
+                }
+
+                startQuestionTimer(timeLimit) {
+                    let timeLeft = timeLimit;
+                    const timerElement = document.getElementById('playerTimeLeft');
+                    const circleElement = document.getElementById('playerTimerCircle');
+                    const submittedTimerElement = document.getElementById('playerTimeLeftSubmitted');
+                    const submittedCircleElement = document.getElementById('playerTimerCircleSubmitted');
+                    
+                    // Initialize both timers
+                    timerElement.textContent = timeLeft;
+                    circleElement.className = 'timer-circle';
+                    if (submittedTimerElement) {
+                        submittedTimerElement.textContent = timeLeft;
+                        submittedCircleElement.className = 'timer-circle';
+                    }
+                    
+                    this.questionTimer = setInterval(() => {
+                        timeLeft--;
+                        timerElement.textContent = timeLeft;
+                        if (submittedTimerElement) {
+                            submittedTimerElement.textContent = timeLeft;
+                        }
+                        
+                        // Update timer circle appearance for both timers
+                        const timerClass = timeLeft <= 10 ? 'danger' : timeLeft <= 20 ? 'warning' : '';
+                        circleElement.className = 'timer-circle ' + timerClass;
+                        if (submittedCircleElement) {
+                            submittedCircleElement.className = 'timer-circle ' + timerClass;
+                        }
+                        
+                        if (timeLeft <= 0) {
+                            circleElement.classList.add('warning');
+                        }
+                        
+                        if (timeLeft <= 0) {
+                            console.log("Time up!");
+                            clearInterval(this.questionTimer);
+                            this.onTimeUp();
+                        }
+                    }, 1000);
+                }
+
+                submitAnswer() {
+                    if (Object.keys(this.userMatches).length === 0 || this.roundSubmitted) return;
+
+                    const leftIdx = parseInt(Object.keys(this.userMatches)[0]);
+                    const rightIdx = this.userMatches[leftIdx];
+                    console.log('[submitAnswer] leftIdx:', leftIdx, 'rightIdx:', rightIdx, 'userMatches:', JSON.stringify(this.userMatches));
+                    this.accumulatedMatches[leftIdx] = rightIdx;
+                    this.roundSubmitted = true;
+
+                    // Texte für History merken – das konkret submittete Item per Index ansprechen
+                    const leftText = document.querySelector(`.draggable-item[data-left-index="${leftIdx}"]`)?.textContent?.trim() || '';
+                    const occupiedZone = document.querySelector('.drop-zone.occupied:not(.completed-round)');
+                    const rightText = occupiedZone?.querySelector('.drop-zone-label')?.textContent?.trim() || '';
+                    this._pendingHistoryEntry = { leftIdx, leftText, rightText, rightIdx };
+
+                    // UI sperren
+                    document.querySelectorAll('.draggable-item').forEach(el => { el.draggable = false; el.style.cursor = 'default'; });
+                    const resetBtn = document.getElementById('resetRoundBtn');
+                    if (resetBtn) resetBtn.classList.add('d-none');
+                    const logBtn = document.getElementById('logRoundBtn');
+                    if (logBtn) logBtn.classList.add('d-none');
+
+                    // Antwort explizit einloggen
+                    if (this.websocket && this.websocket.readyState === WebSocket.OPEN) {
+                        this.websocket.send(JSON.stringify({
+                            type: 'participant_log_round',
+                            round_index: this.currentRoundIndex,
+                            left_item_index: leftIdx,
+                            user_match: { [leftIdx]: rightIdx },
+                        }));
+                    }
+                }
+
+                logCurrentRound() {
+                    this.submitAnswer();
+                }
+
+                onTimeUp() {
+                    if (this.hasAnswered || this.roundSubmitted) return;
+                    console.log('[onTimeUp] userMatches:', JSON.stringify(this.userMatches), 'currentRoundIndex:', this.currentRoundIndex);
+
+                    // Sicherheitsnetz: userMatches aus dem DOM rekonstruieren falls leer aber ein Drop sichtbar ist
+                    if (Object.keys(this.userMatches).length === 0) {
+                        const matchedItem = document.querySelector('.draggable-item.matched');
+                        const occupiedZone = document.querySelector('.drop-zone.occupied:not(.completed-round)');
+                        if (matchedItem && occupiedZone) {
+                            const leftIndex = parseInt(matchedItem.dataset.leftIndex);
+                            const rightIndex = parseInt(occupiedZone.dataset.rightIndex);
+                            if (!isNaN(leftIndex) && !isNaN(rightIndex)) {
+                                console.warn('[onTimeUp] userMatches war leer, rekonstruiert aus DOM:', leftIndex, '→', rightIndex);
+                                this.userMatches = { [leftIndex]: rightIndex };
+                            }
+                        }
+                    }
+
+                    if (Object.keys(this.userMatches).length > 0) {
+                        // Vorhandene Zuordnung einreichen
+                        this.submitAnswer();
+                    } else {
+                        // Keine Zuordnung getroffen → leere Antwort → Eliminierung
+                        if (this.websocket && this.websocket.readyState === WebSocket.OPEN) {
+                            console.log('[onTimeUp] Keine Zuordnung — leere Antwort gesendet');
+                            this.websocket.send(JSON.stringify({
+                                type: 'participant_log_round',
+                                round_index: this.currentRoundIndex,
+                                user_match: {},
+                            }));
+                            this.roundSubmitted = true;
+                            // UI sperren (identisch zu submitAnswer)
+                            document.querySelectorAll('.draggable-item').forEach(el => {
+                                el.draggable = false; el.style.cursor = 'default';
+                            });
+                            const resetBtn = document.getElementById('resetRoundBtn');
+                            if (resetBtn) resetBtn.classList.add('d-none');
+                        }
+                    }
+                }
+
+                showWaitingForNextQuestion() {
+                    // Create a temporary waiting state for next question
+                    // const currentState = document.querySelector('.game-state:not(.d-none)');
+                    // if (currentState) {
+                    //     currentState.innerHTML = `
+                    //         <div class="waiting-card">
+                    //             <div class="waiting-animation">
+                    //                 <div class="pulse-ring"></div>
+                    //                 <div class="pulse-ring delay-1"></div>
+                    //                 <div class="pulse-ring delay-2"></div>
+                    //                 <i data-lucide="clock"></i>
+                    //             </div>
+                    //             <h2>Waiting for Next Question</h2>
+                    //             <p>Get ready for the next challenge!</p>
+                    //         </div>
+                    //     `;
+                    //     lucide.createIcons();
+                    // }
+                    // Switch to a safe waiting state without destroying existing DOM nodes
+                    this.showState('waitingQuestionState');
+                    const waiting = document.getElementById('waitingQuestionState');
+                    if (waiting) {
+                        try { lucide.createIcons(); } catch (e) { /* ignore */ }
+                    }
+                }
+
+                showState(stateId) {
+                    // Hide all states
+                    document.querySelectorAll('.game-state').forEach(state => {
+                        state.classList.add('d-none');
+                    });
+                    
+                    // Show target state
+                    const targetState = document.getElementById(stateId);
+                    if (targetState) {
+                        targetState.classList.remove('d-none');
+                    }
+                }
+
+                updateParticipantCount(count) {
+                    const countElement = document.getElementById('waitingParticipantCount');
+                    if (countElement) {
+                        countElement.textContent = count;
+                    }
+                }
+
+                showConnectionStatus() {
+                    document.getElementById('connectionStatus').classList.remove('d-none');
+                }
+
+                hideConnectionStatus() {
+                    document.getElementById('connectionStatus').classList.add('d-none');
+                }
+
+                setProgressHistory(history) {
+                    this.progressHistory = Array.isArray(history) ? history : [];
+                    this.renderProgressHistory();
+                }
+
+                renderProgressHistory() {
+                    const list = document.getElementById('assignScoreList');
+                    const totalElement = document.getElementById('assignScoreTotal');
+                    if (!list) return;
+                    list.innerHTML = '';
+                    if (!(this.scoreboardQuestions || []).length) {
+                        list.innerHTML = '<div class="text-muted small">Noch keine Fragen verfügbar.</div>';
+                        return;
+                    }
+
+                    const progressByQuestionId = new Map(
+                        (this.progressHistory || [])
+                            .map((entry) => [Number(entry?.question_id), entry])
+                            .filter(([questionId]) => !Number.isNaN(questionId))
+                    );
+                    const progressByQuestionNumber = new Map(
+                        (this.progressHistory || [])
+                            .map((entry) => [Number(entry?.question_number), entry])
+                            .filter(([questionNumber]) => !Number.isNaN(questionNumber))
+                    );
+                    const currentQuestionNumber = this.getCurrentQuestionNumber();
+                    let totalEarnedPoints = 0;
+                    let totalMaxPoints = 0;
+
+                    (this.scoreboardQuestions || []).forEach((question, index) => {
+                        const questionNumber = Number(question?.number) || index + 1;
+                        const normalizedQuestionId = Number(question?.id);
+                        const progressEntry = (
+                            !Number.isNaN(normalizedQuestionId)
+                                ? progressByQuestionId.get(normalizedQuestionId)
+                                : null
+                        ) || progressByQuestionNumber.get(questionNumber);
+                        const maxPoints = progressEntry?.max_rounds ?? question?.max_points;
+                        const earnedPoints = progressEntry?.survived_rounds;
+                        if (progressEntry) {
+                            totalEarnedPoints += Number(earnedPoints) || 0;
+                            totalMaxPoints += Number(maxPoints) || 0;
+                        }
+                        const isCurrent = currentQuestionNumber === questionNumber;
+                        const isPlayed = !isCurrent && !!progressEntry;
+                        const rowState = isCurrent ? 'is-current' : isPlayed ? 'is-played' : 'is-upcoming';
+                        const hasMaxPoints = maxPoints !== undefined && maxPoints !== null;
+                        const row = document.createElement('div');
+                        row.className = `assign-score-row score-box__row ${rowState}`;
+                        row.dataset.questionNumber = String(questionNumber);
+                        if (question?.id !== undefined && question?.id !== null) {
+                            row.dataset.questionId = String(question.id);
+                        }
+                        row.innerHTML = `
+                            <div class="assign-score-badge score-box__badge">${questionNumber}</div>
+                            <div class="assign-score-value score-box__value">
+                                ${earnedPoints !== undefined && earnedPoints !== null
+                                    ? `<span>${earnedPoints}</span>${hasMaxPoints ? `<span class="assign-score-separator score-box__separator">/</span><span>${maxPoints}</span>` : ''}`
+                                    : hasMaxPoints
+                                        ? `<span class="assign-score-empty score-box__empty">__</span><span class="assign-score-separator score-box__separator">/</span><span>${maxPoints}</span>`
+                                        : '<span class="assign-score-empty score-box__empty">____</span>'
+                                }
+                            </div>
+                        `;
+                        list.appendChild(row);
+                    });
+
+                    if (totalElement) {
+                        totalElement.textContent = `${totalEarnedPoints}/${totalMaxPoints}`;
+                    }
+                }
+            }
+
+            // Initialize Assign Player
+            const player = new AssignPlayer();
+
+            const lobbyReturnController = createHubLobbyReturnController({
+                sessionCode: '{{ hub_session|default_if_none:"" }}',
+                gameKey: 'assign',
+                roomCode: '{{ quiz.room_code }}',
+                participantName: '{{ participant.name|escapejs }}',
+                csrfToken: '{{ csrf_token }}',
+            });
+
+            // Handle answer submitted response
+            if (player.websocket) {
+                const originalOnMessage = player.websocket.onmessage;
+                player.websocket.onmessage = (event) => {
+                    const data = JSON.parse(event.data);
+                    
+                    if (data.type === 'answer_submitted') {
+                        document.getElementById('correctMatches').textContent = data.correct_matches;
+                        document.getElementById('pointsEarned').textContent = data.points_earned;
+                        document.getElementById('accuracyPercent').textContent = data.accuracy + '%';
+                        player.setProgressHistory(data.progress_history);
+                        player.setCurrentQuestion(null);
+                    }
+                    
+                    // Call original handler
+                    if (originalOnMessage) {
+                        originalOnMessage.call(player.websocket, event);
+                    }
+                };
+            }
+
+            (function() {
+                let hubCode = null;
+                try {
+                    hubCode = localStorage.getItem('hub_session_code');
+                    console.log("[HubScript2] Retrieved hub_session_code from localStorage:", hubCode);
+                } catch (err) {
+                    console.error("[HubScript2] Error accessing localStorage:", err);
+                }
+
+                if (!hubCode) {
+                    console.warn("[HubScript2] No hub_session_code found, exiting...");
+                    return;
+                }
+
+                const wsScheme = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+                const wsUrl = `${wsScheme}//${window.location.host}/ws/hub/${hubCode}/`;
+                console.log("[HubScript2] Connecting to WebSocket:", wsUrl);
+
+                const hubWS = new WebSocket(wsUrl);
+
+                hubWS.onopen = () => {
+                    console.log("[HubScript2] WebSocket connected successfully.");
+                };
+
+                hubWS.onmessage = (event) => {
+                    console.log("[HubScript2] Message received:", event.data);
+                    try {
+                        const data = JSON.parse(event.data);
+                        console.log("[HubScript2] Parsed data:", data);
+
+                        /*if (data.type === 'navigate' && data.step) {
+                            const step = data.step;
+                            console.log("[HubScript2] Navigation requested for:", step);
+
+                            const routes = {
+                                quiz: { join: '/quiz/join/', play: '/quiz/play/' },
+                                assign: { join: '/assign/join/', play: '/assign/play/' },
+                                estimation: { join: '/estimation/join/', play: '/estimation/play/' },
+                                where: { join: '/where/join/', play: '/where/play/' },
+                                who: { join: '/who/join/', play: '/who/play/' },
+                                who_that: { join: '/who-is-that/join/', play: '/who-is-that/play/' },
+                                blackjack: { join: '/blackjack/join/', play: '/blackjack/play/' },
+                            };
+
+                            const base = routes[step.game_key];
+                            console.log("[HubScript2] Base route:", base);
+
+                            if (base && step.room_code) {
+                                const u = new URL(base, window.location.origin);
+                                u.searchParams.set('room_code', step.room_code);
+                                u.searchParams.set('nickname', player.participantName);
+                                u.searchParams.set('hub_session', hubCode);
+
+                                const joinUrl = new URL(routes[step.game_key].join, window.location.origin);
+                                const playUrl = new URL(`${routes[step.game_key].play}${step.room_code}/${encodeURIComponent(player.participantName)}/`, window.location.origin);
+
+                                // Prepare join payload
+                                const csrfToken = "{{ csrf_token }}"; // or get dynamically if rendered server-side
+                                const body = JSON.stringify({
+                                room_code: step.room_code,
+                                participant_name: player.participantName,
+                                hub_session: hubCode,
+                                });
+
+                                // if (code) {
+                                //     try { localStorage.setItem('hub_session_code', code); } catch (_) {}
+                                // }
+
+                                try {
+                                    fetch(joinUrl.toString(), {
+                                        method: 'POST',
+                                        headers: {
+                                        'Content-Type': 'application/json',
+                                        'X-CSRFToken': csrfToken,
+                                        },
+                                        body: body,
+                                        credentials: 'same-origin',
+                                    })
+                                    .then(response => response.json())
+                                    .then(data => {
+                                        if (data.success) {
+                                        console.log('[HubScript2] Join successful, redirecting to play URL');
+                                        window.location.href = playUrl.toString();
+                                        } else {
+                                        console.error('[HubScript2] Join failed, falling back to play URL');
+                                        window.location.href = playUrl.toString();
+                                        }
+                                    })
+                                } catch (error) {
+                                console.error('[HubScript2] Error joining game:', error);
+                                window.location.href = playUrl.toString();
+                                }
+                            } else {
+                                console.warn("[HubScript2] Invalid navigation info:", step);
+                            }
+
+                        }*/
+                        if (data.type === 'players_recalled_to_lobby') {
+                            lobbyReturnController.returnToLobby({ markInactive: false });
+                        } else if (data.type === 'session_ended') {
+                            console.log("[HubScript2] Session ended message received.");
+                            const u = new URL(`/hub/lobby/${hubCode}/`, window.location.origin);
+                            u.searchParams.set('ended', '1');
+
+                            console.log("[HubScript2] Redirecting to lobby:", u.toString());
+                            window.location.href = u.toString();
+                        } else {
+                            console.log("[HubScript2] Unhandled message type:", data.type);
+                        }
+
+                    } catch (err) {
+                        console.error("[HubScript2] Failed to parse message:", event.data, err);
+                    }
+                };
+
+                hubWS.onerror = (err) => {
+                    console.error("[HubScript2] WebSocket error:", err);
+                };
+
+                hubWS.onclose = (e) => {
+                    console.warn("[HubScript2] WebSocket closed:", e.code, e.reason);
+                };
+            })();
+
+        });
+    </script>
+  {% include 'includes/_leaderboard_overlay.html' %}
+  {% include 'includes/accessibility_widget.html' %}
+</body>
+</html>

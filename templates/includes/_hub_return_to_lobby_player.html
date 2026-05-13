@@ -1,0 +1,94 @@
+<script>
+    function createHubLobbyReturnController(config) {
+        function ensureReturnButton() {
+            const buttonId = config.buttonId || 'returnToLobbyBtn';
+            if (document.getElementById(buttonId)) {
+                return;
+            }
+            if (!buildLobbyUrl()) {
+                return;
+            }
+
+            const targetCard = document.querySelector('#quizEndedState .ended-card') || document.getElementById('quizEndedState');
+            if (!targetCard) {
+                return;
+            }
+
+            const actions = document.createElement('div');
+            actions.className = 'quiz-actions';
+            actions.innerHTML = `
+                <button type="button" class="btn btn-primary btn-lg" id="${buttonId}">
+                    <i data-lucide="arrow-left"></i>
+                    Zur Lobby zurückkehren
+                </button>
+            `;
+            targetCard.appendChild(actions);
+
+            try { lucide.createIcons(); } catch (_) {}
+        }
+
+        async function markParticipantReturnedToLobby() {
+            if (!config.sessionCode || !config.gameKey || !config.roomCode || !config.participantName) {
+                return;
+            }
+
+            try {
+                await fetch(`/hub/api/session/${config.sessionCode}/participant-return-to-lobby/`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-CSRFToken': config.csrfToken || '',
+                    },
+                    body: JSON.stringify({
+                        game_key: config.gameKey,
+                        room_code: config.roomCode,
+                        participant_name: config.participantName,
+                    }),
+                    credentials: 'same-origin',
+                });
+            } catch (_) {}
+        }
+
+        function buildLobbyUrl() {
+            const hubCode = config.sessionCode
+                || (function() {
+                    try { return localStorage.getItem('hub_session_code') || ''; } catch (_) { return ''; }
+                })()
+                || new URLSearchParams(window.location.search).get('hub_session')
+                || '';
+
+            if (!hubCode) {
+                return null;
+            }
+
+            const url = new URL(`/hub/lobby/${hubCode}/`, window.location.origin);
+            url.searchParams.set('nickname', config.participantName);
+            url.searchParams.set('return', '1');
+            return url;
+        }
+
+        async function returnToLobby(options = {}) {
+            const markInactive = options.markInactive !== false;
+            if (markInactive) {
+                await markParticipantReturnedToLobby();
+            }
+
+            const url = buildLobbyUrl();
+            if (url) {
+                window.location.href = url.toString();
+            }
+        }
+
+        ensureReturnButton();
+        const button = document.getElementById(config.buttonId || 'returnToLobbyBtn');
+        if (button) {
+            button.addEventListener('click', () => {
+                returnToLobby();
+            });
+        }
+
+        return {
+            returnToLobby,
+        };
+    }
+</script>

@@ -1,0 +1,1057 @@
+{% extends "admin_dashboard/base.html" %}
+
+{% block title %}Estimation Game Management - QuizMaster Admin{% endblock %}
+
+{% block page_title %}Estimation Game Management{% endblock %}
+{% block page_subtitle %}Add, edit and delete questions{% endblock %}
+
+{% block content %}
+<div class="estimation-management-content">
+    <!-- New Question Button -->
+    <div class="d-flex justify-content-end mb-3">
+        <button type="button" class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#editQuestionModal" id="newQuestionBtn">
+            <i data-lucide="plus" style="width:16px;height:16px;" class="me-1"></i> New Question
+        </button>
+    </div>
+
+    <!-- Questions Bank Card -->
+    <div class="card mb-4">
+        <div class="card-header">
+            <h5 class="card-title mb-0">
+                <i data-lucide="database"></i>
+                Question Bank
+                <span class="badge bg-secondary ms-2" id="questionCountBadge">{{ total_questions }}</span>
+            </h5>
+        </div>
+        <div class="card-body p-0">
+            <div class="table-responsive">
+                <table class="table table-hover mb-0">
+                    <thead class="table-light">
+                        <tr>
+                            <th>Question</th>
+                            <th>Answer</th>
+                            <th>Unit</th>
+                            <th>Points</th>
+                            <th>Time (s)</th>
+                            <th>Created</th>
+
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="questionsTableBody">
+                        <tr><td colspan="8" class="text-center py-4">
+                            <div class="spinner-border spinner-border-sm text-secondary me-2" role="status"></div>
+                            Loading questions...
+                        </td></tr>
+                    </tbody>
+                </table>
+            </div>
+            <div class="d-flex justify-content-between align-items-center px-3 py-2 border-top">
+                <div class="text-muted small" id="questionCount"></div>
+                <nav><ul class="pagination pagination-sm mb-0" id="pagination"></ul></nav>
+            </div>
+        </div>
+    </div>
+
+    <!-- Bundles Card -->
+    <div class="card mb-4">
+        <div class="card-header d-flex justify-content-between align-items-center">
+            <h5 class="card-title mb-0">
+                <i data-lucide="layers"></i> Bundles
+                <span class="badge bg-secondary ms-2" id="bundleCountBadge">{{ bundles|length }}</span>
+            </h5>
+            <button type="button" class="btn btn-primary btn-sm" data-bs-toggle="modal" data-bs-target="#createBundleModal">
+                <i data-lucide="plus"></i> Neues Bundle
+            </button>
+        </div>
+        <div class="card-body p-0">
+            <table class="table table-hover mb-0">
+                <thead class="table-light">
+                    <tr><th>Name</th><th>Fragen</th><th>Erstellt</th><th>Aktionen</th></tr>
+                </thead>
+                <tbody id="bundleTableBody">
+                    {% for bundle in bundles %}
+                    <tr id="bundle-row-{{ bundle.id }}">
+                        <td class="fw-semibold">{{ bundle.name }}</td>
+                        <td>{{ bundle.questions.count }} Fragen</td>
+                        <td class="text-muted small">{{ bundle.created_at|date:"d.m.Y" }}</td>
+                        <td><button class="btn btn-sm btn-outline-danger delete-bundle-btn" data-bundle-id="{{ bundle.id }}" data-bundle-name="{{ bundle.name }}"><i data-lucide="trash-2"></i></button></td>
+                    </tr>
+                    {% empty %}
+                    <tr id="bundleEmptyRow"><td colspan="4" class="text-center py-4 text-muted">Noch keine Bundles erstellt.</td></tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+</div>
+
+<!-- Create Bundle Modal -->
+<div class="modal fade" id="createBundleModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-xl">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title"><i data-lucide="layers"></i> Neues Bundle</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="mb-3">
+                    <label class="form-label fw-semibold">Bundle-Name *</label>
+                    <input type="text" class="form-control" id="bundleName" placeholder="z.B. Geographie-Bundle">
+                </div>
+                <p class="text-muted small mb-2">Fragen auswählen:</p>
+                <div class="table-responsive">
+                    <table class="table table-hover">
+                        <thead class="table-light">
+                            <tr>
+                                <th style="width:40px;"><input type="checkbox" id="selectAllBundleQuestions"></th>
+                                <th>Frage</th><th>Antwort</th>
+                            </tr>
+                        </thead>
+                        <tbody id="bundleQuestionsTableBody"></tbody>
+                    </table>
+                </div>
+                <div class="d-flex justify-content-between align-items-center mt-2">
+                    <div class="text-muted small" id="bundleQuestionCount">Lade Fragen...</div>
+                    <ul class="pagination pagination-sm mb-0" id="bundleQuestionPagination"></ul>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Abbrechen</button>
+                <button type="button" class="btn btn-primary" id="saveBundleBtn"><i data-lucide="save"></i> Bundle speichern</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Create Custom Quiz Modal -->
+<div class="modal fade" id="createCustomQuizModal" tabindex="-1" aria-labelledby="createCustomQuizModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-xl">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="createCustomQuizModalLabel">
+                    <i data-lucide="layers"></i>
+                    Create Custom Quiz
+                </h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div class="row g-3 mb-3">
+                    <div class="col-md-6">
+                        <input type="text" class="form-control" id="customQuizTitle" placeholder="Enter quiz name" value="Custom Quiz">
+                    </div>
+                    <div class="col-md-6">
+                        <div class="d-flex align-items-center gap-3">
+                            <label class="form-label mb-0">Default-Modus:</label>
+                            <div class="form-check form-check-inline">
+                                <input class="form-check-input" type="radio" name="scoringMode" id="scoringTolerance" value="zones" checked>
+                                <label class="form-check-label" for="scoringTolerance">Zonen</label>
+                            </div>
+                            <div class="form-check form-check-inline">
+                                <input class="form-check-input" type="radio" name="scoringMode" id="scoringRank" value="rank">
+                                <label class="form-check-label" for="scoringRank">Ranking</label>
+                            </div>
+                        </div>
+                        <small class="text-muted d-block mt-2" id="scoringModeHint"></small>
+                    </div>
+                </div>
+                <div class="table-responsive">
+                    <table class="table table-hover">
+                        <thead class="table-light">
+                            <tr>
+                                <th style="width:40px;"><input type="checkbox" id="selectAllQuestions"></th>
+                                <th>Question</th>
+                                <th>Correct Answer</th>
+                                <th class="custom-zone-points-col">Zonenpunkte</th>
+                                <th>Unit</th>
+                                <th>Created</th>
+                            </tr>
+                        </thead>
+                        <tbody id="customQuestionsTableBody"></tbody>
+                    </table>
+                </div>
+                <div class="d-flex justify-content-between align-items-center mt-2">
+                    <div class="text-muted" id="customQuestionCount">Loading questions...</div>
+                    <ul class="pagination mb-0" id="customPagination"></ul>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-outline" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-primary" id="createCustomQuizBtn">
+                    <i data-lucide="check"></i>
+                    Create Quiz
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Delete Confirmation Modal -->
+<div class="modal fade" id="deleteQuestionModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Delete Question</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <p>Are you sure you want to delete this question? This action cannot be undone.</p>
+                <p class="text-danger"><strong>Note:</strong> If this question has been used in any games, it will be deactivated instead of deleted.</p>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-danger" id="confirmDeleteBtn">Delete Question</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+.estimation-management-content {
+    /*max-width: 1400px;*/
+}
+
+.action-card {
+    background: var(--bg-primary);
+    border: 1px solid var(--border-color);
+    border-radius: var(--border-radius-xl);
+    box-shadow: var(--shadow-sm);
+    transition: all var(--transition-fast);
+    height: 100%;
+}
+
+.action-card:hover {
+    box-shadow: var(--shadow-lg);
+}
+
+.action-card-body {
+    padding: 2rem;
+    text-align: center;
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+}
+
+.action-icon {
+    width: 60px;
+    height: 60px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin: 0 auto 1.5rem;
+    color: var(--text-white);
+}
+
+.action-icon.bg-primary {
+    background: linear-gradient(135deg, var(--primary-400) 0%, var(--primary-600) 100%);
+}
+
+.action-icon.bg-secondary {
+    background: linear-gradient(135deg, var(--secondary-400) 0%, var(--secondary-600) 100%);
+}
+
+.action-icon.bg-success {
+    background: linear-gradient(135deg, var(--success-400) 0%, var(--success-600) 100%);
+}
+
+.action-card h3 {
+    font-size: 1.25rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    margin-bottom: 1rem;
+}
+
+.action-card p {
+    color: var(--text-secondary);
+    margin-bottom: 1.5rem;
+    flex: 1;
+}
+
+.empty-state {
+    text-align: center;
+    padding: 3rem 2rem;
+    color: var(--text-muted);
+}
+
+.empty-state i {
+    width: 64px;
+    height: 64px;
+    color: var(--text-muted);
+    margin-bottom: 1rem;
+    opacity: 0.5;
+}
+
+.empty-state h4 {
+    color: var(--text-primary);
+    margin-bottom: 0.5rem;
+}
+
+.action-buttons {
+    display: flex;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+}
+
+.modal-content {
+    border: none;
+    box-shadow: var(--shadow-xl);
+    border-radius: var(--border-radius-lg);
+}
+
+.modal-header {
+    background-color: var(--bg-secondary);
+    border-bottom: 1px solid var(--border-color);
+    border-radius: var(--border-radius-lg) var(--border-radius-lg) 0 0;
+}
+
+.modal-title {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-weight: 600;
+}
+
+.modal-title i {
+    width: 20px;
+    height: 20px;
+    color: var(--color-secondary);
+}
+
+.form-label {
+    font-weight: 500;
+    color: var(--text-primary);
+}
+
+.btn.loading {
+    position: relative;
+    color: transparent !important;
+}
+
+.btn.loading::after {
+    content: '';
+    position: absolute;
+    width: 16px;
+    height: 16px;
+    top: 50%;
+    left: 50%;
+    margin-left: -8px;
+    margin-top: -8px;
+    border: 2px solid transparent;
+    border-top-color: currentColor;
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+}
+
+.table th {
+    border-bottom: 2px solid var(--border-color);
+    color: var(--text-primary);
+    font-weight: 600;
+    font-size: 0.875rem;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.table td {
+    vertical-align: middle;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.table-hover tbody tr:hover {
+    background-color: var(--bg-secondary);
+}
+
+@media (max-width: 768px) {
+    .action-buttons {
+        justify-content: center;
+    }
+    .table-responsive {
+        font-size: 0.875rem;
+    }
+}
+</style>
+
+<script>
+    function getCookie(name) {
+        let cookieValue = null;
+        if (document.cookie && document.cookie !== '') {
+            const cookies = document.cookie.split(';');
+            for (let i = 0; i < cookies.length; i++) {
+                const cookie = cookies[i].trim();
+                if (cookie.substring(0, name.length + 1) === (name + '=')) {
+                    cookieValue = decodeURIComponent(cookie.substring(name.length + 1));
+                    break;
+                }
+            }
+        }
+        return cookieValue;
+    }
+
+    function showNotification(message, type = 'info') {
+        const notification = document.createElement('div');
+        notification.className = `alert alert-${type} notification-toast`;
+        notification.textContent = message;
+        notification.style.cssText = `
+            position: fixed; top: 20px; right: 20px; z-index: 9999;
+            min-width: 250px; opacity: 0; transform: translateX(100%);
+            transition: all 0.3s ease;
+        `;
+        document.body.appendChild(notification);
+        setTimeout(() => { notification.style.opacity = '1'; notification.style.transform = 'translateX(0)'; }, 100);
+        setTimeout(() => {
+            notification.style.opacity = '0'; notification.style.transform = 'translateX(100%)';
+            setTimeout(() => notification.remove(), 300);
+        }, 3000);
+    }
+
+    function normalizeEstimationMode(mode) {
+        return mode === 'rank' ? 'rank' : 'zones';
+    }
+
+    function formatEstimationZoneNumber(value) {
+        if (!Number.isFinite(value)) return '';
+        const rounded = Math.round(value * 100) / 100;
+        return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(2).replace(/\.?0+$/, '');
+    }
+
+    function buildEstimationZoneOverview(answer, tolerance, zoneCount, manualPoints, manualMaxPoints) {
+        zoneCount = Math.max(1, parseInt(zoneCount, 10) || 1);
+        tolerance = parseFloat(tolerance) || 0;
+        const maxPoints = manualPoints ? Math.max(1, parseInt(manualMaxPoints, 10) || 1) : zoneCount;
+        if (!Number.isFinite(answer) || tolerance <= 0) {
+            return 'Richtige Antwort und Toleranz eingeben, um die Zonen-Uebersicht zu sehen.';
+        }
+        const rows = [];
+        if (answer === 0) {
+            rows.push(`<li>${maxPoints} P - Bereich: exakt 0</li>`);
+            rows.push('<li>0 P - Bereich: alle anderen Antworten</li>');
+        } else {
+            for (let zone = 1; zone <= zoneCount; zone++) {
+                const delta = Math.abs(answer) * (tolerance * zone / 100);
+                const points = Math.max(0, maxPoints - zone + 1);
+                rows.push(`<li>${points} P - Bereich: ${formatEstimationZoneNumber(answer - delta)} - ${formatEstimationZoneNumber(answer + delta)}</li>`);
+            }
+            const outerDelta = Math.abs(answer) * (tolerance * zoneCount / 100);
+            rows.push(`<li>0 P - Bereich: weniger als ${formatEstimationZoneNumber(answer - outerDelta)} oder mehr als ${formatEstimationZoneNumber(answer + outerDelta)}</li>`);
+        }
+        const modeText = manualPoints
+            ? `Manuell: innerste Zone = ${maxPoints} Punkte, jede weitere Zone 1 Punkt weniger.`
+            : `Automatisch: innerste Zone = ${zoneCount} Punkte, jede weitere Zone 1 Punkt weniger.`;
+        return `<div class="fw-semibold mb-1">Zonen-Uebersicht</div><div class="mb-1">${modeText}</div><ul class="mb-0 ps-3">${rows.join('')}</ul>`;
+    }
+
+    document.addEventListener('DOMContentLoaded', function() {
+        lucide.createIcons();
+
+        const deleteQuestionModal = document.getElementById('deleteQuestionModal');
+        const questionsTableBody = document.getElementById('questionsTableBody');
+        const questionCount = document.getElementById('questionCount');
+        const pagination = document.getElementById('pagination');
+        const submitQuestionBtn = document.getElementById('submitQuestionBtn');
+        const confirmDeleteBtn = document.getElementById('confirmDeleteBtn');
+
+        // Custom Quiz Modal state
+        let estimationEditMode = false;
+        let estimationSelectedIds = new Set();
+        let estimationCurrentQuizId = null;
+        const createCustomQuizModal = document.getElementById('createCustomQuizModal');
+        const createCustomQuizBtn = document.getElementById('createCustomQuizBtn');
+        const selectAllQuestions = document.getElementById('selectAllQuestions');
+
+        function updateQuestionZoneUi() {
+            const manual = document.getElementById('manualPointsEnabled').checked;
+            document.getElementById('maxPointsGroup').classList.toggle('d-none', !manual);
+            document.getElementById('zoneOverview').innerHTML = buildEstimationZoneOverview(
+                parseFloat(document.getElementById('correctAnswer').value),
+                document.getElementById('tolerancePercentage').value,
+                document.getElementById('zoneCount').value,
+                manual,
+                document.getElementById('maxPoints').value
+            );
+        }
+
+        function updateCustomScoringModeUi() {
+            const mode = normalizeEstimationMode(document.querySelector('input[name="scoringMode"]:checked')?.value);
+            const isRanking = mode === 'rank';
+            document.getElementById('scoringModeHint').textContent = isRanking
+                ? 'Ranking vergibt Punkte nach Teilnehmerzahl; manuelle Punkte werden nicht verwendet.'
+                : 'Zonen nutzen Toleranz und Zonenanzahl; standardmaessig ist die Maximalpunktzahl die Anzahl der Zonen.';
+            document.querySelectorAll('.custom-zone-points-col').forEach(el => el.classList.toggle('d-none', isRanking));
+        }
+
+        ['correctAnswer', 'tolerancePercentage', 'zoneCount', 'maxPoints', 'manualPointsEnabled'].forEach(id => {
+            document.getElementById(id).addEventListener('input', updateQuestionZoneUi);
+            document.getElementById(id).addEventListener('change', updateQuestionZoneUi);
+        });
+        document.querySelectorAll('input[name="scoringMode"]').forEach(el => el.addEventListener('change', updateCustomScoringModeUi));
+
+        // Load questions on page load
+        loadBankQuestions(1);
+        updateQuestionZoneUi();
+        updateCustomScoringModeUi();
+
+        // Auto-open edit modal if ?edit=ID in URL
+        const autoEditId = new URLSearchParams(window.location.search).get('edit');
+        if (autoEditId) openEditById(autoEditId);
+
+        // Reset form when modal closes
+        document.getElementById('editQuestionModal').addEventListener('hidden.bs.modal', () => setFormMode('add'));
+
+        // Form submit (add or edit)
+        document.getElementById('addQuestionForm').addEventListener('submit', function(e) {
+            e.preventDefault();
+            submitQuestionBtn.classList.add('loading');
+            const isEdit = submitQuestionBtn.dataset.mode === 'edit';
+
+            const payload = {
+                question_text: document.getElementById('questionText').value.trim(),
+                correct_answer: document.getElementById('correctAnswer').value,
+                unit: document.getElementById('unit').value,
+                max_points: document.getElementById('maxPoints').value || document.getElementById('zoneCount').value || 1,
+                use_manual_points: document.getElementById('manualPointsEnabled').checked,
+                tolerance_percentage: document.getElementById('tolerancePercentage').value,
+                zone_count: document.getElementById('zoneCount').value,
+                hint_text: document.getElementById('hintText').value.trim(),
+                explanation: document.getElementById('explanation').value.trim(),
+            };
+            if (isEdit) payload.question_id = document.getElementById('questionId').value;
+
+            if (!payload.question_text || !payload.correct_answer) {
+                alert('Please fill in the question text and correct answer.');
+                submitQuestionBtn.classList.remove('loading');
+                return;
+            }
+
+            const postUrl = isEdit
+                ? '{% url "admin_dashboard:update_estimation_question" %}'
+                : '{% url "admin_dashboard:add_estimation_question" %}';
+
+            fetch(postUrl, {
+                method: 'POST',
+                headers: { 'X-CSRFToken': getCookie('csrftoken'), 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) {
+                    showNotification(isEdit ? 'Question updated successfully!' : 'Question added successfully!', 'success');
+                    bootstrap.Modal.getInstance(document.getElementById('editQuestionModal'))?.hide();
+                    loadBankQuestions(1);
+                } else {
+                    alert('Error: ' + (data.error || 'Unknown error'));
+                }
+            })
+            .catch(() => alert('Error saving question.'))
+            .finally(() => submitQuestionBtn.classList.remove('loading'));
+        });
+
+        // Load questions inline
+        function loadBankQuestions(page) {
+            fetch('{% url "admin_dashboard:get_estimation_questions" %}?page=' + page, {
+                method: 'GET',
+                headers: { 'X-CSRFToken': getCookie('csrftoken') },
+            })
+            .then(r => r.json())
+            .then(data => {
+                questionsTableBody.innerHTML = '';
+                questionCount.textContent = `${data.count} Questions`;
+                document.getElementById('questionCountBadge').textContent = data.count;
+                data.questions.forEach(q => {
+                    const row = document.createElement('tr');
+                    row.style.cursor = 'pointer';
+                    row.innerHTML = `
+                        <td>${q.question_text}</td>
+                        <td>${q.correct_answer}</td>
+                        <td>${q.unit}</td>
+                        <td>${q.use_manual_points ? q.max_points : (q.zone_count ?? q.max_points)}</td>
+                        <td>${q.time_limit}</td>
+                        <td>${q.created_at}</td>
+
+                        <td onclick="event.stopPropagation()">
+                            <button class="btn btn-sm btn-outline-primary edit-question-btn" data-question-id="${q.id}"><i data-lucide="pencil"></i> Edit</button>
+                            <button class="btn btn-sm btn-danger delete-q-btn" data-question-id="${q.id}"><i data-lucide="trash-2"></i> Delete</button>
+                        </td>
+                    `;
+                    row.addEventListener('click', function(e) {
+                        if (e.target.closest('button') || e.target.closest('a')) return;
+                        row.querySelector('.edit-question-btn').click();
+                    });
+                    questionsTableBody.appendChild(row);
+                });
+                pagination.innerHTML = '';
+                for (let i = 1; i <= data.pages; i++) {
+                    const li = document.createElement('li');
+                    li.className = 'page-item' + (i === page ? ' active' : '');
+                    li.innerHTML = `<button class="page-link" data-page="${i}">${i}</button>`;
+                    pagination.appendChild(li);
+                }
+                lucide.createIcons();
+            })
+            .catch(() => alert('Error loading questions.'));
+        }
+
+        pagination.addEventListener('click', function(e) {
+            if (e.target.classList.contains('page-link')) loadBankQuestions(parseInt(e.target.dataset.page));
+        });
+
+        function openEditById(qid) {
+            fetch(`{% url 'admin_dashboard:get_estimation_question_detail' 0 %}`.replace('/0/', `/${qid}/`), {
+                headers: { 'X-CSRFToken': getCookie('csrftoken') },
+            })
+            .then(r => r.json())
+            .then(({ success, question, error }) => {
+                if (!success) throw new Error(error || 'Failed to load question.');
+                document.getElementById('questionId').value = question.id;
+                document.getElementById('questionText').value = question.question_text;
+                document.getElementById('correctAnswer').value = question.correct_answer;
+                document.getElementById('unit').value = question.unit;
+                document.getElementById('maxPoints').value = question.max_points;
+                document.getElementById('manualPointsEnabled').checked = !!question.use_manual_points;
+                document.getElementById('tolerancePercentage').value = question.tolerance_percentage;
+                document.getElementById('zoneCount').value = question.zone_count ?? 5;
+                document.getElementById('hintText').value = question.hint_text || '';
+                document.getElementById('explanation').value = question.explanation || '';
+                updateQuestionZoneUi();
+                setFormMode('edit');
+                new bootstrap.Modal(document.getElementById('editQuestionModal')).show();
+            })
+            .catch(err => showNotification(err.message, 'danger'));
+        }
+
+        // Edit / Delete question buttons
+        questionsTableBody.addEventListener('click', function(e) {
+            const editBtn = e.target.closest('.edit-question-btn');
+            if (editBtn) {
+                openEditById(editBtn.getAttribute('data-question-id'));
+                return;
+            }
+
+            const deleteBtn = e.target.closest('.delete-q-btn');
+            if (deleteBtn) {
+                deleteQuestionModal.dataset.questionId = deleteBtn.getAttribute('data-question-id');
+                new bootstrap.Modal(deleteQuestionModal).show();
+            }
+        });
+
+        // Confirm delete
+        confirmDeleteBtn.addEventListener('click', function() {
+            fetch('{% url "admin_dashboard:delete_estimation_question" %}', {
+                method: 'POST',
+                headers: { 'X-CSRFToken': getCookie('csrftoken'), 'Content-Type': 'application/json' },
+                body: JSON.stringify({ question_id: deleteQuestionModal.dataset.questionId })
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) {
+                    bootstrap.Modal.getInstance(deleteQuestionModal).hide();
+                    showNotification('Question deleted successfully!', 'success');
+                    loadBankQuestions(1);
+                } else {
+                    alert('Error: ' + (data.error || 'Unknown error'));
+                }
+            })
+            .catch(() => alert('Error deleting question.'));
+        });
+
+        // Utility: switch form mode
+        function setFormMode(mode) {
+            const title = document.getElementById('questionFormTitle');
+            if (mode === 'edit') {
+                title.innerHTML = '<i data-lucide="edit"></i> Edit Estimation Question';
+                submitQuestionBtn.innerHTML = '<i data-lucide="save"></i> Save Changes';
+                submitQuestionBtn.dataset.mode = 'edit';
+            } else {
+                title.innerHTML = '<i data-lucide="help-circle"></i> Add New Question';
+                submitQuestionBtn.innerHTML = '<i data-lucide="plus"></i> Add Question';
+                submitQuestionBtn.dataset.mode = 'add';
+                document.getElementById('questionId').value = '';
+                document.getElementById('addQuestionForm').reset();
+                updateQuestionZoneUi();
+            }
+            lucide.createIcons();
+        }
+
+        // Delete quiz handler
+        document.body.addEventListener('click', function(e) {
+            const btn = e.target.closest('.delete-quiz-btn');
+            if (!btn) return;
+            const quizId = btn.getAttribute('data-quiz-id');
+            if (!quizId) return;
+            if (!confirm('Delete this quiz? This will not delete its questions.')) return;
+            btn.classList.add('loading');
+            fetch("{% url 'admin_dashboard:delete_estimation_quiz' %}", {
+                method: 'POST',
+                headers: { 'X-CSRFToken': getCookie('csrftoken'), 'Content-Type': 'application/json' },
+                body: JSON.stringify({ quiz_id: parseInt(quizId) })
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data && data.success) {
+                    const row = document.querySelector(`tr[data-quiz-row="${quizId}"]`);
+                    if (row) row.remove();
+                    showNotification('Quiz deleted', 'success');
+                } else {
+                    alert('Failed to delete quiz: ' + (data && data.error ? data.error : 'Unknown error'));
+                }
+            })
+            .catch(err => { console.error(err); alert('Error deleting quiz.'); })
+            .finally(() => btn.classList.remove('loading'));
+        });
+
+        // Show quiz questions -> open Custom Quiz modal in edit mode
+        document.body.addEventListener('click', function(e) {
+            const btn = e.target.closest('.show-quiz-questions-btn');
+            if (!btn) return;
+            const quizId = parseInt(btn.getAttribute('data-quiz-id'));
+            const quizTitle = btn.getAttribute('data-quiz-title') || 'Quiz';
+            if (!quizId) return;
+
+            fetch(`{% url 'admin_dashboard:get_estimation_selected_questions' 0 %}`.replace('/0/', `/${quizId}/`), {
+                method: 'GET',
+                headers: { 'X-CSRFToken': getCookie('csrftoken') },
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (!data.success) { alert('Failed to load quiz details'); return; }
+                estimationEditMode = true;
+                estimationCurrentQuizId = quizId;
+                estimationSelectedIds = new Set((data.questions || []).map(q => q.id));
+
+                document.getElementById('createCustomQuizModalLabel').innerHTML = '<i data-lucide="layers"></i> Edit Quiz';
+                const titleInput = document.getElementById('customQuizTitle');
+                if (titleInput) titleInput.value = quizTitle;
+                const btnPrimary = document.getElementById('createCustomQuizBtn');
+                if (btnPrimary) btnPrimary.innerHTML = '<i data-lucide="check"></i> Update Quiz';
+
+                const mode = (data.scoring_mode || (data.quiz && data.quiz.scoring_mode)) || 'tolerance';
+                const tolRadio = document.getElementById('scoringTolerance');
+                const rankRadio = document.getElementById('scoringRank');
+                if (tolRadio && rankRadio) {
+                    if (mode === 'rank') { rankRadio.checked = true; tolRadio.checked = false; }
+                    else { tolRadio.checked = true; rankRadio.checked = false; }
+                }
+                updateCustomScoringModeUi();
+
+                new bootstrap.Modal(document.getElementById('createCustomQuizModal')).show();
+                loadCustomQuestions(1);
+                lucide.createIcons();
+            })
+            .catch(err => { console.error(err); alert('Error loading quiz details.'); });
+        });
+
+        // Custom Quiz Modal events
+        if (createCustomQuizModal) {
+            createCustomQuizModal.addEventListener('shown.bs.modal', function() {
+                if (!estimationEditMode) loadCustomQuestions(1);
+            });
+            createCustomQuizModal.addEventListener('hidden.bs.modal', function() {
+                estimationEditMode = false;
+                estimationSelectedIds = new Set();
+                estimationCurrentQuizId = null;
+                document.getElementById('createCustomQuizModalLabel').innerHTML = '<i data-lucide="layers"></i> Create Custom Quiz';
+                const btnPrimary = document.getElementById('createCustomQuizBtn');
+                if (btnPrimary) btnPrimary.innerHTML = '<i data-lucide="check"></i> Create Quiz';
+                const titleInput = document.getElementById('customQuizTitle');
+                if (titleInput) titleInput.value = 'Custom Quiz';
+                const tolRadio = document.getElementById('scoringTolerance');
+                const rankRadio = document.getElementById('scoringRank');
+                if (tolRadio && rankRadio) { tolRadio.checked = true; rankRadio.checked = false; }
+                updateCustomScoringModeUi();
+            });
+        }
+
+        function loadCustomQuestions(page) {
+            fetch('{% url "admin_dashboard:get_estimation_questions" %}?page=' + page, {
+                method: 'GET',
+                headers: { 'X-CSRFToken': getCookie('csrftoken') },
+            })
+            .then(r => r.json())
+            .then(data => {
+                const body = document.getElementById('customQuestionsTableBody');
+                const pager = document.getElementById('customPagination');
+                const count = document.getElementById('customQuestionCount');
+                body.innerHTML = '';
+                count.textContent = `Showing ${data.count} questions`;
+                data.questions.forEach(q => {
+                    const tr = document.createElement('tr');
+                    const checked = estimationEditMode && estimationSelectedIds.has(q.id) ? 'checked' : '';
+                    tr.innerHTML = `
+                        <td><input type="checkbox" value="${q.id}" ${checked}></td>
+                        <td>${q.question_text}</td>
+                        <td>${q.correct_answer}</td>
+                        <td class="custom-zone-points-col">${q.use_manual_points ? q.max_points : (q.zone_count ?? q.max_points)}</td>
+                        <td>${q.unit}</td>
+                        <td>${q.created_at}</td>
+                    `;
+                    body.appendChild(tr);
+                });
+                updateCustomScoringModeUi();
+                pager.innerHTML = '';
+                for (let i = 1; i <= data.pages; i++) {
+                    const li = document.createElement('li');
+                    li.className = 'page-item' + (i === data.current_page ? ' active' : '');
+                    li.innerHTML = `<button class="page-link" data-page="${i}">${i}</button>`;
+                    pager.appendChild(li);
+                }
+                pager.onclick = e => { if (e.target.classList.contains('page-link')) loadCustomQuestions(parseInt(e.target.dataset.page)); };
+            })
+            .catch(err => { console.error(err); alert('Error loading questions.'); });
+        }
+
+        document.getElementById('customQuestionsTableBody').addEventListener('change', function(e) {
+            if (e.target && e.target.type === 'checkbox') {
+                const id = parseInt(e.target.value);
+                e.target.checked ? estimationSelectedIds.add(id) : estimationSelectedIds.delete(id);
+            }
+        });
+
+        selectAllQuestions.addEventListener('change', function() {
+            document.querySelectorAll('#customQuestionsTableBody input[type="checkbox"]')
+                .forEach(cb => cb.checked = this.checked);
+        });
+
+        createCustomQuizBtn.addEventListener('click', function() {
+            const title = document.getElementById('customQuizTitle').value.trim() || 'Custom Quiz';
+            const btn = this;
+            btn.classList.add('loading');
+            const checkedModeEl = document.querySelector('input[name="scoringMode"]:checked');
+            const scoringMode = checkedModeEl ? checkedModeEl.value : 'zones';
+            const csrfToken = getCookie('csrftoken');
+            if (estimationEditMode) {
+                fetch("{% url 'admin_dashboard:update_estimation_custom_quiz' %}", {
+                    method: 'POST',
+                    headers: { 'X-CSRFToken': csrfToken, 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ quiz_id: estimationCurrentQuizId, title, question_ids: Array.from(estimationSelectedIds), scoring_mode: scoringMode })
+                })
+                .then(r => r.json())
+                .then(data => {
+                    if (data.success) { bootstrap.Modal.getInstance(createCustomQuizModal).hide(); window.location.reload(); }
+                    else alert('Error updating quiz: ' + (data.error || 'Unknown error'));
+                })
+                .catch(err => { console.error(err); alert('Error updating quiz.'); })
+                .finally(() => btn.classList.remove('loading'));
+            } else {
+                const selected = Array.from(document.querySelectorAll('#customQuestionsTableBody input[type="checkbox"]:checked')).map(cb => parseInt(cb.value));
+                fetch("{% url 'admin_dashboard:create_estimation_custom_quiz' %}", {
+                    method: 'POST',
+                    headers: { 'X-CSRFToken': csrfToken, 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ title, question_ids: selected, scoring_mode: scoringMode })
+                })
+                .then(r => r.json())
+                .then(data => {
+                    if (data.success) { bootstrap.Modal.getInstance(createCustomQuizModal).hide(); window.location.reload(); }
+                    else alert('Error creating quiz: ' + (data.error || 'Unknown error'));
+                })
+                .catch(err => { console.error(err); alert('Error creating quiz.'); })
+                .finally(() => btn.classList.remove('loading'));
+            }
+        });
+
+        // Auto-open create modal if ?create=1 in URL
+        if (new URLSearchParams(window.location.search).get('create') === '1') {
+            new bootstrap.Modal(createCustomQuizModal).show();
+        }
+
+        // ── Bundle logic ──────────────────────────────────────────────
+        let bundleQPage = 1;
+        const bundleModal = document.getElementById('createBundleModal');
+        function loadBundleQuestions(page) {
+            fetch('{% url "admin_dashboard:get_estimation_questions" %}?page=' + page, { headers: { 'X-CSRFToken': getCookie('csrftoken') } })
+            .then(r => r.json()).then(data => {
+                const tbody = document.getElementById('bundleQuestionsTableBody');
+                tbody.innerHTML = '';
+                (data.questions || []).forEach(q => {
+                    const tr = document.createElement('tr');
+                    tr.innerHTML = `<td><input type="checkbox" class="bundle-q-check" value="${q.id}"></td><td>${q.question_text}</td><td>${q.correct_answer} ${q.unit}</td>`;
+                    tbody.appendChild(tr);
+                });
+                document.getElementById('bundleQuestionCount').textContent = `${data.count} Fragen`;
+                const pag = document.getElementById('bundleQuestionPagination');
+                pag.innerHTML = '';
+                for (let i = 1; i <= data.pages; i++) {
+                    const li = document.createElement('li');
+                    li.className = 'page-item' + (i === page ? ' active' : '');
+                    li.innerHTML = `<button class="page-link" data-page="${i}">${i}</button>`;
+                    pag.appendChild(li);
+                }
+            });
+        }
+        bundleModal?.addEventListener('shown.bs.modal', () => { bundleQPage = 1; loadBundleQuestions(1); });
+        document.getElementById('bundleQuestionPagination')?.addEventListener('click', e => {
+            if (e.target.classList.contains('page-link')) { bundleQPage = parseInt(e.target.dataset.page); loadBundleQuestions(bundleQPage); }
+        });
+        document.getElementById('selectAllBundleQuestions')?.addEventListener('change', function() {
+            document.querySelectorAll('.bundle-q-check').forEach(cb => cb.checked = this.checked);
+        });
+        document.getElementById('saveBundleBtn')?.addEventListener('click', function() {
+            const name = document.getElementById('bundleName').value.trim();
+            if (!name) { alert('Bitte einen Bundle-Namen angeben.'); return; }
+            const questionIds = Array.from(document.querySelectorAll('.bundle-q-check:checked')).map(cb => parseInt(cb.value));
+            if (!questionIds.length) { alert('Bitte mindestens eine Frage auswählen.'); return; }
+            fetch('{% url "admin_dashboard:create_estimation_bundle" %}', {
+                method: 'POST',
+                headers: { 'X-CSRFToken': getCookie('csrftoken'), 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name, question_ids: questionIds })
+            }).then(r => r.json()).then(data => {
+                if (data.success) {
+                    bootstrap.Modal.getInstance(bundleModal).hide();
+                    document.getElementById('bundleName').value = '';
+                    const tbody = document.getElementById('bundleTableBody');
+                    const emptyRow = document.getElementById('bundleEmptyRow');
+                    if (emptyRow) emptyRow.remove();
+                    const tr = document.createElement('tr');
+                    tr.id = `bundle-row-${data.bundle.id}`;
+                    tr.innerHTML = `<td class="fw-semibold">${data.bundle.name}</td><td>${data.bundle.question_count} Fragen</td><td class="text-muted small">Heute</td><td><button class="btn btn-sm btn-outline-danger delete-bundle-btn" data-bundle-id="${data.bundle.id}" data-bundle-name="${data.bundle.name}"><i data-lucide="trash-2"></i></button></td>`;
+                    tbody.appendChild(tr);
+                    document.getElementById('bundleCountBadge').textContent = parseInt(document.getElementById('bundleCountBadge').textContent) + 1;
+                    lucide.createIcons();
+                }
+            });
+        });
+        document.getElementById('bundleTableBody')?.addEventListener('click', function(e) {
+            const btn = e.target.closest('.delete-bundle-btn');
+            if (!btn) return;
+            if (!confirm(`Bundle "${btn.dataset.bundleName}" löschen?`)) return;
+            fetch('{% url "admin_dashboard:delete_estimation_bundle" %}', {
+                method: 'POST',
+                headers: { 'X-CSRFToken': getCookie('csrftoken'), 'Content-Type': 'application/json' },
+                body: JSON.stringify({ bundle_id: parseInt(btn.dataset.bundleId) })
+            }).then(r => r.json()).then(data => {
+                if (data.success) {
+                    document.getElementById(`bundle-row-${btn.dataset.bundleId}`)?.remove();
+                    document.getElementById('bundleCountBadge').textContent = Math.max(0, parseInt(document.getElementById('bundleCountBadge').textContent) - 1);
+                }
+            });
+        });
+    });
+</script>
+
+<!-- Edit / Add Question Modal -->
+<div class="modal fade" id="editQuestionModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="questionFormTitle">
+                    <i data-lucide="help-circle"></i> Add New Question
+                </h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <form id="addQuestionForm" novalidate>
+                    <input type="hidden" id="questionId" name="question_id" />
+                    <div class="row">
+                        <div class="col-lg-6">
+                            <div class="mb-3">
+                                <label for="questionText" class="form-label">Question Text *</label>
+                                <textarea class="form-control" id="questionText" name="question_text" rows="3"
+                                          placeholder="e.g., How tall is Mount Everest?" required></textarea>
+                            </div>
+                            <div class="mb-3">
+                                <label for="correctAnswer" class="form-label">Correct Answer *</label>
+                                <input type="number" class="form-control" id="correctAnswer" name="correct_answer"
+                                       step="any" placeholder="e.g., 8848" required>
+                            </div>
+                            <div class="row">
+                                <div class="col-6">
+                                    <div class="mb-3">
+                                        <label for="unit" class="form-label">Unit</label>
+                                        <select class="form-control" id="unit" name="unit">
+                                            <option value="number">Number (no unit)</option>
+                                            <option value="meters">Meters</option>
+                                            <option value="kilometers">Kilometers</option>
+                                            <option value="feet">Feet</option>
+                                            <option value="inches">Inches</option>
+                                            <option value="centimeters">Centimeters</option>
+                                            <option value="years">Years</option>
+                                            <option value="months">Months</option>
+                                            <option value="days">Days</option>
+                                            <option value="hours">Hours</option>
+                                            <option value="minutes">Minutes</option>
+                                            <option value="seconds">Seconds</option>
+                                            <option value="kilograms">Kilograms</option>
+                                            <option value="pounds">Pounds</option>
+                                            <option value="grams">Grams</option>
+                                            <option value="tons">Tons</option>
+                                            <option value="liters">Liters</option>
+                                            <option value="gallons">Gallons</option>
+                                            <option value="milliliters">Milliliters</option>
+                                            <option value="degrees">Degrees</option>
+                                            <option value="fahrenheit">Fahrenheit</option>
+                                            <option value="celsius">Celsius</option>
+                                            <option value="dollars">Dollars ($)</option>
+                                            <option value="euros">Euros (€)</option>
+                                            <option value="percent">Percent (%)</option>
+                                            <option value="people">People</option>
+                                            <option value="calories">Calories</option>
+                                            <option value="watts">Watts</option>
+                                            <option value="miles">Miles</option>
+                                            <option value="mph">Miles per hour</option>
+                                            <option value="kmh">Kilometers per hour</option>
+                                        </select>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-lg-6">
+                            <div class="form-check form-switch mb-3">
+                                <input class="form-check-input" type="checkbox" id="manualPointsEnabled" name="use_manual_points">
+                                <label class="form-check-label" for="manualPointsEnabled">Punkte manuell definieren</label>
+                                <small class="form-text text-muted d-block">Standard: maximale Punkte = Anzahl der Zonen.</small>
+                            </div>
+                            <div class="row">
+                                <div class="col-4 d-none" id="maxPointsGroup">
+                                    <div class="mb-3">
+                                        <label for="maxPoints" class="form-label">Max Points</label>
+                                        <input type="number" class="form-control" id="maxPoints" name="max_points"
+                                               value="100" min="1" max="1000">
+                                    </div>
+                                </div>
+                                <div class="col-4">
+                                    <div class="mb-3">
+                                        <label for="tolerancePercentage" class="form-label">Tolerance %</label>
+                                        <input type="number" class="form-control" id="tolerancePercentage"
+                                               name="tolerance_percentage" value="10" min="1" max="50" step="0.1" required>
+                                        <small class="form-text text-muted">Width per zone</small>
+                                    </div>
+                                </div>
+                                <div class="col-4">
+                                    <div class="mb-3">
+                                        <label for="zoneCount" class="form-label">Anzahl der Zonen</label>
+                                        <input type="number" class="form-control" id="zoneCount" name="zone_count"
+                                               value="5" min="1" step="1" required>
+                                        <small class="form-text text-muted">Maximum score in zone mode</small>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="alert alert-info py-2 small" id="zoneOverview"></div>
+                            <div class="mb-3">
+                                <label for="hintText" class="form-label">Hint Text (Optional)</label>
+                                <textarea class="form-control" id="hintText" name="hint_text" rows="2"
+                                          placeholder="Optional hint to help participants"></textarea>
+                            </div>
+                            <div class="mb-3">
+                                <label for="explanation" class="form-label">Explanation (Optional)</label>
+                                <textarea class="form-control" id="explanation" name="explanation" rows="3"
+                                          placeholder="Optional explanation shown after answering"></textarea>
+                            </div>
+                        </div>
+                    </div>
+                </form>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-outline-secondary" id="resetFormBtn" data-bs-dismiss="modal">Cancel</button>
+                <button type="submit" form="addQuestionForm" class="btn btn-primary" id="submitQuestionBtn" data-mode="add">
+                    <i data-lucide="plus"></i> Add Question
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+{% endblock %}

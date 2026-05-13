@@ -1,0 +1,994 @@
+{% extends "admin_dashboard/base.html" %}
+
+{% block title %}Manage Games - QuizMaster Admin{% endblock %}
+{% block page_title %}Manage Games{% endblock %}
+{% block page_subtitle %}All created game instances{% endblock %}
+
+{% block content %}
+<div class="container-fluid py-4">
+
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <h2 class="mb-0">Game Instances</h2>
+        <div class="d-flex gap-2">
+            <a href="{% url 'admin_dashboard:home' %}" class="btn btn-outline-secondary">
+                <i data-lucide="arrow-left" style="width:16px;height:16px;" class="me-1"></i>Hauptmenü
+            </a>
+            <a href="{% url 'admin_dashboard:create_game' %}" class="btn btn-primary">
+                <i data-lucide="plus" style="width:16px;height:16px;" class="me-1"></i>New Game
+            </a>
+            <button class="btn btn-outline-danger" id="deleteSelectedBtn" disabled>
+                <i data-lucide="trash-2" style="width:16px;height:16px;" class="me-1"></i>
+                Löschen (<span id="deleteSelectedCount">0</span>)
+            </button>
+        </div>
+    </div>
+
+    <div class="d-flex gap-2 mb-3">
+        <div class="input-group" style="max-width:300px;">
+            <span class="input-group-text bg-white border-end-0">
+                <i data-lucide="search" style="width:15px;height:15px;color:#6c757d;"></i>
+            </span>
+            <input type="text" class="form-control border-start-0" id="gameSearchInput" placeholder="Spiel suchen…">
+        </div>
+        <select class="form-select" id="gameTypeFilter" style="max-width:200px;">
+            <option value="">Alle Typen</option>
+            <option value="quick quiz">Quick Quiz</option>
+            <option value="estimation">Estimation</option>
+            <option value="assign">Assign</option>
+            <option value="where is this">Where Is This?</option>
+            <option value="who is lying">Who Is Lying?</option>
+            <option value="who is that">Who Is That?</option>
+            <option value="black jack">Black Jack Quiz</option>
+            <option value="clue rush">Clue Rush</option>
+            <option value="sorting ladder">Sorting Ladder</option>
+        </select>
+        <span class="align-self-center text-muted small ms-1" id="gameFilterCount"></span>
+    </div>
+
+    <div class="card border-0 shadow-sm">
+        <div class="card-body p-0">
+            <div class="table-responsive" style="max-height: 490px; overflow-y: auto;">
+                <table class="table table-hover mb-0">
+                    <thead class="table-light sticky-top">
+                        <tr>
+                            <th style="width:36px;"><input type="checkbox" id="selectAllGames" title="Alle auswählen"></th>
+                            <th>Name</th>
+                            <th>Type</th>
+                            <th>Questions</th>
+                            <th>Created</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for game in all_games %}
+                        <tr style="cursor:pointer;" onclick="window.location='{% url 'admin_dashboard:edit_game' game.game_type game.id %}'">
+                            <td onclick="event.stopPropagation()">
+                                <input type="checkbox" class="game-select-cb"
+                                       data-game-id="{{ game.id }}" data-game-type="{{ game.game_type }}">
+                            </td>
+                            <td><strong>{{ game.title }}</strong></td>
+                            <td><span class="badge bg-light text-dark border">{{ game.game_type_display }}</span></td>
+                            <td>{{ game.question_count }}</td>
+                            <td class="text-muted small">{{ game.created_at|date:"d.m.Y H:i" }}</td>
+                            <td onclick="event.stopPropagation()">
+                                <a href="{% url 'admin_dashboard:edit_game' game.game_type game.id %}"
+                                   class="btn btn-sm btn-outline-secondary me-1">
+                                    <i data-lucide="pencil" style="width:14px;height:14px;"></i>
+                                </a>
+                                <!--<a href="{% url game.monitor_url_name game.room_code %}"
+                                   class="btn btn-sm btn-outline-primary me-1">
+                                    <i data-lucide="monitor" style="width:14px;height:14px;"></i>
+                                </a>-->
+                                <button class="btn btn-sm btn-outline-danger delete-game-btn"
+                                        data-game-id="{{ game.id }}"
+                                        data-game-type="{{ game.game_type }}"
+                                        data-game-title="{{ game.title }}">
+                                    <i data-lucide="trash-2" style="width:14px;height:14px;"></i>
+                                </button>
+                            </td>
+                        </tr>
+                        {% empty %}
+                        <tr>
+                            <td colspan="6" class="text-center py-5 text-muted">
+                                No games yet —
+                                <a href="{% url 'admin_dashboard:create_game' %}">create your first one</a>.
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <!-- Question Bank -->
+    <div class="card border-0 shadow-sm mt-4">
+        <div class="card-header bg-white border-0 py-3 d-flex justify-content-between align-items-center">
+            <div class="d-flex align-items-center gap-2">
+                <h5 class="mb-0">
+                    <i data-lucide="database" style="width:18px;height:18px;" class="me-2"></i>Question Bank
+                </h5>
+                <span class="badge bg-secondary" id="qbCountBadge">—</span>
+            </div>
+            <div class="d-flex gap-2 align-items-center">
+                <select class="form-select form-select-sm" id="qbTypeSelect" style="width:180px;">
+                    <option value="" disabled selected>Select type…</option>
+                    <option value="quiz">Quick Quiz</option>
+                    <option value="estimation">Estimation</option>
+                    <option value="assign">Assign</option>
+                    <option value="where">Where Is This?</option>
+                    <option value="who">Who Is Lying?</option>
+                    <option value="who_that">Who Is That?</option>
+                    <option value="blackjack">Black Jack Quiz</option>
+                    <option value="clue_rush">Clue Rush</option>
+                    <option value="sorting_ladder">Sorting Ladder</option>
+                </select>
+                <input type="text" class="form-control form-control-sm" id="qbSearch"
+                       placeholder="Search…" style="width:180px;" disabled>
+            </div>
+        </div>
+        <div class="card-body p-0">
+            <div class="table-responsive">
+                <table class="table table-hover mb-0">
+                    <thead class="table-light">
+                        <tr id="qbHead">
+                            <td colspan="6" class="text-center py-4 text-muted">Select a game type to view questions</td>
+                        </tr>
+                    </thead>
+                    <tbody id="qbBody"></tbody>
+                </table>
+            </div>
+            <div class="d-flex justify-content-between align-items-center px-3 py-2 border-top" id="qbFooter" style="display:none!important;">
+                <div class="text-muted small" id="qbInfo"></div>
+                <ul class="pagination pagination-sm mb-0" id="qbPagination"></ul>
+            </div>
+        </div>
+    </div>
+
+</div>
+
+<script>
+const QB_CONFIG = {
+    quiz:           { url: '/admin-dashboard/quiz/questions/',           dataKey: 'questions', columns: [{key:'question_text',label:'Question'},{key:'question_type',label:'Type'},{key:'points',label:'Points'},{key:'time_limit',label:'Time (s)'}] },
+    estimation:     { url: '/admin-dashboard/estimation/questions/',     dataKey: 'questions', columns: [{key:'question_text',label:'Question'},{key:'correct_answer',label:'Answer'},{key:'unit',label:'Unit'},{key:'points_display',label:'Zonenpunkte'}] },
+    assign:         { url: '/admin-dashboard/assign/questions/',         dataKey: 'questions', columns: [{key:'question_text',label:'Topic'},{key:'time_limit',label:'Time (s)'}] },
+    where:          { url: '/admin-dashboard/where/questions/',          dataKey: 'questions', columns: [{key:'question_text',label:'Location'},{key:'points',label:'Points'}] },
+    who:            { url: '/admin-dashboard/who/questions/',            dataKey: 'questions', columns: [{key:'statement',label:'Statement'},{key:'people_count',label:'People'},{key:'points',label:'Points'}] },
+    who_that:       { url: '/admin-dashboard/who-that/questions/',       dataKey: 'questions', columns: [{key:'question_text',label:'Question'},{key:'correct_answer',label:'Answer'}] },
+    blackjack:      { url: '/admin-dashboard/black-jack/questions/',     dataKey: 'questions', columns: [{key:'question_text',label:'Question'},{key:'correct_answer',label:'Answer'},{key:'time_limit',label:'Time (s)'}] },
+    clue_rush:      { url: '/admin-dashboard/clue-rush/questions/',      dataKey: 'questions', columns: [{key:'question_text',label:'Question'},{key:'answer',label:'Answer'},{key:'points',label:'Points'}] },
+    sorting_ladder: { url: '/admin-dashboard/sorting-ladder/topics/',    dataKey: 'topics',    columns: [{key:'title',label:'Topic'},{key:'description',label:'Description'},{key:'item_count',label:'Items'}] },
+};
+
+// Detail + update URL config per game type
+const QB_EDIT_CFG = {
+    quiz:           { detail: id => `/admin-dashboard/quiz/question/${id}/`,          update: '/admin-dashboard/quiz/update-question/',         json: true },
+    estimation:     { detail: id => `/admin-dashboard/estimation/question/${id}/`,    update: '/admin-dashboard/estimation/update-question/',   json: true },
+    assign:         { detail: id => `/admin-dashboard/assign/question/${id}/`,        update: '/admin-dashboard/assign/update-question/',       json: true },
+    where:          { detail: id => `/admin-dashboard/where/question/${id}/`,         update: '/admin-dashboard/where/question/update/',        json: false },
+    who:            { detail: id => `/admin-dashboard/who/question/${id}/`,           update: '/admin-dashboard/who/update-question/',          json: true },
+    who_that:       { detail: id => `/admin-dashboard/who-that/question/${id}/`,      update: '/admin-dashboard/who-that/update-question/',     json: true },
+    blackjack:      { detail: id => `/admin-dashboard/blackjack/question/${id}/`,     update: '/admin-dashboard/blackjack/update-question/',    json: true },
+    clue_rush:      { detail: id => `/admin-dashboard/clue-rush/question/${id}/`,     update: '/admin-dashboard/clue-rush/update-question/',    json: true },
+    sorting_ladder: { detail: id => `/admin-dashboard/sorting-ladder/topic/${id}/`,   update: '/admin-dashboard/sorting-ladder/topics/update/', json: false },
+};
+
+let qbCurrentEditId = null;
+
+let qbType = null, qbPage = 1, qbTimer = null;
+
+document.getElementById('qbTypeSelect').addEventListener('change', function () {
+    qbType = this.value;
+    qbPage = 1;
+    document.getElementById('qbSearch').value = '';
+    document.getElementById('qbSearch').disabled = false;
+    loadQB(1);
+});
+
+document.getElementById('qbSearch').addEventListener('input', function () {
+    clearTimeout(qbTimer);
+    qbTimer = setTimeout(() => loadQB(1), 350);
+});
+
+function loadQB(page) {
+    if (!qbType) return;
+    qbPage = page;
+    const cfg = QB_CONFIG[qbType];
+    const search = document.getElementById('qbSearch').value.trim();
+
+    // Render header
+    document.getElementById('qbHead').innerHTML =
+        cfg.columns.map(c => `<th>${c.label}</th>`).join('');
+
+    document.getElementById('qbBody').innerHTML =
+        '<tr><td colspan="6" class="text-center py-4"><div class="spinner-border spinner-border-sm text-secondary"></div> Loading…</td></tr>';
+
+    fetch(`${cfg.url}?page=${page}&search=${encodeURIComponent(search)}`)
+    .then(r => r.json())
+    .then(data => {
+        const items = data[cfg.dataKey] || [];
+        if (qbType === 'estimation') {
+            items.forEach(item => {
+                item.points_display = item.use_manual_points ? item.max_points : (item.zone_count ?? item.max_points);
+            });
+        }
+        const total = data.count || 0;
+        const pages = data.pages || 1;
+
+        document.getElementById('qbCountBadge').textContent = total;
+        document.getElementById('qbInfo').textContent = `${total} items`;
+        document.getElementById('qbFooter').style.display = 'flex';
+
+        if (!items.length) {
+            document.getElementById('qbBody').innerHTML =
+                '<tr><td colspan="6" class="text-center py-4 text-muted">No items found</td></tr>';
+            document.getElementById('qbPagination').innerHTML = '';
+            return;
+        }
+
+        document.getElementById('qbBody').innerHTML = items.map(item =>
+            `<tr style="cursor:${item.id ? 'pointer' : 'default'}" data-item-id="${item.id || ''}">` +
+            cfg.columns.map(c =>
+                `<td>${item[c.key] !== undefined && item[c.key] !== null ? item[c.key] : '—'}</td>`
+            ).join('') + '</tr>'
+        ).join('');
+
+        document.querySelectorAll('#qbBody tr[data-item-id]').forEach(tr => {
+            const id = tr.dataset.itemId;
+            if (!id) return;
+            tr.addEventListener('click', () => openQBEdit(id));
+        });
+
+        const pag = document.getElementById('qbPagination');
+        pag.innerHTML = '';
+        for (let i = 1; i <= pages; i++) {
+            const li = document.createElement('li');
+            li.className = 'page-item' + (i === (data.current_page || page) ? ' active' : '');
+            li.innerHTML = `<button class="page-link" data-page="${i}">${i}</button>`;
+            pag.appendChild(li);
+        }
+        pag.querySelectorAll('[data-page]').forEach(b =>
+            b.addEventListener('click', () => loadQB(parseInt(b.dataset.page)))
+        );
+    })
+    .catch(() => {
+        document.getElementById('qbBody').innerHTML =
+            '<tr><td colspan="6" class="text-center py-4 text-danger">Failed to load</td></tr>';
+    });
+}
+
+// ── Game Instances Filter ──────────────────────────────────────────────────────
+
+(function () {
+    const searchInput = document.getElementById('gameSearchInput');
+    const typeFilter  = document.getElementById('gameTypeFilter');
+    const countEl     = document.getElementById('gameFilterCount');
+    const rows        = Array.from(document.querySelectorAll('tbody tr[onclick]'));
+    const total       = rows.length;
+
+    function applyFilter() {
+        const search = searchInput.value.toLowerCase().trim();
+        const type   = typeFilter.value.toLowerCase();
+        let visible  = 0;
+        rows.forEach(row => {
+            const name     = row.querySelector('td:nth-child(2)')?.textContent.toLowerCase() || '';
+            const rowType  = row.querySelector('td:nth-child(3)')?.textContent.toLowerCase() || '';
+            const matchSearch = !search || name.includes(search);
+            const matchType   = !type   || rowType.includes(type);
+            const show = matchSearch && matchType;
+            row.style.display = show ? '' : 'none';
+            if (show) visible++;
+        });
+        countEl.textContent = (search || type) ? `${visible} von ${total}` : '';
+    }
+
+    searchInput.addEventListener('input', applyFilter);
+    typeFilter.addEventListener('change', applyFilter);
+})();
+
+// ── QB Edit Modal ─────────────────────────────────────────────────────────────
+
+function getCookie(name) {
+    const v = document.cookie.match('(^|;) ?' + name + '=([^;]*)(;|$)');
+    return v ? v[2] : null;
+}
+
+function formatEstimationZoneNumber(value) {
+    if (!Number.isFinite(value)) return '';
+    const rounded = Math.round(value * 100) / 100;
+    return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(2).replace(/\.?0+$/, '');
+}
+
+function buildEstimationZoneOverview(answer, tolerance, zoneCount, manualPoints, manualMaxPoints) {
+    zoneCount = Math.max(1, parseInt(zoneCount, 10) || 1);
+    tolerance = parseFloat(tolerance) || 0;
+    const maxPoints = manualPoints ? Math.max(1, parseInt(manualMaxPoints, 10) || 1) : zoneCount;
+    if (!Number.isFinite(answer) || tolerance <= 0) {
+        return 'Richtige Antwort und Toleranz eingeben, um die Zonen-Uebersicht zu sehen.';
+    }
+    const rows = [];
+    if (answer === 0) {
+        rows.push(`<li>${maxPoints} P - Bereich: exakt 0</li>`);
+        rows.push('<li>0 P - Bereich: alle anderen Antworten</li>');
+    } else {
+        for (let zone = 1; zone <= zoneCount; zone++) {
+            const delta = Math.abs(answer) * (tolerance * zone / 100);
+            const points = Math.max(0, maxPoints - zone + 1);
+            rows.push(`<li>${points} P - Bereich: ${formatEstimationZoneNumber(answer - delta)} - ${formatEstimationZoneNumber(answer + delta)}</li>`);
+        }
+        const outerDelta = Math.abs(answer) * (tolerance * zoneCount / 100);
+        rows.push(`<li>0 P - Bereich: weniger als ${formatEstimationZoneNumber(answer - outerDelta)} oder mehr als ${formatEstimationZoneNumber(answer + outerDelta)}</li>`);
+    }
+    const modeText = manualPoints
+        ? `Manuell: innerste Zone = ${maxPoints} Punkte, jede weitere Zone 1 Punkt weniger.`
+        : `Automatisch: innerste Zone = ${zoneCount} Punkte, jede weitere Zone 1 Punkt weniger.`;
+    return `<div class="fw-semibold mb-1">Zonen-Uebersicht</div><div class="mb-1">${modeText}</div><ul class="mb-0 ps-3">${rows.join('')}</ul>`;
+}
+
+function updateQbEstimationZoneUi() {
+    const manual = document.getElementById('qbe-manual-points').checked;
+    document.getElementById('qbe-manual-points-group').classList.toggle('d-none', !manual);
+    document.getElementById('qbe-zone-overview').innerHTML = buildEstimationZoneOverview(
+        parseFloat(document.getElementById('qbe-answer').value),
+        document.getElementById('qbe-tolerance').value,
+        document.getElementById('qbe-zone-count').value,
+        manual,
+        document.getElementById('qbe-points').value
+    );
+}
+
+function openQBEdit(id) {
+    const cfg = QB_EDIT_CFG[qbType];
+    if (!cfg) return;
+    qbCurrentEditId = id;
+
+    // Show correct section, hide others
+    document.querySelectorAll('.qb-edit-section').forEach(s => s.classList.add('d-none'));
+    const section = document.getElementById('qbEdit-' + qbType);
+    if (section) section.classList.remove('d-none');
+
+    const titles = { quiz:'Quick Quiz', estimation:'Estimation', assign:'Assign', where:'Where Is This?',
+                     who:'Who Is Lying?', who_that:'Who Is That?', blackjack:'Black Jack', clue_rush:'Clue Rush', sorting_ladder:'Sorting Ladder' };
+    document.getElementById('qbEditModalTitle').textContent = 'Edit – ' + (titles[qbType] || qbType);
+
+    fetch(cfg.detail(id), { headers: { 'X-CSRFToken': getCookie('csrftoken') } })
+    .then(r => r.json())
+    .then(data => {
+        const q = data.question || data.topic || {};
+        if (!data.success) { alert(data.error || 'Failed to load'); return; }
+        qbPopulate[qbType]?.(q);
+        new bootstrap.Modal(document.getElementById('qbEditModal')).show();
+    })
+    .catch(err => alert('Error loading: ' + err.message));
+}
+
+document.addEventListener('DOMContentLoaded', function() {
+    ['qbe-answer', 'qbe-tolerance', 'qbe-zone-count', 'qbe-points', 'qbe-manual-points'].forEach(id => {
+        const el = document.getElementById(id);
+        if (!el) return;
+        el.addEventListener('input', updateQbEstimationZoneUi);
+        el.addEventListener('change', updateQbEstimationZoneUi);
+    });
+    updateQbEstimationZoneUi();
+
+    // Delete game instance
+    let _deleteGameId = null, _deleteGameType = null;
+    document.querySelectorAll('.delete-game-btn').forEach(btn => {
+        btn.addEventListener('click', function() {
+            _deleteGameId = this.dataset.gameId;
+            _deleteGameType = this.dataset.gameType;
+            document.getElementById('deleteGameTitle').textContent = this.dataset.gameTitle;
+            new bootstrap.Modal(document.getElementById('deleteGameModal')).show();
+        });
+    });
+    document.getElementById('confirmDeleteGameBtn').addEventListener('click', function() {
+        if (!_deleteGameId) return;
+        this.disabled = true;
+        fetch('{% url "admin_dashboard:delete_game_instance" %}', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-CSRFToken': getCookie('csrftoken') },
+            body: JSON.stringify({ game_id: parseInt(_deleteGameId), game_type: _deleteGameType }),
+        })
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) {
+                bootstrap.Modal.getInstance(document.getElementById('deleteGameModal')).hide();
+                window.location.reload();
+            } else {
+                alert('Fehler: ' + (data.error || 'Unbekannter Fehler'));
+            }
+        })
+        .catch(err => alert('Fehler: ' + err.message))
+        .finally(() => this.disabled = false);
+    });
+
+    // Checkbox selection
+    function getSelectedGames() {
+        return Array.from(document.querySelectorAll('.game-select-cb:checked'))
+            .map(cb => ({ game_id: parseInt(cb.dataset.gameId), game_type: cb.dataset.gameType }));
+    }
+    function updateDeleteBtn() {
+        const count = getSelectedGames().length;
+        document.getElementById('deleteSelectedCount').textContent = count;
+        document.getElementById('deleteSelectedBtn').disabled = count === 0;
+        document.getElementById('selectAllGames').indeterminate =
+            count > 0 && count < document.querySelectorAll('.game-select-cb').length;
+    }
+    document.querySelectorAll('.game-select-cb').forEach(cb => cb.addEventListener('change', updateDeleteBtn));
+    document.getElementById('selectAllGames').addEventListener('change', function() {
+        document.querySelectorAll('.game-select-cb:not([style*="display: none"])').forEach(cb => {
+            const row = cb.closest('tr');
+            if (!row || row.style.display !== 'none') cb.checked = this.checked;
+        });
+        updateDeleteBtn();
+    });
+
+    // Delete selected
+    document.getElementById('deleteSelectedBtn').addEventListener('click', function() {
+        const selected = getSelectedGames();
+        if (!selected.length) return;
+        document.getElementById('deleteSelectedModalCount').textContent = selected.length;
+        new bootstrap.Modal(document.getElementById('deleteSelectedGamesModal')).show();
+    });
+    document.getElementById('confirmDeleteSelectedBtn').addEventListener('click', function() {
+        const selected = getSelectedGames();
+        this.disabled = true;
+        Promise.all(selected.map(({ game_id, game_type }) =>
+            fetch('{% url "admin_dashboard:delete_game_instance" %}', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'X-CSRFToken': getCookie('csrftoken') },
+                body: JSON.stringify({ game_id, game_type }),
+            }).then(r => r.json())
+        ))
+        .then(results => {
+            const failed = results.filter(r => !r.success);
+            bootstrap.Modal.getInstance(document.getElementById('deleteSelectedGamesModal')).hide();
+            if (failed.length) alert(`${failed.length} Spiel(e) konnten nicht gelöscht werden.`);
+            window.location.reload();
+        })
+        .catch(err => { alert('Fehler: ' + err.message); this.disabled = false; });
+    });
+
+    document.getElementById('qbEditSaveBtn').addEventListener('click', function() {
+        const cfg = QB_EDIT_CFG[qbType];
+        if (!cfg || !qbCurrentEditId) return;
+        const payload = qbCollect[qbType]?.();
+        if (!payload) return;
+        const btn = this;
+        btn.disabled = true;
+
+        let fetchOpts;
+        if (cfg.json) {
+            fetchOpts = { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRFToken': getCookie('csrftoken') }, body: JSON.stringify(payload) };
+        } else {
+            const fd = new FormData();
+            Object.entries(payload).forEach(([k, v]) => fd.append(k, v));
+            fetchOpts = { method: 'POST', headers: { 'X-CSRFToken': getCookie('csrftoken') }, body: fd };
+        }
+
+        fetch(cfg.update, fetchOpts)
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) {
+                bootstrap.Modal.getInstance(document.getElementById('qbEditModal'))?.hide();
+                loadQB(qbPage);
+            } else {
+                alert('Error: ' + (data.error || 'Unknown error'));
+            }
+        })
+        .catch(err => alert('Save failed: ' + err.message))
+        .finally(() => btn.disabled = false);
+    });
+});
+
+// ── Populate functions (fill form from API data) ──────────────────────────────
+const qbPopulate = {
+    quiz(q) {
+        document.getElementById('qbq-id').value = q.id;
+        document.getElementById('qbq-text').value = q.question_text || '';
+        document.getElementById('qbq-type').value = q.question_type || 'multiple_choice';
+        document.getElementById('qbq-points').value = q.points || '';
+        document.getElementById('qbq-time').value = q.time_limit || '';
+        document.getElementById('qbq-a').value = q.option_a || '';
+        document.getElementById('qbq-b').value = q.option_b || '';
+        document.getElementById('qbq-c').value = q.option_c || '';
+        document.getElementById('qbq-d').value = q.option_d || '';
+        document.getElementById('qbq-correct').value = q.correct_answer || '';
+    },
+    estimation(q) {
+        document.getElementById('qbe-id').value = q.id;
+        document.getElementById('qbe-text').value = q.question_text || '';
+        document.getElementById('qbe-answer').value = q.correct_answer || '';
+        document.getElementById('qbe-unit').value = q.unit || '';
+        document.getElementById('qbe-points').value = q.max_points || '';
+        document.getElementById('qbe-manual-points').checked = !!q.use_manual_points;
+        document.getElementById('qbe-tolerance').value = q.tolerance_percentage || '';
+        document.getElementById('qbe-zone-count').value = q.zone_count || 5;
+        document.getElementById('qbe-hint').value = q.hint_text || '';
+        document.getElementById('qbe-explanation').value = q.explanation || '';
+        updateQbEstimationZoneUi();
+    },
+    assign(q) {
+        document.getElementById('qba-id').value = q.id;
+        document.getElementById('qba-text').value = q.question_text || '';
+        document.getElementById('qba-time').value = q.time_limit || '';
+        document.getElementById('qba-explanation').value = q.explanation || '';
+        // Build left/right items
+        qbBuildSimpleList('qba-left-items', q.left_items || []);
+        qbBuildSimpleList('qba-right-items', q.right_items || []);
+        window._qbAssignMatches = q.correct_matches || {};
+    },
+    where(q) {
+        document.getElementById('qbw-id').value = q.id;
+        document.getElementById('qbw-text').value = q.question_text || '';
+        document.getElementById('qbw-time').value = q.time_limit || '';
+        document.getElementById('qbw-points').value = q.points || '';
+        document.getElementById('qbw-perfect').value = q.perfect_distance || '';
+        document.getElementById('qbw-good').value = q.good_distance || '';
+        document.getElementById('qbw-fair').value = q.fair_distance || '';
+        document.getElementById('qbw-poor').value = q.poor_distance || '';
+        document.getElementById('qbw-lat').value = q.latitude ?? '';
+        document.getElementById('qbw-lng').value = q.longitude ?? '';
+        document.getElementById('qbw-hint').value = q.hint_text || '';
+        document.getElementById('qbw-explanation').value = q.explanation || '';
+    },
+    who(q) {
+        document.getElementById('qbwho-id').value = q.id;
+        document.getElementById('qbwho-statement').value = q.statement || '';
+        document.getElementById('qbwho-points').value = q.points || '';
+        document.getElementById('qbwho-time').value = q.time_limit || '';
+        document.getElementById('qbwho-explanation').value = q.explanation || '';
+        const container = document.getElementById('qbwho-people');
+        container.innerHTML = '';
+        (q.people || []).forEach(p => qbAddPersonRow(container, p.name, p.is_lying));
+        if (!container.children.length) qbAddPersonRow(container, '', false);
+    },
+    who_that(q) {
+        document.getElementById('qbwt-id').value = q.id;
+        document.getElementById('qbwt-text').value = q.question_text || '';
+        document.getElementById('qbwt-answer').value = q.correct_answer || '';
+        document.getElementById('qbwt-alt').value = q.alternative_answers || '';
+        document.getElementById('qbwt-time').value = q.time_limit || '';
+        document.getElementById('qbwt-hint').value = q.hint_text || '';
+        document.getElementById('qbwt-explanation').value = q.explanation || '';
+        document.getElementById('qbwt-category').value = q.category || '';
+    },
+    blackjack(q) {
+        document.getElementById('qbbj-id').value = q.id;
+        document.getElementById('qbbj-text').value = q.question_text || '';
+        document.getElementById('qbbj-answer').value = q.correct_answer || '';
+        document.getElementById('qbbj-time').value = q.time_limit || '';
+        document.getElementById('qbbj-hint').value = q.hint_text || '';
+        document.getElementById('qbbj-explanation').value = q.explanation || '';
+    },
+    clue_rush(q) {
+        document.getElementById('qbcr-id').value = q.id;
+        document.getElementById('qbcr-text').value = q.question_text || '';
+        document.getElementById('qbcr-answer').value = q.answer || '';
+        document.getElementById('qbcr-points').value = q.points || '';
+        const container = document.getElementById('qbcr-clues');
+        container.innerHTML = '';
+        (q.clues || []).forEach(c => qbAddClueRow(container, c.clue_text, c.order, c.duration));
+        if (!container.children.length) qbAddClueRow(container, '', 1, 10);
+    },
+    sorting_ladder(q) {
+        document.getElementById('qbsl-id').value = q.id;
+        document.getElementById('qbsl-title').value = q.title || q.question_text || '';
+        document.getElementById('qbsl-desc').value = q.description || '';
+        document.getElementById('qbsl-points').value = q.points || '';
+        document.getElementById('qbsl-time').value = q.round_time_limit || '';
+        document.getElementById('qbsl-upper').value = q.upper_label || 'Ascending';
+        document.getElementById('qbsl-lower').value = q.lower_label || 'Descending';
+        const container = document.getElementById('qbsl-items');
+        container.innerHTML = '';
+        (q.items || []).forEach(item => qbAddItemRow(container, item.text, item.order));
+        if (!container.children.length) qbAddItemRow(container, '', 1);
+    },
+};
+
+// ── Collect functions (read form → payload object) ────────────────────────────
+const qbCollect = {
+    quiz() {
+        return {
+            question_id: document.getElementById('qbq-id').value,
+            question_text: document.getElementById('qbq-text').value.trim(),
+            question_type: document.getElementById('qbq-type').value,
+            points: parseInt(document.getElementById('qbq-points').value) || 0,
+            time_limit: parseInt(document.getElementById('qbq-time').value) || 30,
+            option_a: document.getElementById('qbq-a').value.trim(),
+            option_b: document.getElementById('qbq-b').value.trim(),
+            option_c: document.getElementById('qbq-c').value.trim(),
+            option_d: document.getElementById('qbq-d').value.trim(),
+            correct_answer: document.getElementById('qbq-correct').value.trim(),
+        };
+    },
+    estimation() {
+        return {
+            question_id: document.getElementById('qbe-id').value,
+            question_text: document.getElementById('qbe-text').value.trim(),
+            correct_answer: document.getElementById('qbe-answer').value,
+            unit: document.getElementById('qbe-unit').value.trim(),
+            max_points: parseInt(document.getElementById('qbe-points').value) || 1,
+            use_manual_points: document.getElementById('qbe-manual-points').checked,
+            tolerance_percentage: parseFloat(document.getElementById('qbe-tolerance').value) || 0,
+            zone_count: parseInt(document.getElementById('qbe-zone-count').value) || 5,
+            hint_text: document.getElementById('qbe-hint').value.trim(),
+            explanation: document.getElementById('qbe-explanation').value.trim(),
+        };
+    },
+    assign() {
+        const leftItems = Array.from(document.querySelectorAll('#qba-left-items .qb-list-text')).map(i => i.value.trim()).filter(Boolean);
+        const rightItems = Array.from(document.querySelectorAll('#qba-right-items .qb-list-text')).map(i => i.value.trim()).filter(Boolean);
+        return {
+            question_id: document.getElementById('qba-id').value,
+            question_text: document.getElementById('qba-text').value.trim(),
+            time_limit: parseInt(document.getElementById('qba-time').value) || 30,
+            explanation: document.getElementById('qba-explanation').value.trim(),
+            left_items: leftItems,
+            right_items: rightItems,
+            correct_matches: window._qbAssignMatches || {},
+        };
+    },
+    where() {
+        return {
+            question_id: document.getElementById('qbw-id').value,
+            question_text: document.getElementById('qbw-text').value.trim(),
+            time_limit: parseInt(document.getElementById('qbw-time').value) || 30,
+            points: parseInt(document.getElementById('qbw-points').value) || 0,
+            perfect_distance: parseFloat(document.getElementById('qbw-perfect').value) || 0,
+            good_distance: parseFloat(document.getElementById('qbw-good').value) || 0,
+            fair_distance: parseFloat(document.getElementById('qbw-fair').value) || 0,
+            poor_distance: parseFloat(document.getElementById('qbw-poor').value) || 0,
+            latitude: document.getElementById('qbw-lat').value,
+            longitude: document.getElementById('qbw-lng').value,
+            hint_text: document.getElementById('qbw-hint').value.trim(),
+            explanation: document.getElementById('qbw-explanation').value.trim(),
+        };
+    },
+    who() {
+        const people = Array.from(document.querySelectorAll('#qbwho-people .qb-person-row')).map(row => ({
+            name: row.querySelector('.qb-person-name').value.trim(),
+            is_lying: row.querySelector('.qb-person-lying').checked,
+        })).filter(p => p.name);
+        return {
+            question_id: document.getElementById('qbwho-id').value,
+            statement: document.getElementById('qbwho-statement').value.trim(),
+            points: parseInt(document.getElementById('qbwho-points').value) || 0,
+            time_limit: parseInt(document.getElementById('qbwho-time').value) || 30,
+            explanation: document.getElementById('qbwho-explanation').value.trim(),
+            people,
+        };
+    },
+    who_that() {
+        return {
+            question_id: document.getElementById('qbwt-id').value,
+            question_text: document.getElementById('qbwt-text').value.trim(),
+            correct_answer: document.getElementById('qbwt-answer').value.trim(),
+            alternative_answers: document.getElementById('qbwt-alt').value.trim(),
+            time_limit: parseInt(document.getElementById('qbwt-time').value) || 30,
+            hint_text: document.getElementById('qbwt-hint').value.trim(),
+            explanation: document.getElementById('qbwt-explanation').value.trim(),
+            category: document.getElementById('qbwt-category').value.trim(),
+        };
+    },
+    blackjack() {
+        return {
+            question_id: document.getElementById('qbbj-id').value,
+            question_text: document.getElementById('qbbj-text').value.trim(),
+            correct_answer: document.getElementById('qbbj-answer').value.trim(),
+            time_limit: parseInt(document.getElementById('qbbj-time').value) || 30,
+            hint_text: document.getElementById('qbbj-hint').value.trim(),
+            explanation: document.getElementById('qbbj-explanation').value.trim(),
+        };
+    },
+    clue_rush() {
+        const clues = Array.from(document.querySelectorAll('#qbcr-clues .qb-clue-row')).map((row, idx) => ({
+            clue_text: row.querySelector('.qb-clue-text').value.trim(),
+            order: idx + 1,
+            duration: parseInt(row.querySelector('.qb-clue-dur').value) || 10,
+        })).filter(c => c.clue_text);
+        return {
+            question_id: document.getElementById('qbcr-id').value,
+            question_text: document.getElementById('qbcr-text').value.trim(),
+            answer: document.getElementById('qbcr-answer').value.trim(),
+            points: parseInt(document.getElementById('qbcr-points').value) || 0,
+            clues,
+        };
+    },
+    sorting_ladder() {
+        const items = Array.from(document.querySelectorAll('#qbsl-items .qb-item-row')).map((row, idx) => ({
+            text: row.querySelector('.qb-item-text').value.trim(),
+            order: idx + 1,
+        })).filter(i => i.text);
+        return {
+            topic_id: document.getElementById('qbsl-id').value,
+            title: document.getElementById('qbsl-title').value.trim(),
+            description: document.getElementById('qbsl-desc').value.trim(),
+            points: document.getElementById('qbsl-points').value,
+            round_time_limit: document.getElementById('qbsl-time').value,
+            upper_label: document.getElementById('qbsl-upper').value.trim(),
+            lower_label: document.getElementById('qbsl-lower').value.trim(),
+            items_json: JSON.stringify(items),
+        };
+    },
+};
+
+// ── Dynamic list helpers ──────────────────────────────────────────────────────
+function qbAddItemRow(container, text = '', order = '') {
+    const div = document.createElement('div');
+    div.className = 'qb-item-row d-flex gap-2 mb-1';
+    div.innerHTML = `<input type="text" class="form-control form-control-sm qb-item-text" placeholder="Item…" value="${text}">
+                     <button type="button" class="btn btn-sm btn-outline-danger" onclick="this.parentElement.remove()">×</button>`;
+    container.appendChild(div);
+}
+
+function qbBuildSimpleList(containerId, items) {
+    const container = document.getElementById(containerId);
+    container.innerHTML = '';
+    (Array.isArray(items) ? items : []).forEach(item => qbAddItemRow(container, item));
+    if (!container.children.length) qbAddItemRow(container);
+}
+
+function qbAddPersonRow(container, name = '', isLying = false) {
+    const div = document.createElement('div');
+    div.className = 'qb-person-row d-flex gap-2 align-items-center mb-1';
+    div.innerHTML = `<input type="text" class="form-control form-control-sm qb-person-name" placeholder="Name…" value="${name}">
+                     <label class="d-flex align-items-center gap-1 text-nowrap">
+                         <input type="checkbox" class="qb-person-lying" ${isLying ? 'checked' : ''}> Liar
+                     </label>
+                     <button type="button" class="btn btn-sm btn-outline-danger" onclick="this.parentElement.remove()">×</button>`;
+    container.appendChild(div);
+}
+
+function qbAddClueRow(container, text = '', order = '', duration = 10) {
+    const div = document.createElement('div');
+    div.className = 'qb-clue-row d-flex gap-2 mb-1';
+    div.innerHTML = `<input type="text" class="form-control form-control-sm qb-clue-text" placeholder="Clue…" value="${text}">
+                     <input type="number" class="form-control form-control-sm qb-clue-dur" placeholder="s" value="${duration}" style="width:70px;">
+                     <button type="button" class="btn btn-sm btn-outline-danger" onclick="this.parentElement.remove()">×</button>`;
+    container.appendChild(div);
+}
+</script>
+
+<!-- Delete Selected Games Modal -->
+<div class="modal fade" id="deleteSelectedGamesModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Ausgewählte Spiele löschen</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <p>Sollen wirklich <strong id="deleteSelectedModalCount"></strong> ausgewählte Spiel(e) gelöscht werden?</p>
+                <p class="text-muted small">Die Fragen in der Question Bank bleiben erhalten. Diese Aktion kann nicht rückgängig gemacht werden.</p>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Abbrechen</button>
+                <button type="button" class="btn btn-danger" id="confirmDeleteSelectedBtn">Löschen</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Delete Game Modal -->
+<div class="modal fade" id="deleteGameModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Spiel löschen</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <p>Soll <strong id="deleteGameTitle"></strong> wirklich gelöscht werden?</p>
+                <p class="text-muted small">Die Fragen in der Question Bank bleiben erhalten.</p>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Abbrechen</button>
+                <button type="button" class="btn btn-danger" id="confirmDeleteGameBtn">Löschen</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- QB Edit Modal -->
+<div class="modal fade" id="qbEditModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="qbEditModalTitle">Edit</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+
+                <!-- Quick Quiz -->
+                <div id="qbEdit-quiz" class="qb-edit-section d-none">
+                    <input type="hidden" id="qbq-id">
+                    <div class="mb-3"><label class="form-label">Question *</label>
+                        <textarea class="form-control" id="qbq-text" rows="3"></textarea></div>
+                    <div class="row g-3 mb-3">
+                        <div class="col-md-4"><label class="form-label">Type</label>
+                            <select class="form-select" id="qbq-type">
+                                <option value="multiple_choice">Multiple Choice</option>
+                                <option value="true_false">True / False</option>
+                                <option value="short_answer">Short Answer</option>
+                            </select></div>
+                        <div class="col-md-4"><label class="form-label">Points</label>
+                            <input type="number" class="form-control" id="qbq-points"></div>
+                        <div class="col-md-4"><label class="form-label">Time (s)</label>
+                            <input type="number" class="form-control" id="qbq-time"></div>
+                    </div>
+                    <div class="row g-2 mb-3">
+                        <div class="col-md-6"><label class="form-label">Option A</label><input type="text" class="form-control" id="qbq-a"></div>
+                        <div class="col-md-6"><label class="form-label">Option B</label><input type="text" class="form-control" id="qbq-b"></div>
+                        <div class="col-md-6"><label class="form-label">Option C</label><input type="text" class="form-control" id="qbq-c"></div>
+                        <div class="col-md-6"><label class="form-label">Option D</label><input type="text" class="form-control" id="qbq-d"></div>
+                    </div>
+                    <div class="row g-3 mb-3">
+                        <div class="col-md-6"><label class="form-label">Correct Answer</label><input type="text" class="form-control" id="qbq-correct"></div>
+                    </div>
+                </div>
+
+                <!-- Estimation -->
+                <div id="qbEdit-estimation" class="qb-edit-section d-none">
+                    <input type="hidden" id="qbe-id">
+                    <div class="mb-3"><label class="form-label">Question *</label>
+                        <textarea class="form-control" id="qbe-text" rows="2"></textarea></div>
+                    <div class="row g-3 mb-3">
+                        <div class="col-md-4"><label class="form-label">Correct Answer *</label><input type="number" class="form-control" id="qbe-answer"></div>
+                        <div class="col-md-4"><label class="form-label">Unit</label><input type="text" class="form-control" id="qbe-unit" placeholder="km, kg…"></div>
+                    </div>
+                    <div class="form-check form-switch mb-3">
+                        <input class="form-check-input" type="checkbox" id="qbe-manual-points">
+                        <label class="form-check-label" for="qbe-manual-points">Punkte manuell definieren</label>
+                        <small class="form-text text-muted d-block">Standard: maximale Punkte = Anzahl der Zonen.</small>
+                    </div>
+                    <div class="row g-3 mb-3">
+                        <div class="col-md-3 d-none" id="qbe-manual-points-group"><label class="form-label">Max Points</label><input type="number" class="form-control" id="qbe-points"></div>
+                        <div class="col-md-3"><label class="form-label">Tolerance %</label><input type="number" class="form-control" id="qbe-tolerance"></div>
+                        <div class="col-md-3"><label class="form-label">Anzahl der Zonen</label><input type="number" class="form-control" id="qbe-zone-count" min="1" step="1"></div>
+                        <div class="col-md-3"><label class="form-label">Hint</label><input type="text" class="form-control" id="qbe-hint"></div>
+                    </div>
+                    <div class="alert alert-info py-2 small" id="qbe-zone-overview"></div>
+                    <div class="mb-3"><label class="form-label">Explanation</label><input type="text" class="form-control" id="qbe-explanation"></div>
+                </div>
+
+                <!-- Assign -->
+                <div id="qbEdit-assign" class="qb-edit-section d-none">
+                    <input type="hidden" id="qba-id">
+                    <div class="mb-3"><label class="form-label">Topic / Question *</label>
+                        <textarea class="form-control" id="qba-text" rows="2"></textarea></div>
+                    <div class="row g-3 mb-3">
+                        <div class="col-md-6"><label class="form-label">Time (s)</label><input type="number" class="form-control" id="qba-time"></div>
+                        <div class="col-md-6"><label class="form-label">Explanation</label><input type="text" class="form-control" id="qba-explanation"></div>
+                    </div>
+                    <div class="row g-3">
+                        <div class="col-md-6">
+                            <label class="form-label">Left Items</label>
+                            <div id="qba-left-items"></div>
+                            <button type="button" class="btn btn-sm btn-outline-secondary mt-1" onclick="qbAddItemRow(document.getElementById('qba-left-items'))">+ Add</button>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Right Items</label>
+                            <div id="qba-right-items"></div>
+                            <button type="button" class="btn btn-sm btn-outline-secondary mt-1" onclick="qbAddItemRow(document.getElementById('qba-right-items'))">+ Add</button>
+                        </div>
+                    </div>
+                    <p class="text-muted small mt-2">Note: Correct matches are preserved as-is. Edit them in the full management page if needed.</p>
+                </div>
+
+                <!-- Where Is This? -->
+                <div id="qbEdit-where" class="qb-edit-section d-none">
+                    <input type="hidden" id="qbw-id">
+                    <div class="mb-3"><label class="form-label">Location Name *</label>
+                        <textarea class="form-control" id="qbw-text" rows="2"></textarea></div>
+                    <div class="row g-3 mb-3">
+                        <div class="col-md-3"><label class="form-label">Time (s)</label><input type="number" class="form-control" id="qbw-time"></div>
+                        <div class="col-md-3"><label class="form-label">Points</label><input type="number" class="form-control" id="qbw-points"></div>
+                        <div class="col-md-3"><label class="form-label">Hint</label><input type="text" class="form-control" id="qbw-hint"></div>
+                    </div>
+                    <div class="row g-3 mb-3">
+                        <div class="col-md-3"><label class="form-label">Perfect (km)</label><input type="number" class="form-control" id="qbw-perfect"></div>
+                        <div class="col-md-3"><label class="form-label">Good (km)</label><input type="number" class="form-control" id="qbw-good"></div>
+                        <div class="col-md-3"><label class="form-label">Fair (km)</label><input type="number" class="form-control" id="qbw-fair"></div>
+                        <div class="col-md-3"><label class="form-label">Poor (km)</label><input type="number" class="form-control" id="qbw-poor"></div>
+                    </div>
+                    <div class="row g-3 mb-3">
+                        <div class="col-md-6"><label class="form-label">Latitude</label><input type="number" step="any" class="form-control" id="qbw-lat"></div>
+                        <div class="col-md-6"><label class="form-label">Longitude</label><input type="number" step="any" class="form-control" id="qbw-lng"></div>
+                    </div>
+                    <div class="mb-3"><label class="form-label">Explanation</label><input type="text" class="form-control" id="qbw-explanation"></div>
+                    <p class="text-muted small">Image can be updated in the full management page.</p>
+                </div>
+
+                <!-- Who Is Lying? -->
+                <div id="qbEdit-who" class="qb-edit-section d-none">
+                    <input type="hidden" id="qbwho-id">
+                    <div class="mb-3"><label class="form-label">Statement *</label>
+                        <textarea class="form-control" id="qbwho-statement" rows="3"></textarea></div>
+                    <div class="row g-3 mb-3">
+                        <div class="col-md-4"><label class="form-label">Points</label><input type="number" class="form-control" id="qbwho-points"></div>
+                        <div class="col-md-4"><label class="form-label">Time (s)</label><input type="number" class="form-control" id="qbwho-time"></div>
+                        <div class="col-md-4"><label class="form-label">Explanation</label><input type="text" class="form-control" id="qbwho-explanation"></div>
+                    </div>
+                    <label class="form-label">People</label>
+                    <div id="qbwho-people"></div>
+                    <button type="button" class="btn btn-sm btn-outline-secondary mt-1" onclick="qbAddPersonRow(document.getElementById('qbwho-people'))">+ Add Person</button>
+                </div>
+
+                <!-- Who Is That? -->
+                <div id="qbEdit-who_that" class="qb-edit-section d-none">
+                    <input type="hidden" id="qbwt-id">
+                    <div class="mb-3"><label class="form-label">Question *</label>
+                        <textarea class="form-control" id="qbwt-text" rows="2"></textarea></div>
+                    <div class="row g-3 mb-3">
+                        <div class="col-md-6"><label class="form-label">Correct Answer *</label><input type="text" class="form-control" id="qbwt-answer"></div>
+                        <div class="col-md-6"><label class="form-label">Alternative Answers</label><input type="text" class="form-control" id="qbwt-alt" placeholder="Comma separated"></div>
+                    </div>
+                    <div class="row g-3 mb-3">
+                        <div class="col-md-3"><label class="form-label">Time (s)</label><input type="number" class="form-control" id="qbwt-time"></div>
+                        <div class="col-md-3"><label class="form-label">Category</label><input type="text" class="form-control" id="qbwt-category"></div>
+                    </div>
+                    <div class="row g-3 mb-3">
+                        <div class="col-md-6"><label class="form-label">Hint</label><input type="text" class="form-control" id="qbwt-hint"></div>
+                        <div class="col-md-6"><label class="form-label">Explanation</label><input type="text" class="form-control" id="qbwt-explanation"></div>
+                    </div>
+                    <p class="text-muted small">Image can be updated in the full management page.</p>
+                </div>
+
+                <!-- Black Jack -->
+                <div id="qbEdit-blackjack" class="qb-edit-section d-none">
+                    <input type="hidden" id="qbbj-id">
+                    <div class="mb-3"><label class="form-label">Question *</label>
+                        <textarea class="form-control" id="qbbj-text" rows="3"></textarea></div>
+                    <div class="row g-3 mb-3">
+                        <div class="col-md-4"><label class="form-label">Correct Answer *</label><input type="text" class="form-control" id="qbbj-answer"></div>
+                        <div class="col-md-4"><label class="form-label">Time (s)</label><input type="number" class="form-control" id="qbbj-time"></div>
+                    </div>
+                    <div class="row g-3 mb-3">
+                        <div class="col-md-6"><label class="form-label">Hint</label><input type="text" class="form-control" id="qbbj-hint"></div>
+                        <div class="col-md-6"><label class="form-label">Explanation</label><input type="text" class="form-control" id="qbbj-explanation"></div>
+                    </div>
+                </div>
+
+                <!-- Clue Rush -->
+                <div id="qbEdit-clue_rush" class="qb-edit-section d-none">
+                    <input type="hidden" id="qbcr-id">
+                    <div class="mb-3"><label class="form-label">Question / Riddle *</label>
+                        <textarea class="form-control" id="qbcr-text" rows="2"></textarea></div>
+                    <div class="row g-3 mb-3">
+                        <div class="col-md-6"><label class="form-label">Correct Answer *</label><input type="text" class="form-control" id="qbcr-answer"></div>
+                        <div class="col-md-6"><label class="form-label">Points</label><input type="number" class="form-control" id="qbcr-points"></div>
+                    </div>
+                    <label class="form-label">Clues <small class="text-muted">(text · duration s)</small></label>
+                    <div id="qbcr-clues"></div>
+                    <button type="button" class="btn btn-sm btn-outline-secondary mt-1" onclick="qbAddClueRow(document.getElementById('qbcr-clues'))">+ Add Clue</button>
+                </div>
+
+                <!-- Sorting Ladder -->
+                <div id="qbEdit-sorting_ladder" class="qb-edit-section d-none">
+                    <input type="hidden" id="qbsl-id">
+                    <div class="row g-3 mb-3">
+                        <div class="col-md-8"><label class="form-label">Title *</label><input type="text" class="form-control" id="qbsl-title"></div>
+                        <div class="col-md-4"><label class="form-label">Points</label><input type="text" class="form-control" id="qbsl-points"></div>
+                    </div>
+                    <div class="mb-3"><label class="form-label">Description</label><input type="text" class="form-control" id="qbsl-desc"></div>
+                    <div class="row g-3 mb-3">
+                        <div class="col-md-4"><label class="form-label">Time Limit (s)</label><input type="text" class="form-control" id="qbsl-time"></div>
+                        <div class="col-md-4"><label class="form-label">Upper Label</label><input type="text" class="form-control" id="qbsl-upper"></div>
+                        <div class="col-md-4"><label class="form-label">Lower Label</label><input type="text" class="form-control" id="qbsl-lower"></div>
+                    </div>
+                    <label class="form-label">Items (in correct order)</label>
+                    <div id="qbsl-items"></div>
+                    <button type="button" class="btn btn-sm btn-outline-secondary mt-1" onclick="qbAddItemRow(document.getElementById('qbsl-items'))">+ Add Item</button>
+                </div>
+
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-primary" id="qbEditSaveBtn">Save Changes</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+{% endblock %}

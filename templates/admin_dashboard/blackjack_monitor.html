@@ -1,0 +1,2098 @@
+{% extends "admin_dashboard/base.html" %}
+
+{% block title %}BlackJack Quiz Monitor - QuizMaster Admin{% endblock %}
+
+{% block page_title %}BlackJack Quiz Monitor{% endblock %}
+{% block page_subtitle %}Real-time monitoring and control for your live BlackJack quiz session{% endblock %}
+
+{% block content %}
+<div class="blackjack-monitor-content">
+    <div id="blackjackMonitorState"
+         data-selected-set-number="{{ selected_set_number }}"
+         data-selected-set-has-remaining="{% if selected_set_has_remaining_questions %}1{% else %}0{% endif %}"
+         data-question-active="{% if quiz.current_question %}1{% else %}0{% endif %}"
+         data-select-set-url="{% url 'admin_dashboard:select_blackjack_set' quiz.room_code %}"
+         data-stats-url="{% url 'admin_dashboard:api_blackjack_quiz_stats' quiz.room_code %}"></div>
+    <!-- Quiz Status Header -->
+    <div class="quiz-status-header mb-4">
+        <div class="row align-items-center">
+            <div class="col-md-8">
+                <div class="quiz-info">
+                    <h2 class="quiz-title">{{ quiz.title }}</h2>
+                    <div class="quiz-meta">
+                        <span class="meta-item">
+                            <i data-lucide="users"></i>
+                            <span id="participantCount">{{ participant_count }}</span> Participants
+                        </span>
+                        <span class="meta-item">
+                            <i data-lucide="help-circle"></i>
+                            Set {{ current_set_number }}/{{ total_sets }} · Question <span id="questionNumber">{{ current_question_in_set }}</span>/{{ current_set_question_count }}
+                        </span>
+                        <span class="meta-item">
+                            <i data-lucide="clock"></i>
+                            <span id="quizTimer">00:00</span>
+                        </span>
+                        {% if lobby_url %}
+                        <span class="meta-item">
+                            <i data-lucide="link"></i>
+                            <a href="{{ lobby_url }}" target="_blank" style="font-size:0.85rem;word-break:break-all;">{{ lobby_url }}</a>
+                            <button class="btn btn-link btn-sm p-0 ms-1 copy-lobby-btn-monitor" title="Copy" data-url="{{ lobby_url }}" style="vertical-align:middle;">
+                                <i data-lucide="copy" style="width:13px;height:13px;"></i>
+                            </button>
+                        </span>
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-4 text-md-end">
+                <div class="quiz-controls">
+                    <span class="status-badge status-{{ quiz.status }}">
+                        {{ quiz.get_status_display }}
+                    </span>
+                    {% if quiz.status == 'waiting' or quiz.status == 'inactive' %}
+                        <div class="d-flex align-items-center gap-3">
+                        {% if quiz.status == 'waiting' and quiz.tutorial_enabled %}
+                            <div class="form-check form-switch mb-0">
+                                <input class="form-check-input" type="checkbox" id="showTutorialToggle" checked>
+                                <label class="form-check-label" for="showTutorialToggle">Tutorial anzeigen</label>
+                            </div>
+                            {% endif %}
+                            <button class="btn btn-success" id="startQuizBtn">
+                                <i data-lucide="play"></i>
+                                {% if quiz.status == 'inactive' %}Spiel reaktivieren{% else %}Spiel starten{% endif %}
+                            </button>
+                        </div>
+                    {% elif quiz.status == 'active' %}
+                        <div class="d-flex align-items-center gap-2">
+                            <button class="btn btn-outline-warning" id="setInactiveBtn">
+                                <i data-lucide="pause-circle"></i>
+                                Set inactive
+                            </button>
+                            <button class="btn btn-warning" id="endQuizBtn">
+                                <i data-lucide="square"></i>
+                                End Quiz
+                            </button>
+                        </div>
+                    {% endif %}
+                    <button class="btn btn-outline-primary" id="showLeaderboardBtn">
+                        <i data-lucide="trophy"></i>
+                        Leaderboard einblenden
+                    </button>
+                    <button class="btn btn-outline-secondary" id="backToHubBtn">
+                        <i data-lucide="arrow-left"></i>
+                        Back to Overview
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Target Display -->
+    <div class="target-section mb-4">
+        <div class="row align-items-center">
+            <div class="col-md-8">
+                <div class="target-info">
+                    <h4><i data-lucide="target"></i> BlackJack Target: Get as close to 21 points as possible</h4>
+                    <p>Players earn points based on how far their answers are from the correct answer. 22+ points = BUST!</p>
+                </div>
+            </div>
+            <div class="col-md-4 text-center">
+                <div class="target-display-large">
+                    <div class="target-circle-large">
+                        <span class="target-number-large">21</span>
+                        <span class="target-label-large">TARGET</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="card mb-4">
+        <div class="card-body d-flex justify-content-between align-items-center flex-wrap gap-3">
+            <div>
+                <div class="fw-semibold">Bewertungsmodus</div>
+                <div class="text-muted small" id="blackjackScoringModeHint">
+                    {% if can_change_scoring_mode %}
+                        Vor der ersten gesendeten Frage änderbar.
+                    {% else %}
+                        Nach der ersten gesendeten Frage gesperrt.
+                    {% endif %}
+                </div>
+            </div>
+            <div style="min-width: 220px;">
+                <select class="form-select" id="blackjackScoringModeSelect" {% if not can_change_scoring_mode %}disabled{% endif %}>
+                    <option value="simple" {% if quiz.scoring_mode != 'rank' %}selected{% endif %}>einfach</option>
+                    <option value="rank" {% if quiz.scoring_mode == 'rank' %}selected{% endif %}>Ranking</option>
+                </select>
+            </div>
+        </div>
+    </div>
+
+    <div class="card mb-4 set-overview-card">
+        <div class="card-header d-flex justify-content-between align-items-center">
+            <h5 class="card-title mb-0">
+                <i data-lucide="layers"></i>
+                Set-Übersicht
+            </h5>
+            <span class="badge bg-secondary">
+                {% if total_sets == 1 %}1 Set{% else %}{{ total_sets }} Sets{% endif %}
+            </span>
+        </div>
+        <div class="card-body">
+            {% if blackjack_set_overview %}
+                <div class="set-overview-list">
+                    {% for set_item in blackjack_set_overview %}
+                    <div class="set-overview-item{% if set_item.is_selected %} is-playable{% elif set_item.is_completed %} is-completed{% endif %}">
+                        <div class="set-overview-summary">
+                            <div>
+                                <div class="set-overview-title">Set {{ set_item.number }}</div>
+                                <div class="set-overview-meta">
+                                    {{ set_item.question_count }} Frage{% if set_item.question_count != 1 %}n{% endif %}
+                                    {% if set_item.is_active %}
+                                        · aktuell
+                                    {% elif set_item.is_selected %}
+                                        Â· ausgewÃ¤hlt
+                                    {% elif set_item.is_completed %}
+                                        · gespielt
+                                    {% endif %}
+                                </div>
+                            </div>
+                            <div class="set-overview-actions">
+                                <button class="btn btn-sm btn-outline-secondary"
+                                        type="button"
+                                        data-bs-toggle="collapse"
+                                        data-bs-target="#setQuestions{{ set_item.number }}"
+                                        aria-expanded="false"
+                                        aria-controls="setQuestions{{ set_item.number }}">
+                                    Fragen
+                                </button>
+                                <button type="button"
+                                   class="btn btn-sm {% if set_item.is_selected %}btn-primary{% else %}btn-outline-primary{% endif %} select-set-btn"
+                                   data-set-number="{{ set_item.number }}"
+                                   data-set-remaining="{{ set_item.remaining_question_count }}">
+                                    Spielen
+                                </button>
+                            </div>
+                        </div>
+                        <div class="collapse" id="setQuestions{{ set_item.number }}">
+                            <div class="set-question-list">
+                                {% for question in set_item.questions %}
+                                <div class="set-question-row">
+                                    <span class="set-question-number">F{{ forloop.counter }}:</span>
+                                    <span class="set-question-text">{{ question.question_text|truncatechars:140 }}</span>
+                                </div>
+                                {% empty %}
+                                <div class="text-muted small">Keine Fragen in diesem Set.</div>
+                                {% endfor %}
+                            </div>
+                        </div>
+                    </div>
+                    {% endfor %}
+                </div>
+            {% else %}
+                <div class="empty-state py-4">
+                    <i data-lucide="layers"></i>
+                    <h4>Keine Sets konfiguriert</h4>
+                    <p>Füge Fragen hinzu, um eine Set-Übersicht zu sehen.</p>
+                </div>
+            {% endif %}
+        </div>
+    </div>
+
+    <!-- Main Monitor Grid -->
+    <div class="row g-4">
+        <!-- Question Control Panel -->
+        <div class="col-lg-8">
+            <div class="card question-panel">
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    <h5 class="card-title mb-0">
+                        <i data-lucide="help-circle"></i>
+                        Question Control
+                    </h5>
+                    <button type="button" class="btn btn-sm btn-outline-secondary" data-bs-toggle="modal" data-bs-target="#questionBankModal">
+                        <i data-lucide="database" style="width:14px;height:14px;"></i>
+                        Question Bank
+                    </button>
+                </div>
+                <div class="card-body">
+                    {% if not quiz.current_question %}
+                        <!-- Question Selection -->
+                        <div id="questionSelection">
+                            <h6 class="mb-3">Select Next Question (Set {{ next_set_number }}/{{ total_sets }}, {{ next_question_in_set }}/{{ next_set_question_count }})</h6>
+                            {% if quiz_complete %}
+                                <div class="quiz-complete-message">
+                                    <div class="complete-icon">
+                                        <i data-lucide="check-circle"></i>
+                                    </div>
+                                    <h4>Quiz Complete!</h4>
+                                    <p>All {{ total_game_questions }} questions have been asked. The quiz is finished.</p>
+                                </div>
+                            {% else %}
+                                <div class="question-list" id="availableQuestions">
+                                    {% for question in available_questions %}
+                                    <div class="question-item" data-question-id="{{ question.id }}">
+                                        <div class="question-content">
+                                            <div class="question-text">{{ question.question_text|truncatechars:120 }}</div>
+                                            <div class="question-preview">
+                                                <div class="answer-preview">
+                                                    <strong>Correct Answer:</strong>
+                                                    <span class="correct-answer">{{ question.correct_answer }}</span>
+                                                </div>
+                                                {% if question.hint_text %}
+                                                <div class="hint-preview">
+                                                    <strong>Hint:</strong>
+                                                    <span class="hint-text">{{ question.hint_text|truncatechars:80 }}</span>
+                                                </div>
+                                                {% endif %}
+                                            </div>
+                                        </div>
+                                        <div class="d-flex align-items-center gap-2">
+                                            <div>
+                                                <small class="text-muted d-block mb-1">Zeit in Sek.</small>
+                                                <input type="number" class="form-control form-control-sm question-time-input" placeholder="Time (s)" min="5" step="1" style="max-width: 120px;" value="{{ question.time_limit }}">
+                                            </div>
+                                            <button class="btn btn-secondary send-question-btn" data-question-id="{{ question.id }}" {% if quiz.status != 'active' %}disabled title="Start the quiz to send questions"{% endif %}>
+                                                <i data-lucide="send"></i>
+                                                Send Question
+                                            </button>
+                                        </div>
+                                    </div>
+                                    {% endfor %}
+                                </div>
+                            {% endif %}
+                            {% if not available_questions and not quiz_complete %}
+                                <div class="empty-state">
+                                    <i data-lucide="inbox"></i>
+                                    {% if blackjack_set_overview %}
+                                    <h4>Dieses Set ist bereits durchgespielt</h4>
+                                    <p>WÃ¤hle ein anderes Set aus der Set-Ãœbersicht, um weiterzuspielen.</p>
+                                    {% else %}
+                                    <h4>No Questions Available</h4>
+                                    <p>Add some BlackJack questions to continue!</p>
+                                    <a href="{% url 'admin_dashboard:blackjack_management' %}" class="btn btn-primary">
+                                        <i data-lucide="plus"></i>
+                                        Add Questions
+                                    </a>
+                                    {% endif %}
+                                </div>
+                            {% endif %}
+                        </div>
+                    {% else %}
+                        <!-- Active Question Display -->
+                        <div id="activeQuestion">
+                            <div class="active-question-header">
+                                <h6>Current Question (Set {{ current_set_number }}/{{ total_sets }}, {{ current_question_in_set }}/{{ current_set_question_count }})</h6>
+                                <div class="question-timer">
+                                    <div class="timer-circle" id="questionTimerCircle">
+                                        <span id="questionTimeLeft">{{ quiz.current_question.time_limit }}</span>
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            <div class="current-question-content">
+                                <div class="question-text">{{ quiz.current_question.question_text }}</div>
+                                
+                                <div class="current-question-details">
+                                    <div class="answer-display">
+                                        <div class="answer-label">Correct Answer:</div>
+                                        <div class="answer-value">{{ quiz.current_question.correct_answer }}</div>
+                                    </div>
+                                    
+                                    {% if quiz.current_question.hint_text %}
+                                    <div class="hint-display">
+                                        <div class="hint-label">Hint:</div>
+                                        <div class="hint-value">{{ quiz.current_question.hint_text }}</div>
+                                    </div>
+                                    {% endif %}
+                                    
+                                    <div class="scoring-display">
+                                        <div class="scoring-label">Scoring:</div>
+                                        <div class="scoring-value">
+                                            Points = |Player Answer - {{ quiz.current_question.correct_answer }}|
+                                        </div>
+                                    </div>
+                                </div>
+                                
+                                <div class="question-actions">
+                                    <button class="btn btn-warning" id="endQuestionBtn">
+                                        <i data-lucide="skip-forward"></i>
+                                        End Question Early
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    {% endif %}
+                </div>
+            </div>
+
+            <!-- Live Responses -->
+            <div class="card mt-4">
+                <div class="card-header">
+                    <h5 class="card-title mb-0">
+                        <i data-lucide="activity"></i>
+                        Live Responses
+                        <span class="badge bg-secondary" id="responseCount">0</span>
+                    </h5>
+                </div>
+                <div class="card-body">
+                    <div id="liveResponses" class="live-responses">
+                        <div class="no-responses">
+                            <i data-lucide="spade"></i>
+                            <p>No responses yet. Send a question to see participant answers in real-time!</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Participants & Stats Panel -->
+        <div class="col-lg-4">
+            <!-- Participants List -->
+            <div class="card participants-panel">
+                <div class="card-header">
+                    <h6 class="card-title mb-0">
+                        <i data-lucide="users"></i>
+                        Participants <span class="badge bg-secondary" id="participantBadge">{{ participant_count }}</span>
+                    </h6>
+                </div>
+                <div class="card-body">
+                    <div class="participants-list" id="participantsList">
+                        {% for participant in participants %}
+                        <div class="participant-item" data-participant-name="{{ participant.name }}" data-participant-id="{{ participant.id }}">
+                            <div class="participant-avatar {% if participant.is_busted %}busted{% elif participant.total_points == 21 %}blackjack{% endif %}">
+                                {{ participant.name|first|upper }}
+                            </div>
+                            <div class="participant-info">
+                                <div class="participant-name">
+                                    {{ participant.name }}
+                                    {% if participant.is_busted %}
+                                        <span class="bust-badge">BUST</span>
+                                    {% elif participant.total_points == 21 %}
+                                        <span class="blackjack-badge">21!</span>
+                                    {% endif %}
+                                </div>
+                                <div class="participant-score" id="score-{{ participant.id }}">{{ participant.total_points }} points</div>
+                                <div class="participant-status">{{ participant.questions_answered }}/{{ participant_progress_question_count }} answered</div>
+                            </div>
+                            <div class="participant-status-dot">
+                                <button class="btn btn-link btn-sm p-0 me-1 edit-score-btn" title="Set points manually"
+                                    data-participant-id="{{ participant.id }}"
+                                    data-participant-name="{{ participant.name }}"
+                                    data-current-score="{{ participant.total_points }}"
+                                    data-bs-toggle="modal" data-bs-target="#editScoreModal">
+                                    <i data-lucide="pencil" style="width:14px;height:14px;color:#6c757d;"></i>
+                                </button>
+                                <div class="status-dot {% if participant.is_active %}online{% else %}offline{% endif %}"></div>
+                            </div>
+                        </div>
+                        {% empty %}
+                        <div class="no-participants">
+                            <i data-lucide="user-plus"></i>
+                            <p>No participants yet.</p>
+                        </div>
+                        {% endfor %}
+                    </div>
+                </div>
+            </div>
+
+            <!-- Tutorial Progress -->
+            <div class="card mt-4" id="tutorialProgressCard" {% if quiz.status != 'active' %}style="display:none"{% endif %}>
+                <div class="card-header">
+                    <h6 class="card-title mb-0">
+                        <i data-lucide="book-open"></i>
+                        Tutorial
+                    </h6>
+                </div>
+                <div class="card-body">
+                    <div class="d-flex justify-content-between align-items-center mb-2">
+                        <span class="text-muted small">Participants ready</span>
+                        <span id="tutProgressText" class="fw-bold">0 / 0</span>
+                    </div>
+                    <div class="progress mb-3" style="height: 10px;">
+                        <div class="progress-bar bg-success" id="tutProgressBar" role="progressbar" style="width: 0%" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100"></div>
+                    </div>
+                    <div id="tutAllDoneBadge" class="alert alert-success py-2 text-center mb-0" style="display:none;">
+                        <i data-lucide="check-circle"></i>
+                        All ready! You can send the first question.
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+.blackjack-monitor-content {
+    max-width: 1600px;
+}
+
+/* Quiz Status Header */
+.quiz-status-header {
+    background: linear-gradient(135deg, var(--secondary-50) 0%, #1a1a2e 100%);
+    border-radius: var(--border-radius-xl);
+    padding: 2rem;
+    color: var(--text-white);
+}
+
+.quiz-title {
+    font-size: 1.75rem;
+    font-weight: 700;
+    color: var(--text-white);
+    margin-bottom: 0.5rem;
+}
+
+.quiz-meta {
+    display: flex;
+    gap: 1.5rem;
+    flex-wrap: wrap;
+}
+
+.meta-item {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    color: rgba(255, 255, 255, 0.9);
+    font-weight: 500;
+}
+
+.meta-item i {
+    width: 16px;
+    height: 16px;
+    color: rgba(255, 255, 255, 0.7);
+}
+
+.quiz-controls {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+}
+
+.status-badge {
+    padding: 0.5rem 1rem;
+    border-radius: var(--border-radius-xl);
+    font-weight: 600;
+    font-size: 0.875rem;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.status-waiting {
+    background-color: var(--warning-100);
+    color: var(--warning-700);
+}
+
+.status-active {
+    background-color: var(--success-100);
+    color: var(--success-700);
+    animation: pulse 2s infinite;
+}
+
+.status-completed {
+    background-color: var(--secondary-100);
+    color: var(--secondary-700);
+}
+
+/* Target Section */
+.target-section {
+    background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+    border-radius: var(--border-radius-xl);
+    padding: 1.5rem;
+    color: var(--text-white);
+}
+
+.target-info h4 {
+    color: var(--text-white);
+    margin-bottom: 0.5rem;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.target-info p {
+    color: rgba(255, 255, 255, 0.8);
+    margin: 0;
+}
+
+.target-display-large {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+}
+
+.set-overview-item {
+    border: 1px solid #e5e7eb;
+    border-radius: 16px;
+    padding: 1rem 1.1rem;
+    background: #fff;
+}
+
+.set-overview-item + .set-overview-item {
+    margin-top: 0.9rem;
+}
+
+.set-overview-item.is-playable {
+    border-color: rgba(25, 135, 84, 0.35);
+    box-shadow: 0 0 0 1px rgba(25, 135, 84, 0.08);
+}
+
+.set-overview-item.is-completed {
+    background: #f8fafc;
+}
+
+.set-overview-summary {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 1rem;
+    flex-wrap: wrap;
+}
+
+.set-overview-title {
+    font-weight: 700;
+    color: #111827;
+}
+
+.set-overview-meta {
+    font-size: 0.9rem;
+    color: #6b7280;
+}
+
+.set-overview-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+}
+
+.set-question-list {
+    margin-top: 0.9rem;
+    padding-top: 0.9rem;
+    border-top: 1px solid #eef2f7;
+    display: grid;
+    gap: 0.55rem;
+}
+
+.set-question-row {
+    display: flex;
+    gap: 0.6rem;
+    font-size: 0.95rem;
+    color: #1f2937;
+}
+
+.set-question-number {
+    min-width: 2rem;
+    font-weight: 700;
+    color: #475569;
+}
+
+.target-circle-large {
+    width: 100px;
+    height: 100px;
+    border: 3px solid rgba(255, 255, 255, 0.3);
+    border-radius: 50%;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    background: rgba(255, 255, 255, 0.1);
+    backdrop-filter: blur(10px);
+}
+
+.target-number-large {
+    font-size: 2rem;
+    font-weight: 700;
+    line-height: 1;
+}
+
+.target-label-large {
+    font-size: 0.75rem;
+    opacity: 0.8;
+}
+
+/* Question Panel */
+.question-panel .card-body {
+    min-height: 300px;
+}
+
+.quiz-complete-message {
+    text-align: center;
+    padding: 3rem 2rem;
+}
+
+.complete-icon {
+    width: 80px;
+    height: 80px;
+    margin: 0 auto 1.5rem;
+    background: var(--color-success);
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.complete-icon i {
+    width: 40px;
+    height: 40px;
+    color: var(--text-white);
+}
+
+.quiz-complete-message h4 {
+    color: var(--text-primary);
+    margin-bottom: 0.5rem;
+}
+
+.quiz-complete-message p {
+    color: var(--text-secondary);
+}
+
+.question-list {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+    max-height: 500px;
+    overflow-y: auto;
+}
+
+.question-item {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    padding: 1.5rem;
+    background-color: var(--bg-secondary);
+    border-radius: var(--border-radius-lg);
+    border: 1px solid var(--border-color);
+    transition: all var(--transition-fast);
+}
+
+.question-item:hover {
+    background-color: var(--bg-tertiary);
+    border-color: var(--color-secondary);
+    box-shadow: var(--shadow-md);
+}
+
+.question-content {
+    flex: 1;
+}
+
+.question-text {
+    font-weight: 500;
+    color: var(--text-primary);
+    margin-bottom: 1rem;
+}
+
+.question-preview {
+    margin-bottom: 1rem;
+    padding: 0.75rem;
+    background: var(--bg-primary);
+    border-radius: var(--border-radius);
+    border: 1px solid var(--border-color);
+}
+
+.answer-preview, .hint-preview {
+    margin-bottom: 0.5rem;
+    font-size: 0.875rem;
+}
+
+.answer-preview:last-child, .hint-preview:last-child {
+    margin-bottom: 0;
+}
+
+.correct-answer {
+    color: var(--color-success);
+    font-weight: 600;
+}
+
+.hint-text {
+    color: var(--text-secondary);
+    font-style: italic;
+}
+
+.question-meta {
+    display: flex;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+}
+
+.badge {
+    padding: 0.25rem 0.5rem;
+    border-radius: var(--border-radius-sm);
+    font-size: 0.75rem;
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.time-badge {
+    background-color: var(--secondary-100);
+    color: var(--secondary-700);
+    padding: 0.25rem 0.5rem;
+    border-radius: var(--border-radius-sm);
+    font-size: 0.75rem;
+    font-weight: 500;
+}
+
+/* Active Question */
+.active-question-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 1.5rem;
+    padding-bottom: 1rem;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.question-timer {
+    position: relative;
+}
+
+.timer-circle {
+    width: 60px;
+    height: 60px;
+    border: 4px solid var(--success-300);
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 700;
+    color: var(--success-600);
+    position: relative;
+    background: var(--bg-primary);
+}
+
+.timer-circle.warning {
+    border-color: var(--warning-300);
+    color: var(--warning-600);
+}
+
+.timer-circle.danger {
+    border-color: var(--error-300);
+    color: var(--error-600);
+    animation: shake 0.5s infinite;
+}
+
+.current-question-content .question-text {
+    font-size: 1.25rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    margin-bottom: 1.5rem;
+    line-height: 1.6;
+}
+
+.current-question-details {
+    background: var(--bg-secondary);
+    border-radius: var(--border-radius);
+    padding: 1.5rem;
+    margin-bottom: 1.5rem;
+}
+
+.answer-display, .hint-display, .scoring-display {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    margin-bottom: 1rem;
+}
+
+.answer-display:last-child, .hint-display:last-child, .scoring-display:last-child {
+    margin-bottom: 0;
+}
+
+.answer-label, .hint-label, .scoring-label {
+    font-weight: 600;
+    color: var(--text-primary);
+    min-width: 120px;
+}
+
+.answer-value {
+    color: var(--color-success);
+    font-weight: 700;
+    font-size: 1.125rem;
+}
+
+.hint-value {
+    color: var(--text-secondary);
+    font-style: italic;
+}
+
+.scoring-value {
+    color: var(--color-primary);
+    font-weight: 500;
+    font-family: var(--font-family-mono);
+}
+
+/* Live Responses */
+.live-responses {
+    min-height: 200px;
+    max-height: 400px;
+    overflow-y: auto;
+}
+
+.response-item {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 1rem;
+    border-bottom: 1px solid var(--border-color);
+    animation: slideIn 0.3s ease-out;
+}
+
+.response-item:last-child {
+    border-bottom: none;
+}
+
+.response-avatar {
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-white);
+    font-weight: 600;
+    font-size: 0.875rem;
+    flex-shrink: 0;
+}
+
+.response-avatar.excellent {
+    background-color: var(--color-success);
+}
+
+.response-avatar.good {
+    background-color: var(--color-primary);
+}
+
+.response-avatar.fair {
+    background-color: var(--color-warning);
+}
+
+.response-avatar.poor {
+    background-color: var(--color-error);
+}
+
+.response-avatar.busted {
+    background-color: #8B5A2B;
+}
+
+.response-content {
+    flex: 1;
+}
+
+.response-name {
+    font-weight: 600;
+    color: var(--text-primary);
+    margin-bottom: 0.25rem;
+}
+
+.response-details {
+    color: var(--text-secondary);
+    font-size: 0.875rem;
+}
+
+.response-answer {
+    font-weight: 600;
+    color: var(--color-primary);
+}
+
+.response-time {
+    color: var(--text-muted);
+    font-size: 0.75rem;
+    margin-left: auto;
+}
+
+/* Participants Panel */
+.participants-list {
+    max-height: 300px;
+    overflow-y: auto;
+}
+
+.participant-item {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.75rem;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.participant-item:last-child {
+    border-bottom: none;
+}
+
+.participant-avatar {
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    background-color: var(--color-secondary);
+    color: var(--text-white);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    font-weight: 600;
+}
+
+.participant-avatar.busted {
+    background-color: var(--color-error);
+}
+
+.participant-avatar.blackjack {
+    background-color: var(--color-success);
+}
+
+.participant-info {
+    flex: 1;
+}
+
+.participant-name {
+    font-weight: 600;
+    color: var(--text-primary);
+    margin-bottom: 0.125rem;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.bust-badge {
+    background-color: var(--error-500);
+    color: var(--text-white);
+    font-size: 0.625rem;
+    font-weight: 700;
+    padding: 0.125rem 0.375rem;
+    border-radius: var(--border-radius-sm);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.blackjack-badge {
+    background-color: var(--success-500);
+    color: var(--text-white);
+    font-size: 0.625rem;
+    font-weight: 700;
+    padding: 0.125rem 0.375rem;
+    border-radius: var(--border-radius-sm);
+}
+
+.participant-score {
+    color: var(--text-primary);
+    font-size: 0.875rem;
+    font-weight: 600;
+}
+
+.participant-status {
+    color: var(--text-muted);
+    font-size: 0.75rem;
+}
+
+.participant-status-dot {
+    position: relative;
+}
+
+.status-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+}
+
+.status-dot.online {
+    background-color: var(--color-success);
+    box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.3);
+}
+
+.status-dot.offline {
+    background-color: var(--text-muted);
+}
+
+/* Stats Grid */
+.stats-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1rem;
+}
+
+.stat-item {
+    text-align: center;
+    padding: 1rem;
+    background-color: var(--bg-secondary);
+    border-radius: var(--border-radius);
+}
+
+.stat-item.bust-stat {
+    background-color: var(--error-50);
+}
+
+.stat-item.bust-stat .stat-value {
+    color: var(--error-600);
+}
+
+.stat-item.blackjack-stat {
+    background-color: var(--success-50);
+}
+
+.stat-item.blackjack-stat .stat-value {
+    color: var(--success-600);
+}
+
+.stat-value {
+    font-size: 1.5rem;
+    font-weight: 700;
+    color: var(--color-secondary);
+    margin-bottom: 0.25rem;
+}
+
+.stat-label {
+    color: var(--text-muted);
+    font-size: 0.75rem;
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+/* Join Instructions */
+.join-instructions .card-body {
+    background: linear-gradient(135deg, var(--secondary-50) 0%, var(--primary-50) 100%);
+}
+
+.join-url {
+    display: block;
+    background-color: var(--bg-primary);
+    padding: 0.75rem;
+    border-radius: var(--border-radius);
+    border: 1px solid var(--border-color);
+    font-size: 0.875rem;
+    word-break: break-all;
+}
+
+.room-code-display {
+    font-family: var(--font-family-mono);
+    font-size: 2rem;
+    font-weight: 700;
+    color: var(--color-secondary);
+    background-color: var(--secondary-50);
+    padding: 1rem;
+    border-radius: var(--border-radius-lg);
+    letter-spacing: 0.25rem;
+    margin-bottom: 0.5rem;
+}
+
+/* Empty States */
+.no-responses, .no-participants, .empty-state {
+    text-align: center;
+    padding: 2rem;
+    color: var(--text-muted);
+}
+
+.no-responses i, .no-participants i, .empty-state i {
+    width: 48px;
+    height: 48px;
+    margin-bottom: 1rem;
+    opacity: 0.5;
+}
+
+/* Animations */
+@keyframes slideIn {
+    from { opacity: 0; transform: translateX(-20px); }
+    to { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes shake {
+    0%, 100% { transform: translateX(0); }
+    25% { transform: translateX(-2px); }
+    75% { transform: translateX(2px); }
+}
+
+@keyframes pulse {
+    0% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.4); }
+    70% { box-shadow: 0 0 0 10px rgba(16, 185, 129, 0); }
+    100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
+}
+
+/* Responsive Design */
+@media (max-width: 768px) {
+    .quiz-status-header {
+        padding: 1.5rem;
+    }
+    
+    .quiz-title {
+        font-size: 1.5rem;
+    }
+    
+    .quiz-meta {
+        gap: 1rem;
+    }
+    
+    .quiz-controls {
+        justify-content: flex-start;
+        margin-top: 1rem;
+    }
+    
+    .question-item {
+        flex-direction: column;
+        text-align: center;
+        gap: 1rem;
+    }
+    
+    .current-question-details {
+        padding: 1rem;
+    }
+    
+    .answer-display, .hint-display, .scoring-display {
+        flex-direction: column;
+        text-align: center;
+        gap: 0.5rem;
+    }
+    
+    .stats-grid {
+        grid-template-columns: 1fr;
+    }
+    
+    .room-code-display {
+        font-size: 1.5rem;
+    }
+    
+    .target-section {
+        padding: 1rem;
+    }
+    
+    .target-circle-large {
+        width: 80px;
+        height: 80px;
+    }
+    
+    .target-number-large {
+        font-size: 1.5rem;
+    }
+}
+</style>
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    // Save hub_session immediately for Back to Overview button
+    (function() {
+        try {
+            var _hub = new URLSearchParams(window.location.search).get('hub_session');
+            if (_hub) { window.__hubCode = _hub; sessionStorage.setItem('_hub_admin', _hub); }
+        } catch(_) {}
+    })();
+
+    lucide.createIcons();
+    
+    // BlackJack Quiz Monitor Class
+    class BlackJackMonitor {
+        constructor() {
+            this.roomCode = '{{ quiz.room_code|escapejs }}';
+            this.websocket = null;
+            this.isActive = '{{ quiz.status|escapejs }}' === 'active';
+            this.questionTimer = null;
+            this.quizStartTime = {% if quiz.started_at %}new Date('{{ quiz.started_at|date:"c" }}'){% else %}null{% endif %};
+            this.liveResponseState = new Map();
+            this.csrfToken = '{{ csrf_token }}';
+            this.selectedSetNumber = Number('{{ selected_set_number|default:1 }}') || 1;
+            this.selectedSetHasRemainingQuestions = {% if selected_set_has_remaining_questions %}true{% else %}false{% endif %};
+            this.isQuestionRunning = {% if quiz.current_question %}true{% else %}false{% endif %};
+            this.selectSetUrl = '{% url "admin_dashboard:select_blackjack_set" quiz.room_code %}';
+            this.statsUrl = (() => {
+                const baseUrl = '{% url "admin_dashboard:api_blackjack_quiz_stats" quiz.room_code %}';
+                const params = new URLSearchParams(window.location.search);
+                const hubSession = params.get('hub_session');
+                if (!hubSession) return baseUrl;
+                const scopedUrl = new URL(baseUrl, window.location.origin);
+                scopedUrl.searchParams.set('hub_session', hubSession);
+                return scopedUrl.toString();
+            })();
+            this.init();
+        }
+
+                getStorageKey() {
+            return `quiz_sent_${this.roomCode}`;
+        }
+        getSentSet() {
+            try {
+                const raw = localStorage.getItem(this.getStorageKey());
+                if (!raw) return new Set();
+                const arr = JSON.parse(raw);
+                return new Set(Array.isArray(arr) ? arr : []);
+            } catch (_) { return new Set(); }
+        }
+        saveSentSet(sentSet) {
+            try { localStorage.setItem(this.getStorageKey(), JSON.stringify([...sentSet])); } catch(_) {}
+        }
+        isQuestionSent(qid) {
+            const sent = this.getSentSet();
+            return sent.has(String(qid));
+        }
+        markQuestionSent(qid) {
+            const sent = this.getSentSet();
+            sent.add(String(qid));
+            this.saveSentSet(sent);
+        }
+        applySentStates() {
+            document.querySelectorAll('.send-question-btn').forEach(btn => {
+                const qid = btn.getAttribute('data-question-id');
+                if (this.isQuestionSent(qid)) {
+                    this.updateSendButtonAsSent(btn);
+                }
+            });
+        }
+        updateSendButtonAsSent(btn) {
+            btn.disabled = false;
+            btn.classList.remove('loading');
+            btn.innerHTML = '<i data-lucide="send"></i> Send Question';
+            btn.removeAttribute('title');
+            // Add "already sent" hint next to button if not already there
+            const wrapper = btn.closest('.d-flex');
+            if (wrapper && !wrapper.querySelector('.already-sent-hint')) {
+                const hint = document.createElement('span');
+                hint.className = 'already-sent-hint text-muted small';
+                hint.style.whiteSpace = 'nowrap';
+                hint.innerHTML = '<i data-lucide="check-circle" style="width:13px;height:13px;color:#6c757d;vertical-align:-2px;"></i> already sent';
+                wrapper.appendChild(hint);
+            }
+            try { lucide.createIcons(); } catch(_) {}
+            this.initializeLiveResponseState();
+        }
+        
+        // Reset all persisted and UI states for sent questions
+        resetSentStates() {
+            try { localStorage.removeItem(this.getStorageKey()); } catch(_) {}
+            document.querySelectorAll('.send-question-btn').forEach(btn => {
+                btn.disabled = false;
+                btn.classList.remove('loading');
+                btn.innerHTML = '<i data-lucide="send"></i> Send Question';
+                btn.removeAttribute('title');
+            });
+            try { lucide.createIcons(); } catch(_) {}
+        }
+        
+        init() {
+            this.syncMonitorStateFromDom();
+            this.connectWebSocket();
+            this.bindEvents();
+            this.startQuizTimer();
+            this.applySentStates();
+            this.initializeLiveResponseState();
+            this.syncScoringModeHint();
+        }
+
+        syncMonitorStateFromDom() {
+            const stateEl = document.getElementById('blackjackMonitorState');
+            if (!stateEl) return;
+            this.selectedSetNumber = Number(stateEl.dataset.selectedSetNumber || this.selectedSetNumber || 1) || 1;
+            this.selectedSetHasRemainingQuestions = stateEl.dataset.selectedSetHasRemaining === '1';
+            this.isQuestionRunning = stateEl.dataset.questionActive === '1';
+            if (stateEl.dataset.selectSetUrl) this.selectSetUrl = stateEl.dataset.selectSetUrl;
+            if (stateEl.dataset.statsUrl) this.statsUrl = stateEl.dataset.statsUrl;
+        }
+
+        syncScoringModeHint() {
+            const scoringModeHint = document.getElementById('blackjackScoringModeHint');
+            const scoringModeSelect = document.getElementById('blackjackScoringModeSelect');
+            if (!scoringModeHint || !scoringModeSelect) return;
+            scoringModeHint.textContent = scoringModeSelect.disabled
+                ? 'Nach der ersten gesendeten Frage gesperrt.'
+                : 'Vor der ersten gesendeten Frage änderbar.';
+        }
+        
+        connectWebSocket() {
+            const wsScheme = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsUrl = `${wsScheme}//${window.location.host}/ws/blackjack/${this.roomCode}/`;
+            
+            this.websocket = new WebSocket(wsUrl);
+            
+            this.websocket.onopen = () => {
+                console.log('WebSocket connected');
+                this.updateConnectionStatus(true);
+            };
+            
+            this.websocket.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                this.handleWebSocketMessage(data);
+            };
+            
+            this.websocket.onclose = () => {
+                console.log('WebSocket disconnected');
+                this.updateConnectionStatus(false);
+                setTimeout(() => this.connectWebSocket(), 3000);
+            };
+            
+            this.websocket.onerror = (error) => {
+                console.error('WebSocket error:', error);
+                this.updateConnectionStatus(false);
+            };
+        }
+
+        handleWebSocketMessage(data) {
+            switch(data.type) {
+                case 'connection_established':
+                    console.log('Connected:', data.message);
+                    break;
+                    
+                case 'participant_joined':
+                    this.addParticipant(data.participant);
+                    this.updateParticipantCount();
+                    break;
+                    
+                case 'participant_answered':
+                    this.addLiveResponse(data.answer);
+                    break;
+                    
+                case 'quiz_started':
+                    console.log('Quiz started:', data.message);
+                    this.isActive = true;
+                    this.quizStartTime = new Date(data.timestamp);
+                    //this.updateQuizTimer();
+                    this.updateQuizStatus('active');
+                    // Enable question send buttons if they were disabled before start
+                    document.querySelectorAll('.send-question-btn').forEach(btn => {
+                        btn.disabled = false;
+                        btn.removeAttribute('title');
+                    });
+                    // Re-apply sent state so already-sent questions remain blocked
+                    this.applySentStates();
+                    break;
+                    
+                case 'tutorial_start':
+                    this.updateTutorialProgress(0, 0, false);
+                    break;
+
+                case 'tutorial_progress':
+                    this.updateTutorialProgress(data.completed, data.total, data.all_done);
+                    break;
+                    
+                case 'question_started':
+                    this.resetLiveResponseStateForQuestion();
+                    this.isQuestionRunning = true;
+                    console.log('Question started');
+                    location.reload();
+                    break;
+                    
+                case 'question_ended':
+                    this.isQuestionRunning = false;
+                    console.log('Question ended:', data.message);
+                    if (data.quiz_complete) {
+                        setTimeout(() => location.reload(), 2000);
+                    } else {
+                        location.reload();
+                    }
+                    break;
+                    
+                case 'quiz_ended':
+                    console.log('Quiz ended:', data.message);
+                    // Clear persisted sent state so a new session starts fresh
+                    this.resetSentStates();
+                    location.reload();
+                    break;
+
+                case 'quiz_inactive':
+                    console.log('Quiz set inactive:', data.message);
+                    this.isActive = false;
+                    this.isQuestionRunning = false;
+                    location.reload();
+                    break;
+                    
+                default:
+                    console.log('Unknown message type:', data.type);
+            }
+        }
+        
+        bindEvents() {
+            // Start Quiz button
+            document.getElementById('startQuizBtn')?.addEventListener('click', () => {
+                this.startQuiz();
+            });
+            
+            // End Quiz button
+            document.getElementById('endQuizBtn')?.addEventListener('click', () => {
+                if (confirm('Are you sure you want to end this quiz?')) {
+                    this.endQuiz();
+                }
+            });
+
+            document.getElementById('setInactiveBtn')?.addEventListener('click', () => {
+                if (confirm('Do you want to set this game inactive and preserve its current progress?')) {
+                    this.setInactive();
+                }
+            });
+            
+            // Send Question buttons
+            document.querySelectorAll('.send-question-btn').forEach(btn => {
+                btn.addEventListener('click', (e) => {
+                    const questionId = e.target.closest('button').dataset.questionId;
+                    if (!this.isActive) {
+                        alert('Start the quiz before sending questions.');
+                        return;
+                    }
+                    // Ask for confirmation if question was already sent
+                    if (this.isQuestionSent(questionId)) {
+                        if (!confirm('This question has already been sent. Do you want to send it again?')) {
+                            return;
+                        }
+                    }
+                    this.sendQuestion(questionId);
+                });
+            });
+
+            document.querySelectorAll('.select-set-btn').forEach(btn => {
+                btn.addEventListener('click', async (event) => {
+                    const targetSetNumber = Number(event.currentTarget.dataset.setNumber || 0);
+                    if (!targetSetNumber) return;
+                    if (targetSetNumber === this.selectedSetNumber && !this.isQuestionRunning) {
+                        document.getElementById('questionSelection')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                        return;
+                    }
+                    if (this.isQuestionRunning) {
+                        alert('Eine Frage ist aktuell noch aktiv. Beende zuerst die laufende Frage, bevor du ein anderes Set lÃ¤dst.');
+                        return;
+                    }
+                    if (this.selectedSetHasRemainingQuestions && targetSetNumber !== this.selectedSetNumber) {
+                        const shouldSwitch = window.confirm('Das aktuell ausgewÃ¤hlte Set ist noch nicht beendet. MÃ¶chtest du trotzdem zu einem anderen Set wechseln?');
+                        if (!shouldSwitch) {
+                            return;
+                        }
+                    }
+                    await this.selectSet(targetSetNumber);
+                });
+            });
+            
+            // End Question button
+            document.getElementById('endQuestionBtn')?.addEventListener('click', async () => {
+                await this.endCurrentQuestion();
+            });
+
+            // Leaderboard ein-/ausblenden (Toggle)
+            document.getElementById('showLeaderboardBtn')?.addEventListener('click', () => {
+                if (this.websocket && this.websocket.readyState === WebSocket.OPEN) {
+                    const btn = document.getElementById('showLeaderboardBtn');
+                    const isVisible = btn.dataset.lbVisible === '1';
+                    if (isVisible) {
+                        this.websocket.send(JSON.stringify({ type: 'admin_hide_leaderboard' }));
+                        btn.dataset.lbVisible = '0';
+                        btn.innerHTML = '<i data-lucide="trophy"></i> Leaderboard einblenden';
+                    } else {
+                        this.websocket.send(JSON.stringify({ type: 'admin_show_leaderboard' }));
+                        btn.dataset.lbVisible = '1';
+                        btn.innerHTML = '<i data-lucide="eye-off"></i> Leaderboard ausblenden';
+                    }
+                    try { lucide.createIcons(); } catch(_) {}
+                }
+            });
+
+            // Back to Hub button
+            document.getElementById('backToHubBtn')?.addEventListener('click', () => {
+                this.backToHub();
+            });
+            
+            // Share Code button
+            document.getElementById('shareCodeBtn')?.addEventListener('click', () => {
+                this.shareRoomCode();
+            });
+        }
+        
+        startQuiz() {
+            if (this.websocket && this.websocket.readyState === WebSocket.OPEN) {
+                // Also notify hub directly (in case backend mirror is unavailable)
+                try {
+                    const qs = new URLSearchParams(window.location.search);
+                    const hub = qs.get('hub_session') || window.__hubCode || (function(){ try { return sessionStorage.getItem("_hub_admin"); } catch(_) { return null; } })();
+                    if (hub) {
+                        const hubWs = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws/hub/' + hub + '/');
+                        hubWs.onopen = () => {
+                            hubWs.send(JSON.stringify({
+                                type: 'navigate_direct',
+                                game_key: 'blackjack',
+                                room_code: '{{ quiz.room_code }}'
+                            }));
+                            setTimeout(() => hubWs.close(), 100);
+                        };
+                    }
+                } catch(_) {}
+                const showTutorial = document.getElementById('showTutorialToggle')?.checked ?? false;
+                this.websocket.send(JSON.stringify({
+                    type: 'admin_start_quiz',
+                    show_tutorial: showTutorial
+                }));
+                //reload page
+                location.reload();
+            }
+        }
+        
+        endQuiz() {
+            if (this.websocket && this.websocket.readyState === WebSocket.OPEN) {
+                // Also notify hub directly (in case backend mirror is unavailable)
+                // try {
+                //     const qs = new URLSearchParams(window.location.search);
+                //     const hub = qs.get('hub_session') || window.__hubCode || (function(){ try { return sessionStorage.getItem("_hub_admin"); } catch(_) { return null; } })();
+                //     if (hub) {
+                //         const hubWs = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws/hub/' + hub + '/');
+                //         hubWs.onopen = () => {
+                //             hubWs.send(JSON.stringify({
+                //                 type: 'broadcast',
+                //                 event: { type: 'quiz_ended', game_key: 'blackjack', room_code: '{{ quiz.room_code }}' }
+                //             }));
+                //             setTimeout(() => hubWs.close(), 100);
+                //         };
+                //     }
+                // } catch(_) {}
+                this.websocket.send(JSON.stringify({
+                    type: 'admin_end_quiz'
+                }));
+                // Immediately reset UI/local state on admin action
+                this.resetSentStates();
+            }
+        }
+
+        setInactive() {
+            if (this.websocket && this.websocket.readyState === WebSocket.OPEN) {
+                this.websocket.send(JSON.stringify({
+                    type: 'admin_set_inactive'
+                }));
+            }
+        }
+
+        backToHub() {
+            try {
+                const qs = new URLSearchParams(window.location.search);
+                const hub = qs.get('hub_session') || window.__hubCode || (function(){ try { return sessionStorage.getItem("_hub_admin"); } catch(_) { return null; } })();
+                if (hub) {
+                    setTimeout(() => {
+                        window.location.href = `/hub/monitor/${hub}/`;
+                    }, 200);
+                }
+            } catch(_) {}
+        }
+        
+        sendQuestion(questionId) {
+            if (this.websocket && this.websocket.readyState === WebSocket.OPEN) {
+                const btn = document.querySelector(`[data-question-id="${questionId}"]`);
+                if (btn) btn.classList.add('loading');
+                const scoringModeSelect = document.getElementById('blackjackScoringModeSelect');
+                const scoringModeHint = document.getElementById('blackjackScoringModeHint');
+                if (scoringModeSelect) scoringModeSelect.disabled = true;
+                if (scoringModeHint) scoringModeHint.textContent = 'Nach der ersten gesendeten Frage gesperrt.';
+
+                // Read optional time override from the adjacent input
+                let customTime = null;
+                try {
+                    const item = btn.closest('.question-item');
+                    const input = item ? item.querySelector('.question-time-input') : null;
+                    if (input && input.value) {
+                        const v = parseInt(input.value, 10);
+                        if (!isNaN(v) && v > 0) customTime = v;
+                    }
+                } catch(_) {}
+
+                const payload = {
+                    type: 'admin_send_question',
+                    question_id: questionId,
+                    selected_set_number: this.selectedSetNumber,
+                };
+                if (customTime) {
+                    payload.custom_time_limit = customTime;
+                    // Persist for admin-side timer after backend switches state
+                    try { localStorage.setItem(`override_time_${this.roomCode}`, String(customTime)); } catch(_) {}
+                }
+
+                this.websocket.send(JSON.stringify(payload));
+
+                // Optimistically mark as sent to prevent duplicate sends
+                this.markQuestionSent(questionId);
+                if (btn) this.updateSendButtonAsSent(btn);
+            }
+        }
+        
+        async endCurrentQuestion() {
+            if (this.websocket && this.websocket.readyState === WebSocket.OPEN) {
+                const shouldEnd = await this.confirmEarlyQuestionEnd();
+                if (!shouldEnd) {
+                    return;
+                }
+                this.websocket.send(JSON.stringify({
+                    type: 'admin_end_question'
+                }));
+            }
+        }
+
+        async confirmEarlyQuestionEnd() {
+            try {
+                const response = await fetch(this.statsUrl, { credentials: 'same-origin' });
+                const payload = await response.json();
+                const stats = payload?.stats || {};
+                const answeredCount = Number(stats.current_question_responses || 0);
+                const activeCount = Number(stats.active_participants || 0);
+                if (activeCount > 0 && answeredCount < activeCount) {
+                    return window.confirm(`Es haben erst ${answeredCount} von ${activeCount} Teilnehmenden geantwortet. Frage trotzdem frÃ¼hzeitig beenden?`);
+                }
+            } catch (_) {}
+            return true;
+        }
+
+        async selectSet(setNumber) {
+            const response = await fetch(this.selectSetUrl, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRFToken': this.csrfToken,
+                },
+                credentials: 'same-origin',
+                body: JSON.stringify({ set_number: setNumber }),
+            });
+            const payload = await response.json();
+            if (!response.ok || !payload.success) {
+                alert(payload.error || 'Das Set konnte nicht geladen werden.');
+                return;
+            }
+            this.selectedSetNumber = Number(payload.selected_set_number || setNumber) || setNumber;
+            window.location.reload();
+        }
+        
+        startQuestionTimer() {
+            // Prefer any override set at send-time (stored just before backend switched state)
+            let override = null;
+            try {
+                const raw = localStorage.getItem(`override_time_${this.roomCode}`);
+                if (raw) {
+                    const v = parseInt(raw, 10);
+                    if (!isNaN(v) && v > 0) override = v;
+                }
+            } catch(_) {}
+            let serverTimeLeft = 0;
+            try {
+                const serverEl = document.getElementById('questionTimeLeft');
+                if (serverEl && serverEl.textContent) {
+                    const sv = parseInt(serverEl.textContent, 10);
+                    if (!isNaN(sv) && sv > 0) serverTimeLeft = sv;
+                }
+            } catch(_) {}
+            const timeLeft = (override !== null) ? override : serverTimeLeft;
+            if (timeLeft <= 0) return;
+            
+            let currentTime = timeLeft;
+            const timerElement = document.getElementById('questionTimeLeft');
+            const circleElement = document.getElementById('questionTimerCircle');
+            
+            this.questionTimer = setInterval(() => {
+                currentTime--;
+                if (timerElement) timerElement.textContent = currentTime;
+                
+                // Update timer circle color based on time left
+                if (circleElement) {
+                    circleElement.className = 'timer-circle';
+                    if (currentTime <= 10) {
+                        circleElement.classList.add('danger');
+                    } else if (currentTime <= 20) {
+                        circleElement.classList.add('warning');
+                    }
+                }
+                
+                if (currentTime <= 0) {
+                    clearInterval(this.questionTimer);
+                    this.onQuestionTimeout();
+                }
+            }, 1000);
+            // Clear one-time override so subsequent questions use their own values
+            try { localStorage.removeItem(`override_time_${this.roomCode}`); } catch(_) {}
+        }
+        
+        startQuizTimer() {
+            if (!this.quizStartTime) return;
+            
+            const updateTimer = () => {
+                const now = new Date();
+                const elapsed = Math.floor((now - this.quizStartTime) / 1000);
+                const minutes = Math.floor(elapsed / 60);
+                const seconds = elapsed % 60;
+                const timerElement = document.getElementById('quizTimer');
+                if (timerElement) {
+                    timerElement.textContent = 
+                        `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+                }
+            };
+            
+            updateTimer();
+            setInterval(updateTimer, 1000);
+        }
+        
+        initializeLiveResponseState() {
+            if (!(this.liveResponseState instanceof Map)) {
+                this.liveResponseState = new Map();
+            }
+            document.querySelectorAll('.participant-item').forEach((row) => {
+                const nameEl = row.querySelector('.participant-name');
+                const name = (nameEl?.textContent || '').trim();
+                if (!name) return;
+                const rowText = (row.textContent || '').toLowerCase();
+                const inferredEliminated = rowText.includes('eliminated') || rowText.includes('ausgeschieden') || rowText.includes('bust');
+                const prev = this.liveResponseState.get(name) || { answered: false, eliminated: false };
+                this.liveResponseState.set(name, {
+                    answered: !!prev.answered,
+                    eliminated: !!(prev.eliminated || inferredEliminated),
+                });
+            });
+            this.renderLiveResponseState();
+        }
+
+        resetLiveResponseStateForQuestion() {
+            if (!(this.liveResponseState instanceof Map)) {
+                this.liveResponseState = new Map();
+            }
+            for (const [name, state] of this.liveResponseState.entries()) {
+                this.liveResponseState.set(name, { answered: false, eliminated: !!state?.eliminated });
+            }
+            this.renderLiveResponseState();
+        }
+
+        renderLiveResponseState() {
+            const responsesContainer = document.getElementById('liveResponses');
+            if (!responsesContainer) return;
+
+            const entries = Array.from(this.liveResponseState.entries());
+            if (!entries.length) {
+                responsesContainer.innerHTML = `
+                    <div class="no-responses">
+                        <i data-lucide="clock"></i>
+                        <p>No participant status available yet.</p>
+                    </div>
+                `;
+                const responseCount = document.getElementById('responseCount');
+                if (responseCount) responseCount.textContent = '0';
+                try { lucide.createIcons(); } catch(_) {}
+                return;
+            }
+
+            responsesContainer.innerHTML = '';
+            let answeredCount = 0;
+            let eligibleCount = 0;
+            entries.forEach(([participantName, state]) => {
+                const eliminated = !!state?.eliminated;
+                const answered = !eliminated && !!state?.answered;
+                if (!eliminated) eligibleCount += 1;
+                if (answered) answeredCount += 1;
+
+                const quality = eliminated ? 'poor' : (answered ? 'excellent' : 'fair');
+                const detailText = eliminated ? 'Ausgeschieden' : (answered ? 'Antwort abgegeben' : 'Warte auf Antwort');
+
+                const row = document.createElement('div');
+                row.className = 'response-item';
+                row.innerHTML = `
+                    <div class="response-avatar ${quality}">${participantName.charAt(0).toUpperCase()}</div>
+                    <div class="response-content">
+                        <div class="response-name">${participantName}</div>
+                        <div class="response-details">${detailText}</div>
+                    </div>
+                `;
+                responsesContainer.appendChild(row);
+            });
+
+            const responseCount = document.getElementById('responseCount');
+            if (responseCount) responseCount.textContent = `${answeredCount}/${eligibleCount}`;
+        }
+
+        addParticipant(participant) {
+            const participantsList = document.getElementById('participantsList');
+            if (!participantsList) return;
+            
+            const noParticipants = participantsList.querySelector('.no-participants');
+            if (noParticipants) noParticipants.remove();
+            
+            // Check if participant already exists
+            const existingParticipant = participantsList.querySelector(`[data-participant-name="${participant.name}"]`);
+            if (existingParticipant) return;
+            
+            const participantEl = document.createElement('div');
+            participantEl.className = 'participant-item';
+            participantEl.dataset.participantName = participant.name;
+            participantEl.innerHTML = `
+                <div class="participant-avatar ${participant.is_busted ? 'busted' : ''}">
+                    ${participant.name.charAt(0).toUpperCase()}
+                </div>
+                <div class="participant-info">
+                    <div class="participant-name">
+                        ${participant.name}
+                        ${participant.is_busted ? '<span class="bust-badge">BUST</span>' : ''}
+                    </div>
+                    <div class="participant-score" id="score-${participant.id}">${participant.total_points || 0} points</div>
+                    <div class="participant-status">0/{{ participant_progress_question_count }} answered</div>
+                </div>
+                <div class="participant-status-dot">
+                    <button class="btn btn-link btn-sm p-0 me-1 edit-score-btn" title="Set points manually"
+                        data-participant-id="${participant.id}"
+                        data-participant-name="${participant.name}"
+                        data-current-score="${participant.total_points || 0}"
+                        data-bs-toggle="modal" data-bs-target="#editScoreModal">
+                        <i data-lucide="pencil" style="width:14px;height:14px;color:#6c757d;"></i>
+                    </button>
+                    <div class="status-dot online"></div>
+                </div>
+            `;
+            
+            participantsList.appendChild(participantEl);
+            lucide.createIcons();
+            this.initializeLiveResponseState();
+        }
+        
+        addLiveResponse(response) {
+            if (!(this.liveResponseState instanceof Map)) { this.liveResponseState = new Map(); }
+            const participantName = (response.participant_name || '').trim();
+            if (!participantName) return;
+            const prev = this.liveResponseState.get(participantName) || { answered: false, eliminated: false };
+            this.liveResponseState.set(participantName, { answered: true, eliminated: !!(prev.eliminated || response.is_eliminated || response.is_busted) });
+            this.renderLiveResponseState();
+            return;
+
+            const responsesContainer = document.getElementById('liveResponses');
+            if (!responsesContainer) return;
+            
+            const noResponses = responsesContainer.querySelector('.no-responses');
+            if (noResponses) noResponses.remove();
+            
+            // Determine response quality based on points (lower is better for BlackJack)
+            let quality = 'poor';
+            if (response.points_earned === 0) quality = 'excellent';
+            else if (response.points_earned <= 2) quality = 'good';
+            else if (response.points_earned <= 5) quality = 'fair';
+            
+            if (response.is_busted) quality = 'busted';
+            
+            const responseEl = document.createElement('div');
+            responseEl.className = 'response-item';
+            responseEl.innerHTML = `
+                <div class="response-avatar ${quality}">
+                    ${response.participant_name.charAt(0).toUpperCase()}
+                </div>
+                <div class="response-content">
+                    <div class="response-name">${response.participant_name}</div>
+                    <div class="response-details">
+                        Answer: <span class="response-answer">${response.user_answer}</span> • 
+                        ${response.points_earned} pts • Total: ${response.total_points}
+                        ${response.is_busted ? ' • <strong>BUSTED!</strong>' : ''}
+                    </div>
+                </div>
+                <div class="response-time">${response.time_taken ? response.time_taken.toFixed(1) + 's' : '-'}</div>
+            `;
+            
+            responsesContainer.insertBefore(responseEl, responsesContainer.firstChild);
+            
+            // Update response count
+            const count = document.querySelectorAll('.response-item').length;
+            const responseCount = document.getElementById('responseCount');
+            if (responseCount) responseCount.textContent = count;
+        }
+        
+        updateParticipantCount() {
+            const count = document.querySelectorAll('.participant-item').length;
+            const countElement = document.getElementById('participantCount');
+            const badgeElement = document.getElementById('participantBadge');
+            
+            if (countElement) countElement.textContent = count;
+            if (badgeElement) badgeElement.textContent = count;
+        }
+        
+        
+        updateConnectionStatus(connected) {
+            // You could add a connection indicator here
+        }
+        
+        onQuestionTimeout() {
+            console.log('Question timed out');
+            if (this.websocket && this.websocket.readyState === WebSocket.OPEN) {
+                this.websocket.send(JSON.stringify({
+                    type: 'admin_end_question'
+                }));
+            }
+        }
+        
+        shareRoomCode() {
+            const shareData = {
+                title: 'Join BlackJack Quiz Room',
+                text: `Join the BlackJack quiz with room code: {{ quiz.room_code }}`,
+                url: window.location.origin + '/blackjack/join/'
+            };
+            
+            if (navigator.share) {
+                navigator.share(shareData);
+            } else {
+                // Fallback: copy to clipboard
+                const textToCopy = `Join the BlackJack quiz at ${shareData.url} with room code: {{ quiz.room_code }}`;
+                navigator.clipboard.writeText(textToCopy).then(() => {
+                    alert('Room code and link copied to clipboard!');
+                });
+            }
+        }
+    }
+    
+    // Initialize BlackJack Monitor
+    const monitor = new BlackJackMonitor();
+    window.adminGameMonitor = monitor;
+    
+    // Start question timer if there's an active question
+    {% if quiz.current_question %}
+        monitor.startQuestionTimer();
+    {% endif %}
+});
+</script>
+<script>
+// Minimal hub listener for admin auto-redirect across steps
+(function() {
+  try {
+    const params = new URLSearchParams(window.location.search);
+    const hubCode = params.get('hub_session');
+    if (hubCode) { window.__hubCode = hubCode; try { sessionStorage.setItem("_hub_admin", hubCode); } catch(_) {} }
+    if (!hubCode) return;
+    const wsScheme = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = `${wsScheme}//${window.location.host}/ws/hub/${hubCode}/`;
+    const hubWS = new WebSocket(wsUrl);
+    hubWS.onmessage = (e) => {
+      try {
+        const data = JSON.parse(e.data);
+        if (data.type === 'navigate' && data.step) {
+          const step = data.step;
+          const routes = {
+            quiz: `/admin-dashboard/quiz/${step.room_code}/monitor/`,
+            assign: `/admin-dashboard/assign/${step.room_code}/monitor/`,
+            estimation: `/admin-dashboard/estimation/${step.room_code}/monitor/`,
+            where: `/admin-dashboard/where/monitor/${step.room_code}/`,
+            who: `/admin-dashboard/who/${step.room_code}/monitor/`,
+            who_that: `/admin-dashboard/who-that/${step.room_code}/monitor/`,
+            blackjack: `/admin-dashboard/blackjack/${step.room_code}/monitor/`,
+            clue_rush: `/admin-dashboard/clue-rush/${step.room_code}/monitor/`,
+            sorting_ladder: `/admin-dashboard/sorting-ladder/${step.room_code}/monitor/`,
+          };
+          const base = routes[step.game_key];
+          if (base) {
+            const u = new URL(base, window.location.origin);
+            u.searchParams.set('hub_session', hubCode);
+            window.location.href = u.toString();
+          }
+        } else if (data.type === 'recall_to_lobby') {
+          window.location.href = new URL(`/hub/lobby/${hubCode}/`, window.location.origin).toString();
+        } else if (data.type === 'session_ended') {
+          const u = new URL(`/hub/lobby/${hubCode}/`, window.location.origin);
+          u.searchParams.set('ended', '1');
+          window.location.href = u.toString();
+        }
+      } catch (_) {}
+    };
+  } catch (_) {}
+})();
+</script>
+
+<!-- Score Edit Modal -->
+<div class="modal fade" id="editScoreModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-sm modal-dialog-centered">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h6 class="modal-title">Edit Points</h6>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <p class="text-muted small mb-2">Participant: <strong id="editScoreName"></strong></p>
+        <div class="mb-3">
+          <label class="form-label">New Score</label>
+          <input type="number" class="form-control" id="editScoreInput" min="0" step="1">
+        </div>
+        <div id="editScoreError" class="text-danger small d-none"></div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
+        <button type="button" class="btn btn-primary btn-sm" id="editScoreSave">Save</button>
+      </div>
+    </div>
+  </div>
+</div>
+<script>
+(function() {
+    const modal = document.getElementById('editScoreModal');
+    if (!modal) return;
+    let currentParticipantId = null;
+    document.addEventListener('click', function(e) {
+        const btn = e.target.closest('.edit-score-btn');
+        if (!btn) return;
+        currentParticipantId = btn.dataset.participantId;
+        document.getElementById('editScoreName').textContent = btn.dataset.participantName;
+        document.getElementById('editScoreInput').value = btn.dataset.currentScore;
+        document.getElementById('editScoreError').classList.add('d-none');
+    });
+    document.getElementById('editScoreSave').addEventListener('click', function() {
+        const score = parseInt(document.getElementById('editScoreInput').value, 10);
+        const errEl = document.getElementById('editScoreError');
+        if (isNaN(score) || score < 0) { errEl.textContent = 'Please enter a valid number (≥ 0).'; errEl.classList.remove('d-none'); return; }
+        errEl.classList.add('d-none');
+        this.disabled = true;
+        fetch('{% url "admin_dashboard:set_blackjack_participant_score" %}', {
+            method: 'POST',
+            headers: {'X-CSRFToken': '{{ csrf_token }}', 'Content-Type': 'application/json'},
+            body: JSON.stringify({participant_id: currentParticipantId, score: score})
+        })
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) {
+                const el = document.getElementById('score-' + currentParticipantId);
+                if (el) el.textContent = data.new_score + ' points';
+                const btn = document.querySelector(`.edit-score-btn[data-participant-id="${currentParticipantId}"]`);
+                if (btn) btn.dataset.currentScore = data.new_score;
+                bootstrap.Modal.getInstance(modal).hide();
+            } else { errEl.textContent = 'Error.'; errEl.classList.remove('d-none'); }
+        })
+        .catch(() => { errEl.textContent = 'Network error.'; errEl.classList.remove('d-none'); })
+        .finally(() => { this.disabled = false; });
+    });
+})();
+</script>
+<script>
+(function() {
+    const scoringModeSelect = document.getElementById('blackjackScoringModeSelect');
+    if (!scoringModeSelect) return;
+
+    scoringModeSelect.dataset.previousValue = scoringModeSelect.value;
+
+    scoringModeSelect.addEventListener('change', async function() {
+        const previousValue = this.dataset.previousValue || 'simple';
+        const nextValue = this.value === 'rank' ? 'rank' : 'simple';
+        let keepDisabled = false;
+        this.disabled = true;
+
+        try {
+            const response = await fetch('{% url "admin_dashboard:set_blackjack_scoring_mode" quiz.room_code %}', {
+                method: 'POST',
+                headers: {
+                    'X-CSRFToken': '{{ csrf_token }}',
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ scoring_mode: nextValue }),
+            });
+
+            const data = await response.json();
+            if (!data.success) {
+                this.value = previousValue;
+                alert(data.error || 'Scoring mode could not be updated.');
+            } else {
+                const normalized = data.scoring_mode === 'rank' ? 'rank' : 'simple';
+                this.value = normalized;
+                this.dataset.previousValue = normalized;
+                keepDisabled = !data.can_change_scoring_mode;
+            }
+        } catch (_) {
+            this.value = previousValue;
+            alert('Request failed.');
+        } finally {
+            this.disabled = keepDisabled;
+        }
+    });
+})();
+</script>
+<script>
+document.querySelectorAll('.copy-lobby-btn-monitor').forEach(btn => {
+    btn.addEventListener('click', function() {
+        navigator.clipboard.writeText(this.dataset.url).then(() => {
+            const icon = this.querySelector('i');
+            icon.setAttribute('data-lucide', 'check');
+            lucide.createIcons();
+            setTimeout(() => { icon.setAttribute('data-lucide', 'copy'); lucide.createIcons(); }, 1500);
+        });
+    });
+});
+</script>
+
+{% with qb_game_key="blackjack" qb_room_code=quiz.room_code qb_quiz=quiz %}
+  {% include "admin_dashboard/includes/question_bank_modal.html" %}
+{% endwith %}
+
+{% endblock %}

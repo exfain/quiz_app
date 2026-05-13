@@ -1,0 +1,870 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Admin Dashboard - QuizMaster{% endblock %}</title>
+    
+    <!-- Bootstrap 5 CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
+    
+    <!-- Custom Theme CSS -->
+    <link rel="stylesheet" href="{% static 'theme.css' %}">
+    
+    <!-- Inter Font -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    
+    {% block extra_head %}{% endblock %}
+</head>
+<body>
+    <!-- Admin Layout Container -->
+    <div class="admin-layout">
+        <!-- Main Content -->
+        <main class="main-content" id="mainContent">
+            <!-- Top Navbar -->
+            <header class="navbar-top">
+                <div class="navbar-content">
+                    <div class="navbar-left">
+                        <a href="{% url 'admin_dashboard:home' %}" class="navbar-brand-link">
+                            <i data-lucide="brain-circuit" class="navbar-brand-icon"></i>
+                            <span class="navbar-brand-text">QuizMaster</span>
+                        </a>
+                        <div class="page-title">
+                            <h1>{% block page_title %}Dashboard{% endblock %}</h1>
+                            <p class="page-subtitle">{% block page_subtitle %}{% endblock %}</p>
+                        </div>
+                    </div>
+                </div>
+            </header>
+
+            <!-- Page Content -->
+            <div class="page-content">
+                {% block content %}
+                {% endblock %}
+            </div>
+        </main>
+    </div>
+
+    <div class="modal fade" id="activeGameConflictModal" tabindex="-1" aria-labelledby="activeGameConflictModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="activeGameConflictModalLabel">Aktives Spiel vorhanden</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <p class="mb-0" id="activeGameConflictMessage">Ein anderes Spiel ist noch aktiv.</p>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-danger" id="activeGameConflictEndBtn">Aktives Spiel beenden</button>
+                    <button type="button" class="btn btn-warning" id="activeGameConflictDeactivateBtn">Aktives Spiel auf inaktiv setzen</button>
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Zurück</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal fade" id="activeGameLeaveModal" tabindex="-1" aria-labelledby="activeGameLeaveModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="activeGameLeaveModalLabel">Aktives Spiel verlassen</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <p class="mb-3" id="activeGameLeaveMessage">Das Spiel ist noch aktiv. W&auml;hle, wie du zur &Uuml;bersicht zur&uuml;ckkehren willst.</p>
+                    <div class="alert alert-warning d-none mb-0" id="activeGameLeaveWarning">
+                        Not all sets/questions were played yet.
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-danger" id="activeGameLeaveEndBtn">End Quiz</button>
+                    <button type="button" class="btn btn-warning" id="activeGameLeaveInactiveBtn">Set inactive</button>
+                    <button type="button" class="btn btn-primary" id="activeGameLeaveOverviewBtn">Back to overview</button>
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Zur&uuml;ck</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal fade" id="lobbyReturnGuardModal" tabindex="-1" aria-labelledby="lobbyReturnGuardModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="lobbyReturnGuardModalLabel">Teilnehmer sind noch im Spiel</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <p class="mb-2" id="lobbyReturnGuardMessage">Noch nicht alle Teilnehmer sind in der Lobby.</p>
+                    <div class="small text-muted" id="lobbyReturnGuardNames"></div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-warning" id="lobbyReturnGuardPrimaryBtn">Teilnehmer in die Lobby zurückschicken (10)</button>
+                    <button type="button" class="btn btn-secondary" id="lobbyReturnGuardCancelBtn" data-bs-dismiss="modal">Abbrechen</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Bootstrap 5 JS -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+
+    <!-- Custom Admin JS -->
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            lucide.createIcons();
+        });
+    </script>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            const startButtonSelector = '#startQuizBtn';
+            const modalElement = document.getElementById('activeGameConflictModal');
+            const conflictMessage = document.getElementById('activeGameConflictMessage');
+            const endButton = document.getElementById('activeGameConflictEndBtn');
+            const deactivateButton = document.getElementById('activeGameConflictDeactivateBtn');
+            const conflictModal = modalElement ? bootstrap.Modal.getOrCreateInstance(modalElement) : null;
+            const leaveModalElement = document.getElementById('activeGameLeaveModal');
+            const leaveMessage = document.getElementById('activeGameLeaveMessage');
+            const leaveWarning = document.getElementById('activeGameLeaveWarning');
+            const leaveEndButton = document.getElementById('activeGameLeaveEndBtn');
+            const leaveInactiveButton = document.getElementById('activeGameLeaveInactiveBtn');
+            const leaveOverviewButton = document.getElementById('activeGameLeaveOverviewBtn');
+            const leaveModal = leaveModalElement ? bootstrap.Modal.getOrCreateInstance(leaveModalElement) : null;
+            const lobbyReturnModalElement = document.getElementById('lobbyReturnGuardModal');
+            const lobbyReturnMessage = document.getElementById('lobbyReturnGuardMessage');
+            const lobbyReturnNames = document.getElementById('lobbyReturnGuardNames');
+            const lobbyReturnPrimaryButton = document.getElementById('lobbyReturnGuardPrimaryBtn');
+            const lobbyReturnCancelButton = document.getElementById('lobbyReturnGuardCancelBtn');
+            const lobbyReturnModal = lobbyReturnModalElement ? bootstrap.Modal.getOrCreateInstance(lobbyReturnModalElement) : null;
+            const pendingLeaveStorageKey = '_admin_leave_to_hub';
+
+            const monitorRouteMatchers = [
+                { regex: /^\/admin-dashboard\/quiz\/([^/]+)\/monitor\/?$/, gameKey: 'quiz' },
+                { regex: /^\/admin-dashboard\/assign\/([^/]+)\/monitor\/?$/, gameKey: 'assign' },
+                { regex: /^\/admin-dashboard\/estimation\/([^/]+)\/monitor\/?$/, gameKey: 'estimation' },
+                { regex: /^\/admin-dashboard\/where\/monitor\/([^/]+)\/?$/, gameKey: 'where' },
+                { regex: /^\/admin-dashboard\/who\/([^/]+)\/monitor\/?$/, gameKey: 'who' },
+                { regex: /^\/admin-dashboard\/who-that\/([^/]+)\/monitor\/?$/, gameKey: 'who_that' },
+                { regex: /^\/admin-dashboard\/blackjack\/([^/]+)\/monitor\/?$/, gameKey: 'blackjack' },
+                { regex: /^\/admin-dashboard\/clue-rush\/([^/]+)\/monitor\/?$/, gameKey: 'clue_rush' },
+                { regex: /^\/admin-dashboard\/sorting-ladder\/([^/]+)\/monitor\/?$/, gameKey: 'sorting_ladder' },
+            ];
+
+            const guardState = {
+                pendingButton: null,
+                pendingContext: null,
+            };
+
+            const leaveState = {
+                isUnfinished: false,
+            };
+
+            const lobbyReturnState = {
+                mode: null,
+                sessionCode: '',
+                pendingButton: null,
+                countdownRemaining: 10,
+                countdownTimer: null,
+            };
+
+            function getSessionCode() {
+                return (
+                    new URLSearchParams(window.location.search).get('hub_session')
+                    || window.location.pathname.match(/^\/hub\/monitor\/([^/]+)\/?$/)?.[1]
+                    || ''
+                );
+            }
+
+            function getMonitorContext() {
+                const sessionCode = getSessionCode();
+                if (!sessionCode) return null;
+
+                const path = window.location.pathname;
+                for (const matcher of monitorRouteMatchers) {
+                    const match = path.match(matcher.regex);
+                    if (match) {
+                        return {
+                            sessionCode,
+                            gameKey: matcher.gameKey,
+                            roomCode: match[1],
+                        };
+                    }
+                }
+                return null;
+            }
+
+            function getHubMonitorUrl() {
+                const sessionCode = getSessionCode();
+                return sessionCode ? `/hub/monitor/${sessionCode}/` : null;
+            }
+
+            function getAdminGameMonitor() {
+                return window.adminGameMonitor || null;
+            }
+
+            function isMonitorGameActive() {
+                const monitor = getAdminGameMonitor();
+                if (typeof monitor?.isActive === 'boolean') {
+                    return monitor.isActive;
+                }
+                return !!document.getElementById('endQuizBtn') && !document.getElementById('startQuizBtn');
+            }
+
+            function isMonitorGameUnfinished() {
+                if (document.getElementById('activeQuestion')) {
+                    return true;
+                }
+
+                const sendButtons = Array.from(document.querySelectorAll('.send-question-btn'));
+                if (!sendButtons.length) {
+                    return false;
+                }
+
+                return sendButtons.some((button) => {
+                    const wrapper = button.closest('.d-flex');
+                    return !wrapper || !wrapper.querySelector('.already-sent-hint');
+                });
+            }
+
+            function syncSetInactiveVisibility() {
+                const setInactiveButton = document.getElementById('setInactiveBtn');
+                if (!setInactiveButton) return;
+                setInactiveButton.classList.toggle('d-none', !isMonitorGameUnfinished());
+            }
+
+            function readPendingLeaveNavigation() {
+                try {
+                    const raw = sessionStorage.getItem(pendingLeaveStorageKey);
+                    return raw ? JSON.parse(raw) : null;
+                } catch (_) {
+                    return null;
+                }
+            }
+
+            function writePendingLeaveNavigation(action) {
+                const context = getMonitorContext();
+                if (!context) return;
+                try {
+                    sessionStorage.setItem(pendingLeaveStorageKey, JSON.stringify({
+                        action,
+                        path: window.location.pathname,
+                        hub_session: context.sessionCode,
+                        room_code: context.roomCode,
+                        game_key: context.gameKey,
+                    }));
+                } catch (_) {}
+            }
+
+            function clearPendingLeaveNavigation() {
+                try {
+                    sessionStorage.removeItem(pendingLeaveStorageKey);
+                } catch (_) {}
+            }
+
+            function navigateToHubMonitor() {
+                const hubMonitorUrl = getHubMonitorUrl();
+                if (hubMonitorUrl) {
+                    window.location.href = hubMonitorUrl;
+                }
+            }
+
+            function setLeaveButtonsDisabled(disabled) {
+                if (leaveEndButton) leaveEndButton.disabled = disabled;
+                if (leaveInactiveButton) leaveInactiveButton.disabled = disabled;
+                if (leaveOverviewButton) leaveOverviewButton.disabled = disabled;
+            }
+
+            function openLeaveModal() {
+                if (!leaveModal) {
+                    navigateToHubMonitor();
+                    return;
+                }
+
+                leaveState.isUnfinished = isMonitorGameUnfinished();
+
+                if (leaveMessage) {
+                    leaveMessage.textContent = leaveState.isUnfinished
+                        ? 'Das Spiel ist noch aktiv. Waehle, wie du zur Uebersicht zurueckkehren willst.'
+                        : 'Das Spiel ist noch aktiv. Du kannst es beenden oder zur Uebersicht zurueckkehren.';
+                }
+
+                if (leaveWarning) {
+                    leaveWarning.classList.toggle('d-none', !leaveState.isUnfinished);
+                }
+
+                if (leaveInactiveButton) {
+                    leaveInactiveButton.classList.toggle('d-none', !leaveState.isUnfinished);
+                }
+
+                setLeaveButtonsDisabled(false);
+                leaveModal.show();
+            }
+
+            function continuePendingLeaveNavigation() {
+                const pending = readPendingLeaveNavigation();
+                const context = getMonitorContext();
+                if (!pending || !context) return;
+
+                if (
+                    pending.path !== window.location.pathname
+                    || pending.hub_session !== context.sessionCode
+                    || pending.room_code !== context.roomCode
+                    || pending.game_key !== context.gameKey
+                ) {
+                    return;
+                }
+
+                if (pending.action === 'end' || pending.action === 'inactive') {
+                    if (!isMonitorGameActive()) {
+                        clearPendingLeaveNavigation();
+                        navigateToHubMonitor();
+                    }
+                }
+            }
+
+            function clearLobbyReturnCountdown() {
+                if (lobbyReturnState.countdownTimer) {
+                    clearInterval(lobbyReturnState.countdownTimer);
+                }
+                lobbyReturnState.countdownTimer = null;
+                lobbyReturnState.countdownRemaining = 10;
+            }
+
+            function setLobbyReturnButtonsDisabled(disabled) {
+                if (lobbyReturnPrimaryButton) lobbyReturnPrimaryButton.disabled = disabled;
+                if (lobbyReturnCancelButton) lobbyReturnCancelButton.disabled = disabled;
+            }
+
+            function updateLobbyReturnPrimaryLabel() {
+                if (!lobbyReturnPrimaryButton) return;
+                lobbyReturnPrimaryButton.textContent = `Teilnehmer in die Lobby zurückschicken (${lobbyReturnState.countdownRemaining})`;
+            }
+
+            function resetLobbyReturnState() {
+                clearLobbyReturnCountdown();
+                if (lobbyReturnState.pendingButton) {
+                    lobbyReturnState.pendingButton.disabled = false;
+                }
+                lobbyReturnState.mode = null;
+                lobbyReturnState.sessionCode = '';
+                lobbyReturnState.pendingButton = null;
+                setLobbyReturnButtonsDisabled(false);
+                updateLobbyReturnPrimaryLabel();
+            }
+
+            async function fetchLobbyPresence(sessionCode) {
+                const response = await fetch(`/hub/api/session/${sessionCode}/lobby-presence/`);
+                return response.json();
+            }
+
+            function openLobbyReturnModal(presence, mode, pendingButton = null) {
+                if (!lobbyReturnModal) {
+                    if (pendingButton) pendingButton.disabled = false;
+                    return;
+                }
+
+                lobbyReturnState.mode = mode;
+                lobbyReturnState.sessionCode = presence.session_code || getSessionCode();
+                lobbyReturnState.pendingButton = pendingButton;
+                clearLobbyReturnCountdown();
+                setLobbyReturnButtonsDisabled(false);
+                updateLobbyReturnPrimaryLabel();
+
+                const missingCount = presence.not_in_lobby_count || 0;
+                const missingLabel = missingCount === 1
+                    ? '1 Teilnehmer ist noch nicht in der Lobby.'
+                    : `${missingCount} Teilnehmer sind noch nicht in der Lobby.`;
+
+                if (lobbyReturnMessage) {
+                    lobbyReturnMessage.textContent = `Noch nicht alle Teilnehmer sind in der Lobby. ${missingLabel}`;
+                }
+
+                if (lobbyReturnNames) {
+                    const names = (presence.participants_not_in_lobby || []).map((entry) => entry.name).filter(Boolean);
+                    lobbyReturnNames.textContent = names.length ? `Noch im Spiel: ${names.join(', ')}` : '';
+                }
+
+                lobbyReturnModal.show();
+            }
+
+            async function executeLobbyRecall() {
+                if (!lobbyReturnState.sessionCode) {
+                    return;
+                }
+
+                clearLobbyReturnCountdown();
+                setLobbyReturnButtonsDisabled(true);
+
+                try {
+                    const response = await fetch(`/hub/api/session/${lobbyReturnState.sessionCode}/recall-to-lobby/`, {
+                        method: 'POST',
+                        headers: {
+                            'X-CSRFToken': '{{ csrf_token }}',
+                        },
+                    });
+                    const payload = await response.json().catch(() => ({ success: false }));
+                    if (!payload.success) {
+                        alert(payload.error || 'Die Teilnehmer konnten nicht in die Lobby zurückgeschickt werden.');
+                        setLobbyReturnButtonsDisabled(false);
+                        updateLobbyReturnPrimaryLabel();
+                        return;
+                    }
+                    lobbyReturnModal?.hide();
+                } catch (_) {
+                    alert('Die Teilnehmer konnten nicht in die Lobby zurückgeschickt werden.');
+                    setLobbyReturnButtonsDisabled(false);
+                    updateLobbyReturnPrimaryLabel();
+                }
+            }
+
+            function startLobbyRecallCountdown() {
+                if (lobbyReturnState.countdownTimer) {
+                    executeLobbyRecall();
+                    return;
+                }
+
+                lobbyReturnState.countdownRemaining = 10;
+                updateLobbyReturnPrimaryLabel();
+                lobbyReturnState.countdownTimer = setInterval(() => {
+                    lobbyReturnState.countdownRemaining -= 1;
+                    if (lobbyReturnState.countdownRemaining <= 0) {
+                        executeLobbyRecall();
+                        return;
+                    }
+                    updateLobbyReturnPrimaryLabel();
+                }, 1000);
+            }
+
+            async function requestActivation(context, action = null, checkOnly = false) {
+                const response = await fetch(`/hub/api/session/${context.sessionCode}/activate-game/`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-CSRFToken': '{{ csrf_token }}',
+                    },
+                    body: JSON.stringify({
+                        game_key: context.gameKey,
+                        room_code: context.roomCode,
+                        action: action,
+                        check_only: checkOnly,
+                    }),
+                });
+
+                const payload = await response.json().catch(() => ({
+                    success: false,
+                    error: 'Unbekannter Serverfehler.',
+                }));
+                payload.http_status = response.status;
+                return payload;
+            }
+
+            function releasePendingStart() {
+                const button = guardState.pendingButton;
+                if (!button) return;
+                button.dataset.sessionStartApproved = '1';
+                button.disabled = false;
+                guardState.pendingButton = null;
+                guardState.pendingContext = null;
+                button.click();
+            }
+
+            function setResolutionButtonsDisabled(disabled) {
+                if (endButton) endButton.disabled = disabled;
+                if (deactivateButton) deactivateButton.disabled = disabled;
+            }
+
+            async function resolveConflict(action) {
+                if (!guardState.pendingButton || !guardState.pendingContext) return;
+                setResolutionButtonsDisabled(true);
+                const result = await requestActivation(guardState.pendingContext, action);
+                setResolutionButtonsDisabled(false);
+
+                if (result.success) {
+                    releasePendingStart();
+                    conflictModal?.hide();
+                    return;
+                }
+
+                if (result.conflict && conflictMessage) {
+                    const activeName = result.active_game?.display_name || result.active_game?.title || 'Unbekanntes Spiel';
+                    conflictMessage.textContent = `Ein anderes Spiel ist noch aktiv: ${activeName}`;
+                    return;
+                }
+
+                alert(result.error || result.message || 'Das Spiel konnte nicht gestartet werden.');
+            }
+
+            endButton?.addEventListener('click', () => resolveConflict('end'));
+            deactivateButton?.addEventListener('click', () => resolveConflict('inactive'));
+            modalElement?.addEventListener('hidden.bs.modal', function() {
+                if (guardState.pendingButton) {
+                    guardState.pendingButton.disabled = false;
+                }
+                guardState.pendingButton = null;
+                guardState.pendingContext = null;
+                setResolutionButtonsDisabled(false);
+            });
+
+            lobbyReturnPrimaryButton?.addEventListener('click', function() {
+                startLobbyRecallCountdown();
+            });
+
+            lobbyReturnModalElement?.addEventListener('hidden.bs.modal', function() {
+                resetLobbyReturnState();
+            });
+
+            leaveEndButton?.addEventListener('click', function() {
+                if (leaveState.isUnfinished) {
+                    const confirmed = confirm('Not all sets/questions were played yet. End Quiz anyway?');
+                    if (!confirmed) {
+                        return;
+                    }
+                }
+
+                const monitor = getAdminGameMonitor();
+                if (!monitor?.endQuiz) {
+                    return;
+                }
+
+                writePendingLeaveNavigation('end');
+                setLeaveButtonsDisabled(true);
+                leaveModal?.hide();
+                monitor.endQuiz();
+            });
+
+            leaveInactiveButton?.addEventListener('click', function() {
+                const monitor = getAdminGameMonitor();
+                if (!monitor?.setInactive) {
+                    return;
+                }
+
+                writePendingLeaveNavigation('inactive');
+                setLeaveButtonsDisabled(true);
+                leaveModal?.hide();
+                monitor.setInactive();
+            });
+
+            leaveOverviewButton?.addEventListener('click', function() {
+                clearPendingLeaveNavigation();
+                leaveModal?.hide();
+                navigateToHubMonitor();
+            });
+
+            leaveModalElement?.addEventListener('hidden.bs.modal', function() {
+                setLeaveButtonsDisabled(false);
+            });
+
+            document.addEventListener('click', function(event) {
+                const backButton = event.target.closest('#backToHubBtn');
+                if (!backButton) return;
+
+                const context = getMonitorContext();
+                if (!context) return;
+
+                event.preventDefault();
+                event.stopImmediatePropagation();
+                clearPendingLeaveNavigation();
+
+                if (!isMonitorGameActive()) {
+                    navigateToHubMonitor();
+                    return;
+                }
+
+                openLeaveModal();
+            }, true);
+
+            document.addEventListener('click', async function(event) {
+                const startButton = event.target.closest(startButtonSelector);
+                if (!startButton) return;
+
+                if (startButton.dataset.sessionStartApproved === '1') {
+                    delete startButton.dataset.sessionStartApproved;
+                    return;
+                }
+
+                const context = getMonitorContext();
+                if (!context) return;
+
+                event.preventDefault();
+                event.stopImmediatePropagation();
+
+                startButton.disabled = true;
+
+                let presence;
+                try {
+                    presence = await fetchLobbyPresence(context.sessionCode);
+                } catch (_) {
+                    startButton.disabled = false;
+                    alert('Der Lobby-Status konnte nicht geprüft werden.');
+                    return;
+                }
+
+                if (presence.success && !presence.all_in_lobby) {
+                    openLobbyReturnModal(presence, 'start', startButton);
+                    return;
+                }
+
+                const previewResult = await requestActivation(context, null, true);
+
+                if (previewResult.conflict && conflictModal && conflictMessage) {
+                    guardState.pendingButton = startButton;
+                    guardState.pendingContext = context;
+                    const activeName = previewResult.active_game?.display_name || previewResult.active_game?.title || 'Unbekanntes Spiel';
+                    conflictMessage.textContent = `Ein anderes Spiel ist noch aktiv: ${activeName}`;
+                    setResolutionButtonsDisabled(false);
+                    conflictModal.show();
+                    return;
+                }
+
+                if (!previewResult.success) {
+                    startButton.disabled = false;
+                    alert(previewResult.error || previewResult.message || 'Das Spiel konnte nicht gestartet werden.');
+                    return;
+                }
+
+                const result = await requestActivation(context);
+
+                if (result.success) {
+                    guardState.pendingButton = startButton;
+                    guardState.pendingContext = context;
+                    releasePendingStart();
+                    return;
+                }
+
+                startButton.disabled = false;
+
+                if (result.conflict && conflictModal && conflictMessage) {
+                    guardState.pendingButton = startButton;
+                    guardState.pendingContext = context;
+                    const activeName = result.active_game?.display_name || result.active_game?.title || 'Unbekanntes Spiel';
+                    conflictMessage.textContent = `Ein anderes Spiel ist noch aktiv: ${activeName}`;
+                    setResolutionButtonsDisabled(false);
+                    conflictModal.show();
+                    return;
+                }
+
+                alert(result.error || result.message || 'Das Spiel konnte nicht gestartet werden.');
+            }, true);
+
+            document.addEventListener('click', async function(event) {
+                const recallButton = event.target.closest('#recallLobbyBtn');
+                if (!recallButton) return;
+
+                const sessionCode = getSessionCode();
+                if (!sessionCode) return;
+
+                event.preventDefault();
+                event.stopImmediatePropagation();
+
+                recallButton.disabled = true;
+                try {
+                    const presence = await fetchLobbyPresence(sessionCode);
+                    if (!presence.success) {
+                        alert(presence.error || 'Der Lobby-Status konnte nicht geprüft werden.');
+                        return;
+                    }
+                    if (presence.all_in_lobby) {
+                        alert('Alle Teilnehmer sind bereits in der Lobby.');
+                        return;
+                    }
+                    openLobbyReturnModal(presence, 'manual');
+                } catch (_) {
+                    alert('Der Lobby-Status konnte nicht geprüft werden.');
+                } finally {
+                    recallButton.disabled = false;
+                }
+            }, true);
+
+            syncSetInactiveVisibility();
+            continuePendingLeaveNavigation();
+        });
+    </script>
+
+    <style>
+        /* ==========================================================================
+           Admin Dashboard Specific Styles
+           ========================================================================== */
+
+        .admin-layout {
+            min-height: 100vh;
+            background-color: var(--bg-secondary);
+        }
+
+        /* ==========================================================================
+           Main Content Styles
+           ========================================================================== */
+
+        .main-content {
+            display: flex;
+            flex-direction: column;
+            min-height: 100vh;
+        }
+
+        .navbar-top {
+            background-color: var(--bg-primary);
+            border-bottom: 1px solid var(--border-color);
+            padding: 0 var(--admin-content-padding);
+            height: var(--navbar-height);
+            display: flex;
+            align-items: center;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+            box-shadow: var(--shadow-sm);
+        }
+
+        .navbar-content {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            width: 100%;
+        }
+
+        .navbar-left {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+        }
+
+        .navbar-brand-link {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            text-decoration: none;
+            color: var(--text-primary);
+            font-weight: 700;
+            font-size: 1.1rem;
+            white-space: nowrap;
+            flex-shrink: 0;
+            padding-right: 1rem;
+            border-right: 1px solid var(--border-color);
+        }
+
+        .navbar-brand-link:hover {
+            color: var(--color-primary, #0d6efd);
+        }
+
+        .navbar-brand-icon {
+            width: 22px;
+            height: 22px;
+            color: var(--color-primary, #0d6efd);
+        }
+
+        .navbar-brand-text {
+            letter-spacing: -0.3px;
+        }
+
+        .page-title h1 {
+            font-size: 1.5rem;
+            font-weight: 700;
+            margin: 0;
+            color: var(--text-primary);
+        }
+
+        .page-subtitle {
+            font-size: 0.875rem;
+            color: var(--text-muted);
+            margin: 0;
+        }
+
+        .page-content {
+            flex: 1;
+            padding: var(--admin-content-padding);
+        }
+
+        /* ==========================================================================
+           Responsive Design
+           ========================================================================== */
+
+        @media (max-width: 991.98px) {
+            .page-title h1 {
+                font-size: 1.25rem;
+            }
+
+            .page-subtitle {
+                display: none;
+            }
+        }
+
+        @media (max-width: 576px) {
+            .page-content {
+                padding: 1rem;
+            }
+        }
+
+        /* ==========================================================================
+           Additional Animations
+           ========================================================================== */
+
+        @keyframes slideIn {
+            from {
+                opacity: 0;
+                transform: translateY(20px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .page-content > * {
+            animation: slideIn 0.4s ease-out;
+        }
+
+        .action-buttons {
+            display: flex;
+            justify-content: center;
+            gap: 0.5rem;
+        }
+    </style>
+
+    {% block extra_js %}{% endblock %}
+
+    {% include 'includes/accessibility_widget.html' %}
+
+    <style>
+        /* ── High-contrast overrides for admin dashboard ── */
+        html.hc .navbar-top {
+            background: #111 !important;
+            border-color: #555 !important;
+        }
+        html.hc .page-title h1 { color: #fff !important; }
+        html.hc .page-subtitle  { color: #ccc !important; }
+
+        html.hc .main-content,
+        html.hc .page-content,
+        html.hc .dashboard-content,
+        html.hc body { background: #000 !important; }
+
+        html.hc .card-header { background: #111 !important; border-color: #555 !important; }
+        html.hc .table-light,
+        html.hc .table-light th { background: #222 !important; color: #fff !important; }
+        html.hc .badge.bg-light  { background: #333 !important; color: #fff !important; }
+        html.hc .badge.bg-white  { background: #222 !important; color: #fff !important; }
+
+        html.hc .btn-outline-primary:not(#a11y-bar button)  {
+            background: transparent !important;
+            color: #ff0 !important;
+            border-color: #ff0 !important;
+        }
+        html.hc .btn-outline-secondary:not(#a11y-bar button) {
+            background: transparent !important;
+            color: #fff !important;
+            border-color: #fff !important;
+        }
+        html.hc .dropdown-menu {
+            background: #111 !important;
+            border-color: #555 !important;
+        }
+        html.hc .dropdown-item { color: #fff !important; }
+        html.hc .dropdown-item:hover { background: #333 !important; }
+    </style>
+</body>
+</html>

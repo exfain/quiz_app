@@ -1,0 +1,1759 @@
+{% extends "admin_dashboard/base.html" %}
+
+{% block title %}Quick Quiz Monitor - QuizMaster Admin{% endblock %}
+
+{% block page_title %}Quick Quiz Monitor{% endblock %}
+{% block page_subtitle %}Real-time monitoring and control for your live quick quiz session{% endblock %}
+
+{% block content %}
+<div class="where-monitor-content">
+    <!-- Quiz Status Header -->
+    <div class="quiz-status-header mb-4">
+        <div class="row align-items-center">
+            <div class="col-md-8">
+                <div class="quiz-info">
+                    <h2 class="quiz-title">{{ quiz.title }}</h2>
+                    <div class="quiz-meta">
+                        <span class="meta-item">
+                            <i data-lucide="users"></i>
+                            <span id="participantCount">{{ participant_count }}</span> Participants
+                        </span>
+                        <span class="meta-item">
+                            <i data-lucide="clock"></i>
+                            <span id="quizTimer">00:00</span>
+                        </span>
+                        {% if lobby_url %}
+                        <span class="meta-item">
+                            <i data-lucide="link"></i>
+                            <a href="{{ lobby_url }}" target="_blank" style="font-size:0.85rem;word-break:break-all;">{{ lobby_url }}</a>
+                            <button class="btn btn-link btn-sm p-0 ms-1 copy-lobby-btn-monitor" title="Copy" data-url="{{ lobby_url }}" style="vertical-align:middle;">
+                                <i data-lucide="copy" style="width:13px;height:13px;"></i>
+                            </button>
+                        </span>
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-4 text-md-end">
+                <div class="quiz-controls">
+                    <span class="status-badge status-{{ quiz.status }}">
+                        {{ quiz.get_status_display }}
+                    </span>
+                    {% if quiz.status == 'waiting' or quiz.status == 'inactive' %}
+                        <div class="d-flex align-items-center gap-3">
+                        {% if quiz.status == 'waiting' and quiz.tutorial_enabled %}
+                            <div class="form-check form-switch mb-0">
+                                <input class="form-check-input" type="checkbox" id="showTutorialToggle" checked>
+                                <label class="form-check-label" for="showTutorialToggle">Tutorial anzeigen</label>
+                            </div>
+                            {% endif %}
+                            <button class="btn btn-success" id="startQuizBtn">
+                                <i data-lucide="play"></i>
+                                {% if quiz.status == 'inactive' %}Spiel reaktivieren{% else %}Spiel starten{% endif %}
+                            </button>
+                        </div>
+                    {% elif quiz.status == 'active' %}
+                        <div class="d-flex align-items-center gap-2">
+                            <button class="btn btn-outline-warning" id="setInactiveBtn">
+                                <i data-lucide="pause-circle"></i>
+                                Set inactive
+                            </button>
+                            <button class="btn btn-warning" id="endQuizBtn">
+                                <i data-lucide="square"></i>
+                                End Quiz
+                            </button>
+                        </div>
+                    {% endif %}
+                    <button class="btn btn-outline-primary" id="showLeaderboardBtn">
+                        <i data-lucide="trophy"></i>
+                        Leaderboard einblenden
+                    </button>
+                    <button class="btn btn-outline-secondary" id="backToHubBtn">
+                        <i data-lucide="arrow-left"></i>
+                        Back to Overview
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Main Monitor Grid -->
+    <div class="row g-4">
+        <!-- Question Control Panel -->
+        <div class="col-lg-8">
+            <div class="card question-panel">
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    <h5 class="card-title mb-0">
+                        <i data-lucide="map-pin"></i>
+                        Question Control
+                    </h5>
+                    <button type="button" class="btn btn-sm btn-outline-secondary" data-bs-toggle="modal" data-bs-target="#questionBankModal">
+                        <i data-lucide="database" style="width:14px;height:14px;"></i>
+                        Question Bank
+                    </button>
+                </div>
+                <div class="card-body">
+                    {% if not quiz.current_question %}
+                        <!-- Question Selection -->
+                        <div id="questionSelection">
+                            <h6 class="mb-3">Select Next Question</h6>
+                            <div class="question-list" id="availableQuestions">
+                                {% for question in available_questions %}
+                                <div class="question-item" data-question-id="{{ question.id }}">
+                                    <div class="question-content">
+                                        <div class="question-text">{{ question.question_text|truncatechars:120 }}</div>
+                                        {% if question.question_type == 'multiple_choice' %}
+                                        <div class="question-answers mt-1">
+                                            {% if question.option_a %}<span class="answer-option {% if question.correct_answer == 'A' %}answer-correct{% endif %}"><strong>A</strong> {{ question.option_a }}</span>{% endif %}
+                                            {% if question.option_b %}<span class="answer-option {% if question.correct_answer == 'B' %}answer-correct{% endif %}"><strong>B</strong> {{ question.option_b }}</span>{% endif %}
+                                            {% if question.option_c %}<span class="answer-option {% if question.correct_answer == 'C' %}answer-correct{% endif %}"><strong>C</strong> {{ question.option_c }}</span>{% endif %}
+                                            {% if question.option_d %}<span class="answer-option {% if question.correct_answer == 'D' %}answer-correct{% endif %}"><strong>D</strong> {{ question.option_d }}</span>{% endif %}
+                                        </div>
+                                        {% elif question.question_type == 'true_false' %}
+                                        <div class="question-answers mt-1">
+                                            <span class="answer-option {% if question.correct_answer == 'True' %}answer-correct{% endif %}"><strong>True</strong></span>
+                                            <span class="answer-option {% if question.correct_answer == 'False' %}answer-correct{% endif %}"><strong>False</strong></span>
+                                        </div>
+                                        {% else %}
+                                        <div class="question-answers mt-1">
+                                            <span class="answer-option answer-correct"><strong>Antwort:</strong> {{ question.get_formatted_correct_answer }}</span>
+                                        </div>
+                                        {% endif %}
+                                        <div class="question-meta">
+                                            {% if question.hint_text %}
+                                                <span class="hint-indicator">
+                                                    <i data-lucide="lightbulb"></i>
+                                                    Has Hint
+                                                </span>
+                                            {% endif %}
+                                            {% if question.explanation %}
+                                                <span class="explanation-indicator">
+                                                    <i data-lucide="info"></i>
+                                                    Has Explanation
+                                                </span>
+                                            {% endif %}
+                                        </div>
+                                    </div>
+                                    <div class="d-flex align-items-center gap-2">
+                                        <div>
+                                            <small class="text-muted d-block mb-1">Zeit in Sek.</small>
+                                            <input type="number" class="form-control form-control-sm question-time-input" placeholder="Time (s)" min="5" step="1" style="max-width: 120px;" value="{{ question.time_limit }}">
+                                        </div>
+                                        <button class="btn btn-secondary send-question-btn" data-question-id="{{ question.id }}" {% if quiz.status != 'active' %}disabled title="Start the quiz to send questions"{% endif %}>
+                                            <i data-lucide="send"></i>
+                                            Send Question
+                                        </button>
+                                    </div>
+                                </div>
+                                {% endfor %}
+                            </div>
+                            {% if not available_questions %}
+                                <div class="empty-state">
+                                    <i data-lucide="inbox"></i>
+                                    <h4>No Questions Available</h4>
+                                    <p>Add some geography questions to get started!</p>
+                                    <a href="{% url 'admin_dashboard:where_management' %}" class="btn btn-primary">
+                                        <i data-lucide="plus"></i>
+                                        Add Questions
+                                    </a>
+                                </div>
+                            {% endif %}
+                        </div>
+                    {% else %}
+                        <!-- Active Question Display -->
+                        <div id="activeQuestion">
+                            <div class="active-question-header">
+                                <h6>Current Question</h6>
+                                <div class="question-timer">
+                                    <div class="timer-circle" id="questionTimerCircle">
+                                        <span id="questionTimeLeft">{{ quiz.current_question.time_limit }}</span>
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            <div class="current-question-content">
+                                <div class="question-text">{{ quiz.current_question.question_text }}</div>
+
+                                <div class="question-actions">
+                                    <button class="btn btn-warning" id="endQuestionBtn">
+                                        <i data-lucide="skip-forward"></i>
+                                        End Question Early
+                                    </button>
+                                    <button class="btn btn-outline-secondary d-none" id="returnToQuestionOverviewBtn">
+                                        <i data-lucide="arrow-left"></i>
+                                        Back to Question Overview
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    {% endif %}
+                </div>
+            </div>
+
+            <!-- Live Responses -->
+            <div class="card mt-4" id="liveResponsesCard" style="{% if not quiz.current_question %}display:none;{% endif %}">
+                <div class="card-header">
+                    <h5 class="card-title mb-0">
+                        <i data-lucide="activity"></i>
+                        Live Responses
+                        <span class="badge bg-secondary" id="responseCount">0</span>
+                    </h5>
+                </div>
+                <div class="card-body">
+                    <div id="liveResponses" class="live-responses">
+                        <div class="no-responses">
+                            <i data-lucide="map"></i>
+                            <p>No responses yet. Send a question to see participant geography guesses in real-time!</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Participants & Stats Panel -->
+        <div class="col-lg-4">
+            <!-- Participants List -->
+            <div class="card participants-panel">
+                <div class="card-header">
+                    <h6 class="card-title mb-0">
+                        <i data-lucide="users"></i>
+                        Participants <span class="badge bg-secondary" id="participantBadge">{{ participant_count }}</span>
+                    </h6>
+                </div>
+                <div class="card-body">
+                    <div class="participants-list" id="participantsList">
+                        {% for participant in participants %}
+                        <div class="participant-item" data-participant-name="{{ participant.name }}" data-participant-id="{{ participant.id }}">
+                            <div class="participant-name">{{ participant.name }}</div>
+                            <div class="d-flex align-items-center gap-2 ms-auto">
+                                <span class="participant-score" id="score-{{ participant.id }}">{{ participant.total_score }} pts</span>
+                                <button class="btn btn-link btn-sm p-0 edit-score-btn" title="Punkte bearbeiten"
+                                    data-participant-id="{{ participant.id }}"
+                                    data-participant-name="{{ participant.name }}"
+                                    data-current-score="{{ participant.total_score }}"
+                                    data-bs-toggle="modal" data-bs-target="#editScoreModal">
+                                    <i data-lucide="pencil" style="width:14px;height:14px;color:#6c757d;"></i>
+                                </button>
+                            </div>
+                        </div>
+                        {% empty %}
+                        <div class="no-participants">
+                            <i data-lucide="user-plus"></i>
+                            <p>No participants yet.</p>
+                        </div>
+                        {% endfor %}
+                    </div>
+                </div>
+            </div>
+
+            <!-- Tutorial Progress -->
+            <div class="card mt-4" id="tutorialProgressCard" style="display:none">
+                <div class="card-header">
+                    <h6 class="card-title mb-0">
+                        <i data-lucide="book-open"></i>
+                        Tutorial Progress
+                    </h6>
+                </div>
+                <div class="card-body">
+                    <div class="d-flex justify-content-between align-items-center mb-2">
+                        <span class="text-muted small">Participants ready</span>
+                        <span id="tutProgressText" class="fw-bold">0 / 0</span>
+                    </div>
+                    <div class="progress mb-3" style="height: 10px;">
+                        <div class="progress-bar bg-success" id="tutProgressBar" role="progressbar" style="width: 0%" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100"></div>
+                    </div>
+                    <div id="tutAllDoneBadge" class="alert alert-success py-2 text-center mb-0" style="display:none;">
+                        <i data-lucide="check-circle"></i>
+                        All ready! You can send the first question.
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+/* Geography Quiz Monitor Styles - Similar to assign_monitor.html */
+.where-monitor-content {
+    max-width: 1600px;
+}
+
+/* Quiz Status Header */
+.quiz-status-header {
+    background: linear-gradient(135deg, var(--secondary-50) 0%, var(--primary-50) 100%);
+    border-radius: var(--border-radius-xl);
+    padding: 2rem;
+}
+
+.quiz-title {
+    font-size: 1.75rem;
+    font-weight: 700;
+    color: var(--text-primary);
+    margin-bottom: 0.5rem;
+}
+
+.quiz-meta {
+    display: flex;
+    gap: 1.5rem;
+    flex-wrap: wrap;
+}
+
+.meta-item {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    color: var(--text-secondary);
+    font-weight: 500;
+}
+
+.meta-item i {
+    width: 16px;
+    height: 16px;
+    color: var(--color-secondary);
+}
+
+.quiz-controls {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+}
+
+.status-badge {
+    padding: 0.5rem 1rem;
+    border-radius: var(--border-radius-xl);
+    font-weight: 600;
+    font-size: 0.875rem;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.status-waiting {
+    background-color: var(--warning-100);
+    color: var(--warning-700);
+}
+
+.status-active {
+    background-color: var(--success-100);
+    color: var(--success-700);
+    animation: pulse 2s infinite;
+}
+
+.status-completed {
+    background-color: var(--secondary-100);
+    color: var(--secondary-700);
+}
+
+@keyframes pulse {
+    0% { box-shadow: 0 0 0 0 rgba(6, 182, 212, 0.4); }
+    70% { box-shadow: 0 0 0 10px rgba(6, 182, 212, 0); }
+    100% { box-shadow: 0 0 0 0 rgba(6, 182, 212, 0); }
+}
+
+/* Question Panel */
+.question-panel .card-body {
+    min-height: 300px;
+}
+
+.question-list {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+    max-height: 500px;
+    overflow-y: auto;
+}
+
+.question-item {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    padding: 1.5rem;
+    background-color: var(--bg-secondary);
+    border-radius: var(--border-radius-lg);
+    border: 1px solid var(--border-color);
+    transition: all var(--transition-fast);
+}
+
+.question-item:hover {
+    background-color: var(--bg-tertiary);
+    border-color: var(--color-secondary);
+    box-shadow: var(--shadow-md);
+}
+
+.question-content {
+    flex: 1;
+}
+
+.question-text {
+    font-weight: 500;
+    color: var(--text-primary);
+    margin-bottom: 0.5rem;
+}
+
+.question-answers {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    margin-bottom: 0.75rem;
+}
+
+.answer-option {
+    font-size: 0.8rem;
+    padding: 0.2rem 0.5rem;
+    border-radius: 4px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+    color: var(--text-secondary);
+}
+
+.answer-correct {
+    background: #d1fae5;
+    border-color: #6ee7b7;
+    color: #065f46;
+    font-weight: 600;
+}
+
+.question-details {
+    margin-bottom: 1rem;
+}
+
+.detail-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.5rem;
+    font-size: 0.875rem;
+}
+
+.detail-item {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    color: var(--text-secondary);
+}
+
+.detail-item i {
+    width: 14px;
+    height: 14px;
+    color: var(--color-primary);
+}
+
+.question-meta {
+    display: flex;
+    gap: 1rem;
+    align-items: center;
+}
+
+.badge-success {
+    background-color: var(--success-100);
+    color: var(--success-700);
+}
+
+.badge-warning {
+    background-color: var(--warning-100);
+    color: var(--warning-700);
+}
+
+.badge-error {
+    background-color: var(--error-100);
+    color: var(--error-700);
+}
+
+.badge-primary {
+    background-color: var(--primary-100);
+    color: var(--primary-700);
+}
+
+.hint-indicator, .explanation-indicator {
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+    font-size: 0.75rem;
+    color: var(--text-muted);
+}
+
+.hint-indicator i, .explanation-indicator i {
+    width: 12px;
+    height: 12px;
+}
+
+/* Active Question */
+.active-question-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 1.5rem;
+    padding-bottom: 1rem;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.question-timer {
+    position: relative;
+}
+
+.timer-circle {
+    width: 60px;
+    height: 60px;
+    border: 4px solid var(--success-200);
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 700;
+    color: var(--success-600);
+    position: relative;
+    background: var(--bg-primary);
+}
+
+.timer-circle.warning {
+    border-color: var(--warning-200);
+    color: var(--warning-600);
+}
+
+.timer-circle.danger {
+    border-color: var(--error-200);
+    color: var(--error-600);
+    animation: shake 0.5s infinite;
+}
+
+@keyframes shake {
+    0%, 100% { transform: translateX(0); }
+    25% { transform: translateX(-2px); }
+    75% { transform: translateX(2px); }
+}
+
+.current-question-content .question-text {
+    font-size: 1.125rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    margin-bottom: 1.5rem;
+    line-height: 1.6;
+}
+
+.current-question-details {
+    display: grid;
+    grid-template-columns: 2fr 1fr;
+    gap: 2rem;
+    margin-bottom: 1.5rem;
+    padding: 1rem;
+    background: var(--bg-secondary);
+    border-radius: var(--border-radius);
+}
+
+.location-info {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+
+.coordinates, .hint-preview {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.5rem;
+    font-size: 0.875rem;
+}
+
+.coordinates i, .hint-preview i {
+    width: 16px;
+    height: 16px;
+    color: var(--color-primary);
+    margin-top: 0.125rem;
+}
+
+.question-settings {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+
+.setting-item {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 0.875rem;
+    color: var(--text-secondary);
+}
+
+.setting-item i {
+    width: 14px;
+    height: 14px;
+    color: var(--color-primary);
+}
+
+/* Live Responses */
+.live-responses {
+    min-height: 200px;
+    max-height: 400px;
+    overflow-y: auto;
+}
+
+.response-item {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 1rem;
+    border-bottom: 1px solid var(--border-color);
+    animation: slideIn 0.3s ease-out;
+}
+
+.response-item:last-child {
+    border-bottom: none;
+}
+
+.response-avatar {
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-white);
+    font-weight: 600;
+    font-size: 0.875rem;
+    flex-shrink: 0;
+}
+
+.response-avatar.excellent {
+    background-color: var(--color-success);
+}
+
+.response-avatar.good {
+    background-color: var(--color-primary);
+}
+
+.response-avatar.fair {
+    background-color: var(--color-warning);
+}
+
+.response-avatar.poor {
+    background-color: var(--color-error);
+}
+
+.response-content {
+    flex: 1;
+}
+
+.response-name {
+    font-weight: 600;
+    color: var(--text-primary);
+    margin-bottom: 0.25rem;
+}
+
+.response-details {
+    color: var(--text-secondary);
+    font-size: 0.875rem;
+}
+
+.response-answer {
+    font-weight: 600;
+    color: var(--color-primary);
+}
+
+.response-meta {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 0.5rem;
+    margin-left: auto;
+}
+
+.response-time {
+    color: var(--text-muted);
+    font-size: 0.75rem;
+}
+
+.response-actions {
+    display: flex;
+    gap: 0.5rem;
+}
+
+/* Participants Panel */
+.participants-list {
+    max-height: 300px;
+    overflow-y: auto;
+}
+
+.participant-item {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.75rem;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.participant-item:last-child {
+    border-bottom: none;
+}
+
+.participant-name {
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.participant-score {
+    color: var(--color-success);
+    font-size: 0.875rem;
+    font-weight: 500;
+}
+
+/* Stats Grid */
+.stats-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1rem;
+}
+
+.stat-item {
+    text-align: center;
+    padding: 1rem;
+    background-color: var(--bg-secondary);
+    border-radius: var(--border-radius);
+}
+
+.stat-value {
+    font-size: 1.5rem;
+    font-weight: 700;
+    color: var(--color-secondary);
+    margin-bottom: 0.25rem;
+}
+
+.stat-label {
+    color: var(--text-muted);
+    font-size: 0.75rem;
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+/* Join Instructions */
+.join-instructions .card-body {
+    background: linear-gradient(135deg, var(--secondary-50) 0%, var(--primary-50) 100%);
+}
+
+.join-url {
+    display: block;
+    background-color: var(--bg-primary);
+    padding: 0.75rem;
+    border-radius: var(--border-radius);
+    border: 1px solid var(--border-color);
+    font-size: 0.875rem;
+    word-break: break-all;
+}
+
+.room-code-display {
+    font-family: var(--font-family-mono);
+    font-size: 2rem;
+    font-weight: 700;
+    color: var(--color-secondary);
+    background-color: var(--secondary-50);
+    padding: 1rem;
+    border-radius: var(--border-radius-lg);
+    letter-spacing: 0.25rem;
+    margin-bottom: 0.5rem;
+}
+
+/* Empty States */
+.no-responses, .no-participants, .empty-state {
+    text-align: center;
+    padding: 2rem;
+    color: var(--text-muted);
+}
+
+.no-responses i, .no-participants i, .empty-state i {
+    width: 48px;
+    height: 48px;
+    margin-bottom: 1rem;
+    opacity: 0.5;
+}
+
+/* Responsive Design */
+@media (max-width: 768px) {
+    .quiz-status-header {
+        padding: 1.5rem;
+    }
+    
+    .quiz-title {
+        font-size: 1.5rem;
+    }
+    
+    .quiz-meta {
+        gap: 1rem;
+    }
+    
+    .quiz-controls {
+        justify-content: flex-start;
+        margin-top: 1rem;
+    }
+    
+    .question-item {
+        flex-direction: column;
+        text-align: center;
+        gap: 1rem;
+    }
+    
+    .current-question-details {
+        grid-template-columns: 1fr;
+        gap: 1rem;
+    }
+    
+    .detail-grid {
+        grid-template-columns: 1fr;
+    }
+    
+    .stats-grid {
+        grid-template-columns: 1fr;
+    }
+    
+    .room-code-display {
+        font-size: 1.5rem;
+    }
+}
+</style>
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    // Save hub_session immediately for Back to Overview button
+    (function() {
+        try {
+            var _hub = new URLSearchParams(window.location.search).get('hub_session');
+            if (_hub) { window.__hubCode = _hub; sessionStorage.setItem('_hub_admin', _hub); }
+        } catch(_) {}
+    })();
+
+    lucide.createIcons();
+    
+    // Geography Quiz Monitor Class
+    class WhereMonitor {
+        constructor() {
+            this.roomCode = '{{ quiz.room_code }}';
+            this.websocket = null;
+            this.questionTimer = null;
+            this.quizStartTime = {% if quiz.started_at %}new Date('{{ quiz.started_at|date:"c" }}'){% else %}null{% endif %};
+            this.isActive = '{{ quiz.status }}' === 'active';
+            this.liveResponseState = new Map();
+            this.init();
+        }
+
+        getStorageKey() {
+            return `quiz_sent_${this.roomCode}`;
+        }
+        getSentSet() {
+            try {
+                const raw = localStorage.getItem(this.getStorageKey());
+                if (!raw) return new Set();
+                const arr = JSON.parse(raw);
+                return new Set(Array.isArray(arr) ? arr : []);
+            } catch (_) { return new Set(); }
+        }
+        saveSentSet(sentSet) {
+            try { localStorage.setItem(this.getStorageKey(), JSON.stringify([...sentSet])); } catch(_) {}
+        }
+        isQuestionSent(qid) {
+            const sent = this.getSentSet();
+            return sent.has(String(qid));
+        }
+        markQuestionSent(qid) {
+            const sent = this.getSentSet();
+            sent.add(String(qid));
+            this.saveSentSet(sent);
+        }
+        applySentStates() {
+            document.querySelectorAll('.send-question-btn').forEach(btn => {
+                const qid = btn.getAttribute('data-question-id');
+                if (this.isQuestionSent(qid)) {
+                    this.updateSendButtonAsSent(btn);
+                }
+            });
+        }
+        updateSendButtonAsSent(btn) {
+            btn.disabled = false;
+            btn.classList.remove('loading');
+            btn.innerHTML = '<i data-lucide="send"></i> Send Question';
+            btn.removeAttribute('title');
+            // Add "already sent" hint next to button if not already there
+            const wrapper = btn.closest('.d-flex');
+            if (wrapper && !wrapper.querySelector('.already-sent-hint')) {
+                const hint = document.createElement('span');
+                hint.className = 'already-sent-hint text-muted small';
+                hint.style.whiteSpace = 'nowrap';
+                hint.innerHTML = '<i data-lucide="check-circle" style="width:13px;height:13px;color:#6c757d;vertical-align:-2px;"></i> already sent';
+                wrapper.appendChild(hint);
+            }
+            try { lucide.createIcons(); } catch(_) {}
+            this.initializeLiveResponseState();
+        }
+        
+        // Reset all persisted and UI states for sent questions
+        resetSentStates() {
+            try { localStorage.removeItem(this.getStorageKey()); } catch(_) {}
+            document.querySelectorAll('.send-question-btn').forEach(btn => {
+                btn.disabled = false;
+                btn.classList.remove('loading');
+                btn.innerHTML = '<i data-lucide="send"></i> Send Question';
+                btn.removeAttribute('title');
+            });
+            try { lucide.createIcons(); } catch(_) {}
+        }
+        
+        init() {
+            this.responsesPollInterval = null;
+            this.connectWebSocket();
+            this.bindEvents();
+            this.startQuizTimer();
+            this.applySentStates();
+            this.initializeLiveResponseState();
+            this.startResponsesPolling();
+        }
+
+        startResponsesPolling() {
+            this.fetchResponses();
+            this.responsesPollInterval = setInterval(() => this.fetchResponses(), 2000);
+        }
+
+        stopResponsesPolling() {
+            if (this.responsesPollInterval) {
+                clearInterval(this.responsesPollInterval);
+                this.responsesPollInterval = null;
+            }
+        }
+
+        fetchResponses() {
+            fetch(`/admin-dashboard/api/quiz/{{ quiz.room_code }}/responses/`)
+            .then(r => r.json())
+            .then(data => {
+                if (data.success && data.responses) {
+                    this.replaceLiveResponses(data.responses);
+                }
+            })
+            .catch(() => {});
+        }
+
+        escapeHtml(value) {
+            return String(value ?? '')
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
+        }
+
+        getLiveResponseKey(response) {
+            return String(response.answer_id || response.participant_name || '');
+        }
+
+        replaceLiveResponses(responses) {
+            if (!(this.liveResponseState instanceof Map)) {
+                this.liveResponseState = new Map();
+            }
+            this.liveResponseState.clear();
+            (responses || []).forEach((response) => {
+                const key = this.getLiveResponseKey(response);
+                if (key) {
+                    this.liveResponseState.set(key, response);
+                }
+            });
+            this.renderLiveResponseState();
+        }
+        
+        connectWebSocket() {
+            const wsScheme = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsUrl = `${wsScheme}//${window.location.host}/ws/quiz/${this.roomCode}/`;
+            
+            this.websocket = new WebSocket(wsUrl);
+            
+            this.websocket.onopen = () => {
+                console.log('WebSocket connected');
+                this.updateConnectionStatus(true);
+            };
+            
+            this.websocket.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                this.handleWebSocketMessage(data);
+            };
+            
+            this.websocket.onclose = () => {
+                console.log('WebSocket disconnected');
+                this.updateConnectionStatus(false);
+                setTimeout(() => this.connectWebSocket(), 3000);
+            };
+            
+            this.websocket.onerror = (error) => {
+                console.error('WebSocket error:', error);
+                this.updateConnectionStatus(false);
+            };
+        }
+
+        handleWebSocketMessage(data) {
+            switch(data.type) {
+                case 'connection_established':
+                    console.log('Connected:', data.message);
+                    break;
+                    
+                case 'participant_joined':
+                    this.addParticipant(data.participant);
+                    this.updateParticipantCount();
+                    break;
+                    
+                case 'participant_answered':
+                    this.addLiveResponse(data.answer);
+                    break;
+                    
+                case 'quiz_started':
+                    console.log('Quiz started:', data.message);
+                    this.isActive = true;
+                    // Enable question send buttons if they were disabled before start
+                    document.querySelectorAll('.send-question-btn').forEach(btn => {
+                        btn.disabled = false;
+                        btn.removeAttribute('title');
+                    });
+                    // Re-apply sent state so already-sent questions remain blocked
+                    this.applySentStates();
+                    break;
+
+                case 'tutorial_start':
+                    this.updateTutorialProgress(0, 0, false);
+                    break;
+
+                case 'tutorial_progress':
+                    this.updateTutorialProgress(data.completed, data.total, data.all_done);
+                    break;
+                    
+                case 'question_started':
+                    this.resetLiveResponseStateForQuestion();
+                    console.log('Question started');
+                    location.reload();
+                    break;
+                    
+                case 'question_ended':
+                    console.log('Question ended:', data.message);
+                    this.stopResponsesPolling();
+                    this.showQuestionReviewState();
+                    break;
+                    
+                case 'quiz_ended':
+                    console.log('Quiz ended:', data.message);
+                    // Clear persisted sent state so a new session starts fresh
+                    this.resetSentStates();
+                    location.reload();
+                    break;
+
+                case 'quiz_inactive':
+                    console.log('Quiz set inactive:', data.message);
+                    this.isActive = false;
+                    location.reload();
+                    break;
+                    
+                default:
+                    console.log('Unknown message type:', data.type);
+            }
+        }
+        
+        updateTutorialProgress(completed, total, allDone) {
+            const card = document.getElementById('tutorialProgressCard');
+            if (card) card.style.display = '';
+            const text = document.getElementById('tutProgressText');
+            const bar = document.getElementById('tutProgressBar');
+            const badge = document.getElementById('tutAllDoneBadge');
+            if (text) text.textContent = completed + ' / ' + total;
+            const pct = total > 0 ? Math.round((completed / total) * 100) : 0;
+            if (bar) {
+                bar.style.width = pct + '%';
+                bar.setAttribute('aria-valuenow', pct);
+            }
+            if (badge) {
+                badge.style.display = allDone ? '' : 'none';
+                if (allDone) lucide.createIcons();
+            }
+        }
+
+        bindEvents() {
+            // Start Quiz button
+            document.getElementById('startQuizBtn')?.addEventListener('click', () => {
+                this.startQuiz();
+            });
+            
+            // End Quiz button
+            document.getElementById('endQuizBtn')?.addEventListener('click', () => {
+                if (confirm('Are you sure you want to end this quiz?')) {
+                    this.endQuiz();
+                }
+            });
+
+            document.getElementById('setInactiveBtn')?.addEventListener('click', () => {
+                if (confirm('Do you want to set this game inactive and preserve its current progress?')) {
+                    this.setInactive();
+                }
+            });
+
+            // Back to Hub button
+            document.getElementById('backToHubBtn')?.addEventListener('click', () => {
+                this.backToHub();
+            });
+
+            // Leaderboard ein-/ausblenden (Toggle)
+            document.getElementById('showLeaderboardBtn')?.addEventListener('click', () => {
+                if (this.websocket && this.websocket.readyState === WebSocket.OPEN) {
+                    const btn = document.getElementById('showLeaderboardBtn');
+                    const isVisible = btn.dataset.lbVisible === '1';
+                    if (isVisible) {
+                        this.websocket.send(JSON.stringify({ type: 'admin_hide_leaderboard' }));
+                        btn.dataset.lbVisible = '0';
+                        btn.innerHTML = '<i data-lucide="trophy"></i> Leaderboard einblenden';
+                    } else {
+                        this.websocket.send(JSON.stringify({ type: 'admin_show_leaderboard' }));
+                        btn.dataset.lbVisible = '1';
+                        btn.innerHTML = '<i data-lucide="eye-off"></i> Leaderboard ausblenden';
+                    }
+                    try { lucide.createIcons(); } catch(_) {}
+                }
+            });
+
+            // End quiz from warning modal → end quiz, then navigate
+            document.getElementById('endQuizFromWarningBtn')?.addEventListener('click', () => {
+                bootstrap.Modal.getInstance(document.getElementById('quizActiveWarningModal'))?.hide();
+                this.endQuiz();
+                setTimeout(() => this._navigateToHub(), 800);
+            });
+            
+            // Send Question buttons
+            document.querySelectorAll('.send-question-btn').forEach(btn => {
+                btn.addEventListener('click', (e) => {
+                    const questionId = e.target.closest('button').dataset.questionId;
+                    if (!this.isActive) {
+                        alert('Start the quiz before sending questions.');
+                        return;
+                    }
+                    // Ask for confirmation if question was already sent
+                    if (this.isQuestionSent(questionId)) {
+                        if (!confirm('This question has already been sent. Do you want to send it again?')) {
+                            return;
+                        }
+                    }
+                    this.sendQuestion(questionId);
+                });
+            });
+            
+            // End Question button
+            document.getElementById('endQuestionBtn')?.addEventListener('click', () => {
+                this.endCurrentQuestion();
+            });
+
+            document.getElementById('returnToQuestionOverviewBtn')?.addEventListener('click', () => {
+                this.returnToQuestionOverview();
+            });
+            
+            // Share Code button
+            document.getElementById('shareCodeBtn')?.addEventListener('click', () => {
+                this.shareRoomCode();
+            });
+
+            document.getElementById('liveResponses')?.addEventListener('click', (event) => {
+                const button = event.target.closest('.promote-correct-btn');
+                if (!button) return;
+                this.promoteAnswerCorrect(button.dataset.answerId, button);
+            });
+        }
+        
+        startQuiz() {
+            if (this.websocket && this.websocket.readyState === WebSocket.OPEN) {
+                // Also notify hub directly (in case backend mirror is unavailable)
+                try {
+                    const qs = new URLSearchParams(window.location.search);
+                    const hub = qs.get('hub_session') || window.__hubCode || (function(){ try { return sessionStorage.getItem("_hub_admin"); } catch(_) { return null; } })();
+                    if (hub) {
+                        const hubWs = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws/hub/' + hub + '/');
+                        hubWs.onopen = () => {
+                            hubWs.send(JSON.stringify({
+                                type: 'navigate_direct',
+                                game_key: 'quiz',
+                                room_code: '{{ quiz.room_code }}'
+                            }));
+                            setTimeout(() => hubWs.close(), 100);
+                        };
+                    }
+                } catch(_) {}
+                const showTutorial = document.getElementById('showTutorialToggle')?.checked ?? false;
+                this.websocket.send(JSON.stringify({
+                    type: 'admin_start_quiz',
+                    show_tutorial: showTutorial
+                }));
+                //reload page
+                location.reload();
+            }
+        }
+        
+        endQuiz() {
+            if (this.websocket && this.websocket.readyState === WebSocket.OPEN) {
+                // Also notify hub directly (in case backend mirror is unavailable)
+                // try {
+                //     const qs = new URLSearchParams(window.location.search);
+                //     const hub = qs.get('hub_session') || window.__hubCode || (function(){ try { return sessionStorage.getItem("_hub_admin"); } catch(_) { return null; } })();
+                //     if (hub) {
+                //         const hubWs = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws/hub/' + hub + '/');
+                //         hubWs.onopen = () => {
+                //             hubWs.send(JSON.stringify({
+                //                 type: 'broadcast',
+                //                 event: { type: 'quiz_ended', game_key: 'quiz', room_code: '{{ quiz.room_code }}' }
+                //             }));
+                //             setTimeout(() => hubWs.close(), 100);
+                //         };
+                //     }
+                // } catch(_) {}
+                this.websocket.send(JSON.stringify({
+                    type: 'admin_end_quiz'
+                }));
+                // Immediately reset UI/local state on admin action
+                this.resetSentStates();
+            }
+        }
+
+        setInactive() {
+            if (this.websocket && this.websocket.readyState === WebSocket.OPEN) {
+                this.websocket.send(JSON.stringify({
+                    type: 'admin_set_inactive'
+                }));
+            }
+        }
+
+        backToHub() {
+            if (this.isActive) {
+                new bootstrap.Modal(document.getElementById('quizActiveWarningModal')).show();
+                return;
+            }
+            this._navigateToHub();
+        }
+
+        _navigateToHub() {
+            try {
+                const qs = new URLSearchParams(window.location.search);
+                const hub = qs.get('hub_session') || window.__hubCode || (function(){ try { return sessionStorage.getItem("_hub_admin"); } catch(_) { return null; } })();
+                if (hub) {
+                    setTimeout(() => {
+                        window.location.href = `/hub/monitor/${hub}/`;
+                    }, 200);
+                }
+            } catch(_) {}
+        }
+        
+        sendQuestion(questionId) {
+            if (this.websocket && this.websocket.readyState === WebSocket.OPEN) {
+                const btn = document.querySelector(`[data-question-id="${questionId}"]`);
+                if (btn) btn.classList.add('loading');
+
+                // Read optional time override from the adjacent input
+                let customTime = null;
+                try {
+                    const item = btn.closest('.question-item');
+                    const input = item ? item.querySelector('.question-time-input') : null;
+                    if (input && input.value) {
+                        const v = parseInt(input.value, 10);
+                        if (!isNaN(v) && v > 0) customTime = v;
+                    }
+                } catch(_) {}
+
+                const payload = {
+                    type: 'admin_send_question',
+                    question_id: questionId
+                };
+                if (customTime) {
+                    payload.custom_time_limit = customTime;
+                    // Persist for admin-side timer after backend switches state
+                    try { localStorage.setItem(`override_time_${this.roomCode}`, String(customTime)); } catch(_) {}
+                }
+
+                this.websocket.send(JSON.stringify(payload));
+
+                // Optimistically mark as sent to prevent duplicate sends
+                this.markQuestionSent(questionId);
+                if (btn) this.updateSendButtonAsSent(btn);
+            }
+        }
+        
+        endCurrentQuestion() {
+            if (this.websocket && this.websocket.readyState === WebSocket.OPEN) {
+                this.websocket.send(JSON.stringify({
+                    type: 'admin_end_question'
+                }));
+            }
+        }
+
+        showQuestionReviewState() {
+            const endBtn = document.getElementById('endQuestionBtn');
+            const returnBtn = document.getElementById('returnToQuestionOverviewBtn');
+            if (endBtn) endBtn.disabled = true;
+            if (returnBtn) returnBtn.classList.remove('d-none');
+        }
+
+        returnToQuestionOverview() {
+            location.reload();
+        }
+        
+        startQuestionTimer() {
+            // Prefer any override set at send-time (stored just before backend switched state)
+            let override = null;
+            try {
+                const raw = localStorage.getItem(`override_time_${this.roomCode}`);
+                if (raw) {
+                    const v = parseInt(raw, 10);
+                    if (!isNaN(v) && v > 0) override = v;
+                }
+            } catch(_) {}
+            let serverTimeLeft = 0;
+            try {
+                const serverEl = document.getElementById('questionTimeLeft');
+                if (serverEl && serverEl.textContent) {
+                    const sv = parseInt(serverEl.textContent, 10);
+                    if (!isNaN(sv) && sv > 0) serverTimeLeft = sv;
+                }
+            } catch(_) {}
+            const timeLeft = (override !== null) ? override : serverTimeLeft;
+            if (timeLeft <= 0) return;
+            
+            let currentTime = timeLeft;
+            const timerElement = document.getElementById('questionTimeLeft');
+            const circleElement = document.getElementById('questionTimerCircle');
+            
+            this.questionTimer = setInterval(() => {
+                currentTime--;
+                if (timerElement) timerElement.textContent = currentTime;
+                
+                if (circleElement) {
+                    circleElement.className = 'timer-circle';
+                    if (currentTime <= 20) {
+                        circleElement.classList.add('danger');
+                    } else if (currentTime <= 40) {
+                        circleElement.classList.add('warning');
+                    }
+                }
+                
+                if (currentTime <= 0) {
+                    clearInterval(this.questionTimer);
+                    this.onQuestionTimeout();
+                }
+            }, 1000);
+            // Clear one-time override so subsequent questions use their own values
+            try { localStorage.removeItem(`override_time_${this.roomCode}`); } catch(_) {}
+        }
+        
+        startQuizTimer() {
+            if (!this.quizStartTime) return;
+            
+            const updateTimer = () => {
+                const now = new Date();
+                const elapsed = Math.floor((now - this.quizStartTime) / 1000);
+                const minutes = Math.floor(elapsed / 60);
+                const seconds = elapsed % 60;
+                const timerElement = document.getElementById('quizTimer');
+                if (timerElement) {
+                    timerElement.textContent = 
+                        `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+                }
+            };
+            
+            updateTimer();
+            setInterval(updateTimer, 1000);
+        }
+        
+        initializeLiveResponseState() {
+            if (!(this.liveResponseState instanceof Map)) {
+                this.liveResponseState = new Map();
+            }
+            this.renderLiveResponseState();
+        }
+
+        resetLiveResponseStateForQuestion() {
+            this.liveResponseState = new Map();
+            this.renderLiveResponseState();
+        }
+
+        renderLiveResponseState() {
+            const responsesContainer = document.getElementById('liveResponses');
+            if (!responsesContainer) return;
+
+            const responses = Array.from(this.liveResponseState.values()).sort((left, right) => {
+                return new Date(right.submitted_at || 0) - new Date(left.submitted_at || 0);
+            });
+            if (!responses.length) {
+                responsesContainer.innerHTML = `
+                    <div class="no-responses">
+                        <i data-lucide="map"></i>
+                        <p>No responses yet. Send a question to see participant answers in real-time.</p>
+                    </div>
+                `;
+                const responseCount = document.getElementById('responseCount');
+                if (responseCount) responseCount.textContent = '0';
+                try { lucide.createIcons(); } catch(_) {}
+                return;
+            }
+
+            responsesContainer.innerHTML = responses.map((response) => {
+                const participantName = this.escapeHtml(response.participant_name || '');
+                const answerText = this.escapeHtml(response.answer_text || '');
+                const quality = response.is_correct ? 'excellent' : 'poor';
+                const timeTaken = (typeof response.time_taken === 'number' && response.time_taken > 0)
+                    ? `${response.time_taken.toFixed(1)}s`
+                    : '-';
+                const badge = response.is_correct
+                    ? `<span class="badge ${response.is_manual_override ? 'bg-info text-dark' : 'bg-success'} ms-1" style="font-size:0.7rem;">${response.is_manual_override ? 'Correct (manual)' : 'Correct'}</span>`
+                    : '<span class="badge bg-danger ms-1" style="font-size:0.7rem;">Wrong</span>';
+                const promoteButton = response.can_mark_correct
+                    ? `<button class="btn btn-sm btn-outline-success promote-correct-btn" data-answer-id="${this.escapeHtml(response.answer_id)}">Mark correct</button>`
+                    : '';
+
+                return `
+                    <div class="response-item" data-answer-id="${this.escapeHtml(response.answer_id)}">
+                        <div class="response-avatar ${quality}">
+                            ${participantName.charAt(0).toUpperCase()}
+                        </div>
+                        <div class="response-content">
+                            <div class="response-name">${participantName}</div>
+                            <div class="response-details">
+                                <span class="response-answer">${answerText}</span>
+                                ${badge}
+                                &nbsp;+${response.points_earned} pts
+                            </div>
+                        </div>
+                        <div class="response-meta">
+                            <div class="response-time">${timeTaken}</div>
+                            <div class="response-actions">${promoteButton}</div>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+
+            const responseCount = document.getElementById('responseCount');
+            if (responseCount) responseCount.textContent = String(responses.length);
+        }
+
+        addParticipant(participant) {
+            const participantsList = document.getElementById('participantsList');
+            if (!participantsList) return;
+            
+            const noParticipants = participantsList.querySelector('.no-participants');
+            if (noParticipants) noParticipants.remove();
+            
+            const existingParticipant = participantsList.querySelector(`[data-participant-name="${participant.name}"]`);
+            if (existingParticipant) return;
+            
+            const participantEl = document.createElement('div');
+            participantEl.className = 'participant-item';
+            participantEl.dataset.participantName = participant.name;
+            participantEl.innerHTML = `
+                <div class="participant-name">${participant.name}</div>
+                <div class="d-flex align-items-center gap-2 ms-auto">
+                    <span class="participant-score" id="score-${participant.id}">${participant.total_score || 0} pts</span>
+                    <button class="btn btn-link btn-sm p-0 edit-score-btn" title="Punkte bearbeiten"
+                        data-participant-id="${participant.id}"
+                        data-participant-name="${participant.name}"
+                        data-current-score="${participant.total_score || 0}"
+                        data-bs-toggle="modal" data-bs-target="#editScoreModal">
+                        <i data-lucide="pencil" style="width:14px;height:14px;color:#6c757d;"></i>
+                    </button>
+                </div>
+            `;
+            
+            participantsList.appendChild(participantEl);
+            lucide.createIcons();
+            this.initializeLiveResponseState();
+        }
+        
+        addLiveResponse(response) {
+            if (!(this.liveResponseState instanceof Map)) { this.liveResponseState = new Map(); }
+            const key = this.getLiveResponseKey(response);
+            if (!key) return;
+            this.liveResponseState.set(key, response);
+            this.renderLiveResponseState();
+        }
+
+        async promoteAnswerCorrect(answerId, button) {
+            if (!answerId) return;
+            if (!confirm('Mark this response as correct? This can only be done once.')) {
+                return;
+            }
+
+            if (button) button.disabled = true;
+            try {
+                const response = await fetch('{% url "admin_dashboard:promote_quiz_answer_correct" quiz.room_code %}', {
+                    method: 'POST',
+                    headers: {
+                        'X-CSRFToken': '{{ csrf_token }}',
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ answer_id: answerId })
+                });
+                const data = await response.json();
+                if (!response.ok || !data.success) {
+                    throw new Error(data.error || 'Unable to mark this answer as correct.');
+                }
+
+                this.liveResponseState.set(String(data.answer_id), data);
+                this.renderLiveResponseState();
+
+                const scoreEl = document.getElementById(`score-${data.participant_id}`);
+                if (scoreEl) scoreEl.textContent = `${data.total_score} pts`;
+                const editBtn = document.querySelector(`.edit-score-btn[data-participant-id="${data.participant_id}"]`);
+                if (editBtn) editBtn.dataset.currentScore = data.total_score;
+            } catch (error) {
+                alert(error.message || 'Unable to mark this answer as correct.');
+            } finally {
+                if (button) button.disabled = false;
+            }
+        }
+        
+        updateParticipantCount() {
+            const count = document.querySelectorAll('.participant-item').length;
+            const countElement = document.getElementById('participantCount');
+            const badgeElement = document.getElementById('participantBadge');
+            const activeElement = document.getElementById('activeUsers');
+            
+            if (countElement) countElement.textContent = count;
+            if (badgeElement) badgeElement.textContent = count;
+            if (activeElement) activeElement.textContent = count;
+        }
+        
+        
+        updateConnectionStatus(connected) {
+            // Connection indicator could be added here
+        }
+        
+        onQuestionTimeout() {
+            console.log('Question timed out');
+            if (this.websocket && this.websocket.readyState === WebSocket.OPEN) {
+                this.websocket.send(JSON.stringify({
+                    type: 'admin_end_question'
+                }));
+            }
+        }
+        
+        shareRoomCode() {
+            const shareData = {
+                title: 'Join Geography Quiz Room',
+                text: `Join the geography quiz with room code: {{ quiz.room_code }}`,
+                url: window.location.origin + '/quiz/join/'
+            };
+            
+            if (navigator.share) {
+                navigator.share(shareData);
+            } else {
+                const textToCopy = `Join the geography quiz at ${shareData.url} with room code: {{ quiz.room_code }}`;
+                navigator.clipboard.writeText(textToCopy).then(() => {
+                    alert('Room code and link copied to clipboard!');
+                });
+            }
+        }
+    }
+    
+    // Initialize Geography Quiz Monitor
+    const monitor = new WhereMonitor();
+    window.adminGameMonitor = monitor;
+    
+    // Start question timer if there's an active question
+    {% if quiz.current_question %}
+        monitor.startQuestionTimer();
+    {% endif %}
+});
+
+// Minimal hub listener for admin auto-redirect across steps
+(function() {
+  try {
+    console.log("[HubScript] Initializing...");
+
+    const params = new URLSearchParams(window.location.search);
+    const hubCode = params.get('hub_session');
+    if (hubCode) { window.__hubCode = hubCode; try { sessionStorage.setItem("_hub_admin", hubCode); } catch(_) {} }
+    console.log("[HubScript] hub_session param:", hubCode);
+
+    if (!hubCode) {
+      console.warn("[HubScript] No hub_session found in URL, exiting...");
+      return;
+    }
+
+    const wsScheme = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = `${wsScheme}//${window.location.host}/ws/hub/${hubCode}/`;
+    console.log("[HubScript] Connecting to WebSocket:", wsUrl);
+
+    const hubWS = new WebSocket(wsUrl);
+
+    hubWS.onopen = () => {
+      console.log("[HubScript] WebSocket connected successfully.");
+    };
+
+    hubWS.onmessage = (e) => {
+      console.log("[HubScript] Message received:", e.data);
+      try {
+        const data = JSON.parse(e.data);
+        console.log("[HubScript] Parsed data:", data);
+
+        if (data.type === 'navigate' && data.step) {
+          const step = data.step;
+          console.log("[HubScript] Navigation requested for:", step);
+
+          const routes = {
+            quiz: `/admin-dashboard/quiz/${step.room_code}/monitor/`,
+            assign: `/admin-dashboard/assign/${step.room_code}/monitor/`,
+            estimation: `/admin-dashboard/estimation/${step.room_code}/monitor/`,
+            where: `/admin-dashboard/where/monitor/${step.room_code}/`,
+            who: `/admin-dashboard/who/${step.room_code}/monitor/`,
+            who_that: `/admin-dashboard/who-that/${step.room_code}/monitor/`,
+            blackjack: `/admin-dashboard/blackjack/${step.room_code}/monitor/`,
+            clue_rush: `/admin-dashboard/clue-rush/${step.room_code}/monitor/`,
+            sorting_ladder: `/admin-dashboard/sorting-ladder/${step.room_code}/monitor/`,
+          };
+
+          const base = routes[step.game_key];
+          console.log("[HubScript] Base route:", base);
+
+          if (base) {
+            const u = new URL(base, window.location.origin);
+            u.searchParams.set('hub_session', hubCode);
+            console.log("[HubScript] Redirecting to:", u.toString());
+            window.location.href = u.toString();
+          } else {
+            console.warn("[HubScript] Unknown game_key:", step.game_key);
+          }
+
+        } else if (data.type === 'recall_to_lobby') {
+          window.location.href = new URL(`/hub/lobby/${hubCode}/`, window.location.origin).toString();
+        } else if (data.type === 'session_ended') {
+          console.log("[HubScript] Session ended message received.");
+          const u = new URL(`/hub/lobby/${hubCode}/`, window.location.origin);
+          u.searchParams.set('ended', '1');
+          console.log("[HubScript] Redirecting to lobby:", u.toString());
+          window.location.href = u.toString();
+        } else {
+          console.log("[HubScript] Unhandled message type:", data.type);
+        }
+      } catch (err) {
+        console.error("[HubScript] Failed to parse message:", e.data, err);
+      }
+    };
+
+    hubWS.onerror = (err) => {
+      console.error("[HubScript] WebSocket error:", err);
+    };
+
+    hubWS.onclose = (e) => {
+      console.warn("[HubScript] WebSocket closed:", e.code, e.reason);
+    };
+
+  } catch (err) {
+    console.error("[HubScript] General error:", err);
+  }
+})();
+
+</script>
+
+<!-- Score Edit Modal -->
+<!-- Quiz still active warning modal -->
+<div class="modal fade" id="quizActiveWarningModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">
+                    <i data-lucide="alert-triangle" style="width:20px;height:20px;color:var(--color-warning);vertical-align:middle;margin-right:.4rem;"></i>
+                    Quiz läuft noch
+                </h5>
+            </div>
+            <div class="modal-body">
+                Das Quiz wurde noch nicht beendet. Bitte beende das Quiz zuerst, bevor du zur Übersicht zurückkehrst.
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Abbrechen</button>
+                <button type="button" class="btn btn-danger" id="endQuizFromWarningBtn">
+                    <i data-lucide="square"></i>
+                    Quiz beenden
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="modal fade" id="editScoreModal" tabindex="-1" aria-labelledby="editScoreModalLabel" aria-hidden="true">
+  <div class="modal-dialog modal-sm modal-dialog-centered">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h6 class="modal-title" id="editScoreModalLabel">Edit Points</h6>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <p class="text-muted small mb-2">Participant: <strong id="editScoreName"></strong></p>
+        <div class="mb-3">
+          <label class="form-label">New Score</label>
+          <input type="number" class="form-control" id="editScoreInput" min="0" step="1">
+        </div>
+        <div id="editScoreError" class="text-danger small d-none"></div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
+        <button type="button" class="btn btn-primary btn-sm" id="editScoreSave">Save</button>
+      </div>
+    </div>
+  </div>
+</div>
+<script>
+(function() {
+    const modal = document.getElementById('editScoreModal');
+    if (!modal) return;
+    let currentParticipantId = null;
+    document.addEventListener('click', function(e) {
+        const btn = e.target.closest('.edit-score-btn');
+        if (!btn) return;
+        currentParticipantId = btn.dataset.participantId;
+        document.getElementById('editScoreName').textContent = btn.dataset.participantName;
+        document.getElementById('editScoreInput').value = btn.dataset.currentScore;
+        document.getElementById('editScoreError').classList.add('d-none');
+    });
+    document.getElementById('editScoreSave').addEventListener('click', function() {
+        const score = parseInt(document.getElementById('editScoreInput').value, 10);
+        const errEl = document.getElementById('editScoreError');
+        if (isNaN(score) || score < 0) {
+            errEl.textContent = 'Please enter a valid number (≥ 0).';
+            errEl.classList.remove('d-none');
+            return;
+        }
+        errEl.classList.add('d-none');
+        this.disabled = true;
+        fetch('{% url "admin_dashboard:set_quiz_participant_score" %}', {
+            method: 'POST',
+            headers: {'X-CSRFToken': '{{ csrf_token }}', 'Content-Type': 'application/json'},
+            body: JSON.stringify({participant_id: currentParticipantId, score: score})
+        })
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) {
+                const scoreEl = document.getElementById('score-' + currentParticipantId);
+                if (scoreEl) scoreEl.textContent = data.new_score + ' pts';
+                const btn = document.querySelector(`.edit-score-btn[data-participant-id="${currentParticipantId}"]`);
+                if (btn) btn.dataset.currentScore = data.new_score;
+                bootstrap.Modal.getInstance(modal).hide();
+            } else {
+                errEl.textContent = data.error || 'Error saving.';
+                errEl.classList.remove('d-none');
+            }
+        })
+        .catch(() => {
+            errEl.textContent = 'Network error.';
+            errEl.classList.remove('d-none');
+        })
+        .finally(() => { this.disabled = false; });
+    });
+})();
+</script>
+<script>
+document.querySelectorAll('.copy-lobby-btn-monitor').forEach(btn => {
+    btn.addEventListener('click', function() {
+        navigator.clipboard.writeText(this.dataset.url).then(() => {
+            const icon = this.querySelector('i');
+            icon.setAttribute('data-lucide', 'check');
+            lucide.createIcons();
+            setTimeout(() => { icon.setAttribute('data-lucide', 'copy'); lucide.createIcons(); }, 1500);
+        });
+    });
+});
+</script>
+
+{% with qb_game_key="quiz" qb_room_code=quiz.room_code qb_quiz=quiz %}
+  {% include "admin_dashboard/includes/question_bank_modal.html" %}
+{% endwith %}
+
+{% endblock %}

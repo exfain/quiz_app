@@ -1,0 +1,939 @@
+{% extends "admin_dashboard/base.html" %}
+
+{% block title %}Who is That Game Management - QuizMaster Admin{% endblock %}
+
+{% block page_title %}Who is That Game Management{% endblock %}
+{% block page_subtitle %}Add, edit and delete questions{% endblock %}
+
+{% block content %}
+<div class="who-that-management-content">
+
+    <!-- New Question Button -->
+    <div class="d-flex justify-content-end mb-3">
+        <button type="button" class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#editQuestionModal" id="newQuestionBtn">
+            <i data-lucide="plus" style="width:16px;height:16px;" class="me-1"></i> New Question
+        </button>
+    </div>
+
+    <!-- Questions Bank Card -->
+    <div class="card mb-4">
+        <div class="card-header d-flex justify-content-between align-items-center">
+            <h5 class="card-title mb-0">
+                <i data-lucide="database"></i>
+                Question Bank
+                <span class="badge bg-secondary ms-2" id="questionCountBadge">{{ total_questions }}</span>
+            </h5>
+        </div>
+        <div class="card-body">
+            <div class="table-responsive">
+                <table class="table table-hover">
+                    <thead class="table-light">
+                        <tr>
+                            <th>Question</th>
+                            <th>Answer</th>
+                            <th>Time Limit (s)</th>
+                            <th>Has Image</th>
+                            <th>Category</th>
+
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="questionsTableBody">
+                        <!-- Questions loaded via JS -->
+                    </tbody>
+                </table>
+            </div>
+            <div class="d-flex justify-content-between align-items-center mt-3">
+                <div class="text-muted" id="questionCount">Loading questions...</div>
+                <nav>
+                    <ul class="pagination mb-0" id="pagination"></ul>
+                </nav>
+            </div>
+        </div>
+    </div>
+
+    <!-- Bundles Card -->
+    <div class="card mb-4">
+        <div class="card-header d-flex justify-content-between align-items-center">
+            <h5 class="card-title mb-0">
+                <i data-lucide="layers"></i> Bundles
+                <span class="badge bg-secondary ms-2" id="bundleCountBadge">{{ bundles|length }}</span>
+            </h5>
+            <button type="button" class="btn btn-primary btn-sm" data-bs-toggle="modal" data-bs-target="#createBundleModal">
+                <i data-lucide="plus"></i> Neues Bundle
+            </button>
+        </div>
+        <div class="card-body p-0">
+            <table class="table table-hover mb-0">
+                <thead class="table-light">
+                    <tr><th>Name</th><th>Fragen</th><th>Erstellt</th><th>Aktionen</th></tr>
+                </thead>
+                <tbody id="bundleTableBody">
+                    {% for bundle in bundles %}
+                    <tr id="bundle-row-{{ bundle.id }}">
+                        <td class="fw-semibold">{{ bundle.name }}</td>
+                        <td>{{ bundle.questions.count }} Fragen</td>
+                        <td class="text-muted small">{{ bundle.created_at|date:"d.m.Y" }}</td>
+                        <td><button class="btn btn-sm btn-outline-danger delete-bundle-btn" data-bundle-id="{{ bundle.id }}" data-bundle-name="{{ bundle.name }}"><i data-lucide="trash-2"></i></button></td>
+                    </tr>
+                    {% empty %}
+                    <tr id="bundleEmptyRow"><td colspan="4" class="text-center py-4 text-muted">Noch keine Bundles erstellt.</td></tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+</div>
+
+<!-- Edit / Add Question Modal -->
+<div class="modal fade" id="editQuestionModal" tabindex="-1" aria-labelledby="editQuestionModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="questionFormTitle">
+                    <i data-lucide="image"></i> Add New Question
+                </h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <form id="addQuestionForm" enctype="multipart/form-data">
+                    {% csrf_token %}
+                    <input type="hidden" id="questionId" name="question_id">
+
+                    <div class="mb-3">
+                        <label for="questionText" class="form-label fw-semibold">Question Text *</label>
+                        <textarea class="form-control" id="questionText" name="question_text" rows="3" placeholder="Who is this person?" required></textarea>
+                    </div>
+
+                    <div class="mb-3">
+                        <label for="imageUpload" class="form-label fw-semibold">Image *</label>
+                        <input type="file" class="form-control" id="imageUpload" name="image" accept="image/*">
+                        <div id="imagePreviewContainer" style="display:none; margin-top:0.5rem;">
+                            <img id="imagePreview" src="" alt="Preview" style="max-width:200px; max-height:200px; border-radius:4px; border:1px solid #dee2e6;">
+                            <button type="button" class="btn btn-sm btn-outline-danger ms-2" id="removeImageBtn" onclick="clearImagePreview(); document.getElementById('imageUpload').value='';">
+                                <i data-lucide="x"></i> Remove
+                            </button>
+                        </div>
+                    </div>
+
+                    <div class="row g-3">
+                        <div class="col-md-6">
+                            <label for="correctAnswer" class="form-label fw-semibold">Correct Answer *</label>
+                            <input type="text" class="form-control" id="correctAnswer" name="correct_answer" placeholder="e.g. Albert Einstein" required>
+                        </div>
+                        <div class="col-md-6">
+                            <label for="alternativeAnswers" class="form-label fw-semibold">Alternative Answers</label>
+                            <input type="text" class="form-control" id="alternativeAnswers" name="alternative_answers" placeholder="e.g. Einstein, A. Einstein (comma-separated)">
+                        </div>
+                    </div>
+
+                    <div class="row g-3 mt-1">
+                        <div class="col-md-4">
+                            <label for="timeLimit" class="form-label fw-semibold">Time Limit (s)</label>
+                            <input type="number" class="form-control" id="timeLimit" name="time_limit" value="30" min="5">
+                        </div>
+                    </div>
+
+                    <div class="mb-3 mt-3">
+                        <label for="hintText" class="form-label fw-semibold">Hint</label>
+                        <input type="text" class="form-control" id="hintText" name="hint_text" placeholder="Optional hint for players">
+                    </div>
+
+                    <div class="mb-3">
+                        <label for="explanation" class="form-label fw-semibold">Explanation</label>
+                        <textarea class="form-control" id="explanation" name="explanation" rows="2" placeholder="Optional explanation shown after answer"></textarea>
+                    </div>
+
+                    <div class="mb-3">
+                        <label for="category" class="form-label fw-semibold">Category</label>
+                        <input type="text" class="form-control" id="category" name="category" placeholder="e.g. Politicians, Scientists">
+                    </div>
+                </form>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="submit" form="addQuestionForm" class="btn btn-primary" id="submitQuestionBtn">
+                    <i data-lucide="plus"></i> Add Question
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Create Bundle Modal -->
+<div class="modal fade" id="createBundleModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-xl">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title"><i data-lucide="layers"></i> Neues Bundle</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="mb-3">
+                    <label class="form-label fw-semibold">Bundle-Name *</label>
+                    <input type="text" class="form-control" id="bundleName" placeholder="z.B. Politiker-Bundle">
+                </div>
+                <p class="text-muted small mb-2">Fragen auswählen:</p>
+                <div class="table-responsive">
+                    <table class="table table-hover">
+                        <thead class="table-light">
+                            <tr>
+                                <th style="width:40px;"><input type="checkbox" id="selectAllBundleQuestions"></th>
+                                <th>Frage</th><th>Antwort</th>
+                            </tr>
+                        </thead>
+                        <tbody id="bundleQuestionsTableBody"></tbody>
+                    </table>
+                </div>
+                <div class="d-flex justify-content-between align-items-center mt-2">
+                    <div class="text-muted small" id="bundleQuestionCount">Lade Fragen...</div>
+                    <ul class="pagination pagination-sm mb-0" id="bundleQuestionPagination"></ul>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Abbrechen</button>
+                <button type="button" class="btn btn-primary" id="saveBundleBtn"><i data-lucide="save"></i> Bundle speichern</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Create Custom Quiz Modal -->
+<div class="modal fade" id="createCustomQuizModal" tabindex="-1" aria-labelledby="createCustomQuizModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-xl">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="createCustomQuizModalLabel">
+                    <i data-lucide="layers"></i>
+                    Create Custom Quiz
+                </h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div class="row g-3 mb-3">
+                    <div class="col-md-6">
+                        <input type="text" class="form-control" id="customQuizTitle" placeholder="Enter quiz name" value="Custom Quiz">
+                    </div>
+                </div>
+                <div class="table-responsive">
+                    <table class="table table-hover">
+                        <thead class="table-light">
+                            <tr>
+                                <th style="width:40px;"><input type="checkbox" id="selectAllQuestions"></th>
+                                <th>Question</th>
+                                <th>Correct Answer</th>
+                                <th>Time (s)</th>
+                                <th>Has Image</th>
+                            </tr>
+                        </thead>
+                        <tbody id="customQuestionsTableBody"></tbody>
+                    </table>
+                </div>
+                <div class="d-flex justify-content-between align-items-center mt-2">
+                    <div class="text-muted" id="customQuestionCount">Loading questions...</div>
+                    <ul class="pagination mb-0" id="customPagination"></ul>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-outline" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-primary" id="createCustomQuizBtn">
+                    <i data-lucide="check"></i>
+                    Create Quiz
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Quiz-specific Questions Modal -->
+<div class="modal fade" id="quizQuestionsModal" tabindex="-1" aria-labelledby="quizQuestionsModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-xl">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="quizQuestionsModalLabel">Quiz Questions</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div class="table-responsive">
+                    <table class="table table-hover">
+                        <thead class="table-light">
+                            <tr>
+                                <th>Question</th>
+                                <th>Correct Answer</th>
+                                <th>Time Limit (s)</th>
+                                <th>Created</th>
+    
+                            </tr>
+                        </thead>
+                        <tbody id="quizQuestionsTableBody"></tbody>
+                    </table>
+                </div>
+                <div class="d-flex justify-content-between align-items-center mt-3">
+                    <div class="text-muted" id="quizQuestionCount">Loading questions...</div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Delete Confirmation Modal -->
+<div class="modal fade" id="deleteQuestionModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Delete Question</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <p>Are you sure you want to delete this question? This action cannot be undone.</p>
+                <p class="text-danger"><strong>Note:</strong> If this question has been used in any games, it will be deactivated instead of deleted.</p>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-danger" id="confirmDeleteBtn">Delete Question</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+.who-that-management-content {
+    /*max-width: 1400px;*/
+}
+
+.form-section {
+    margin-bottom: 1.5rem;
+}
+
+/* Action Buttons */
+.action-buttons {
+    display: flex;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+}
+
+.btn-sm {
+    padding: 0.375rem 0.75rem;
+    font-size: 0.8125rem;
+}
+
+/* Empty State */
+.empty-state {
+    text-align: center;
+    padding: 3rem 2rem;
+    color: var(--text-muted);
+}
+
+.empty-state i {
+    width: 64px;
+    height: 64px;
+    color: var(--text-muted);
+    margin-bottom: 1rem;
+    opacity: 0.5;
+}
+
+.empty-state h4 {
+    color: var(--text-primary);
+    margin-bottom: 0.5rem;
+}
+
+/* Loading states */
+.btn.loading {
+    position: relative;
+    color: transparent !important;
+}
+
+.btn.loading::after {
+    content: '';
+    position: absolute;
+    width: 16px;
+    height: 16px;
+    top: 50%;
+    left: 50%;
+    margin-left: -8px;
+    margin-top: -8px;
+    border: 2px solid transparent;
+    border-top-color: currentColor;
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+}
+
+@media (max-width: 768px) {
+    .modal-dialog.modal-lg {
+        margin: 1rem;
+        max-width: calc(100% - 2rem);
+    }
+}
+</style>
+
+<script>
+function showNotification(message, type = 'info') {
+    const notification = document.createElement('div');
+    notification.className = `alert alert-${type} notification-toast`;
+    notification.textContent = message;
+    notification.style.cssText = `
+        position: fixed;
+        top: 20px;
+        right: 20px;
+        z-index: 9999;
+        min-width: 250px;
+        opacity: 0;
+        transform: translateX(100%);
+        transition: all 0.3s ease;
+    `;
+    document.body.appendChild(notification);
+    setTimeout(() => {
+        notification.style.opacity = '1';
+        notification.style.transform = 'translateX(0)';
+    }, 100);
+    setTimeout(() => {
+        notification.style.opacity = '0';
+        notification.style.transform = 'translateX(100%)';
+        setTimeout(() => { notification.remove(); }, 300);
+    }, 3000);
+}
+
+function getCookie(name) {
+    let cookieValue = null;
+    if (document.cookie && document.cookie !== '') {
+        const cookies = document.cookie.split(';');
+        for (let i = 0; i < cookies.length; i++) {
+            const cookie = cookies[i].trim();
+            if (cookie.substring(0, name.length + 1) === (name + '=')) {
+                cookieValue = decodeURIComponent(cookie.substring(name.length + 1));
+                break;
+            }
+        }
+    }
+    return cookieValue;
+}
+
+// Image preview helpers
+const imageInputEl = document.getElementById('imageUpload');
+const imagePreviewContainer = document.getElementById('imagePreviewContainer');
+const imagePreview = document.getElementById('imagePreview');
+
+function clearImagePreview() {
+    if (!imagePreviewContainer) return;
+    imagePreviewContainer.style.display = 'none';
+    imagePreview.src = '';
+}
+
+function setImagePreviewFromUrl(url) {
+    if (!imagePreviewContainer) return;
+    if (url) {
+        imagePreview.src = url;
+        imagePreviewContainer.style.display = 'block';
+    } else {
+        clearImagePreview();
+    }
+}
+
+function setFormMode(mode) {
+    const title = document.getElementById('questionFormTitle');
+    const submitBtn = document.getElementById('submitQuestionBtn');
+    const imageInput = document.getElementById('imageUpload');
+    if (mode === 'edit') {
+        title.innerHTML = '<i data-lucide="image"></i> Edit Question';
+        submitBtn.innerHTML = '<i data-lucide="save"></i> Save Changes';
+        submitBtn.dataset.mode = 'edit';
+        imageInput.removeAttribute('required');
+    } else {
+        title.innerHTML = '<i data-lucide="image"></i> Add New Question';
+        submitBtn.innerHTML = '<i data-lucide="plus"></i> Add Question';
+        submitBtn.dataset.mode = 'add';
+        document.getElementById('questionId').value = '';
+        document.getElementById('addQuestionForm').reset();
+        clearImagePreview();
+        imageInput.setAttribute('required', 'required');
+    }
+    lucide.createIcons();
+}
+
+document.addEventListener('DOMContentLoaded', function() {
+    lucide.createIcons();
+
+    // Bank table elements
+    const questionsTableBody = document.getElementById('questionsTableBody');
+    const questionCount = document.getElementById('questionCount');
+    const questionCountBadge = document.getElementById('questionCountBadge');
+    const pagination = document.getElementById('pagination');
+
+    // Edit state
+    let whoThatEditMode = false;
+    let whoThatSelectedIds = new Set();
+    let whoThatCurrentQuizId = null;
+
+    // Image file input preview
+    imageInputEl?.addEventListener('change', function() {
+        const file = this.files && this.files[0];
+        if (!file) { clearImagePreview(); return; }
+        const reader = new FileReader();
+        reader.onload = e => { setImagePreviewFromUrl(e.target.result); };
+        reader.readAsDataURL(file);
+    });
+
+    // Reset form when modal is closed
+    document.getElementById('editQuestionModal').addEventListener('hidden.bs.modal', () => setFormMode('add'));
+
+    // Load bank questions on page load
+    loadBankQuestions(1);
+
+    // Auto-open edit modal if ?edit=ID in URL
+    const autoEditId = new URLSearchParams(window.location.search).get('edit');
+    if (autoEditId) openEditById(autoEditId);
+
+    function loadBankQuestions(page) {
+        fetch('{% url "admin_dashboard:get_who_that_questions" %}?page=' + page, {
+            method: 'GET',
+            headers: { 'X-CSRFToken': getCookie('csrftoken') },
+        })
+        .then(response => response.json())
+        .then(data => {
+            questionsTableBody.innerHTML = '';
+            questionCount.textContent = `Showing ${data.count} questions`;
+            if (questionCountBadge) questionCountBadge.textContent = data.count;
+
+            data.questions.forEach(question => {
+                const row = document.createElement('tr');
+                row.style.cursor = 'pointer';
+                row.innerHTML = `
+                    <td>${question.question_text}</td>
+                    <td>${question.correct_answer}</td>
+                    <td>${question.time_limit}</td>
+                    <td>${question.has_image ? 'Yes' : 'No'}</td>
+                    <td>${question.category}</td>
+
+                    <td onclick="event.stopPropagation()">
+                        <button class="btn btn-sm btn-outline-primary edit-question-btn" data-question-id="${question.id}">
+                            <i data-lucide="edit-2"></i> Edit
+                        </button>
+                        <button class="btn btn-sm btn-danger delete-question-btn" data-question-id="${question.id}">
+                            <i data-lucide="trash-2"></i> Delete
+                        </button>
+                    </td>
+                `;
+                row.addEventListener('click', () => {
+                    row.querySelector('.edit-question-btn').click();
+                });
+                questionsTableBody.appendChild(row);
+            });
+            lucide.createIcons();
+
+            pagination.innerHTML = '';
+            for (let i = 1; i <= data.pages; i++) {
+                const pageItem = document.createElement('li');
+                pageItem.className = `page-item ${i === page ? 'active' : ''}`;
+                pageItem.innerHTML = `<button class="page-link">${i}</button>`;
+                pageItem.addEventListener('click', () => loadBankQuestions(i));
+                pagination.appendChild(pageItem);
+            }
+        })
+        .catch(error => {
+            console.error('Error:', error);
+            alert('Error loading questions. Please try again.');
+        });
+    }
+
+    function openEditById(qid) {
+        fetch(`{% url 'admin_dashboard:get_who_that_question_detail' 0 %}`.replace('/0/', `/${qid}/`), {
+            method: 'GET',
+            headers: { 'X-CSRFToken': getCookie('csrftoken') },
+        })
+        .then(r => r.json())
+        .then(({success, question, error}) => {
+            if (!success) throw new Error(error || 'Failed to load question.');
+
+            document.getElementById('questionId').value = question.id;
+            document.getElementById('questionText').value = question.question_text || '';
+            document.getElementById('correctAnswer').value = question.correct_answer || '';
+            document.getElementById('alternativeAnswers').value = question.alternative_answers || '';
+            document.getElementById('timeLimit').value = question.time_limit;
+            document.getElementById('hintText').value = question.hint_text || '';
+            document.getElementById('explanation').value = question.explanation || '';
+            document.getElementById('category').value = question.category || '';
+
+            setImagePreviewFromUrl(question.image);
+            setFormMode('edit');
+            lucide.createIcons();
+
+            new bootstrap.Modal(document.getElementById('editQuestionModal')).show();
+        })
+        .catch(err => {
+            console.error(err);
+            showNotification(err.message || 'Failed to load question.', 'danger');
+        });
+    }
+
+    // Edit button handler (inline)
+    questionsTableBody.addEventListener('click', function(e) {
+        const btn = e.target.closest('.edit-question-btn');
+        if (!btn) return;
+        openEditById(btn.getAttribute('data-question-id'));
+    });
+
+    // Delete button handler — open confirm modal
+    questionsTableBody.addEventListener('click', function(e) {
+        const btn = e.target.closest('.delete-question-btn');
+        if (!btn) return;
+        const questionId = btn.getAttribute('data-question-id');
+        document.getElementById('deleteQuestionModal').dataset.questionId = questionId;
+        const modal = new bootstrap.Modal(document.getElementById('deleteQuestionModal'));
+        modal.show();
+    });
+
+    // Confirm delete
+    document.getElementById('confirmDeleteBtn').addEventListener('click', function() {
+        const questionId = document.getElementById('deleteQuestionModal').dataset.questionId;
+        fetch('{% url "admin_dashboard:delete_who_that_question" %}', {
+            method: 'POST',
+            headers: {
+                'X-CSRFToken': getCookie('csrftoken'),
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ question_id: questionId })
+        })
+        .then(response => response.json())
+        .then(data => {
+            bootstrap.Modal.getInstance(document.getElementById('deleteQuestionModal')).hide();
+            if (data.success) {
+                showNotification('Question deleted successfully!', 'success');
+                loadBankQuestions(1);
+            } else {
+                alert('Error deleting question: ' + (data.error || 'Unknown error'));
+            }
+        })
+        .catch(error => {
+            console.error('Error:', error);
+            alert('Error deleting question. Please try again.');
+        });
+    });
+
+    // Form submit (add/update) — uses FormData for file upload
+    document.getElementById('addQuestionForm').addEventListener('submit', function(e) {
+        e.preventDefault();
+
+        const submitBtn = document.getElementById('submitQuestionBtn');
+        submitBtn.classList.add('loading');
+
+        const isEdit = submitBtn.dataset.mode === 'edit';
+        const formData = new FormData(this);
+        if (isEdit) {
+            formData.set('question_id', document.getElementById('questionId').value);
+        }
+
+        if (!formData.get('correct_answer')) {
+            alert('Please provide the correct answer.');
+            submitBtn.classList.remove('loading');
+            return;
+        }
+        if (!isEdit && !formData.get('image').size) {
+            alert('Please provide an image.');
+            submitBtn.classList.remove('loading');
+            return;
+        }
+
+        const postUrl = isEdit
+            ? '{% url "admin_dashboard:update_who_that_question" %}'
+            : '{% url "admin_dashboard:add_who_that_question" %}';
+
+        fetch(postUrl, {
+            method: 'POST',
+            headers: { 'X-CSRFToken': getCookie('csrftoken') },
+            body: formData
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                showNotification(isEdit ? 'Question updated successfully!' : (data.message || 'Question added successfully!'), 'success');
+                bootstrap.Modal.getInstance(document.getElementById('editQuestionModal'))?.hide();
+                loadBankQuestions(1);
+            } else {
+                alert('Error saving question: ' + (data.error || 'Unknown error'));
+            }
+        })
+        .catch(error => {
+            console.error('Error:', error);
+            alert('Error saving question. Please try again.');
+        })
+        .finally(() => {
+            submitBtn.classList.remove('loading');
+        });
+    });
+
+    // Show questions for a specific quiz -> open Custom Quiz modal in edit mode
+    document.body.addEventListener('click', function(e) {
+        const btn = e.target.closest('.show-quiz-questions-btn');
+        if (!btn) return;
+        const quizId = parseInt(btn.getAttribute('data-quiz-id'));
+        const quizTitle = btn.getAttribute('data-quiz-title') || 'Quiz';
+        if (!quizId) return;
+
+        fetch(`{% url 'admin_dashboard:get_who_that_selected_questions' 0 %}`.replace('/0/', `/${quizId}/`), {
+            method: 'GET',
+            headers: { 'X-CSRFToken': getCookie('csrftoken') },
+        })
+        .then(r => r.json())
+        .then(data => {
+            if (!data.success) { alert('Failed to load quiz details'); return; }
+            whoThatEditMode = true;
+            whoThatCurrentQuizId = quizId;
+            whoThatSelectedIds = new Set((data.questions || []).map(q => q.id));
+
+            document.getElementById('createCustomQuizModalLabel').innerHTML = '<i data-lucide="layers"></i> Edit Quiz';
+            const titleInput = document.getElementById('customQuizTitle');
+            if (titleInput) titleInput.value = quizTitle;
+            const btnPrimary = document.getElementById('createCustomQuizBtn');
+            if (btnPrimary) btnPrimary.innerHTML = '<i data-lucide="check"></i> Update Quiz';
+
+            const modal = new bootstrap.Modal(document.getElementById('createCustomQuizModal'));
+            modal.show();
+            loadCustomQuestions(1);
+            lucide.createIcons();
+        })
+        .catch(err => { console.error(err); alert('Error loading quiz details.'); });
+    });
+
+    // Delete quiz handler
+    document.body.addEventListener('click', function(e) {
+        const btn = e.target.closest('.delete-quiz-btn');
+        if (!btn) return;
+        const quizId = btn.getAttribute('data-quiz-id');
+        if (!quizId) return;
+        if (!confirm('Delete this quiz? This will not delete its questions.')) return;
+        btn.classList.add('loading');
+        fetch("{% url 'admin_dashboard:delete_who_that_quiz' %}", {
+            method: 'POST',
+            headers: {
+                'X-CSRFToken': getCookie('csrftoken'),
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ quiz_id: parseInt(quizId) })
+        })
+        .then(r => r.json())
+        .then(data => {
+            if (data && data.success) {
+                const row = document.querySelector(`tr[data-quiz-row="${quizId}"]`);
+                if (row) row.remove();
+                showNotification('Quiz deleted', 'success');
+            } else {
+                alert('Failed to delete quiz: ' + (data && data.error ? data.error : 'Unknown error'));
+            }
+        })
+        .catch(err => { console.error(err); alert('Error deleting quiz.'); })
+        .finally(() => btn.classList.remove('loading'));
+    });
+
+    // Custom Quiz Modal bindings
+    const createCustomQuizModal = document.getElementById('createCustomQuizModal');
+    const selectAllQuestions = document.getElementById('selectAllQuestions');
+    const createCustomQuizBtn = document.getElementById('createCustomQuizBtn');
+
+    if (createCustomQuizModal) {
+        createCustomQuizModal.addEventListener('shown.bs.modal', function() {
+            if (!whoThatEditMode) {
+                loadCustomQuestions(1);
+            }
+        });
+        createCustomQuizModal.addEventListener('hidden.bs.modal', function() {
+            whoThatEditMode = false;
+            whoThatSelectedIds = new Set();
+            whoThatCurrentQuizId = null;
+            document.getElementById('createCustomQuizModalLabel').innerHTML = '<i data-lucide="layers"></i> Create Custom Quiz';
+            const btnPrimary = document.getElementById('createCustomQuizBtn');
+            if (btnPrimary) btnPrimary.innerHTML = '<i data-lucide="check"></i> Create Quiz';
+            const titleInput = document.getElementById('customQuizTitle');
+            if (titleInput) titleInput.value = 'Custom Quiz';
+        });
+    }
+
+    function loadCustomQuestions(page) {
+        fetch('{% url "admin_dashboard:get_who_that_questions" %}?page=' + page, {
+            method: 'GET',
+            headers: { 'X-CSRFToken': getCookie('csrftoken') },
+        })
+        .then(response => response.json())
+        .then(data => {
+            const body = document.getElementById('customQuestionsTableBody');
+            const pager = document.getElementById('customPagination');
+            const count = document.getElementById('customQuestionCount');
+            body.innerHTML = '';
+            count.textContent = `Showing ${data.count} questions`;
+            data.questions.forEach(q => {
+                const tr = document.createElement('tr');
+                const checked = whoThatEditMode && whoThatSelectedIds.has(q.id) ? 'checked' : '';
+                tr.innerHTML = `
+                    <td><input type="checkbox" value="${q.id}" ${checked}></td>
+                    <td>${q.question_text}</td>
+                    <td>${q.correct_answer}</td>
+                    <td>${q.time_limit}</td>
+                    <td>${q.has_image ? 'Yes' : 'No'}</td>
+                `;
+                body.appendChild(tr);
+            });
+            pager.innerHTML = '';
+            for (let i = 1; i <= data.pages; i++) {
+                const li = document.createElement('li');
+                li.className = 'page-item ' + (i === data.current_page ? 'active' : '');
+                li.innerHTML = `<button class="page-link" data-page="${i}">${i}</button>`;
+                pager.appendChild(li);
+            }
+            pager.onclick = function(e) {
+                if (e.target.classList.contains('page-link')) {
+                    loadCustomQuestions(parseInt(e.target.dataset.page));
+                }
+            };
+        })
+        .catch(err => { console.error(err); alert('Error loading questions. Please try again.'); });
+    }
+
+    selectAllQuestions.addEventListener('change', function() {
+        const checkboxes = document.querySelectorAll('#customQuestionsTableBody input[type="checkbox"]');
+        checkboxes.forEach(checkbox => { checkbox.checked = this.checked; });
+    });
+
+    createCustomQuizBtn.addEventListener('click', function() {
+        const title = document.getElementById('customQuizTitle').value.trim() || 'Custom Quiz';
+        const btn = this;
+        btn.classList.add('loading');
+        if (whoThatEditMode) {
+            const selected = Array.from(whoThatSelectedIds);
+            fetch("{% url 'admin_dashboard:update_who_that_custom_quiz' %}", {
+                method: 'POST',
+                headers: {
+                    'X-CSRFToken': getCookie('csrftoken'),
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ quiz_id: whoThatCurrentQuizId, title: title, question_ids: selected })
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) {
+                    bootstrap.Modal.getInstance(createCustomQuizModal).hide();
+                    window.location.reload();
+                } else {
+                    alert('Error updating quiz: ' + (data.error || 'Unknown error'));
+                }
+            })
+            .catch(err => { console.error(err); alert('Error updating quiz. Please try again.'); })
+            .finally(() => btn.classList.remove('loading'));
+        } else {
+            const selected = Array.from(document.querySelectorAll('#customQuestionsTableBody input[type="checkbox"]:checked')).map(cb => parseInt(cb.value));
+            fetch("{% url 'admin_dashboard:create_who_that_custom_quiz' %}", {
+                method: 'POST',
+                headers: {
+                    'X-CSRFToken': getCookie('csrftoken'),
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ title: title, question_ids: selected })
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) {
+                    bootstrap.Modal.getInstance(createCustomQuizModal).hide();
+                    window.location.reload();
+                } else {
+                    alert('Error creating quiz: ' + (data.error || 'Unknown error'));
+                }
+            })
+            .catch(err => { console.error(err); alert('Error creating quiz. Please try again.'); })
+            .finally(() => btn.classList.remove('loading'));
+        }
+    });
+
+    document.getElementById('customQuestionsTableBody').addEventListener('change', function(e) {
+        if (e.target && e.target.type === 'checkbox') {
+            const id = parseInt(e.target.value);
+            if (e.target.checked) whoThatSelectedIds.add(id); else whoThatSelectedIds.delete(id);
+        }
+    });
+
+    // Auto-open create modal if ?create=1
+    if (new URLSearchParams(window.location.search).get('create') === '1') {
+        const modal = new bootstrap.Modal(document.getElementById('createCustomQuizModal'));
+        modal.show();
+    }
+
+    // ── Bundle logic ──────────────────────────────────────────────
+    let bundleQPage = 1;
+    const bundleModal = document.getElementById('createBundleModal');
+    function loadBundleQuestions(page) {
+        fetch('{% url "admin_dashboard:get_who_that_questions" %}?page=' + page, { headers: { 'X-CSRFToken': getCookie('csrftoken') } })
+        .then(r => r.json()).then(data => {
+            const tbody = document.getElementById('bundleQuestionsTableBody');
+            tbody.innerHTML = '';
+            (data.questions || []).forEach(q => {
+                const tr = document.createElement('tr');
+                tr.innerHTML = `<td><input type="checkbox" class="bundle-q-check" value="${q.id}"></td><td>${q.question_text}</td><td>${q.correct_answer}</td>`;
+                tbody.appendChild(tr);
+            });
+            document.getElementById('bundleQuestionCount').textContent = `${data.count} Fragen`;
+            const pag = document.getElementById('bundleQuestionPagination');
+            pag.innerHTML = '';
+            for (let i = 1; i <= data.pages; i++) {
+                const li = document.createElement('li');
+                li.className = 'page-item' + (i === page ? ' active' : '');
+                li.innerHTML = `<button class="page-link" data-page="${i}">${i}</button>`;
+                pag.appendChild(li);
+            }
+        });
+    }
+    bundleModal?.addEventListener('shown.bs.modal', () => { bundleQPage = 1; loadBundleQuestions(1); });
+    document.getElementById('bundleQuestionPagination')?.addEventListener('click', e => {
+        if (e.target.classList.contains('page-link')) { bundleQPage = parseInt(e.target.dataset.page); loadBundleQuestions(bundleQPage); }
+    });
+    document.getElementById('selectAllBundleQuestions')?.addEventListener('change', function() {
+        document.querySelectorAll('.bundle-q-check').forEach(cb => cb.checked = this.checked);
+    });
+    document.getElementById('saveBundleBtn')?.addEventListener('click', function() {
+        const name = document.getElementById('bundleName').value.trim();
+        if (!name) { alert('Bitte einen Bundle-Namen angeben.'); return; }
+        const questionIds = Array.from(document.querySelectorAll('.bundle-q-check:checked')).map(cb => parseInt(cb.value));
+        if (!questionIds.length) { alert('Bitte mindestens eine Frage auswählen.'); return; }
+        fetch('{% url "admin_dashboard:create_who_that_bundle" %}', {
+            method: 'POST',
+            headers: { 'X-CSRFToken': getCookie('csrftoken'), 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name, question_ids: questionIds })
+        }).then(r => r.json()).then(data => {
+            if (data.success) {
+                bootstrap.Modal.getInstance(bundleModal).hide();
+                document.getElementById('bundleName').value = '';
+                const tbody = document.getElementById('bundleTableBody');
+                const emptyRow = document.getElementById('bundleEmptyRow');
+                if (emptyRow) emptyRow.remove();
+                const tr = document.createElement('tr');
+                tr.id = `bundle-row-${data.bundle.id}`;
+                tr.innerHTML = `<td class="fw-semibold">${data.bundle.name}</td><td>${data.bundle.question_count} Fragen</td><td class="text-muted small">Heute</td><td><button class="btn btn-sm btn-outline-danger delete-bundle-btn" data-bundle-id="${data.bundle.id}" data-bundle-name="${data.bundle.name}"><i data-lucide="trash-2"></i></button></td>`;
+                tbody.appendChild(tr);
+                document.getElementById('bundleCountBadge').textContent = parseInt(document.getElementById('bundleCountBadge').textContent) + 1;
+                lucide.createIcons();
+            }
+        });
+    });
+    document.getElementById('bundleTableBody')?.addEventListener('click', function(e) {
+        const btn = e.target.closest('.delete-bundle-btn');
+        if (!btn) return;
+        if (!confirm(`Bundle "${btn.dataset.bundleName}" löschen?`)) return;
+        fetch('{% url "admin_dashboard:delete_who_that_bundle" %}', {
+            method: 'POST',
+            headers: { 'X-CSRFToken': getCookie('csrftoken'), 'Content-Type': 'application/json' },
+            body: JSON.stringify({ bundle_id: parseInt(btn.dataset.bundleId) })
+        }).then(r => r.json()).then(data => {
+            if (data.success) {
+                document.getElementById(`bundle-row-${btn.dataset.bundleId}`)?.remove();
+                document.getElementById('bundleCountBadge').textContent = Math.max(0, parseInt(document.getElementById('bundleCountBadge').textContent) - 1);
+            }
+        });
+    });
+});
+</script>
+{% endblock %}

@@ -1,0 +1,602 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Admin Login - QuizMaster</title>
+    
+    <!-- Bootstrap 5 CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
+    
+    <!-- Custom Theme CSS -->
+    <link rel="stylesheet" href="{% static 'theme.css' %}">
+    
+    <!-- Inter Font -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body class="login-page">
+    <div class="login-container">
+        <!-- Left Side - Branding -->
+        <div class="login-branding">
+            <div class="branding-content">
+                <div class="brand-logo">
+                    <i data-lucide="brain-circuit"></i>
+                </div>
+                <h1 class="brand-title">QuizMaster</h1>
+                <p class="brand-subtitle">Admin Dashboard</p>
+                <p class="brand-description">Manage your games, track performance, and engage with your players through our comprehensive admin interface.</p>
+                
+                <div class="features-list">
+                    <div class="feature-item">
+                        <i data-lucide="gamepad-2"></i>
+                        <span>Multiple Game Types</span>
+                    </div>
+                    <div class="feature-item">
+                        <i data-lucide="users"></i>
+                        <span>Player Management</span>
+                    </div>
+                    <div class="feature-item">
+                        <i data-lucide="bar-chart-3"></i>
+                        <span>Real-time Analytics</span>
+                    </div>
+                    <div class="feature-item">
+                        <i data-lucide="shield-check"></i>
+                        <span>Secure Admin Access</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Right Side - Login Form -->
+        <div class="login-form-section">
+            <div class="login-form-container">
+                <!-- Mobile Logo (visible only on mobile) -->
+                <div class="mobile-logo">
+                    <i data-lucide="brain-circuit"></i>
+                    <span>QuizMaster</span>
+                </div>
+
+                <div class="login-header">
+                    <h2>Welcome Back</h2>
+                    <p>Sign in to access your admin dashboard</p>
+                </div>
+
+                <!-- Messages -->
+                {% if messages %}
+                    <div class="messages-container mb-4">
+                        {% for message in messages %}
+                            <div class="alert alert-{{ message.tags }} alert-dismissible fade show" role="alert">
+                                {{ message }}
+                                <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                            </div>
+                        {% endfor %}
+                    </div>
+                {% endif %}
+
+                <!-- Login Form -->
+                <form method="post" class="login-form">
+                    {% csrf_token %}
+                    
+                    <div class="form-group mb-4">
+                        <label for="username" class="form-label">Username or Email</label>
+                        <div class="input-group">
+                            <span class="input-group-text">
+                                <i data-lucide="user"></i>
+                            </span>
+                            <input type="text" class="form-control" id="username" name="username" 
+                                   placeholder="Enter your username" required autofocus>
+                        </div>
+                    </div>
+
+                    <div class="form-group mb-4">
+                        <label for="password" class="form-label">Password</label>
+                        <div class="input-group">
+                            <span class="input-group-text">
+                                <i data-lucide="lock"></i>
+                            </span>
+                            <input type="password" class="form-control" id="password" name="password" 
+                                   placeholder="Enter your password" required>
+                            <button class="btn btn-outline-secondary" type="button" id="togglePassword">
+                                <i data-lucide="eye" id="eyeIcon"></i>
+                            </button>
+                        </div>
+                    </div>
+
+                    <div class="form-options mb-4">
+                        <div class="form-check">
+                            <input class="form-check-input" type="checkbox" id="remember" name="remember">
+                            <label class="form-check-label" for="remember">
+                                Remember me for 30 days
+                            </label>
+                        </div>
+                    </div>
+
+                    <button type="submit" class="btn btn-primary btn-lg w-100 mb-3">
+                        <i data-lucide="log-in" class="me-2"></i>
+                        Sign In to Dashboard
+                    </button>
+                </form>
+
+                <div class="login-footer">
+                    <div class="security-info">
+                        <i data-lucide="shield"></i>
+                        <span>Secure login with SSL encryption</span>
+                    </div>
+                    
+                    {% comment %}
+                    <div class="help-links">
+                        <a href="#" class="text-muted">Forgot password?</a>
+                        <span class="mx-2">•</span>
+                        <a href="#" class="text-muted">Need help?</a>
+                    </div>
+                    {% endcomment %}
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Bootstrap 5 JS -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+
+    <script>
+        // Initialize Lucide icons
+        document.addEventListener('DOMContentLoaded', function() {
+            lucide.createIcons();
+        });
+
+        // Password visibility toggle
+        document.getElementById('togglePassword').addEventListener('click', function() {
+            const passwordInput = document.getElementById('password');
+            const eyeIcon = document.getElementById('eyeIcon');
+            
+            if (passwordInput.type === 'password') {
+                passwordInput.type = 'text';
+                eyeIcon.setAttribute('data-lucide', 'eye-off');
+            } else {
+                passwordInput.type = 'password';
+                eyeIcon.setAttribute('data-lucide', 'eye');
+            }
+            
+            // Re-initialize the icon
+            lucide.createIcons();
+        });
+
+        // Form submission animation
+        document.querySelector('.login-form').addEventListener('submit', function() {
+            const submitBtn = this.querySelector('button[type="submit"]');
+            const originalContent = submitBtn.innerHTML;
+            
+            submitBtn.innerHTML = '<i data-lucide="loader-2" class="me-2 animate-spin"></i>Signing in...';
+            submitBtn.disabled = true;
+            
+            lucide.createIcons();
+            
+            // Reset if submission takes too long (fallback)
+            setTimeout(() => {
+                if (submitBtn.disabled) {
+                    submitBtn.innerHTML = originalContent;
+                    submitBtn.disabled = false;
+                    lucide.createIcons();
+                }
+            }, 10000);
+        });
+
+        // Auto-focus username field
+        document.getElementById('username').focus();
+
+        // Add loading animation style
+        const style = document.createElement('style');
+        style.textContent = `
+            @keyframes spin {
+                from { transform: rotate(0deg); }
+                to { transform: rotate(360deg); }
+            }
+            .animate-spin {
+                animation: spin 1s linear infinite;
+            }
+        `;
+        document.head.appendChild(style);
+    </script>
+
+    <style>
+        /* ==========================================================================
+           Login Page Styles
+           ========================================================================== */
+
+        .login-page {
+            margin: 0;
+            padding: 0;
+            font-family: 'Inter', sans-serif;
+            background-color: var(--bg-secondary);
+            min-height: 100vh;
+        }
+
+        .login-container {
+            display: flex;
+            min-height: 100vh;
+            position: relative;
+        }
+
+        /* ==========================================================================
+           Branding Section (Left Side)
+           ========================================================================== */
+
+        .login-branding {
+            flex: 1;
+            background: linear-gradient(135deg, var(--primary-600) 0%, var(--primary-700) 100%);
+            color: var(--text-white);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 3rem;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .login-branding::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><defs><pattern id="grid" width="10" height="10" patternUnits="userSpaceOnUse"><path d="M 10 0 L 0 0 0 10" fill="none" stroke="rgba(255,255,255,0.05)" stroke-width="1"/></pattern></defs><rect width="100" height="100" fill="url(%23grid)"/></svg>');
+            opacity: 0.3;
+        }
+
+        .branding-content {
+            max-width: 500px;
+            text-align: center;
+            position: relative;
+            z-index: 1;
+        }
+
+        .brand-logo {
+            width: 80px;
+            height: 80px;
+            background-color: var(--accent-400);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 0 auto 2rem;
+            box-shadow: 0 0.5rem 2rem rgba(0, 0, 0, 0.15);
+        }
+
+        .brand-logo i {
+            width: 40px;
+            height: 40px;
+            color: var(--text-white);
+        }
+
+        .brand-title {
+            font-size: 3rem;
+            font-weight: 700;
+            margin-bottom: 0.5rem;
+            background: linear-gradient(45deg, #ffffff, var(--accent-300));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .brand-subtitle {
+            font-size: 1.25rem;
+            font-weight: 500;
+            margin-bottom: 2rem;
+            color: rgba(255, 255, 255, 0.9);
+        }
+
+        .brand-description {
+            font-size: 1rem;
+            line-height: 1.6;
+            margin-bottom: 3rem;
+            color: rgba(255, 255, 255, 0.8);
+        }
+
+        .features-list {
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 1rem;
+            text-align: left;
+        }
+
+        .feature-item {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            padding: 1rem;
+            background-color: rgba(255, 255, 255, 0.1);
+            border-radius: var(--border-radius);
+            backdrop-filter: blur(10px);
+            transition: all var(--transition-fast);
+        }
+
+        .feature-item:hover {
+            background-color: rgba(255, 255, 255, 0.15);
+        }
+
+        .feature-item i {
+            width: 24px;
+            height: 24px;
+            color: var(--accent-400);
+            flex-shrink: 0;
+        }
+
+        .feature-item span {
+            font-weight: 500;
+            color: rgba(255, 255, 255, 0.95);
+        }
+
+        /* ==========================================================================
+           Login Form Section (Right Side)
+           ========================================================================== */
+
+        .login-form-section {
+            flex: 1;
+            background-color: var(--bg-primary);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 2rem;
+        }
+
+        .login-form-container {
+            width: 100%;
+            max-width: 450px;
+        }
+
+        .mobile-logo {
+            display: none;
+            align-items: center;
+            justify-content: center;
+            gap: 0.75rem;
+            margin-bottom: 2rem;
+            font-size: 1.5rem;
+            font-weight: 700;
+            color: var(--color-primary);
+        }
+
+        .mobile-logo i {
+            width: 32px;
+            height: 32px;
+        }
+
+        .login-header {
+            text-align: center;
+            margin-bottom: 2rem;
+        }
+
+        .login-header h2 {
+            font-size: 2rem;
+            font-weight: 700;
+            color: var(--text-primary);
+            margin-bottom: 0.5rem;
+        }
+
+        .login-header p {
+            color: var(--text-muted);
+            font-size: 1rem;
+        }
+
+        /* Form Styling */
+        .form-group label {
+            font-weight: 600;
+            color: var(--text-primary);
+            margin-bottom: 0.5rem;
+        }
+
+        .input-group {
+            border-radius: var(--border-radius);
+            overflow: hidden;
+            box-shadow: var(--shadow-sm);
+            transition: all var(--transition-fast);
+        }
+
+        .input-group:focus-within {
+            box-shadow: 0 0 0 3px rgba(var(--primary-rgb), 0.1);
+        }
+
+        .input-group-text {
+            background-color: var(--bg-tertiary);
+            border: 1px solid var(--border-color);
+            border-right: none;
+            color: var(--text-secondary);
+        }
+
+        .form-control {
+            border: 1px solid var(--border-color);
+            border-left: none;
+            padding: 0.875rem 1rem;
+            font-size: 1rem;
+            transition: all var(--transition-fast);
+        }
+
+        .form-control:focus {
+            border-color: var(--color-primary);
+            box-shadow: none;
+        }
+
+        .input-group .btn {
+            border: 1px solid var(--border-color);
+            border-left: none;
+            background-color: var(--bg-tertiary);
+            color: var(--text-secondary);
+        }
+
+        .input-group .btn:hover {
+            background-color: var(--bg-secondary);
+            color: var(--text-primary);
+        }
+
+        .form-options {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .form-check {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .form-check-input {
+            width: 1.25rem;
+            height: 1.25rem;
+            border-color: var(--border-color);
+        }
+
+        .form-check-input:checked {
+            background-color: var(--color-primary);
+            border-color: var(--color-primary);
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, var(--primary-600) 0%, var(--primary-700) 100%);
+            border: none;
+            padding: 1rem 2rem;
+            font-weight: 600;
+            border-radius: var(--border-radius);
+            transition: all var(--transition-fast);
+            box-shadow: var(--shadow-md);
+        }
+
+        .btn-primary:hover {
+            box-shadow: 0 0.5rem 1.5rem rgba(var(--primary-rgb), 0.3);
+        }
+
+        .btn-primary:disabled {
+            opacity: 0.7;
+            transform: none;
+            box-shadow: none;
+        }
+
+        .login-footer {
+            margin-top: 2rem;
+            text-align: center;
+        }
+
+        .security-info {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.5rem;
+            color: var(--text-muted);
+            font-size: 0.875rem;
+            margin-bottom: 1rem;
+        }
+
+        .security-info i {
+            width: 16px;
+            height: 16px;
+            color: var(--color-success);
+        }
+
+        .help-links {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 1rem;
+            font-size: 0.875rem;
+        }
+
+        .help-links a {
+            color: var(--text-muted);
+            text-decoration: none;
+            transition: color var(--transition-fast);
+        }
+
+        .help-links a:hover {
+            color: var(--color-primary);
+        }
+
+        /* Alert Styling */
+        .messages-container .alert {
+            border-radius: var(--border-radius);
+            border: none;
+            font-weight: 500;
+        }
+
+        .alert-danger {
+            background-color: rgba(var(--error-rgb), 0.1);
+            color: var(--color-error);
+        }
+
+        .alert-success {
+            background-color: rgba(var(--success-rgb), 0.1);
+            color: var(--color-success);
+        }
+
+        /* ==========================================================================
+           Responsive Design
+           ========================================================================== */
+
+        @media (max-width: 992px) {
+            .login-branding {
+                display: none;
+            }
+
+            .mobile-logo {
+                display: flex;
+            }
+
+            .login-form-section {
+                flex: none;
+                width: 100%;
+            }
+        }
+
+        @media (max-width: 576px) {
+            .login-form-section {
+                padding: 1rem;
+            }
+
+            .login-form-container {
+                max-width: 100%;
+            }
+
+            .login-header h2 {
+                font-size: 1.75rem;
+            }
+
+            .brand-title {
+                font-size: 2.5rem;
+            }
+
+            .branding-content {
+                padding: 2rem;
+            }
+        }
+
+        /* ==========================================================================
+           Animations
+           ========================================================================== */
+
+        @keyframes fadeInUp {
+            from {
+                opacity: 0;
+                transform: translateY(30px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .login-form-container > * {
+            animation: fadeInUp 0.6s ease-out backwards;
+        }
+
+        .login-form-container > *:nth-child(1) { animation-delay: 0.1s; }
+        .login-form-container > *:nth-child(2) { animation-delay: 0.2s; }
+        .login-form-container > *:nth-child(3) { animation-delay: 0.3s; }
+        .login-form-container > *:nth-child(4) { animation-delay: 0.4s; }
+    </style>
+</body>
+</html>

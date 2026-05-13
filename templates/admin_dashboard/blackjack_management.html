@@ -1,0 +1,1344 @@
+{% extends "admin_dashboard/base.html" %}
+
+{% block title %}BlackJack Quiz Management - QuizMaster Admin{% endblock %}
+
+{% block page_title %}BlackJack Quiz Management{% endblock %}
+{% block page_subtitle %}Add, edit and delete questions{% endblock %}
+
+{% block content %}
+<div class="blackjack-management-content">
+
+    <!-- Game Info Card (keep as-is) -->
+    <div class="game-info-card mb-4">
+        <div class="row align-items-center">
+            <div class="col-md-8">
+                <div class="game-description">
+                    <h4><i data-lucide="spade"></i> How BlackJack Quiz Works</h4>
+                    <ul class="game-rules">
+                        <li><strong>Questions per Set:</strong> Each quiz uses the configured number of numerical questions (default 5)</li>
+                        <li><strong>Points System:</strong> Points = how far off your answer is from the correct answer</li>
+                        <li><strong>Goal:</strong> Get as close to 21 total points as possible without going over</li>
+                        <li><strong>Bust Rule:</strong> If you reach 22+ points, you automatically lose that round</li>
+                        <li><strong>Winner:</strong> Player closest to 21 points without busting wins</li>
+                    </ul>
+                </div>
+            </div>
+            <div class="col-md-4 text-center">
+                <div class="target-display">
+                    <div class="target-circle">
+                        <span class="target-number">21</span>
+                        <span class="target-label">Target Points</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- New Question Button -->
+    <div class="d-flex justify-content-end mb-3">
+        <button type="button" class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#editQuestionModal" id="newQuestionBtn">
+            <i data-lucide="plus" style="width:16px;height:16px;" class="me-1"></i> New Question
+        </button>
+    </div>
+
+    <!-- Questions Bank Card -->
+    <div class="card mb-4">
+        <div class="card-header d-flex justify-content-between align-items-center">
+            <h5 class="card-title mb-0">
+                <i data-lucide="database"></i>
+                Question Bank
+                <span class="badge bg-secondary ms-2" id="questionCountBadge">{{ total_questions }}</span>
+            </h5>
+        </div>
+        <div class="card-body">
+            <div class="table-responsive">
+                <table class="table table-hover">
+                    <thead class="table-light">
+                        <tr>
+                            <th>Question</th>
+                            <th>Answer</th>
+                            <th>Time Limit (s)</th>
+                            <th>Created</th>
+
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="questionsTableBody">
+                        <!-- Questions loaded via JS -->
+                    </tbody>
+                </table>
+            </div>
+            <div class="d-flex justify-content-between align-items-center mt-3">
+                <div class="text-muted" id="questionCount">Loading questions...</div>
+                <nav>
+                    <ul class="pagination mb-0" id="pagination"></ul>
+                </nav>
+            </div>
+        </div>
+    </div>
+
+    <!-- Bundles Card -->
+    <div class="card mb-4">
+        <div class="card-header d-flex justify-content-between align-items-center">
+            <h5 class="card-title mb-0">
+                <i data-lucide="layers"></i> Bundles
+                <span class="badge bg-secondary ms-2" id="bundleCountBadge">{{ bundles|length }}</span>
+            </h5>
+            <button type="button" class="btn btn-primary btn-sm" data-bs-toggle="modal" data-bs-target="#createBundleModal">
+                <i data-lucide="plus"></i> Neues Bundle
+            </button>
+        </div>
+        <div class="card-body p-0">
+            <table class="table table-hover mb-0">
+                <thead class="table-light">
+                    <tr><th>Name</th><th>Fragen</th><th>Erstellt</th><th>Aktionen</th></tr>
+                </thead>
+                <tbody id="bundleTableBody">
+                    {% for bundle in bundles %}
+                    <tr id="bundle-row-{{ bundle.id }}">
+                        <td class="fw-semibold">{{ bundle.name }}</td>
+                        <td>{{ bundle.questions.count }} Fragen</td>
+                        <td class="text-muted small">{{ bundle.created_at|date:"d.m.Y" }}</td>
+                        <td><button class="btn btn-sm btn-outline-danger delete-bundle-btn" data-bundle-id="{{ bundle.id }}" data-bundle-name="{{ bundle.name }}"><i data-lucide="trash-2"></i></button></td>
+                    </tr>
+                    {% empty %}
+                    <tr id="bundleEmptyRow"><td colspan="4" class="text-center py-4 text-muted">Noch keine Bundles erstellt.</td></tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+</div>
+
+<!-- Edit / Add Question Modal -->
+<div class="modal fade" id="editQuestionModal" tabindex="-1" aria-labelledby="editQuestionModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="questionFormTitle">
+                    <i data-lucide="help-circle"></i> Add New Question
+                </h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <form id="addQuestionForm">
+                    {% csrf_token %}
+                    <input type="hidden" id="questionId" name="question_id">
+
+                    <div class="mb-3">
+                        <label for="questionText" class="form-label fw-semibold">Question Text *</label>
+                        <textarea class="form-control" id="questionText" name="question_text" rows="3"
+                                  placeholder="e.g., How many legs does a spider have?" required></textarea>
+                    </div>
+
+                    <div class="row g-3">
+                        <div class="col-md-6">
+                            <label for="correctAnswer" class="form-label fw-semibold">Correct Answer *</label>
+                            <input type="number" class="form-control" id="correctAnswer" name="correct_answer"
+                                   placeholder="e.g., 8" required min="0" max="1000">
+                            <small class="form-text text-muted">Enter a whole number only</small>
+                        </div>
+                        <div class="col-md-3">
+                            <label for="timeLimit" class="form-label fw-semibold">Time Limit (s)</label>
+                            <input type="number" class="form-control" id="timeLimit" name="time_limit"
+                                   value="30" min="10" max="120" required>
+                        </div>
+                    </div>
+
+                    <div class="blackjack-scoring-info mt-3">
+                        <h6><i data-lucide="info"></i> BlackJack Scoring</h6>
+                        <div class="scoring-explanation">
+                            <p><strong>How points are calculated:</strong></p>
+                            <ul>
+                                <li>Points = |Your Answer - Correct Answer|</li>
+                                <li>Lower points are better</li>
+                                <li>Goal: Get close to 21 total points</li>
+                                <li>22+ total points = BUST (elimination)</li>
+                            </ul>
+                        </div>
+                    </div>
+
+                    <div class="mb-3 mt-3">
+                        <label for="explanation" class="form-label fw-semibold">Explanation (Optional)</label>
+                        <textarea class="form-control" id="explanation" name="explanation" rows="2"
+                                  placeholder="Optional explanation shown after answering"></textarea>
+                    </div>
+                </form>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="submit" form="addQuestionForm" class="btn btn-primary" id="submitQuestionBtn" data-mode="add">
+                    <i data-lucide="plus"></i> Add Question
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Create Bundle Modal -->
+<div class="modal fade" id="createBundleModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-xl">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title"><i data-lucide="layers"></i> Neues Bundle</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="mb-3">
+                    <label class="form-label fw-semibold">Bundle-Name *</label>
+                    <input type="text" class="form-control" id="bundleName" placeholder="z.B. Mathe-Bundle">
+                </div>
+                <p class="text-muted small mb-2">Fragen auswählen:</p>
+                <div class="table-responsive">
+                    <table class="table table-hover">
+                        <thead class="table-light">
+                            <tr>
+                                <th style="width:40px;"><input type="checkbox" id="selectAllBundleQuestions"></th>
+                                <th>Frage</th><th>Antwort</th>
+                            </tr>
+                        </thead>
+                        <tbody id="bundleQuestionsTableBody"></tbody>
+                    </table>
+                </div>
+                <div class="d-flex justify-content-between align-items-center mt-2">
+                    <div class="text-muted small" id="bundleQuestionCount">Lade Fragen...</div>
+                    <ul class="pagination pagination-sm mb-0" id="bundleQuestionPagination"></ul>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Abbrechen</button>
+                <button type="button" class="btn btn-primary" id="saveBundleBtn"><i data-lucide="save"></i> Bundle speichern</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Create Custom Quiz Modal -->
+<div class="modal fade" id="createCustomQuizModal" tabindex="-1" aria-labelledby="createCustomQuizModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-xl">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="createCustomQuizModalLabel">
+                    <i data-lucide="layers"></i>
+                    Create Custom Quiz
+                </h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div class="row g-3 mb-3">
+                    <div class="col-md-4">
+                        <input type="text" class="form-control" id="customQuizTitle" placeholder="Enter quiz name" value="Custom Quiz">
+                    </div>
+                    <div class="col-md-2">
+                        <label for="customQuizTotalQuestions" class="form-label fw-semibold">Questions per Set</label>
+                        <input type="number" class="form-control" id="customQuizTotalQuestions" value="5" min="1" step="1">
+                    </div>
+                    <div class="col-md-3">
+                        <label for="customQuizSetSizes" class="form-label fw-semibold">Set Sizes</label>
+                        <input type="text" class="form-control" id="customQuizSetSizes" placeholder="e.g. 2,3,2" readonly>
+                        <small class="text-muted">Auto-generated from the explicit set assignments below.</small>
+                    </div>
+                    <div class="col-md-3">
+                        <label for="customQuizScoringMode" class="form-label fw-semibold">Scoring Mode</label>
+                        <select class="form-select" id="customQuizScoringMode">
+                            <option value="simple">einfach</option>
+                            <option value="rank">Ranking</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="card set-builder-card mb-3">
+                    <div class="card-body">
+                        <div class="d-flex flex-column flex-lg-row justify-content-between align-items-lg-center gap-3">
+                            <div>
+                                <h6 class="mb-1">Sets</h6>
+                                <p class="text-muted small mb-0">Create explicit sets and assign each selected question to a concrete set.</p>
+                            </div>
+                            <button type="button" class="btn btn-outline-primary btn-sm" id="addBlackjackSetBtn">
+                                <i data-lucide="plus"></i> Add Set
+                            </button>
+                        </div>
+                        <div id="blackjackSetSummary" class="blackjack-set-summary mt-3"></div>
+                    </div>
+                </div>
+                <div class="table-responsive">
+                    <table class="table table-hover">
+                        <thead class="table-light">
+                            <tr>
+                                <th style="width:40px;"><input type="checkbox" id="selectAllQuestions"></th>
+                                <th>Question</th>
+                                <th style="width:160px;">Set</th>
+                                <th>Correct Answer</th>
+                                <th>Time (s)</th>
+                                <th>Created</th>
+                            </tr>
+                        </thead>
+                        <tbody id="customQuestionsTableBody"></tbody>
+                    </table>
+                </div>
+                <div class="d-flex justify-content-between align-items-center mt-2">
+                    <div class="text-muted" id="customQuestionCount">Loading questions...</div>
+                    <ul class="pagination mb-0" id="customPagination"></ul>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-outline" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-primary" id="createCustomQuizBtn">
+                    <i data-lucide="check"></i>
+                    Create Quiz
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Quiz-specific Questions Modal -->
+<div class="modal fade" id="quizQuestionsModal" tabindex="-1" aria-labelledby="quizQuestionsModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-xl">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="quizQuestionsModalLabel">Quiz Questions</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div class="table-responsive">
+                    <table class="table table-hover">
+                        <thead class="table-light">
+                            <tr>
+                                <th>Question</th>
+                                <th>Correct Answer</th>
+                                <th>Time Limit (s)</th>
+                                <th>Created</th>
+    
+                            </tr>
+                        </thead>
+                        <tbody id="quizQuestionsTableBody"></tbody>
+                    </table>
+                </div>
+                <div class="d-flex justify-content-between align-items-center mt-3">
+                    <div class="text-muted" id="quizQuestionCount">Loading questions...</div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Delete Confirmation Modal -->
+<div class="modal fade" id="deleteQuestionModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Delete Question</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <p>Are you sure you want to delete this question? This action cannot be undone.</p>
+                <p class="text-danger"><strong>Note:</strong> If this question has been used in any games, it will be deactivated instead of deleted.</p>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-danger" id="confirmDeleteBtn">Delete Question</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+.blackjack-management-content {
+    /*max-width: 1400px;*/
+}
+
+/* Game Info Card */
+.game-info-card {
+    background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+    color: var(--text-white);
+    border-radius: var(--border-radius-xl);
+    padding: 2rem;
+    box-shadow: var(--shadow-lg);
+}
+
+.game-description h4 {
+    color: var(--text-white);
+    margin-bottom: 1rem;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.game-rules {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+}
+
+.game-rules li {
+    padding: 0.5rem 0;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.game-rules li:last-child {
+    border-bottom: none;
+}
+
+.target-display {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+}
+
+.target-circle {
+    width: 120px;
+    height: 120px;
+    border: 4px solid rgba(255, 255, 255, 0.3);
+    border-radius: 50%;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    background: rgba(255, 255, 255, 0.1);
+    backdrop-filter: blur(10px);
+}
+
+.target-number {
+    font-size: 2.5rem;
+    font-weight: 700;
+    line-height: 1;
+}
+
+.target-label {
+    font-size: 0.875rem;
+    opacity: 0.8;
+}
+
+/* BlackJack Scoring Info */
+.blackjack-scoring-info {
+    background: var(--bg-secondary);
+    border-radius: var(--border-radius);
+    padding: 1.5rem;
+    margin-bottom: 1.5rem;
+}
+
+.blackjack-scoring-info h6 {
+    color: var(--text-primary);
+    margin-bottom: 1rem;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.scoring-explanation {
+    margin-bottom: 1.5rem;
+}
+
+.scoring-explanation p {
+    font-weight: 600;
+    color: var(--text-primary);
+    margin-bottom: 0.5rem;
+}
+
+.scoring-explanation ul {
+    margin: 0;
+    padding-left: 1.5rem;
+}
+
+.scoring-explanation li {
+    margin-bottom: 0.25rem;
+    color: var(--text-secondary);
+}
+
+.scoring-example {
+    border-top: 1px solid var(--border-color);
+    padding-top: 1rem;
+}
+
+.example-case {
+    background: var(--bg-primary);
+    padding: 1rem;
+    border-radius: var(--border-radius-sm);
+    font-family: var(--font-family-mono);
+    font-size: 0.875rem;
+}
+
+.example-case > div {
+    margin-bottom: 0.5rem;
+}
+
+.example-case > div:last-child {
+    margin-bottom: 0;
+}
+
+.example-answers {
+    margin-top: 0.5rem;
+    padding-left: 1rem;
+}
+
+.example-answers div {
+    color: var(--text-secondary);
+    margin-bottom: 0.25rem;
+}
+
+.form-section {
+    margin-bottom: 1.5rem;
+}
+
+.set-builder-card {
+    border: 1px solid var(--border-color);
+}
+
+.blackjack-set-summary {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 1rem;
+}
+
+.blackjack-set-card {
+    border: 1px solid var(--border-color);
+    border-radius: var(--border-radius);
+    background: var(--bg-secondary);
+    padding: 1rem;
+}
+
+.blackjack-set-card h6 {
+    margin: 0;
+}
+
+.blackjack-set-card ul {
+    margin: 0.75rem 0 0;
+    padding-left: 1rem;
+}
+
+.blackjack-set-card li {
+    margin-bottom: 0.25rem;
+    color: var(--text-secondary);
+}
+
+.blackjack-set-card li:last-child {
+    margin-bottom: 0;
+}
+
+.blackjack-set-empty {
+    color: var(--text-muted);
+    font-size: 0.875rem;
+    margin-top: 0.75rem;
+}
+
+/* Action Buttons */
+.action-buttons {
+    display: flex;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+}
+
+.btn-sm {
+    padding: 0.375rem 0.75rem;
+    font-size: 0.8125rem;
+}
+
+/* Empty State */
+.empty-state {
+    text-align: center;
+    padding: 3rem 2rem;
+    color: var(--text-muted);
+}
+
+.empty-state i {
+    width: 64px;
+    height: 64px;
+    color: var(--text-muted);
+    margin-bottom: 1rem;
+    opacity: 0.5;
+}
+
+.empty-state h4 {
+    color: var(--text-primary);
+    margin-bottom: 0.5rem;
+}
+
+/* Loading states */
+.btn.loading {
+    position: relative;
+    color: transparent !important;
+}
+
+.btn.loading::after {
+    content: '';
+    position: absolute;
+    width: 16px;
+    height: 16px;
+    top: 50%;
+    left: 50%;
+    margin-left: -8px;
+    margin-top: -8px;
+    border: 2px solid transparent;
+    border-top-color: currentColor;
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+}
+
+@media (max-width: 768px) {
+    .game-info-card {
+        padding: 1.5rem;
+    }
+    .target-circle {
+        width: 100px;
+        height: 100px;
+    }
+    .target-number {
+        font-size: 2rem;
+    }
+}
+</style>
+
+<script>
+function showNotification(message, type = 'info') {
+    const notification = document.createElement('div');
+    notification.className = `alert alert-${type} notification-toast`;
+    notification.textContent = message;
+    notification.style.cssText = `
+        position: fixed;
+        top: 20px;
+        right: 20px;
+        z-index: 9999;
+        min-width: 250px;
+        opacity: 0;
+        transform: translateX(100%);
+        transition: all 0.3s ease;
+    `;
+    document.body.appendChild(notification);
+    setTimeout(() => {
+        notification.style.opacity = '1';
+        notification.style.transform = 'translateX(0)';
+    }, 100);
+    setTimeout(() => {
+        notification.style.opacity = '0';
+        notification.style.transform = 'translateX(100%)';
+        setTimeout(() => { notification.remove(); }, 300);
+    }, 3000);
+}
+
+function getCookie(name) {
+    let cookieValue = null;
+    if (document.cookie && document.cookie !== '') {
+        const cookies = document.cookie.split(';');
+        for (let i = 0; i < cookies.length; i++) {
+            const cookie = cookies[i].trim();
+            if (cookie.substring(0, name.length + 1) === (name + '=')) {
+                cookieValue = decodeURIComponent(cookie.substring(name.length + 1));
+                break;
+            }
+        }
+    }
+    return cookieValue;
+}
+
+function setFormMode(mode) {
+    const title = document.getElementById('questionFormTitle');
+    const submitBtn = document.getElementById('submitQuestionBtn');
+    if (mode === 'edit') {
+        title.innerHTML = '<i data-lucide="help-circle"></i> Edit Question';
+        submitBtn.innerHTML = '<i data-lucide="save"></i> Save Changes';
+        submitBtn.dataset.mode = 'edit';
+    } else {
+        title.innerHTML = '<i data-lucide="help-circle"></i> Add New Question';
+        submitBtn.innerHTML = '<i data-lucide="plus"></i> Add Question';
+        submitBtn.dataset.mode = 'add';
+        document.getElementById('questionId').value = '';
+        document.getElementById('addQuestionForm').reset();
+    }
+    lucide.createIcons();
+}
+
+document.addEventListener('DOMContentLoaded', function() {
+    lucide.createIcons();
+
+    const questionsTableBody = document.getElementById('questionsTableBody');
+    const questionCount = document.getElementById('questionCount');
+    const questionCountBadge = document.getElementById('questionCountBadge');
+    const pagination = document.getElementById('pagination');
+
+    // Edit state
+    let blackJackEditMode = false;
+    let blackJackSelectedIds = new Set();
+    let blackJackCurrentQuizId = null;
+    let blackJackSetCount = 1;
+    let blackJackQuestionSetAssignments = new Map();
+    let blackJackQuestionMeta = new Map();
+
+    const customQuizSetSizesInput = document.getElementById('customQuizSetSizes');
+    const blackjackSetSummary = document.getElementById('blackjackSetSummary');
+    const addBlackjackSetBtn = document.getElementById('addBlackjackSetBtn');
+
+    function rememberBlackJackQuestionMeta(question) {
+        if (!question || !question.id) return;
+        blackJackQuestionMeta.set(question.id, {
+            id: question.id,
+            question_text: question.question_text || '',
+            correct_answer: question.correct_answer,
+            time_limit: question.time_limit,
+            created_at: question.created_at,
+        });
+    }
+
+    function normalizeBlackJackSetNumber(setNumber) {
+        const parsed = parseInt(setNumber, 10);
+        if (!Number.isFinite(parsed) || parsed < 1) return 1;
+        return Math.min(parsed, Math.max(1, blackJackSetCount));
+    }
+
+    function getBlackJackSetOptions(selectedSetNumber) {
+        let options = '';
+        for (let setNumber = 1; setNumber <= blackJackSetCount; setNumber += 1) {
+            const selected = setNumber === selectedSetNumber ? 'selected' : '';
+            options += `<option value="${setNumber}" ${selected}>Set ${setNumber}</option>`;
+        }
+        return options;
+    }
+
+    function buildBlackJackQuestionSets() {
+        const questionSets = Array.from({ length: Math.max(1, blackJackSetCount) }, () => []);
+        Array.from(blackJackSelectedIds).forEach(questionId => {
+            const assignedSet = normalizeBlackJackSetNumber(blackJackQuestionSetAssignments.get(questionId) || 1);
+            blackJackQuestionSetAssignments.set(questionId, assignedSet);
+            questionSets[assignedSet - 1].push(questionId);
+        });
+        return questionSets.filter(questionSet => questionSet.length > 0);
+    }
+
+    function syncBlackJackSetSizes() {
+        if (!customQuizSetSizesInput) return;
+        customQuizSetSizesInput.value = buildBlackJackQuestionSets()
+            .map(questionSet => questionSet.length)
+            .join(',');
+    }
+
+    function renderBlackJackSetSummary() {
+        if (!blackjackSetSummary) return;
+
+        let markup = '';
+        const questionSets = buildBlackJackQuestionSets();
+
+        for (let setNumber = 1; setNumber <= Math.max(1, blackJackSetCount); setNumber += 1) {
+            const questionSet = questionSets[setNumber - 1] || [];
+            const questionsMarkup = questionSet.length
+                ? `<ul>${questionSet.map(questionId => {
+                    const question = blackJackQuestionMeta.get(questionId);
+                    const questionLabel = question && question.question_text ? question.question_text : `Question #${questionId}`;
+                    return `<li>${questionLabel}</li>`;
+                }).join('')}</ul>`
+                : '<div class="blackjack-set-empty">No questions assigned yet.</div>';
+            const removeButton = blackJackSetCount > 1
+                ? `<button type="button" class="btn btn-outline-danger btn-sm remove-blackjack-set-btn" data-set-number="${setNumber}">Remove</button>`
+                : '';
+
+            markup += `
+                <div class="blackjack-set-card">
+                    <div class="d-flex justify-content-between align-items-start gap-2">
+                        <div>
+                            <h6>Set ${setNumber}</h6>
+                            <div class="text-muted small">${questionSet.length} question${questionSet.length === 1 ? '' : 's'}</div>
+                        </div>
+                        ${removeButton}
+                    </div>
+                    ${questionsMarkup}
+                </div>
+            `;
+        }
+
+        blackjackSetSummary.innerHTML = markup;
+    }
+
+    function refreshBlackJackSetSelects() {
+        document.querySelectorAll('.question-set-select').forEach(select => {
+            const questionId = parseInt(select.getAttribute('data-question-id'), 10);
+            const assignedSet = normalizeBlackJackSetNumber(blackJackQuestionSetAssignments.get(questionId) || 1);
+            select.innerHTML = getBlackJackSetOptions(assignedSet);
+            select.value = String(assignedSet);
+            select.disabled = !blackJackSelectedIds.has(questionId);
+        });
+    }
+
+    function syncBlackJackSetBuilder() {
+        syncBlackJackSetSizes();
+        renderBlackJackSetSummary();
+        refreshBlackJackSetSelects();
+        lucide.createIcons();
+    }
+
+    function resetBlackJackSetBuilder() {
+        blackJackSetCount = 1;
+        blackJackQuestionSetAssignments = new Map();
+        blackJackQuestionMeta = new Map();
+        syncBlackJackSetBuilder();
+    }
+
+    function assignBlackJackQuestionToSet(questionId, setNumber) {
+        blackJackQuestionSetAssignments.set(questionId, normalizeBlackJackSetNumber(setNumber));
+    }
+
+    function setBlackJackQuestionSelection(questionId, isSelected) {
+        if (isSelected) {
+            blackJackSelectedIds.add(questionId);
+            if (!blackJackQuestionSetAssignments.has(questionId)) {
+                assignBlackJackQuestionToSet(questionId, 1);
+            }
+        } else {
+            blackJackSelectedIds.delete(questionId);
+            blackJackQuestionSetAssignments.delete(questionId);
+        }
+        syncBlackJackSetBuilder();
+    }
+
+    function loadBlackJackQuestionSets(questionSets, fallbackQuestionIds) {
+        blackJackSetCount = 1;
+        blackJackQuestionSetAssignments = new Map();
+
+        if (Array.isArray(questionSets) && questionSets.length) {
+            blackJackSetCount = Math.max(1, questionSets.length);
+            questionSets.forEach((questionSet, setIndex) => {
+                (Array.isArray(questionSet) ? questionSet : []).forEach(rawQuestionId => {
+                    const questionId = parseInt(rawQuestionId, 10);
+                    if (!Number.isFinite(questionId)) return;
+                    blackJackSelectedIds.add(questionId);
+                    assignBlackJackQuestionToSet(questionId, setIndex + 1);
+                });
+            });
+        } else {
+            const fallbackIds = Array.isArray(fallbackQuestionIds) ? fallbackQuestionIds : [];
+            fallbackIds.forEach(rawQuestionId => {
+                const questionId = parseInt(rawQuestionId, 10);
+                if (!Number.isFinite(questionId)) return;
+                blackJackSelectedIds.add(questionId);
+                assignBlackJackQuestionToSet(questionId, 1);
+            });
+        }
+
+        syncBlackJackSetBuilder();
+    }
+
+    function removeBlackJackSet(setNumber) {
+        const normalizedSetNumber = normalizeBlackJackSetNumber(setNumber);
+        if (blackJackSetCount <= 1) return;
+
+        Array.from(blackJackSelectedIds).forEach(questionId => {
+            const currentSet = normalizeBlackJackSetNumber(blackJackQuestionSetAssignments.get(questionId) || 1);
+            if (currentSet === normalizedSetNumber) {
+                blackJackQuestionSetAssignments.set(questionId, Math.max(1, normalizedSetNumber - 1));
+            } else if (currentSet > normalizedSetNumber) {
+                blackJackQuestionSetAssignments.set(questionId, currentSet - 1);
+            }
+        });
+
+        blackJackSetCount = Math.max(1, blackJackSetCount - 1);
+        syncBlackJackSetBuilder();
+    }
+
+    // Reset form when modal is closed
+    document.getElementById('editQuestionModal').addEventListener('hidden.bs.modal', () => setFormMode('add'));
+
+    // Load bank questions on page load
+    loadBankQuestions(1);
+
+    // Auto-open edit modal if ?edit=ID in URL
+    const autoEditId = new URLSearchParams(window.location.search).get('edit');
+    if (autoEditId) openEditById(autoEditId);
+
+    function loadBankQuestions(page) {
+        fetch('{% url "admin_dashboard:get_black_jack_questions" %}?page=' + page, {
+            method: 'GET',
+            headers: { 'X-CSRFToken': getCookie('csrftoken') },
+        })
+        .then(response => response.json())
+        .then(data => {
+            questionsTableBody.innerHTML = '';
+            questionCount.textContent = `Showing ${data.count} questions`;
+            if (questionCountBadge) questionCountBadge.textContent = data.count;
+
+            data.questions.forEach(question => {
+                const row = document.createElement('tr');
+                row.style.cursor = 'pointer';
+                row.innerHTML = `
+                    <td>${question.question_text}</td>
+                    <td>${question.correct_answer}</td>
+                    <td>${question.time_limit}</td>
+                    <td>${question.created_at}</td>
+
+                    <td onclick="event.stopPropagation()">
+                        <button class="btn btn-sm btn-outline-primary edit-question-btn" data-question-id="${question.id}">
+                            <i data-lucide="edit-2"></i> Edit
+                        </button>
+                        <button class="btn btn-sm btn-danger delete-question-btn" data-question-id="${question.id}">
+                            <i data-lucide="trash-2"></i> Delete
+                        </button>
+                    </td>
+                `;
+                row.addEventListener('click', () => {
+                    row.querySelector('.edit-question-btn').click();
+                });
+                questionsTableBody.appendChild(row);
+            });
+            lucide.createIcons();
+
+            pagination.innerHTML = '';
+            for (let i = 1; i <= data.pages; i++) {
+                const pageItem = document.createElement('li');
+                pageItem.className = `page-item ${i === page ? 'active' : ''}`;
+                pageItem.innerHTML = `<button class="page-link">${i}</button>`;
+                pageItem.addEventListener('click', () => loadBankQuestions(i));
+                pagination.appendChild(pageItem);
+            }
+        })
+        .catch(error => {
+            console.error('Error:', error);
+            alert('Error loading questions. Please try again.');
+        });
+    }
+
+    function openEditById(qid) {
+        fetch(`{% url 'admin_dashboard:get_blackjack_question_detail' 0 %}`.replace('/0/', `/${qid}/`), {
+            method: 'GET',
+            headers: { 'X-CSRFToken': getCookie('csrftoken') },
+        })
+        .then(r => r.json())
+        .then(({success, question, error}) => {
+            if (!success) throw new Error(error || 'Failed to load question.');
+
+            document.getElementById('questionId').value = question.id;
+            document.getElementById('questionText').value = question.question_text;
+            document.getElementById('correctAnswer').value = question.correct_answer;
+            document.getElementById('timeLimit').value = question.time_limit;
+            document.getElementById('explanation').value = question.explanation || '';
+
+            setFormMode('edit');
+            lucide.createIcons();
+
+            new bootstrap.Modal(document.getElementById('editQuestionModal')).show();
+        })
+        .catch(err => {
+            console.error(err);
+            showNotification(err.message || 'Failed to load question.', 'danger');
+        });
+    }
+
+    // Edit button handler (inline)
+    questionsTableBody.addEventListener('click', function(e) {
+        const btn = e.target.closest('.edit-question-btn');
+        if (!btn) return;
+        openEditById(btn.getAttribute('data-question-id'));
+    });
+
+    // Delete button handler — open confirm modal
+    questionsTableBody.addEventListener('click', function(e) {
+        const btn = e.target.closest('.delete-question-btn');
+        if (!btn) return;
+        const questionId = btn.getAttribute('data-question-id');
+        document.getElementById('deleteQuestionModal').dataset.questionId = questionId;
+        const modal = new bootstrap.Modal(document.getElementById('deleteQuestionModal'));
+        modal.show();
+    });
+
+    // Confirm delete
+    document.getElementById('confirmDeleteBtn').addEventListener('click', function() {
+        const questionId = document.getElementById('deleteQuestionModal').dataset.questionId;
+        fetch('{% url "admin_dashboard:delete_blackjack_question" %}', {
+            method: 'POST',
+            headers: {
+                'X-CSRFToken': getCookie('csrftoken'),
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ question_id: questionId })
+        })
+        .then(response => response.json())
+        .then(data => {
+            bootstrap.Modal.getInstance(document.getElementById('deleteQuestionModal')).hide();
+            if (data.success) {
+                showNotification('Question deleted successfully!', 'success');
+                loadBankQuestions(1);
+            } else {
+                alert('Error deleting question: ' + (data.error || 'Unknown error'));
+            }
+        })
+        .catch(error => {
+            console.error('Error:', error);
+            alert('Error deleting question. Please try again.');
+        });
+    });
+
+    // Form submit (add/update)
+    document.getElementById('addQuestionForm').addEventListener('submit', function(e) {
+        e.preventDefault();
+
+        const submitBtn = document.getElementById('submitQuestionBtn');
+        submitBtn.classList.add('loading');
+
+        const isEdit = submitBtn.dataset.mode === 'edit';
+        const payload = {
+            question_text: document.getElementById('questionText').value.trim(),
+            correct_answer: document.getElementById('correctAnswer').value,
+            time_limit: document.getElementById('timeLimit').value,
+            explanation: document.getElementById('explanation').value.trim(),
+        };
+        if (isEdit) payload.question_id = document.getElementById('questionId').value;
+
+        if (!payload.question_text || !payload.correct_answer) {
+            alert('Please fill in the question text and correct answer.');
+            submitBtn.classList.remove('loading');
+            return;
+        }
+
+        const postUrl = isEdit
+            ? '{% url "admin_dashboard:update_blackjack_question" %}'
+            : '{% url "admin_dashboard:add_blackjack_question" %}';
+
+        fetch(postUrl, {
+            method: 'POST',
+            headers: {
+                'X-CSRFToken': getCookie('csrftoken'),
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify(payload)
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                showNotification(isEdit ? 'Question updated successfully!' : (data.message || 'Question added successfully!'), 'success');
+                bootstrap.Modal.getInstance(document.getElementById('editQuestionModal'))?.hide();
+                loadBankQuestions(1);
+            } else {
+                alert('Error saving question: ' + (data.error || 'Unknown error'));
+            }
+        })
+        .catch(error => {
+            console.error('Error:', error);
+            alert('Error saving question. Please try again.');
+        })
+        .finally(() => {
+            submitBtn.classList.remove('loading');
+        });
+    });
+
+    // Show questions for a specific quiz -> open Custom Quiz modal in edit mode
+    document.body.addEventListener('click', function(e) {
+        const btn = e.target.closest('.show-quiz-questions-btn');
+        if (!btn) return;
+        const quizId = parseInt(btn.getAttribute('data-quiz-id'));
+        const quizTitle = btn.getAttribute('data-quiz-title') || 'Quiz';
+        if (!quizId) return;
+
+        fetch(`{% url 'admin_dashboard:get_blackjack_selected_questions' 0 %}`.replace('/0/', `/${quizId}/`), {
+            method: 'GET',
+            headers: { 'X-CSRFToken': getCookie('csrftoken') },
+        })
+        .then(r => r.json())
+        .then(data => {
+            if (!data.success) { alert('Failed to load quiz details'); return; }
+            blackJackEditMode = true;
+            blackJackCurrentQuizId = quizId;
+            blackJackSelectedIds = new Set((data.questions || []).map(q => q.id));
+            blackJackQuestionMeta = new Map();
+            (data.questions || []).forEach(rememberBlackJackQuestionMeta);
+
+            document.getElementById('createCustomQuizModalLabel').innerHTML = '<i data-lucide="layers"></i> Edit Quiz';
+            const titleInput = document.getElementById('customQuizTitle');
+            if (titleInput) titleInput.value = quizTitle;
+            const totalQuestionsInput = document.getElementById('customQuizTotalQuestions');
+            if (totalQuestionsInput) totalQuestionsInput.value = data.total_questions || 5;
+            const setSizesInput = document.getElementById('customQuizSetSizes');
+            if (setSizesInput) setSizesInput.value = data.set_sizes || '';
+            const scoringModeInput = document.getElementById('customQuizScoringMode');
+            if (scoringModeInput) scoringModeInput.value = data.scoring_mode === 'rank' ? 'rank' : 'simple';
+            const btnPrimary = document.getElementById('createCustomQuizBtn');
+            if (btnPrimary) btnPrimary.innerHTML = '<i data-lucide="check"></i> Update Quiz';
+            loadBlackJackQuestionSets(data.question_sets || [], (data.questions || []).map(question => question.id));
+
+            const modal = new bootstrap.Modal(document.getElementById('createCustomQuizModal'));
+            modal.show();
+            loadCustomQuestions(1);
+            lucide.createIcons();
+        })
+        .catch(err => { console.error(err); alert('Error loading quiz details.'); });
+    });
+
+    // Delete quiz handler
+    document.body.addEventListener('click', function(e) {
+        const btn = e.target.closest('.delete-quiz-btn');
+        if (!btn) return;
+        const quizId = btn.getAttribute('data-quiz-id');
+        if (!quizId) return;
+        if (!confirm('Delete this quiz? This will not delete its questions.')) return;
+        btn.classList.add('loading');
+        fetch("{% url 'admin_dashboard:delete_blackjack_quiz' %}", {
+            method: 'POST',
+            headers: {
+                'X-CSRFToken': getCookie('csrftoken'),
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ quiz_id: parseInt(quizId) })
+        })
+        .then(r => r.json())
+        .then(data => {
+            if (data && data.success) {
+                const row = document.querySelector(`tr[data-quiz-row="${quizId}"]`);
+                if (row) row.remove();
+                showNotification('Quiz deleted', 'success');
+            } else {
+                alert('Failed to delete quiz: ' + (data && data.error ? data.error : 'Unknown error'));
+            }
+        })
+        .catch(err => { console.error(err); alert('Error deleting quiz.'); })
+        .finally(() => btn.classList.remove('loading'));
+    });
+
+    // Custom Quiz Modal bindings
+    const createCustomQuizModal = document.getElementById('createCustomQuizModal');
+    const selectAllQuestions = document.getElementById('selectAllQuestions');
+    const createCustomQuizBtn = document.getElementById('createCustomQuizBtn');
+
+    if (createCustomQuizModal) {
+        createCustomQuizModal.addEventListener('shown.bs.modal', function() {
+            if (!blackJackEditMode) {
+                blackJackSelectedIds = new Set();
+                resetBlackJackSetBuilder();
+                loadCustomQuestions(1);
+            }
+        });
+        createCustomQuizModal.addEventListener('hidden.bs.modal', function() {
+            blackJackEditMode = false;
+            blackJackSelectedIds = new Set();
+            blackJackCurrentQuizId = null;
+            document.getElementById('createCustomQuizModalLabel').innerHTML = '<i data-lucide="layers"></i> Create Custom Quiz';
+            const btnPrimary = document.getElementById('createCustomQuizBtn');
+            if (btnPrimary) btnPrimary.innerHTML = '<i data-lucide="check"></i> Create Quiz';
+            const titleInput = document.getElementById('customQuizTitle');
+            if (titleInput) titleInput.value = 'Custom Quiz';
+            const totalQuestionsInput = document.getElementById('customQuizTotalQuestions');
+            if (totalQuestionsInput) totalQuestionsInput.value = '5';
+            const setSizesInput = document.getElementById('customQuizSetSizes');
+            if (setSizesInput) setSizesInput.value = '';
+            const scoringModeInput = document.getElementById('customQuizScoringMode');
+            if (scoringModeInput) scoringModeInput.value = 'simple';
+            resetBlackJackSetBuilder();
+        });
+    }
+
+    function loadCustomQuestions(page) {
+        fetch('{% url "admin_dashboard:get_black_jack_questions" %}?page=' + page, {
+            method: 'GET',
+            headers: { 'X-CSRFToken': getCookie('csrftoken') },
+        })
+        .then(response => response.json())
+        .then(data => {
+            const body = document.getElementById('customQuestionsTableBody');
+            const pager = document.getElementById('customPagination');
+            const count = document.getElementById('customQuestionCount');
+            body.innerHTML = '';
+            count.textContent = `Showing ${data.count} questions`;
+            data.questions.forEach(q => {
+                rememberBlackJackQuestionMeta(q);
+                const tr = document.createElement('tr');
+                const checked = blackJackSelectedIds.has(q.id) ? 'checked' : '';
+                const assignedSet = normalizeBlackJackSetNumber(blackJackQuestionSetAssignments.get(q.id) || 1);
+                const setSelectDisabled = checked ? '' : 'disabled';
+                tr.innerHTML = `
+                    <td><input type="checkbox" value="${q.id}" ${checked}></td>
+                    <td>${q.question_text}</td>
+                    <td>
+                        <select class="form-select form-select-sm question-set-select" data-question-id="${q.id}" ${setSelectDisabled}>
+                            ${getBlackJackSetOptions(assignedSet)}
+                        </select>
+                    </td>
+                    <td>${q.correct_answer}</td>
+                    <td>${q.time_limit}</td>
+                    <td>${q.created_at}</td>
+                `;
+                body.appendChild(tr);
+            });
+            pager.innerHTML = '';
+            for (let i = 1; i <= data.pages; i++) {
+                const li = document.createElement('li');
+                li.className = 'page-item ' + (i === data.current_page ? 'active' : '');
+                li.innerHTML = `<button class="page-link" data-page="${i}">${i}</button>`;
+                pager.appendChild(li);
+            }
+            pager.onclick = function(e) {
+                if (e.target.classList.contains('page-link')) {
+                    loadCustomQuestions(parseInt(e.target.dataset.page));
+                }
+            };
+            syncBlackJackSetBuilder();
+        })
+        .catch(err => { console.error(err); alert('Error loading questions. Please try again.'); });
+    }
+
+    selectAllQuestions.addEventListener('change', function() {
+        const checkboxes = document.querySelectorAll('#customQuestionsTableBody input[type="checkbox"]');
+        checkboxes.forEach(checkbox => {
+            checkbox.checked = this.checked;
+            const questionId = parseInt(checkbox.value, 10);
+            setBlackJackQuestionSelection(questionId, this.checked);
+        });
+    });
+
+    createCustomQuizBtn.addEventListener('click', function() {
+        const title = document.getElementById('customQuizTitle').value.trim() || 'Custom Quiz';
+        const totalQuestions = Math.max(1, parseInt(document.getElementById('customQuizTotalQuestions').value, 10) || 5);
+        const questionSets = buildBlackJackQuestionSets();
+        const selected = questionSets.flat();
+        const setSizes = questionSets.map(questionSet => questionSet.length).join(',');
+        const scoringMode = document.getElementById('customQuizScoringMode').value === 'rank' ? 'rank' : 'simple';
+        const btn = this;
+        btn.classList.add('loading');
+        if (blackJackEditMode) {
+            fetch("{% url 'admin_dashboard:update_black_jack_custom_quiz' %}", {
+                method: 'POST',
+                headers: {
+                    'X-CSRFToken': getCookie('csrftoken'),
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ quiz_id: blackJackCurrentQuizId, title: title, question_ids: selected, question_sets: questionSets, total_questions: totalQuestions, set_sizes: setSizes, scoring_mode: scoringMode })
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) {
+                    bootstrap.Modal.getInstance(createCustomQuizModal).hide();
+                    window.location.reload();
+                } else {
+                    alert('Error updating quiz: ' + (data.error || 'Unknown error'));
+                }
+            })
+            .catch(err => { console.error(err); alert('Error updating quiz. Please try again.'); })
+            .finally(() => btn.classList.remove('loading'));
+        } else {
+            fetch("{% url 'admin_dashboard:create_black_jack_custom_quiz' %}", {
+                method: 'POST',
+                headers: {
+                    'X-CSRFToken': getCookie('csrftoken'),
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ title: title, question_ids: selected, question_sets: questionSets, total_questions: totalQuestions, set_sizes: setSizes, scoring_mode: scoringMode })
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) {
+                    bootstrap.Modal.getInstance(createCustomQuizModal).hide();
+                    window.location.reload();
+                } else {
+                    alert('Error creating quiz: ' + (data.error || 'Unknown error'));
+                }
+            })
+            .catch(err => { console.error(err); alert('Error creating quiz. Please try again.'); })
+            .finally(() => btn.classList.remove('loading'));
+        }
+    });
+
+    document.getElementById('customQuestionsTableBody').addEventListener('change', function(e) {
+        if (e.target && e.target.type === 'checkbox') {
+            const id = parseInt(e.target.value, 10);
+            setBlackJackQuestionSelection(id, e.target.checked);
+        }
+
+        if (e.target && e.target.classList.contains('question-set-select')) {
+            const questionId = parseInt(e.target.getAttribute('data-question-id'), 10);
+            assignBlackJackQuestionToSet(questionId, e.target.value);
+            syncBlackJackSetBuilder();
+        }
+    });
+
+    addBlackjackSetBtn?.addEventListener('click', function() {
+        blackJackSetCount += 1;
+        syncBlackJackSetBuilder();
+    });
+
+    blackjackSetSummary?.addEventListener('click', function(e) {
+        const button = e.target.closest('.remove-blackjack-set-btn');
+        if (!button) return;
+        removeBlackJackSet(parseInt(button.getAttribute('data-set-number'), 10));
+    });
+
+    // Auto-open create modal if ?create=1
+    if (new URLSearchParams(window.location.search).get('create') === '1') {
+        const modal = new bootstrap.Modal(document.getElementById('createCustomQuizModal'));
+        modal.show();
+    }
+
+    // ── Bundle logic ──────────────────────────────────────────────
+    let bundleQPage = 1;
+    const bundleModal = document.getElementById('createBundleModal');
+    function loadBundleQuestions(page) {
+        fetch('{% url "admin_dashboard:get_black_jack_questions" %}?page=' + page, { headers: { 'X-CSRFToken': getCookie('csrftoken') } })
+        .then(r => r.json()).then(data => {
+            const tbody = document.getElementById('bundleQuestionsTableBody');
+            tbody.innerHTML = '';
+            (data.questions || []).forEach(q => {
+                const tr = document.createElement('tr');
+                tr.innerHTML = `<td><input type="checkbox" class="bundle-q-check" value="${q.id}"></td><td>${q.question_text}</td><td>${q.correct_answer}</td>`;
+                tbody.appendChild(tr);
+            });
+            document.getElementById('bundleQuestionCount').textContent = `${data.count} Fragen`;
+            const pag = document.getElementById('bundleQuestionPagination');
+            pag.innerHTML = '';
+            for (let i = 1; i <= data.pages; i++) {
+                const li = document.createElement('li');
+                li.className = 'page-item' + (i === page ? ' active' : '');
+                li.innerHTML = `<button class="page-link" data-page="${i}">${i}</button>`;
+                pag.appendChild(li);
+            }
+        });
+    }
+    bundleModal?.addEventListener('shown.bs.modal', () => { bundleQPage = 1; loadBundleQuestions(1); });
+    document.getElementById('bundleQuestionPagination')?.addEventListener('click', e => {
+        if (e.target.classList.contains('page-link')) { bundleQPage = parseInt(e.target.dataset.page); loadBundleQuestions(bundleQPage); }
+    });
+    document.getElementById('selectAllBundleQuestions')?.addEventListener('change', function() {
+        document.querySelectorAll('.bundle-q-check').forEach(cb => cb.checked = this.checked);
+    });
+    document.getElementById('saveBundleBtn')?.addEventListener('click', function() {
+        const name = document.getElementById('bundleName').value.trim();
+        if (!name) { alert('Bitte einen Bundle-Namen angeben.'); return; }
+        const questionIds = Array.from(document.querySelectorAll('.bundle-q-check:checked')).map(cb => parseInt(cb.value));
+        if (!questionIds.length) { alert('Bitte mindestens eine Frage auswählen.'); return; }
+        fetch('{% url "admin_dashboard:create_blackjack_bundle" %}', {
+            method: 'POST',
+            headers: { 'X-CSRFToken': getCookie('csrftoken'), 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name, question_ids: questionIds })
+        }).then(r => r.json()).then(data => {
+            if (data.success) {
+                bootstrap.Modal.getInstance(bundleModal).hide();
+                document.getElementById('bundleName').value = '';
+                const tbody = document.getElementById('bundleTableBody');
+                const emptyRow = document.getElementById('bundleEmptyRow');
+                if (emptyRow) emptyRow.remove();
+                const tr = document.createElement('tr');
+                tr.id = `bundle-row-${data.bundle.id}`;
+                tr.innerHTML = `<td class="fw-semibold">${data.bundle.name}</td><td>${data.bundle.question_count} Fragen</td><td class="text-muted small">Heute</td><td><button class="btn btn-sm btn-outline-danger delete-bundle-btn" data-bundle-id="${data.bundle.id}" data-bundle-name="${data.bundle.name}"><i data-lucide="trash-2"></i></button></td>`;
+                tbody.appendChild(tr);
+                document.getElementById('bundleCountBadge').textContent = parseInt(document.getElementById('bundleCountBadge').textContent) + 1;
+                lucide.createIcons();
+            }
+        });
+    });
+    document.getElementById('bundleTableBody')?.addEventListener('click', function(e) {
+        const btn = e.target.closest('.delete-bundle-btn');
+        if (!btn) return;
+        if (!confirm(`Bundle "${btn.dataset.bundleName}" löschen?`)) return;
+        fetch('{% url "admin_dashboard:delete_blackjack_bundle" %}', {
+            method: 'POST',
+            headers: { 'X-CSRFToken': getCookie('csrftoken'), 'Content-Type': 'application/json' },
+            body: JSON.stringify({ bundle_id: parseInt(btn.dataset.bundleId) })
+        }).then(r => r.json()).then(data => {
+            if (data.success) {
+                document.getElementById(`bundle-row-${btn.dataset.bundleId}`)?.remove();
+                document.getElementById('bundleCountBadge').textContent = Math.max(0, parseInt(document.getElementById('bundleCountBadge').textContent) - 1);
+            }
+        });
+    });
+});
+</script>
+{% endblock %}

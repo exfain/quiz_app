@@ -1,0 +1,57 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.pyc
+*.pyd
+*.pyo
+*.egg-info/
+.pytest_cache/
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+dist/
+wheels/
+*.egg
+
+# Environments
+.env
+.venv
+env/
+venv/
+myenv/
+*.lock
+
+# Editors
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# Testing
+.coverage
+.tox/
+htmlcov/
+
+# Django stuff
+*.log
+*.pot
+*.mo
+*.orig
+db.sqlite3 # WICHTIG: Deine lokale Datenbank, nicht in Git pushen!
+db.sqlite3.*  # Backups & Snapshots
+media/      # Wenn du ein media-Verzeichnis für Benutzer-Uploads hast
+static/     # Wenn du ein gesammeltes statisches Verzeichnis hast
+
+# Security
+*.secret # Wenn du eine Datei für deinen SECRET_KEY hast
+# If your SECRET_KEY is in settings.py and pulled from an env var, this is less critical.
+# But if you hardcoded it, this file would ignore it.
+# Generally, keep SECRET_KEY out of Git.
+quiz_project/settings.py
+
+# Channels stuff
+# if you use local file based channel layers (less common)
+# channel_layer_storage/

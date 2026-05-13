@@ -1,0 +1,2327 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Who is That Quiz: {{ quiz.room_code }} - QuizMaster</title>
+    
+    <!-- Bootstrap 5 CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
+    
+    <!-- Custom Theme CSS -->
+    <link rel="stylesheet" href="{% static 'theme.css' %}">
+    
+    <!-- Inter Font -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body class="who-that-play-page">
+    <div class="play-container">
+        <!-- Header -->
+        <header class="quiz-header">
+            <div class="container">
+                <div class="header-content">
+                    <div class="quiz-info">
+                        <!-- <div class="room-code">
+                            <i data-lucide="hash"></i>
+                            {{ quiz.room_code }}
+                        </div> -->
+                        <h1 class="quiz-title">{{ quiz.title }}</h1>
+                    </div>
+                    <div class="participant-info">
+                        <div class="participant-avatar">
+                            {{ participant.name|first|upper }}
+                        </div>
+                        <div class="participant-details">
+                            <span class="participant-name">{{ participant.name }}</span>
+                            <!-- <span class="participant-score">{{ participant.total_score }} pts</span> -->
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </header>
+
+        <!-- Main Content -->
+        <main class="quiz-main">
+            <div class="container">
+                <div class="row justify-content-center">
+                    <div class="col-xl-10">
+                        <div class="who-that-play-layout">
+                            <div class="who-that-main-column">
+                        <!-- Waiting State -->
+                        <div id="waitingQuizState" class="game-state {% if quiz.status != 'waiting' %}d-none{% endif %}">
+                            <div class="waiting-card">
+                                <div class="waiting-animation">
+                                    <div class="pulse-ring"></div>
+                                    <div class="pulse-ring delay-1"></div>
+                                    <div class="pulse-ring delay-2"></div>
+                                    <i data-lucide="camera"></i>
+                                </div>
+                                <h2>Waiting for Photo Quiz to Start</h2>
+                                <p>Get ready to identify famous people! The quiz host will start the session shortly.</p>
+                                <div class="participants-count">
+                                    <i data-lucide="users"></i>
+                                    <span id="waitingParticipantCount">{{ participant_count }}</span> participants joined
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Question State -->
+                        <div id="questionState" class="game-state {% if not quiz.current_question %}d-none{% endif %}">
+                            <div class="question-card">
+                                <!-- Question Header -->
+                                <div class="question-header">
+                                    <div class="question-number">
+                                        Question <span id="currentQuestionNumber">1</span>
+                                    </div>
+                                        <div class="question-timer">
+                                            <div class="timer-circle" id="playerTimerCircle">
+                                            <span id="playerTimeLeft">{{ current_question_time_left|default_if_none:30 }}</span>
+                                            </div>
+                                        </div>
+                                </div>
+
+                                <!-- Question Content -->
+                                <div class="question-content">
+                                    <div class="question-text" id="questionText">
+                                        {% if quiz.current_question %}
+                                            {% if quiz.current_question.question_text != "Who is this person?" %}
+                                                {{ quiz.current_question.question_text }}
+                                            {% endif %}
+                                        {% endif %}
+                                    </div>
+
+                                    <!-- Photo Display -->
+                                    <div class="photo-display" id="photoDisplay">
+                                        {% if quiz.current_question and quiz.current_question.image %}
+                                            <img src="{{ quiz.current_question.image.url }}" alt="Question image" class="question-photo" id="questionPhoto">
+                                        {% else %}
+                                            <div class="no-photo-placeholder">
+                                                <i data-lucide="image"></i>
+                                                <span>No photo available</span>
+                                            </div>
+                                        {% endif %}
+                                    </div>
+
+                                    <!-- Category & Hint Display -->
+                                    <div class="question-meta" id="questionMeta" style="display: none;">
+                                        <div class="category-display" id="categoryDisplay" style="display: none;">
+                                            <div class="category-icon">
+                                                <i data-lucide="tag"></i>
+                                            </div>
+                                            <div class="category-text" id="categoryText"></div>
+                                        </div>
+                                        
+                                        <div class="hint-display" id="hintDisplay" style="display: none;">
+                                            <div class="hint-icon">
+                                                <i data-lucide="lightbulb"></i>
+                                            </div>
+                                            <div class="hint-text" id="hintText"></div>
+                                        </div>
+                                    </div>
+
+                                    <!-- Answer Input Interface -->
+                                    <div class="answer-interface" id="answerInterface">
+                                        <div class="answer-input-container">
+                                            <div class="input-container">
+                                                <input type="text" 
+                                                       class="form-control name-input" 
+                                                       id="nameInput" 
+                                                       placeholder="Type the person's name..." 
+                                                       autocomplete="off"
+                                                       spellcheck="false">
+                                                <div class="input-icon">
+                                                    <i data-lucide="user"></i>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <!-- Submit Button -->
+                                    <button class="btn btn-primary btn-lg w-100 submit-answer" id="submitAnswerBtn" disabled>
+                                        <i data-lucide="send"></i>
+                                        Einloggen
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Answer Submitted State -->
+                        <div id="answerSubmittedState" class="game-state d-none">
+                            <div class="submitted-card">
+                                    <div class="question-timer submitted-timer">
+                                        <div class="timer-circle" id="playerTimerCircleSubmitted">
+                                        <span id="playerTimeLeftSubmitted">{{ current_question_time_left|default_if_none:30 }}</span>
+                                        </div>
+                                    </div>
+                                <div class="submitted-animation">
+                                    <div class="check-animation">
+                                        <i data-lucide="check-circle" class="check-icon"></i>
+                                    </div>
+                                </div>
+                                <h2>Answer Submitted!</h2>
+                                <p>Waiting for the other participants before the answer is revealed.</p>
+                                <div class="photo-display reveal-photo-display" id="submittedPhotoDisplay">
+                                    {% if quiz.current_question and quiz.current_question.image %}
+                                        <img src="{{ quiz.current_question.image.url }}" alt="Submitted question image" class="question-photo">
+                                    {% else %}
+                                        <div class="no-photo-placeholder">
+                                            <i data-lucide="image"></i>
+                                            <span>No photo available</span>
+                                        </div>
+                                    {% endif %}
+                                </div>
+                                <div class="submitted-details">
+                                    <div class="answer-summary">
+                                        <div class="summary-item">
+                                            <span class="summary-label">Your Answer:</span>
+                                            <span class="summary-value" id="submittedAnswer">{% if current_participant_answer %}{{ current_participant_answer.user_answer }}{% else %}-{% endif %}</span>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Show Correct Answer State -->
+                        <div id="correctAnswerState" class="game-state d-none">
+                            <div class="correct-answer-card">
+                                <div class="answer-reveal">
+                                    <div class="reveal-icon">
+                                        <i data-lucide="eye"></i>
+                                    </div>
+                                    <h2>Correct Answer Revealed!</h2>
+                                    <div class="photo-display reveal-photo-display" id="correctAnswerPhotoDisplay">
+                                        <div class="no-photo-placeholder">
+                                            <i data-lucide="image"></i>
+                                            <span>No photo available</span>
+                                        </div>
+                                    </div>
+                                    <div class="answer-display">
+                                        <span class="answer-value" id="correctAnswerDisplay">-</span>
+                                    </div>
+                                    <div class="alternative-answers" id="alternativeAnswersDisplay" style="display: none;">
+                                        <span class="alt-label">Also accepts:</span>
+                                        <span class="alt-answers" id="altAnswersList">-</span>
+                                    </div>
+                                </div>
+                                
+                                <div class="comparison-display">
+                                    <div class="comparison-item">
+                                        <div class="comparison-label">Your Answer</div>
+                                        <div class="user-answer-display">
+                                            <span class="answer-result-icon incorrect" id="answerResultIcon" aria-hidden="true">
+                                                <i data-lucide="x"></i>
+                                            </span>
+                                            <div class="comparison-value user-answer incorrect" id="userAnswerDisplay">-</div>
+                                        </div>
+                                    </div>
+                                    <div class="comparison-vs">VS</div>
+                                    <div class="comparison-item">
+                                        <div class="comparison-label">Correct Answer</div>
+                                        <div class="comparison-value correct-answer" id="correctAnswerComparison">-</div>
+                                    </div>
+                                </div>
+                                
+                                <div class="performance-summary">
+                                    <div class="performance-badge" id="performanceBadge">
+                                        <span class="performance-text">Good Try!</span>
+                                    </div>
+                                    <div class="explanation-text" id="explanationText" style="display: none;"></div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Quiz Ended State -->
+                        <div id="quizEndedState" class="game-state d-none">
+                            <div class="ended-card">
+                                <div class="ended-animation">
+                                    <i data-lucide="trophy" class="trophy-icon"></i>
+                                </div>
+                                <h2>Photo Quiz Completed!</h2>
+                                <p>Great job identifying all those people!</p>
+                                <div class="final-score">
+                                    <div class="score-circle">
+                                        <span class="score-value">{{ participant.total_score }}</span>
+                                        <span class="score-label">points</span>
+                                    </div>
+                                </div>
+                                <!-- <div class="quiz-actions">
+                                    <a href="/who-is-that/result/{{ quiz.room_code }}/{{ participant.name }}/" class="btn btn-primary btn-lg">
+                                        <i data-lucide="bar-chart-3"></i>
+                                        View Detailed Results
+                                    </a>
+                                    <a href="/who-is-that/join/" class="btn btn-outline btn-lg">
+                                        <i data-lucide="play"></i>
+                                        Join Another Quiz
+                                    </a>
+                                </div> -->
+                            </div>
+                        </div>
+
+                        <!-- Connection Status -->
+                        <div id="connectionStatus" class="connection-status d-none">
+                            <div class="status-indicator">
+                                <i data-lucide="wifi-off"></i>
+                                <span>Reconnecting...</span>
+                            </div>
+                        </div>
+                            </div>
+
+                            <aside class="who-that-status-box score-box" id="whoThatQuestionStatusBox">
+                                <h6 class="mb-2 score-box__title">Punkte</h6>
+                                <div id="whoThatQuestionStatusList" class="who-that-status-list score-box__list">
+                                    {% for question in question_status_board %}
+                                        <div class="who-that-status-row score-box__row {% if question.is_current %}is-current{% elif question.result %}is-played{% else %}is-upcoming{% endif %}" data-question-number="{{ question.number }}" {% if question.id %}data-question-id="{{ question.id }}"{% endif %}>
+                                            <div class="who-that-status-badge score-box__badge">{{ question.number }}</div>
+                                            <div class="who-that-status-main">
+                                                {% if question.result %}
+                                                    <span class="who-that-status-answer-text">{{ question.solution_text }}</span>
+                                                {% else %}
+                                                    <span class="who-that-status-answer-text who-that-status-empty-label score-box__empty">________________</span>
+                                                {% endif %}
+                                                {% if question.result == 'correct' %}
+                                                    <span class="who-that-status-mark is-correct" aria-label="Korrekt">
+                                                        <i data-lucide="check"></i>
+                                                    </span>
+                                                {% elif question.result == 'incorrect' %}
+                                                    <span class="who-that-status-mark is-incorrect" aria-label="Falsch">
+                                                        <i data-lucide="x"></i>
+                                                    </span>
+                                                {% else %}
+                                                    <span class="who-that-status-empty" aria-hidden="true"></span>
+                                                {% endif %}
+                                            </div>
+                                        </div>
+                                    {% empty %}
+                                        <div class="text-muted small">Noch keine Fragen verfügbar.</div>
+                                    {% endfor %}
+                                </div>
+                                <div class="score-history-total" id="whoThatQuestionStatusTotal">0/0 Punkte</div>
+                            </aside>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    {{ question_status_board|json_script:"whoThatQuestionStatusData" }}
+
+    <!-- Bootstrap JS -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+
+    <style>
+        .who-that-play-layout {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) 220px;
+            gap: 1.5rem;
+            align-items: start;
+        }
+
+        .who-that-main-column {
+            min-width: 0;
+        }
+
+        .who-that-status-box {
+            position: sticky;
+            top: 110px;
+            background: var(--bg-primary);
+            border: 1px solid var(--border-color);
+            border-radius: var(--border-radius-lg);
+            box-shadow: var(--shadow-md);
+            padding: 0.75rem;
+        }
+
+        .who-that-status-list {
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+        }
+
+        .who-that-status-row {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+        }
+
+        .who-that-status-row.is-upcoming {
+            border-color: #d1d5db;
+            background: #f3f4f6;
+        }
+
+        .who-that-status-row.is-current {
+            border-color: #86efac;
+            background: #f0fdf4;
+        }
+
+        .who-that-status-row.is-played {
+            border-color: #bfdbfe;
+            background: #eff6ff;
+        }
+
+        .who-that-status-row.is-current .who-that-status-badge {
+            color: #ffffff;
+            background: #22c55e;
+        }
+
+        .who-that-status-row.is-played .who-that-status-badge {
+            color: #ffffff;
+            background: #3b82f6;
+        }
+
+        .who-that-status-main {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 0.75rem;
+            min-width: 0;
+            flex: 1;
+        }
+
+        .who-that-status-answer-text {
+            min-width: 0;
+            color: var(--text-primary);
+            font-size: 0.875rem;
+            font-weight: 500;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .who-that-status-empty-label {
+            letter-spacing: 0.08em;
+        }
+
+        .who-that-status-mark {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+        }
+
+        .who-that-status-mark i {
+            width: 18px;
+            height: 18px;
+        }
+
+        .who-that-status-mark.is-correct {
+            color: var(--color-success);
+        }
+
+        .who-that-status-mark.is-incorrect {
+            color: var(--color-error);
+        }
+
+        .who-that-status-empty {
+            width: 18px;
+            height: 18px;
+            display: inline-block;
+            border-radius: 50%;
+            background: #d1d5db;
+            opacity: 0.55;
+            flex-shrink: 0;
+        }
+
+        .score-history-total {
+            margin-top: 0.75rem;
+            padding-top: 0.75rem;
+            border-top: 1px solid var(--border-color);
+            font-weight: 700;
+            color: var(--text-primary);
+            text-align: right;
+        }
+
+        /* Who is That Play Page Styles */
+        .who-that-play-page {
+            min-height: 100vh;
+            background: linear-gradient(135deg, var(--bg-secondary) 0%, var(--primary-50) 100%);
+        }
+
+        .play-container {
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        /* Header */
+        .quiz-header {
+            background: var(--bg-primary);
+            border-bottom: 1px solid var(--border-color);
+            box-shadow: var(--shadow-sm);
+            padding: 1rem 0;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }
+
+        .header-content {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 1rem;
+        }
+
+        .quiz-info {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+        }
+
+        .room-code {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            background-color: var(--primary-100);
+            color: var(--primary-700);
+            padding: 0.5rem 1rem;
+            border-radius: var(--border-radius-xl);
+            font-family: var(--font-family-mono);
+            font-weight: 700;
+            font-size: 0.875rem;
+        }
+
+        .room-code i {
+            width: 16px;
+            height: 16px;
+        }
+
+        .quiz-title {
+            font-size: 1.5rem;
+            font-weight: 700;
+            color: var(--text-primary);
+            margin: 0;
+        }
+
+        .participant-info {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+        }
+
+        .participant-avatar {
+            width: 48px;
+            height: 48px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, var(--primary-500) 0%, var(--primary-600) 100%);
+            color: var(--text-white);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 700;
+            font-size: 1.25rem;
+        }
+
+        .participant-details {
+            display: flex;
+            flex-direction: column;
+        }
+
+        .participant-name {
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+
+        .participant-score {
+            color: var(--color-success);
+            font-size: 0.875rem;
+            font-weight: 500;
+        }
+
+        /* Main Content */
+        .quiz-main {
+            flex: 1;
+            display: flex;
+            align-items: center;
+            padding: 2rem 0;
+        }
+
+        .game-state {
+            animation: fadeIn 0.5s ease-out;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(20px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        /* Waiting State */
+        .waiting-card {
+            text-align: center;
+            padding: 3rem 2rem;
+            background: var(--bg-primary);
+            border-radius: var(--border-radius-xl);
+            box-shadow: var(--shadow-lg);
+        }
+
+        .waiting-animation {
+            position: relative;
+            width: 120px;
+            height: 120px;
+            margin: 0 auto 2rem;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .pulse-ring {
+            position: absolute;
+            width: 100%;
+            height: 100%;
+            border: 2px solid var(--color-primary);
+            border-radius: 50%;
+            animation: pulse 2s cubic-bezier(0.455, 0.03, 0.515, 0.955) infinite;
+            opacity: 0;
+        }
+
+        .delay-1 { animation-delay: 0.5s; }
+        .delay-2 { animation-delay: 1s; }
+
+        @keyframes pulse {
+            0% { transform: scale(0.8); opacity: 1; }
+            100% { transform: scale(1.4); opacity: 0; }
+        }
+
+        .waiting-animation i {
+            width: 48px;
+            height: 48px;
+            color: var(--color-primary);
+            z-index: 2;
+        }
+
+        .waiting-card h2 {
+            font-size: 1.75rem;
+            font-weight: 700;
+            color: var(--text-primary);
+            margin-bottom: 1rem;
+        }
+
+        .waiting-card p {
+            color: var(--text-secondary);
+            font-size: 1.125rem;
+            margin-bottom: 2rem;
+        }
+
+        .participants-count {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            background-color: var(--bg-secondary);
+            padding: 0.75rem 1.5rem;
+            border-radius: var(--border-radius-xl);
+            color: var(--text-primary);
+            font-weight: 600;
+        }
+
+        .participants-count i {
+            width: 20px;
+            height: 20px;
+            color: var(--color-primary);
+        }
+
+        /* Question State */
+        .question-card {
+            background: var(--bg-primary);
+            border-radius: var(--border-radius-xl);
+            box-shadow: var(--shadow-lg);
+            overflow: hidden;
+        }
+
+        .question-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 1.5rem 2rem;
+            background: linear-gradient(135deg, var(--primary-50) 0%, var(--secondary-50) 100%);
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .question-number {
+            font-size: 1.125rem;
+            font-weight: 700;
+            color: var(--text-primary);
+        }
+
+        .timer-circle {
+            width: 60px;
+            height: 60px;
+            border: 4px solid var(--success-300);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 700;
+            color: var(--success-600);
+            background: var(--bg-primary);
+            position: relative;
+        }
+
+        .timer-circle.warning {
+            border-color: var(--warning-300);
+            color: var(--warning-600);
+        }
+
+        .timer-circle.danger {
+            border-color: var(--error-300);
+            color: var(--error-600);
+            animation: shake 0.5s infinite;
+        }
+
+        @keyframes shake {
+            0%, 100% { transform: translateX(0); }
+            25% { transform: translateX(-2px); }
+            75% { transform: translateX(2px); }
+        }
+
+        .question-content {
+            padding: 2rem;
+        }
+
+        .question-text {
+            font-size: 1.375rem;
+            font-weight: 600;
+            color: var(--text-primary);
+            line-height: 1.6;
+            margin-bottom: 2rem;
+            text-align: center;
+        }
+
+        /* Photo Display */
+        .photo-display {
+            text-align: center;
+            margin-bottom: 2rem;
+        }
+
+        .question-photo {
+            max-width: 100%;
+            max-height: 300px;
+            border-radius: var(--border-radius-lg);
+            box-shadow: var(--shadow-lg);
+            border: 2px solid var(--border-color);
+            object-fit: cover;
+        }
+
+        .no-photo-placeholder {
+            width: 200px;
+            height: 200px;
+            margin: 0 auto;
+            background-color: var(--bg-secondary);
+            border: 2px solid var(--border-color);
+            border-radius: var(--border-radius-lg);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            color: var(--text-muted);
+        }
+
+        .no-photo-placeholder i {
+            width: 64px;
+            height: 64px;
+            margin-bottom: 0.5rem;
+        }
+
+        /* Question Meta */
+        .question-meta {
+            display: flex;
+            justify-content: center;
+            gap: 2rem;
+            margin-bottom: 2rem;
+            flex-wrap: wrap;
+        }
+
+        .category-display, .hint-display {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: var(--border-radius-lg);
+            padding: 0.75rem 1rem;
+        }
+
+        .category-display {
+            border-left: 4px solid var(--color-secondary);
+        }
+
+        .hint-display {
+            border-left: 4px solid var(--color-warning);
+        }
+
+        .category-icon, .hint-icon {
+            width: 20px;
+            height: 20px;
+            flex-shrink: 0;
+        }
+
+        .category-icon {
+            color: var(--color-secondary);
+        }
+
+        .hint-icon {
+            color: var(--color-warning);
+        }
+
+        .category-text, .hint-text {
+            color: var(--text-primary);
+            font-weight: 500;
+        }
+
+        /* Answer Interface */
+        .answer-interface {
+            margin-bottom: 2rem;
+        }
+
+        .answer-input-container {
+            max-width: 400px;
+            margin: 0 auto;
+        }
+
+        .answer-label {
+            display: block;
+            font-size: 1.125rem;
+            font-weight: 600;
+            color: var(--text-primary);
+            margin-bottom: 1rem;
+            text-align: center;
+        }
+
+        .input-container {
+            position: relative;
+            display: flex;
+            align-items: center;
+        }
+
+        .name-input {
+            height: 70px;
+            font-size: 1.25rem;
+            font-weight: 500;
+            text-align: center;
+            border: 3px solid var(--border-color);
+            border-radius: var(--border-radius-lg);
+            transition: all var(--transition-fast);
+            flex: 1;
+            padding-right: 60px;
+        }
+
+        .name-input:focus {
+            border-color: var(--color-primary);
+            box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.1);
+            outline: none;
+        }
+
+        .input-icon {
+            position: absolute;
+            right: 20px;
+            color: var(--text-muted);
+            pointer-events: none;
+        }
+
+        .input-icon i {
+            width: 24px;
+            height: 24px;
+        }
+
+        .input-help {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.5rem;
+            margin-top: 0.75rem;
+            color: var(--text-muted);
+            font-size: 0.875rem;
+        }
+
+        .input-help i {
+            width: 16px;
+            height: 16px;
+        }
+
+        /* Submit Button */
+        .submit-answer {
+            height: 60px;
+            font-size: 1.125rem;
+            font-weight: 600;
+            transition: all var(--transition-fast);
+        }
+
+        .submit-answer:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .submit-answer.loading {
+            position: relative;
+            color: transparent !important;
+        }
+
+        .submit-answer.loading::after {
+            content: '';
+            position: absolute;
+            width: 20px;
+            height: 20px;
+            top: 50%;
+            left: 50%;
+            margin-left: -10px;
+            margin-top: -10px;
+            border: 2px solid transparent;
+            border-top-color: currentColor;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        /* Submitted State */
+        .submitted-card {
+            text-align: center;
+            padding: 3rem 2rem;
+            background: var(--bg-primary);
+            border-radius: var(--border-radius-xl);
+            box-shadow: var(--shadow-lg);
+            position: relative;
+        }
+
+        .submitted-timer {
+            position: absolute;
+            top: 1.5rem;
+            right: 1.5rem;
+        }
+
+        .submitted-animation {
+            margin-bottom: 2rem;
+        }
+
+        .check-animation {
+            width: 120px;
+            height: 120px;
+            margin: 0 auto;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .check-icon {
+            width: 64px;
+            height: 64px;
+            color: var(--color-success);
+            animation: checkPop 0.6s ease-out;
+        }
+
+        @keyframes checkPop {
+            0% { transform: scale(0); }
+            50% { transform: scale(1.2); }
+            100% { transform: scale(1); }
+        }
+
+        .submitted-details {
+            background-color: var(--bg-secondary);
+            padding: 1.5rem;
+            border-radius: var(--border-radius-lg);
+            margin-top: 2rem;
+        }
+
+        .answer-summary {
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+        }
+
+        .summary-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .summary-label {
+            color: var(--text-secondary);
+            font-weight: 500;
+        }
+
+        .summary-value {
+            color: var(--text-primary);
+            font-weight: 700;
+        }
+
+        .summary-value.result.correct {
+            color: var(--color-success);
+        }
+
+        .summary-value.result.incorrect {
+            color: var(--color-error);
+        }
+
+        .summary-value.points {
+            color: var(--color-success);
+        }
+
+        .summary-value.quality {
+            color: var(--color-primary);
+        }
+
+        /* Correct Answer State */
+        .correct-answer-card {
+            background: var(--bg-primary);
+            border-radius: var(--border-radius-xl);
+            box-shadow: var(--shadow-lg);
+            padding: 2rem;
+            text-align: center;
+        }
+
+        .answer-reveal {
+            margin-bottom: 2rem;
+        }
+
+        .reveal-icon {
+            width: 80px;
+            height: 80px;
+            margin: 0 auto 1rem;
+            background: linear-gradient(135deg, var(--primary-500) 0%, var(--primary-600) 100%);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            animation: bounce 1s ease-out;
+        }
+
+        .reveal-icon i {
+            width: 40px;
+            height: 40px;
+            color: var(--text-white);
+        }
+
+        @keyframes bounce {
+            0% { transform: scale(0); }
+            50% { transform: scale(1.1); }
+            100% { transform: scale(1); }
+        }
+
+        .answer-display {
+            margin: 1.5rem 0;
+        }
+
+        .reveal-photo-display {
+            margin: 1.5rem auto 0;
+            max-width: 420px;
+        }
+
+        .reveal-photo-display .question-photo {
+            max-height: 360px;
+            width: 100%;
+            object-fit: cover;
+            border-radius: var(--border-radius-lg);
+            box-shadow: var(--shadow-md);
+        }
+
+        .answer-value {
+            font-size: 2.5rem;
+            font-weight: 700;
+            color: var(--color-success);
+        }
+
+        .alternative-answers {
+            margin-top: 1rem;
+            padding: 1rem;
+            background: var(--success-50);
+            border-radius: var(--border-radius);
+            border: 1px solid var(--success-200);
+        }
+
+        .alt-label {
+            color: var(--success-700);
+            font-weight: 600;
+            margin-right: 0.5rem;
+        }
+
+        .alt-answers {
+            color: var(--success-600);
+            font-style: italic;
+        }
+
+        .comparison-display {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin: 2rem 0;
+            padding: 1.5rem;
+            background: var(--bg-secondary);
+            border-radius: var(--border-radius-lg);
+        }
+
+        .comparison-item {
+            flex: 1;
+            text-align: center;
+        }
+
+        .comparison-label {
+            font-size: 0.875rem;
+            color: var(--text-muted);
+            margin-bottom: 0.5rem;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .comparison-value {
+            font-size: 1.5rem;
+            font-weight: 700;
+        }
+
+        .comparison-value.user-answer {
+            color: var(--color-primary);
+        }
+
+        .comparison-value.user-answer.correct {
+            color: var(--color-success);
+        }
+
+        .comparison-value.user-answer.incorrect {
+            color: var(--color-error);
+        }
+
+        .comparison-value.correct-answer {
+            color: var(--color-success);
+        }
+
+        .user-answer-display {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.75rem;
+            flex-wrap: wrap;
+        }
+
+        .answer-result-icon {
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .answer-result-icon i {
+            width: 20px;
+            height: 20px;
+        }
+
+        .answer-result-icon.correct {
+            background: var(--success-100);
+            color: var(--success-700);
+        }
+
+        .answer-result-icon.incorrect {
+            background: var(--error-100);
+            color: var(--error-700);
+        }
+
+        .comparison-vs {
+            font-size: 1rem;
+            font-weight: 700;
+            color: var(--text-muted);
+            margin: 0 1rem;
+        }
+
+        .performance-summary {
+            margin-top: 2rem;
+        }
+
+        .performance-badge {
+            display: inline-block;
+            padding: 0.75rem 1.5rem;
+            border-radius: var(--border-radius-xl);
+            font-weight: 600;
+            margin-bottom: 1rem;
+        }
+
+        .performance-badge.correct {
+            background: var(--success-100);
+            color: var(--success-700);
+        }
+
+        .performance-badge.partial {
+            background: var(--primary-100);
+            color: var(--primary-700);
+        }
+
+        .performance-badge.incorrect {
+            background: var(--error-100);
+            color: var(--error-700);
+        }
+
+        .explanation-text {
+            color: var(--text-secondary);
+            font-style: italic;
+            line-height: 1.6;
+        }
+
+        /* Quiz Ended State */
+        .ended-card {
+            text-align: center;
+            padding: 3rem 2rem;
+            background: var(--bg-primary);
+            border-radius: var(--border-radius-xl);
+            box-shadow: var(--shadow-lg);
+        }
+
+        .ended-animation {
+            margin-bottom: 2rem;
+        }
+
+        .trophy-icon {
+            width: 80px;
+            height: 80px;
+            color: var(--warning-500);
+            animation: trophy 1s ease-out;
+        }
+
+        @keyframes trophy {
+            0% { transform: scale(0) rotate(-180deg); opacity: 0; }
+            50% { transform: scale(1.1) rotate(-10deg); opacity: 1; }
+            100% { transform: scale(1) rotate(0deg); opacity: 1; }
+        }
+
+        .final-score {
+            margin: 2rem 0;
+        }
+
+        .score-circle {
+            width: 120px;
+            height: 120px;
+            margin: 0 auto;
+            border: 4px solid var(--color-success);
+            border-radius: 50%;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            background: linear-gradient(135deg, var(--success-50) 0%, var(--success-100) 100%);
+        }
+
+        .score-value {
+            font-size: 2rem;
+            font-weight: 700;
+            color: var(--success-700);
+        }
+
+        .score-label {
+            font-size: 0.875rem;
+            color: var(--success-600);
+            font-weight: 500;
+        }
+
+        .quiz-actions {
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+            max-width: 300px;
+            margin: 0 auto;
+        }
+
+        /* Connection Status */
+        .connection-status {
+            position: fixed;
+            bottom: 2rem;
+            right: 2rem;
+            z-index: 1000;
+        }
+
+        .status-indicator {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            background-color: var(--error-500);
+            color: var(--text-white);
+            padding: 0.75rem 1rem;
+            border-radius: var(--border-radius-xl);
+            box-shadow: var(--shadow-lg);
+            font-weight: 500;
+            animation: slideIn 0.3s ease-out;
+        }
+
+        .status-indicator i {
+            width: 20px;
+            height: 20px;
+        }
+
+        /* Responsive Design */
+        @media (max-width: 768px) {
+            .header-content {
+                flex-direction: column;
+                text-align: center;
+                gap: 1rem;
+            }
+
+            .quiz-title {
+                font-size: 1.25rem;
+            }
+
+            .question-header {
+                padding: 1rem 1.5rem;
+            }
+
+            .question-content {
+                padding: 1.5rem;
+            }
+
+            .question-text {
+                font-size: 1.25rem;
+            }
+
+            .question-photo {
+                max-height: 250px;
+            }
+
+            .quiz-actions {
+                max-width: 100%;
+            }
+
+            .waiting-card,
+            .submitted-card,
+            .ended-card,
+            .correct-answer-card {
+                padding: 2rem 1.5rem;
+                margin: 1rem;
+            }
+
+            .comparison-display {
+                flex-direction: column;
+                gap: 1rem;
+            }
+
+            .comparison-vs {
+                transform: rotate(90deg);
+                margin: 0;
+            }
+
+            .question-meta {
+                flex-direction: column;
+                align-items: center;
+                gap: 1rem;
+            }
+        }
+
+        @media (max-width: 576px) {
+            .quiz-main {
+                padding: 1rem 0;
+            }
+
+            .name-input {
+                font-size: 1.125rem;
+                height: 60px;
+            }
+
+            .timer-circle {
+                width: 50px;
+                height: 50px;
+                font-size: 0.875rem;
+            }
+        }
+
+        @media (max-width: 991px) {
+            .who-that-play-layout {
+                grid-template-columns: 1fr;
+            }
+
+            .who-that-status-box {
+                position: static;
+            }
+        }
+    </style>
+
+    {% include 'includes/_hub_return_to_lobby_player.html' %}
+    {% include 'includes/_game_tutorial_overlay.html' %}
+<script>
+        document.addEventListener('DOMContentLoaded', function() {
+            lucide.createIcons();
+
+            // Who is That Quiz Player Class
+            class WhoThatPlayer {
+                constructor() {
+                    this.roomCode = '{{ quiz.room_code }}';
+                    this.participantName = '{{ participant.name }}';
+                    this.participantId = {{ participant.id }};
+                    this.hubSession = '{{ hub_session }}';
+                    this.websocket = null;
+                    this.questionTimer = null;
+                    this.questionStartTime = null;
+                    this.questionEndTime = null;
+                    this.currentQuestionId = null;
+                    this.initialSubmittedState = {% if current_participant_answer %}{
+                        question_id: {{ current_participant_answer.question_id }},
+                        user_answer: '{{ current_participant_answer.user_answer|escapejs }}',
+                        is_correct: {{ current_participant_answer.is_correct|yesno:"true,false" }},
+                        points_earned: {{ current_participant_answer.points_earned|default:0 }},
+                        match_quality: '{{ current_participant_answer.get_match_quality|escapejs }}'
+                    }{% else %}null{% endif %};
+                    this.hasAnswered = Boolean(this.initialSubmittedState);
+                    this.lastSubmittedAnswer = this.initialSubmittedState ? this.initialSubmittedState.user_answer : '';
+                    this.lastAnswerEvaluation = this.initialSubmittedState ? {
+                        is_correct: Boolean(this.initialSubmittedState.is_correct),
+                        points_earned: this.initialSubmittedState.points_earned,
+                        match_quality: this.initialSubmittedState.match_quality || '-'
+                    } : null;
+                    this.lastCorrectAnswerData = null;
+                    this.currentQuestionPoints = 0;
+                    this.questionStatusBoard = this.readJsonScript('whoThatQuestionStatusData', []);
+                    this.currentQuestionNumber = this.getCurrentQuestionNumber();
+                    this.pendingAnswerSyncTimer = null;
+                    this.lastSyncedPendingAnswer = '';
+                    
+                    this.init();
+                }
+
+                init() {
+                    this.connectWebSocket();
+                    this.bindEvents();
+                    this.renderQuestionStatusBoard();
+                    
+                    // Start timer if there's an active question
+                    {% if quiz.current_question %}
+                        this.loadCurrentQuestion();
+                        this.startQuestionTimer({{ current_question_time_left|default_if_none:quiz.current_question.time_limit }}, {% if current_question_end_time %}'{{ current_question_end_time|date:"c" }}'{% else %}null{% endif %});
+                    {% endif %}
+                }
+
+                connectWebSocket() {
+                    const wsScheme = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+                    const wsUrl = `${wsScheme}//${window.location.host}/ws/who_that/${this.roomCode}/`;
+                    
+                    this.websocket = new WebSocket(wsUrl);
+                    
+                    this.websocket.onopen = () => {
+                        console.log('WebSocket connected');
+                        this.hideConnectionStatus();
+                        
+                        // Send join message
+                        this.websocket.send(JSON.stringify({
+                            type: 'participant_join',
+                            participant_name: this.participantName,
+                            hub_session: this.hubSession
+                        }));
+                    };
+                    
+                    this.websocket.onmessage = (event) => {
+                        const data = JSON.parse(event.data);
+                        this.handleWebSocketMessage(data);
+                    };
+                    
+                    this.websocket.onclose = () => {
+                        console.log('WebSocket disconnected');
+                        this.showConnectionStatus();
+                        // Attempt to reconnect after 3 seconds
+                        setTimeout(() => this.connectWebSocket(), 3000);
+                    };
+                    
+                    this.websocket.onerror = (error) => {
+                        console.error('WebSocket error:', error);
+                        this.showConnectionStatus();
+                    };
+                }
+
+                handleWebSocketMessage(data) {
+                    switch(data.type) {
+                        case 'quiz_started':
+                            this.onQuizStarted();
+                            break;
+
+                        case 'tutorial_start':
+                            window.gameTutorial?.showFromPayload(data);
+                            break;
+                            
+                        case 'question_started':
+                            window.gameTutorial?.forceClose();
+                            this.onQuestionStarted(data.question);
+                            break;
+                            
+                        case 'question_ended':
+                            this.onQuestionEnded(data);
+                            break;
+                            
+                        case 'quiz_ended':
+                            window.gameTutorial?.forceClose();
+                            this.onQuizEnded(data);
+                            break;
+                            
+                        case 'participant_count_updated':
+                            this.updateParticipantCount(data.count);
+                            break;
+
+                        case 'answer_submitted':
+                            this.onAnswerSubmitted(data);
+                            break;
+
+                        case 'answer_corrected':
+                            this.onAnswerCorrected(data);
+                            break;
+                            
+                        case 'show_leaderboard':
+                            window.showLeaderboard(this.hubSession);
+                            break;
+
+                        case 'hide_leaderboard':
+                            document.getElementById('leaderboardSidebar')?.classList.add('d-none');
+                            break;
+
+                        default:
+                            console.log('Unknown message type:', data.type);
+                    }
+                }
+
+                bindEvents() {
+                    // Submit answer button
+                    document.getElementById('submitAnswerBtn').addEventListener('click', () => {
+                        this.submitAnswer();
+                    });
+
+                    // Name input
+                    const nameInput = document.getElementById('nameInput');
+                    nameInput.addEventListener('input', () => {
+                        const hasValue = nameInput.value.trim() !== '';
+                        document.getElementById('submitAnswerBtn').disabled = !hasValue || this.hasAnswered;
+                        this.schedulePendingAnswerSync(nameInput.value);
+                    });
+
+                    // Allow Enter key to submit
+                    nameInput.addEventListener('keypress', (e) => {
+                        if (e.key === 'Enter' && !document.getElementById('submitAnswerBtn').disabled) {
+                            this.submitAnswer();
+                        }
+                    });
+                }
+
+                onQuizStarted() {
+                    this.showState('waitingQuizState');
+                }
+
+                onQuestionStarted(question) {
+                    const submittedState = this.getSubmittedStateForQuestion(question.id);
+                    this.hasAnswered = false;
+                    const nextQuestionNumber = Number(question.question_number);
+                    this.currentQuestionNumber = Number.isNaN(nextQuestionNumber) || nextQuestionNumber <= 0
+                        ? this.currentQuestionNumber + 1
+                        : nextQuestionNumber;
+                    this.questionEndTime = question.question_end_time ? new Date(question.question_end_time).getTime() : null;
+                    this.questionStartTime = this.questionEndTime
+                        ? this.questionEndTime - ((question.time_left || question.time_limit || 30) * 1000)
+                        : Date.now();
+                    
+                    this.loadQuestion(question, submittedState);
+                    this.startQuestionTimer(question.time_left || question.time_limit || 30, question.question_end_time || null);
+                    this.showState(submittedState ? 'answerSubmittedState' : 'questionState');
+                    
+                    if (!submittedState) {
+                        // Focus on input
+                        setTimeout(() => {
+                            document.getElementById('nameInput').focus();
+                        }, 500);
+                    }
+                }
+
+                onQuestionEnded(data) {
+                    clearInterval(this.questionTimer);
+                    this.questionEndTime = null;
+                    const endedQuestionNumber = this.currentQuestionNumber;
+                    const endedQuestionPoints = this.currentQuestionPoints;
+                    const evaluatedPendingAnswers = Array.isArray(data.evaluated_pending_answers) ? data.evaluated_pending_answers : [];
+                    const evaluatedPendingAnswer = evaluatedPendingAnswers.find((entry) => (
+                        entry.participant_name === this.participantName &&
+                        (entry.hub_session_code || '') === (this.hubSession || '')
+                    ));
+
+                    if (!this.hasAnswered && evaluatedPendingAnswer) {
+                        this.hasAnswered = true;
+                        this.onAnswerSubmitted(evaluatedPendingAnswer);
+                    }
+
+                    this.currentQuestionId = null;
+
+                    if (!this.lastAnswerEvaluation && endedQuestionNumber > 0) {
+                        this.setQuestionResult(endedQuestionNumber, false, null, endedQuestionPoints, 0);
+                    }
+
+                    if (data.correct_answer) {
+                        const isCorrect = Boolean(this.lastAnswerEvaluation && this.lastAnswerEvaluation.is_correct);
+                        const earnedPoints = this.lastAnswerEvaluation
+                            ? (parseInt(this.lastAnswerEvaluation.points_earned || 0, 10) || 0)
+                            : 0;
+                        this.setQuestionResult(
+                            endedQuestionNumber,
+                            isCorrect,
+                            data.correct_answer.correct_answer || '',
+                            endedQuestionPoints,
+                            earnedPoints,
+                        );
+                        this.showCorrectAnswer(data.correct_answer);
+                    }
+                }
+
+                onQuizEnded(data) {
+                    clearInterval(this.questionTimer);
+                    // If final scores are provided, update the displayed score for this participant
+                    try {
+                        if (data && Array.isArray(data.final_scores)) {
+                            const me = data.final_scores.find(p => p.name === this.participantName);
+                            if (me && typeof me.total_score === 'number') {
+                                const scoreEl = document.querySelector('#quizEndedState .score-value');
+                                if (scoreEl) scoreEl.textContent = me.total_score;
+                            }
+                        }
+                    } catch (e) { console.warn('Unable to update final score:', e); }
+                    this.showState('quizEndedState');
+                }
+
+                loadCurrentQuestion() {
+                    {% if quiz.current_question %}
+                    const question = {
+                        id: {{ quiz.current_question.id }},
+                        question_number: {{ current_question_number|default:0 }},
+                        question_text: '{{ quiz.current_question.question_text|escapejs }}',
+                        image_url: '{{ quiz.current_question.image.url|default:"" }}',
+                        points: 1,
+                        time_limit: {{ quiz.current_question.time_limit }},
+                        time_left: {{ current_question_time_left|default_if_none:quiz.current_question.time_limit }},
+                        question_end_time: {% if current_question_end_time %}'{{ current_question_end_time|date:"c" }}'{% else %}null{% endif %},
+                        hint_text: {% if quiz.current_question.hint_text %}'{{ quiz.current_question.hint_text|escapejs }}'{% else %}null{% endif %},
+                        category: {% if quiz.current_question.category %}'{{ quiz.current_question.category|escapejs }}'{% else %}null{% endif %}
+                    };
+                    const submittedState = this.getSubmittedStateForQuestion(question.id);
+                    this.questionEndTime = question.question_end_time ? new Date(question.question_end_time).getTime() : null;
+                    this.questionStartTime = this.questionEndTime
+                        ? this.questionEndTime - ((question.time_left || question.time_limit || 30) * 1000)
+                        : Date.now();
+                    this.loadQuestion(question, submittedState);
+                    if (submittedState) {
+                        this.showState('answerSubmittedState');
+                    }
+                    {% endif %}
+                }
+
+                loadQuestion(question, submittedState = null) {
+                    this.currentQuestionId = question.id;
+                    this.currentQuestionPoints = Number(question.points || 0) || 0;
+                    const questionNumber = Number(question.question_number);
+                    if (!Number.isNaN(questionNumber) && questionNumber > 0) {
+                        this.currentQuestionNumber = questionNumber;
+                        this.markQuestionAsCurrent(questionNumber, question.id);
+                    }
+                    this.updateCurrentQuestionNumberDisplay();
+                    document.getElementById('questionText').textContent = question.question_text === 'Who is this person?' ? '' : question.question_text;
+                    
+                    // Update photo
+                    const photoDisplay = document.getElementById('photoDisplay');
+                    if (question.image_url) {
+                        photoDisplay.innerHTML = `<img src="${question.image_url}" alt="Question image" class="question-photo" id="questionPhoto">`;
+                    } else {
+                        photoDisplay.innerHTML = `
+                            <div class="no-photo-placeholder">
+                                <i data-lucide="image"></i>
+                                <span>No photo available</span>
+                            </div>
+                        `;
+                        lucide.createIcons();
+                    }
+                    const submittedPhotoDisplay = document.getElementById('submittedPhotoDisplay');
+                    if (submittedPhotoDisplay) {
+                        if (question.image_url) {
+                            submittedPhotoDisplay.innerHTML = `<img src="${question.image_url}" alt="Submitted question image" class="question-photo">`;
+                        } else {
+                            submittedPhotoDisplay.innerHTML = `
+                                <div class="no-photo-placeholder">
+                                    <i data-lucide="image"></i>
+                                    <span>No photo available</span>
+                                </div>
+                            `;
+                            lucide.createIcons();
+                        }
+                    }
+                    
+                    // Show category if available
+                    const categoryDisplay = document.getElementById('categoryDisplay');
+                    const categoryText = document.getElementById('categoryText');
+                    const questionMeta = document.getElementById('questionMeta');
+                    
+                    if (question.category) {
+                        categoryText.textContent = question.category;
+                        categoryDisplay.style.display = 'flex';
+                        questionMeta.style.display = 'flex';
+                    } else {
+                        categoryDisplay.style.display = 'none';
+                    }
+                    
+                    // Show hint if available
+                    const hintDisplay = document.getElementById('hintDisplay');
+                    const hintText = document.getElementById('hintText');
+                    if (question.hint_text) {
+                        hintText.textContent = question.hint_text;
+                        hintDisplay.style.display = 'flex';
+                        questionMeta.style.display = 'flex';
+                    } else {
+                        hintDisplay.style.display = 'none';
+                    }
+                    
+                    // If no category or hint, hide meta section
+                    if (!question.category && !question.hint_text) {
+                        questionMeta.style.display = 'none';
+                    }
+                    
+                    // Reset input
+                    const nameInput = document.getElementById('nameInput');
+                    nameInput.value = submittedState?.user_answer || '';
+                    nameInput.disabled = !!submittedState;
+                    this.lastSubmittedAnswer = submittedState?.user_answer || '';
+                    this.lastAnswerEvaluation = submittedState ? {
+                        is_correct: Boolean(submittedState.is_correct),
+                        points_earned: submittedState.points_earned,
+                        match_quality: submittedState.match_quality || '-'
+                    } : null;
+                    this.lastCorrectAnswerData = null;
+                    this.lastSyncedPendingAnswer = '';
+                    
+                    // Reset submit button
+                    const submitBtn = document.getElementById('submitAnswerBtn');
+                    submitBtn.disabled = !!submittedState;
+                    submitBtn.classList.remove('loading');
+                    if (!submittedState) {
+                        this.hasAnswered = false;
+                    } else {
+                        this.hasAnswered = true;
+                        this.updateSubmittedAnswerState();
+                    }
+                }
+
+                startQuestionTimer(timeLimit, questionEndTime = null) {
+                    let timeLeft = questionEndTime
+                        ? Math.max(0, Math.ceil((new Date(questionEndTime).getTime() - Date.now()) / 1000))
+                        : timeLimit;
+                    const timerElement = document.getElementById('playerTimeLeft');
+                    const circleElement = document.getElementById('playerTimerCircle');
+                    const submittedTimerElement = document.getElementById('playerTimeLeftSubmitted');
+                    const submittedCircleElement = document.getElementById('playerTimerCircleSubmitted');
+                    
+                    // Initialize both timers
+                    timerElement.textContent = timeLeft;
+                    circleElement.className = 'timer-circle';
+                    if (submittedTimerElement && submittedCircleElement) {
+                        submittedTimerElement.textContent = timeLeft;
+                        submittedCircleElement.className = 'timer-circle';
+                    }
+                    
+                    this.questionTimer = setInterval(() => {
+                        timeLeft--;
+                        timerElement.textContent = timeLeft;
+                        if (submittedTimerElement) {
+                            submittedTimerElement.textContent = timeLeft;
+                        }
+                        
+                        // Update timer circle appearance
+                        circleElement.className = 'timer-circle';
+                        if (timeLeft <= 5) {
+                            circleElement.classList.add('danger');
+                            if (submittedCircleElement) submittedCircleElement.className = 'timer-circle danger';
+                        } else if (timeLeft <= 10) {
+                            circleElement.classList.add('warning');
+                            if (submittedCircleElement) submittedCircleElement.className = 'timer-circle warning';
+                        } else if (submittedCircleElement) {
+                            submittedCircleElement.className = 'timer-circle';
+                        }
+                        
+                        if (timeLeft <= 0) {
+                            clearInterval(this.questionTimer);
+                            this.onTimeUp();
+                        }
+                    }, 1000);
+                }
+
+                submitAnswer() {
+                    const nameInput = document.getElementById('nameInput');
+                    const userAnswer = nameInput.value.trim();
+                    
+                    if (!userAnswer || this.hasAnswered) return;
+                    
+                    const timeTaken = (Date.now() - this.questionStartTime) / 1000;
+                    
+                    // Disable interface
+                    nameInput.disabled = true;
+                    const submitBtn = document.getElementById('submitAnswerBtn');
+                    submitBtn.classList.add('loading');
+                    this.lastSubmittedAnswer = userAnswer;
+
+                    // Send answer via WebSocket
+                    this.websocket.send(JSON.stringify({
+                        type: 'participant_submit_answer',
+                        participant_name: this.participantName,
+                        hub_session: this.hubSession,
+                        question_id: this.currentQuestionId,
+                        user_answer: userAnswer,
+                        time_taken: timeTaken
+                    }));
+                    
+                    this.hasAnswered = true;
+                    
+                    // Show submitted state after a brief delay
+                    setTimeout(() => {
+                        this.showState('answerSubmittedState');
+                    }, 500);
+                }
+
+                onAnswerSubmitted(data) {
+                    this.lastSubmittedAnswer = (data.user_answer || document.getElementById('nameInput').value || '').trim();
+                    this.lastAnswerEvaluation = {
+                        is_correct: Boolean(data.is_correct),
+                        points_earned: data.points_earned,
+                        match_quality: data.match_quality || '-'
+                    };
+                    this.updateSubmittedAnswerState();
+                }
+
+                onAnswerCorrected(data) {
+                    if (Number(data.participant_id) !== Number(this.participantId)) {
+                        return;
+                    }
+
+                    const correctedEntry = this.getQuestionStatusEntryById(data.question_id);
+                    const correctedQuestionNumber = Number(correctedEntry?.number || 0) || this.currentQuestionNumber;
+                    const correctedMaxPoints = Number(
+                        correctedEntry?.max_points ?? this.currentQuestionPoints ?? data.points_earned ?? 0
+                    ) || 0;
+                    const correctedPoints = Number(data.points_earned || correctedMaxPoints || 0) || 0;
+
+                    const affectsCurrentDisplay = (
+                        Number(data.question_id) > 0 && Number(data.question_id) === Number(this.currentQuestionId)
+                    ) || (
+                        !this.currentQuestionId &&
+                        correctedQuestionNumber > 0 &&
+                        correctedQuestionNumber === this.currentQuestionNumber
+                    );
+                    if (affectsCurrentDisplay) {
+                        this.lastAnswerEvaluation = {
+                            is_correct: true,
+                            points_earned: correctedPoints,
+                            match_quality: data.match_quality || 'Manual override'
+                        };
+                        this.updateSubmittedAnswerState();
+
+                        if (
+                            this.lastCorrectAnswerData &&
+                            !document.getElementById('correctAnswerState').classList.contains('d-none')
+                        ) {
+                            this.setQuestionResult(
+                                correctedQuestionNumber,
+                                true,
+                                null,
+                                correctedMaxPoints,
+                                correctedPoints,
+                            );
+                            this.showCorrectAnswer(this.lastCorrectAnswerData);
+                        }
+                    } else {
+                        this.setQuestionResult(
+                            correctedQuestionNumber,
+                            true,
+                            null,
+                            correctedMaxPoints,
+                            correctedPoints,
+                        );
+                    }
+
+                    const finalScoreElement = document.querySelector('#quizEndedState .score-value');
+                    if (finalScoreElement && data.total_score !== undefined && data.total_score !== null) {
+                        finalScoreElement.textContent = data.total_score;
+                    }
+                }
+
+                updateSubmittedAnswerState() {
+                    document.getElementById('submittedAnswer').textContent = this.lastSubmittedAnswer || 'Keine Antwort';
+                }
+
+                getSubmittedStateForQuestion(questionId) {
+                    if (Number(questionId) <= 0) {
+                        return null;
+                    }
+
+                    if (
+                        this.hasAnswered &&
+                        Number(this.currentQuestionId) > 0 &&
+                        Number(this.currentQuestionId) === Number(questionId)
+                    ) {
+                        return {
+                            question_id: Number(questionId),
+                            user_answer: this.lastSubmittedAnswer || '',
+                            is_correct: Boolean(this.lastAnswerEvaluation && this.lastAnswerEvaluation.is_correct),
+                            points_earned: this.lastAnswerEvaluation ? this.lastAnswerEvaluation.points_earned : 0,
+                            match_quality: this.lastAnswerEvaluation ? this.lastAnswerEvaluation.match_quality : '-'
+                        };
+                    }
+
+                    if (
+                        this.initialSubmittedState &&
+                        Number(this.initialSubmittedState.question_id) === Number(questionId)
+                    ) {
+                        return {
+                            ...this.initialSubmittedState
+                        };
+                    }
+
+                    return null;
+                }
+
+                onTimeUp() {
+                    if (this.hasAnswered) return;
+                    
+                    const nameInput = document.getElementById('nameInput');
+                    const submitBtn = document.getElementById('submitAnswerBtn');
+                    if (nameInput.value.trim()) {
+                        this.lastSubmittedAnswer = nameInput.value.trim();
+                        this.syncPendingAnswer(nameInput.value);
+                    }
+                    nameInput.disabled = true;
+                    submitBtn.disabled = true;
+                }
+
+                schedulePendingAnswerSync(rawValue) {
+                    if (this.hasAnswered || !this.currentQuestionId) return;
+                    this.syncPendingAnswer(rawValue);
+                }
+
+                syncPendingAnswer(rawValue) {
+                    if (!this.websocket || this.websocket.readyState !== WebSocket.OPEN || this.hasAnswered || !this.currentQuestionId) {
+                        return;
+                    }
+                    const userAnswer = (rawValue || '').trim();
+                    if (userAnswer === this.lastSyncedPendingAnswer) {
+                        return;
+                    }
+                    this.lastSyncedPendingAnswer = userAnswer;
+                    this.websocket.send(JSON.stringify({
+                        type: 'participant_update_pending_answer',
+                        participant_name: this.participantName,
+                        hub_session: this.hubSession,
+                        question_id: this.currentQuestionId,
+                        user_answer: userAnswer
+                    }));
+                }
+
+                showCorrectAnswer(correctAnswerData) {
+                    this.lastCorrectAnswerData = correctAnswerData;
+                    const userAnswer = this.lastSubmittedAnswer || (document.getElementById('nameInput').value || '').trim();
+                    const isCorrect = Boolean(this.lastAnswerEvaluation && this.lastAnswerEvaluation.is_correct);
+                    const photoDisplay = document.getElementById('correctAnswerPhotoDisplay');
+
+                    if (correctAnswerData.image_url) {
+                        photoDisplay.innerHTML = `<img src="${correctAnswerData.image_url}" alt="Question image" class="question-photo">`;
+                    } else {
+                        photoDisplay.innerHTML = `
+                            <div class="no-photo-placeholder">
+                                <i data-lucide="image"></i>
+                                <span>No photo available</span>
+                            </div>
+                        `;
+                    }
+
+                    document.getElementById('correctAnswerDisplay').textContent = correctAnswerData.correct_answer;
+                    document.getElementById('userAnswerDisplay').textContent = userAnswer || 'Keine Antwort';
+                    document.getElementById('correctAnswerComparison').textContent = correctAnswerData.correct_answer;
+
+                    const resultIcon = document.getElementById('answerResultIcon');
+                    resultIcon.className = `answer-result-icon ${isCorrect ? 'correct' : 'incorrect'}`;
+                    resultIcon.innerHTML = `<i data-lucide="${isCorrect ? 'check' : 'x'}"></i>`;
+
+                    const userAnswerDisplay = document.getElementById('userAnswerDisplay');
+                    userAnswerDisplay.className = `comparison-value user-answer ${isCorrect ? 'correct' : 'incorrect'}`;
+                    
+                    // Show alternative answers if available
+                    if (correctAnswerData.alternative_answers && correctAnswerData.alternative_answers.length > 0) {
+                        document.getElementById('altAnswersList').textContent = correctAnswerData.alternative_answers.join(', ');
+                        document.getElementById('alternativeAnswersDisplay').style.display = 'block';
+                    } else {
+                        document.getElementById('altAnswersList').textContent = '';
+                        document.getElementById('alternativeAnswersDisplay').style.display = 'none';
+                    }
+                    
+                    // Show explanation if available
+                    if (correctAnswerData.explanation) {
+                        document.getElementById('explanationText').textContent = correctAnswerData.explanation;
+                        document.getElementById('explanationText').style.display = 'block';
+                    } else {
+                        document.getElementById('explanationText').textContent = '';
+                        document.getElementById('explanationText').style.display = 'none';
+                    }
+                    
+                    // Set performance badge based on result
+                    const performanceBadge = document.getElementById('performanceBadge');
+                    const performanceText = performanceBadge.querySelector('.performance-text');
+                    
+                    if (isCorrect) {
+                        const matchQuality = this.lastAnswerEvaluation ? this.lastAnswerEvaluation.match_quality : '';
+                        if (matchQuality === 'Perfect Match') {
+                            performanceBadge.className = 'performance-badge correct';
+                            performanceText.textContent = 'Perfect Match!';
+                        } else {
+                            performanceBadge.className = 'performance-badge partial';
+                            performanceText.textContent = 'Good Match!';
+                        }
+                    } else {
+                        performanceBadge.className = 'performance-badge incorrect';
+                        performanceText.textContent = 'Better Luck Next Time!';
+                    }
+                    
+                    lucide.createIcons();
+                    this.showState('correctAnswerState');
+                }
+
+                showState(stateId) {
+                    // Hide all states
+                    document.querySelectorAll('.game-state').forEach(state => {
+                        state.classList.add('d-none');
+                    });
+                    
+                    // Show target state
+                    const targetState = document.getElementById(stateId);
+                    if (targetState) {
+                        targetState.classList.remove('d-none');
+                    }
+                }
+
+                updateParticipantCount(count) {
+                    const countElement = document.getElementById('waitingParticipantCount');
+                    if (countElement) {
+                        countElement.textContent = count;
+                    }
+                }
+
+                showConnectionStatus() {
+                    document.getElementById('connectionStatus').classList.remove('d-none');
+                }
+
+                hideConnectionStatus() {
+                    document.getElementById('connectionStatus').classList.add('d-none');
+                }
+
+                readJsonScript(scriptId, fallback = null) {
+                    const element = document.getElementById(scriptId);
+                    if (!element) return fallback;
+                    try {
+                        return JSON.parse(element.textContent);
+                    } catch (error) {
+                        console.warn(`Failed to parse JSON script ${scriptId}`, error);
+                        return fallback;
+                    }
+                }
+
+                getCurrentQuestionNumber() {
+                    const currentEntry = (this.questionStatusBoard || []).find((entry) => entry?.is_current);
+                    return Number(currentEntry?.number) || 0;
+                }
+
+                getQuestionStatusEntryById(questionId) {
+                    const numericQuestionId = Number(questionId);
+                    if (!numericQuestionId) return null;
+                    return (this.questionStatusBoard || []).find((entry) => Number(entry?.id) === numericQuestionId) || null;
+                }
+
+                moveQuestionToNextFreeStatusSlot(questionId) {
+                    const numericQuestionId = Number(questionId);
+                    if (!numericQuestionId) return null;
+
+                    const board = Array.isArray(this.questionStatusBoard) ? [...this.questionStatusBoard] : [];
+                    const existingIndex = board.findIndex((entry) => Number(entry?.id) === numericQuestionId);
+                    const entry = existingIndex >= 0
+                        ? board.splice(existingIndex, 1)[0]
+                        : {
+                            number: 0,
+                            id: numericQuestionId,
+                            is_current: false,
+                            result: null,
+                            solution_text: '',
+                            earned_points: null,
+                            max_points: 0,
+                        };
+
+                    const playedCount = board.filter((question) => Boolean(question?.result)).length;
+                    board.splice(Math.min(playedCount, board.length), 0, entry);
+                    this.questionStatusBoard = board.map((question, index) => ({
+                        ...question,
+                        number: index + 1,
+                    }));
+                    return this.questionStatusBoard.find((question) => Number(question?.id) === numericQuestionId) || null;
+                }
+
+                ensureQuestionStatusEntry(questionNumber, questionId = null) {
+                    const numericQuestionNumber = Number(questionNumber);
+                    if (!numericQuestionNumber || numericQuestionNumber < 1) return null;
+
+                    let entry = (this.questionStatusBoard || []).find((row) => Number(row?.number) === numericQuestionNumber);
+                    if (!entry) {
+                        entry = {
+                            number: numericQuestionNumber,
+                            id: questionId,
+                            is_current: false,
+                            result: null,
+                            solution_text: '',
+                            earned_points: null,
+                            max_points: 0,
+                        };
+                        this.questionStatusBoard.push(entry);
+                        this.questionStatusBoard.sort((left, right) => Number(left?.number || 0) - Number(right?.number || 0));
+                    } else if (questionId && !entry.id) {
+                        entry.id = questionId;
+                    }
+                    return entry;
+                }
+
+                markQuestionAsCurrent(questionNumber, questionId = null) {
+                    (this.questionStatusBoard || []).forEach((entry) => {
+                        entry.is_current = false;
+                    });
+                    const entry = questionId
+                        ? this.moveQuestionToNextFreeStatusSlot(questionId)
+                        : this.ensureQuestionStatusEntry(questionNumber, questionId);
+                    if (entry) {
+                        entry.is_current = true;
+                        this.currentQuestionNumber = Number(entry.number) || Number(questionNumber) || this.currentQuestionNumber;
+                    }
+                    this.updateCurrentQuestionNumberDisplay();
+                    this.renderQuestionStatusBoard();
+                }
+
+                setQuestionResult(questionNumber, isCorrect, solutionText = null, maxPoints = null, earnedPoints = null) {
+                    const entry = this.ensureQuestionStatusEntry(questionNumber, this.currentQuestionId);
+                    if (!entry) return;
+                    const normalizedMaxPoints = Number(maxPoints ?? entry.max_points ?? 0) || 0;
+                    entry.result = isCorrect ? 'correct' : 'incorrect';
+                    entry.is_current = !!this.currentQuestionId;
+                    entry.max_points = normalizedMaxPoints;
+                    entry.earned_points = earnedPoints !== null && earnedPoints !== undefined
+                        ? (Number(earnedPoints) || 0)
+                        : (isCorrect ? normalizedMaxPoints : 0);
+                    if (solutionText) {
+                        entry.solution_text = solutionText;
+                    }
+                    this.renderQuestionStatusBoard();
+                }
+
+                updateCurrentQuestionNumberDisplay() {
+                    const questionNumberElement = document.getElementById('currentQuestionNumber');
+                    if (questionNumberElement) {
+                        questionNumberElement.textContent = this.currentQuestionNumber > 0 ? this.currentQuestionNumber : 1;
+                    }
+                }
+
+                renderQuestionStatusBoard() {
+                    const list = document.getElementById('whoThatQuestionStatusList');
+                    const totalEl = document.getElementById('whoThatQuestionStatusTotal');
+                    if (!list) return;
+
+                    if (!(this.questionStatusBoard || []).length) {
+                        list.innerHTML = '<div class="text-muted small">Noch keine Fragen verfügbar.</div>';
+                        if (totalEl) totalEl.textContent = '0/0 Punkte';
+                        return;
+                    }
+
+                    const playedEntries = (this.questionStatusBoard || []).filter((question) => Boolean(question?.result));
+                    const totalPoints = playedEntries.reduce((sum, question) => {
+                        return sum + (Number(question?.earned_points || 0) || 0);
+                    }, 0);
+                    const totalMaxPoints = playedEntries.reduce((sum, question) => {
+                        return sum + (Number(question?.max_points || 0) || 0);
+                    }, 0);
+
+                    list.innerHTML = '';
+                    this.questionStatusBoard.forEach((question) => {
+                        const row = document.createElement('div');
+                        const rowState = question?.is_current ? 'is-current' : question?.result ? 'is-played' : 'is-upcoming';
+                        row.className = `who-that-status-row score-box__row ${rowState}`;
+                        row.dataset.questionNumber = String(question?.number || '');
+                        if (question?.id !== undefined && question?.id !== null) {
+                            row.dataset.questionId = String(question.id);
+                        }
+
+                        let resultMarkup = '<span class="who-that-status-empty" aria-hidden="true"></span>';
+                        if (question?.result === 'correct') {
+                            resultMarkup = '<span class="who-that-status-mark is-correct" aria-label="Korrekt"><i data-lucide="check"></i></span>';
+                        } else if (question?.result === 'incorrect') {
+                            resultMarkup = '<span class="who-that-status-mark is-incorrect" aria-label="Falsch"><i data-lucide="x"></i></span>';
+                        }
+                        const answerMarkup = question?.result
+                            ? `<span class="who-that-status-answer-text">${this.escapeHtml(question.solution_text || '')}</span>`
+                            : '<span class="who-that-status-answer-text who-that-status-empty-label score-box__empty">________________</span>';
+
+                        row.innerHTML = `
+                            <div class="who-that-status-badge score-box__badge">${question?.number || ''}</div>
+                            <div class="who-that-status-main">
+                                ${answerMarkup}
+                                ${resultMarkup}
+                            </div>
+                        `;
+                        list.appendChild(row);
+                    });
+
+                    if (totalEl) {
+                        totalEl.textContent = `${totalPoints}/${totalMaxPoints} Punkte`;
+                    }
+                    lucide.createIcons();
+                }
+
+                escapeHtml(value) {
+                    const div = document.createElement('div');
+                    div.textContent = value || '';
+                    return div.innerHTML;
+                }
+            }
+
+            // Initialize Who is That Player
+            const player = new WhoThatPlayer();
+
+            const lobbyReturnController = createHubLobbyReturnController({
+                sessionCode: '{{ hub_session|default_if_none:"" }}',
+                gameKey: 'who_that',
+                roomCode: '{{ quiz.room_code }}',
+                participantName: '{{ participant.name|escapejs }}',
+                csrfToken: '{{ csrf_token }}',
+            });
+            
+            // Minimal Hub listener for centralized navigation
+            (function() {
+                let hubCode = null;
+                const configuredHubSessionCode = '{{ hub_session|default_if_none:"" }}';
+                try {
+                    hubCode = localStorage.getItem('hub_session_code') || '';
+                    console.log("[HubScript2] Retrieved hub_session_code from localStorage:", hubCode);
+                } catch (err) {
+                    console.error("[HubScript2] Error accessing localStorage:", err);
+                }
+
+                if (!hubCode) {
+                    hubCode = configuredHubSessionCode || new URLSearchParams(window.location.search).get('hub_session') || '';
+                    if (hubCode) {
+                        try { localStorage.setItem('hub_session_code', hubCode); } catch (_) {}
+                    }
+                }
+
+                if (!hubCode) {
+                    console.warn("[HubScript2] No hub_session_code found, exiting...");
+                    return;
+                }
+
+                const wsScheme = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+                const wsUrl = `${wsScheme}//${window.location.host}/ws/hub/${hubCode}/`;
+                console.log("[HubScript2] Connecting to WebSocket:", wsUrl);
+
+                const hubWS = new WebSocket(wsUrl);
+
+                hubWS.onopen = () => {
+                    console.log("[HubScript2] WebSocket connected successfully.");
+                };
+
+                hubWS.onmessage = (event) => {
+                    console.log("[HubScript2] Message received:", event.data);
+                    try {
+                        const data = JSON.parse(event.data);
+                        console.log("[HubScript2] Parsed data:", data);
+
+                        /*if (data.type === 'navigate' && data.step) {
+                            const step = data.step;
+                            console.log("[HubScript2] Navigation requested for:", step);
+
+                            const routes = {
+                                quiz: { join: '/quiz/join/', play: '/quiz/play/' },
+                                assign: { join: '/assign/join/', play: '/assign/play/' },
+                                estimation: { join: '/estimation/join/', play: '/estimation/play/' },
+                                where: { join: '/where/join/', play: '/where/play/' },
+                                who: { join: '/who/join/', play: '/who/play/' },
+                                who_that: { join: '/who-is-that/join/', play: '/who-is-that/play/' },
+                                blackjack: { join: '/blackjack/join/', play: '/blackjack/play/' },
+                            };
+
+                            const base = routes[step.game_key];
+                            console.log("[HubScript2] Base route:", base);
+
+                            if (base && step.room_code) {
+                                const u = new URL(base, window.location.origin);
+                                u.searchParams.set('room_code', step.room_code);
+                                u.searchParams.set('nickname', player.participantName);
+                                u.searchParams.set('hub_session', hubCode);
+
+                                const joinUrl = new URL(routes[step.game_key].join, window.location.origin);
+                                const playUrl = new URL(`${routes[step.game_key].play}${step.room_code}/${encodeURIComponent(player.participantName)}/`, window.location.origin);
+
+                                // Prepare join payload
+                                const csrfToken = "{{ csrf_token }}"; // or get dynamically if rendered server-side
+                                const body = JSON.stringify({
+                                room_code: step.room_code,
+                                participant_name: player.participantName,
+                                hub_session: hubCode,
+                                });
+
+                                // if (code) {
+                                //     try { localStorage.setItem('hub_session_code', code); } catch (_) {}
+                                // }
+
+                                try {
+                                    fetch(joinUrl.toString(), {
+                                        method: 'POST',
+                                        headers: {
+                                        'Content-Type': 'application/json',
+                                        'X-CSRFToken': csrfToken,
+                                        },
+                                        body: body,
+                                        credentials: 'same-origin',
+                                    })
+                                    .then(response => response.json())
+                                    .then(data => {
+                                        if (data.success) {
+                                        console.log('[HubScript2] Join successful, redirecting to play URL');
+                                        window.location.href = playUrl.toString();
+                                        } else {
+                                        console.error('[HubScript2] Join failed, falling back to play URL');
+                                        window.location.href = playUrl.toString();
+                                        }
+                                    })
+                                } catch (error) {
+                                console.error('[HubScript2] Error joining game:', error);
+                                window.location.href = playUrl.toString();
+                                }
+                            } else {
+                                console.warn("[HubScript2] Invalid navigation info:", step);
+                            }
+
+                        }*/
+                        if (data.type === 'players_recalled_to_lobby') {
+                            lobbyReturnController.returnToLobby({ markInactive: false });
+                        } else if (data.type === 'session_ended') {
+                            console.log("[HubScript2] Session ended message received.");
+                            const u = new URL(`/hub/lobby/${hubCode}/`, window.location.origin);
+                            u.searchParams.set('ended', '1');
+
+                            console.log("[HubScript2] Redirecting to lobby:", u.toString());
+                            window.location.href = u.toString();
+                        } else {
+                            console.log("[HubScript2] Unhandled message type:", data.type);
+                        }
+
+                    } catch (err) {
+                        console.error("[HubScript2] Failed to parse message:", event.data, err);
+                    }
+                };
+
+                hubWS.onerror = (err) => {
+                    console.error("[HubScript2] WebSocket error:", err);
+                };
+
+                hubWS.onclose = (e) => {
+                    console.warn("[HubScript2] WebSocket closed:", e.code, e.reason);
+                };
+            })();
+        });
+    </script>
+  {% include 'includes/_leaderboard_overlay.html' %}
+  {% include 'includes/accessibility_widget.html' %}
+</body>
+</html>

@@ -1,0 +1,115 @@
+<style>
+    .game-tutorial-overlay {
+        position: fixed;
+        inset: 0;
+        z-index: 2500;
+        display: none;
+        align-items: center;
+        justify-content: center;
+        padding: 1.25rem;
+        background: rgba(15, 23, 42, 0.78);
+    }
+
+    .game-tutorial-overlay.is-visible {
+        display: flex;
+    }
+
+    .game-tutorial-card {
+        width: min(100%, 640px);
+        background: #ffffff;
+        border-radius: 1.25rem;
+        padding: 2rem;
+        box-shadow: 0 24px 60px rgba(15, 23, 42, 0.28);
+    }
+
+    .game-tutorial-kicker {
+        margin-bottom: 0.5rem;
+        font-size: 0.8rem;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: #2563eb;
+    }
+
+    .game-tutorial-title {
+        margin: 0 0 0.75rem;
+        font-size: 1.5rem;
+        font-weight: 700;
+        color: #0f172a;
+    }
+
+    .game-tutorial-text {
+        margin: 0 0 1.5rem;
+        font-size: 1rem;
+        line-height: 1.6;
+        color: #334155;
+        white-space: pre-wrap;
+    }
+
+    .game-tutorial-close {
+        min-width: 180px;
+    }
+</style>
+
+<div id="gameTutorialOverlay" class="game-tutorial-overlay" aria-hidden="true">
+    <div class="game-tutorial-card">
+        <div class="game-tutorial-kicker" id="gameTutorialGameTitle"></div>
+        <h2 class="game-tutorial-title" id="gameTutorialTitle">Tutorial</h2>
+        <div class="game-tutorial-text" id="gameTutorialText"></div>
+        <button type="button" class="btn btn-primary game-tutorial-close" id="gameTutorialCloseBtn">Verstanden</button>
+    </div>
+</div>
+
+<script>
+    (function () {
+        if (window.gameTutorial) {
+            return;
+        }
+
+        function getOverlayElements() {
+            return {
+                overlay: document.getElementById('gameTutorialOverlay'),
+                gameTitle: document.getElementById('gameTutorialGameTitle'),
+                title: document.getElementById('gameTutorialTitle'),
+                text: document.getElementById('gameTutorialText'),
+                closeButton: document.getElementById('gameTutorialCloseBtn'),
+            };
+        }
+
+        function hideOverlay() {
+            const elements = getOverlayElements();
+            if (!elements.overlay) {
+                return;
+            }
+            elements.overlay.classList.remove('is-visible');
+            elements.overlay.setAttribute('aria-hidden', 'true');
+        }
+
+        function showOverlay(payload) {
+            const elements = getOverlayElements();
+            if (!elements.overlay) {
+                return;
+            }
+            elements.gameTitle.textContent = payload?.game_title || '';
+            elements.title.textContent = payload?.tutorial_title || 'Tutorial';
+            elements.text.textContent = payload?.tutorial_text || '';
+            elements.overlay.classList.add('is-visible');
+            elements.overlay.setAttribute('aria-hidden', 'false');
+        }
+
+        window.gameTutorial = {
+            showFromPayload(payload) {
+                showOverlay(payload);
+            },
+            forceClose() {
+                hideOverlay();
+            },
+        };
+
+        document.addEventListener('click', function (event) {
+            if (event.target && event.target.id === 'gameTutorialCloseBtn') {
+                hideOverlay();
+            }
+        });
+    })();
+</script>

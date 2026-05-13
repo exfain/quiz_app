@@ -1,0 +1,2099 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Estimation Quiz: {{ quiz.room_code }} - QuizMaster</title>
+    
+    <!-- Bootstrap 5 CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
+    
+    <!-- Custom Theme CSS -->
+    <link rel="stylesheet" href="{% static 'theme.css' %}">
+    
+    <!-- Inter Font -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body class="estimation-play-page">
+    <div class="play-container">
+        <!-- Header -->
+        <header class="quiz-header">
+            <div class="container">
+                <div class="header-content">
+                    <div class="quiz-info">
+                        <!-- <div class="room-code">
+                            <i data-lucide="hash"></i>
+                            {{ quiz.room_code }}
+                        </div> -->
+                        <h1 class="quiz-title">{{ quiz.title }}</h1>
+                    </div>
+                    <div class="participant-info">
+                        <div class="participant-avatar">
+                            {{ participant.name|first|upper }}
+                        </div>
+                        <div class="participant-details">
+                            <span class="participant-name">{{ participant.name }}</span>
+                            <!-- <span class="participant-score">{{ participant.total_score }} pts</span> -->
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </header>
+
+        <!-- Main Content -->
+        <main class="quiz-main">
+            <div class="container">
+                <div class="row justify-content-center">
+                    <div class="col-lg-8">
+                        <!-- Waiting State -->
+                        <div id="waitingQuizState" class="game-state {% if quiz.status != 'waiting' %}d-none{% endif %}">
+                            <div class="waiting-card">
+                                <div class="waiting-animation">
+                                    <div class="pulse-ring"></div>
+                                    <div class="pulse-ring delay-1"></div>
+                                    <div class="pulse-ring delay-2"></div>
+                                    <i data-lucide="calculator"></i>
+                                </div>
+                                <h2>Waiting for Estimation Quiz to Start</h2>
+                                <p>Get ready to make your best estimates! The quiz host will start the session shortly.</p>
+                                <div class="participants-count">
+                                    <i data-lucide="users"></i>
+                                    <span id="waitingParticipantCount">{{ participant_count }}</span> participants joined
+                                </div>
+                            </div>
+                        </div>
+
+                        <div id="waitingQuestionState" class="game-state d-none">
+                            <div class="waiting-card">
+                                <div class="waiting-animation">
+                                    <div class="pulse-ring"></div>
+                                    <div class="pulse-ring delay-1"></div>
+                                    <div class="pulse-ring delay-2"></div>
+                                    <i data-lucide="clock"></i>
+                                </div>
+                                <h2>Waiting for Next Question</h2>
+                                <p>Get ready for the next challenge!</p>
+                            </div>
+                        </div>
+
+                        <!-- Question State -->
+                        <div id="questionState" class="game-state {% if not quiz.current_question %}d-none{% endif %}">
+                            <div class="question-card">
+                                <!-- Question Header -->
+                                <div class="question-header">
+                                    <div class="question-number">
+                                        Question <span id="currentQuestionNumber">1</span>
+                                    </div>
+                                    <div class="question-timer">
+                                        <div class="timer-circle" id="playerTimerCircle">
+                                            <span id="playerTimeLeft">90</span>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <!-- Question Content -->
+                                <div class="question-content">
+                                    <div class="question-text" id="questionText">
+                                        {% if quiz.current_question %}
+                                            {{ quiz.current_question.question_text }}
+                                        {% endif %}
+                                    </div>
+
+                                    <!-- Hint Display -->
+                                    <div class="hint-display" id="hintDisplay" style="display: none;">
+                                        <div class="hint-icon">
+                                            <i data-lucide="lightbulb"></i>
+                                        </div>
+                                        <div class="hint-text" id="hintText"></div>
+                                    </div>
+
+                                    <!-- Answer Input Interface -->
+                                    <div class="answer-interface" id="answerInterface">
+                                        <div class="answer-input-container">
+                                            <label for="estimateInput" class="answer-label">Your Estimate:</label>
+                                            <div class="input-with-unit">
+                                                <input type="number" 
+                                                       class="form-control estimate-input" 
+                                                       id="estimateInput" 
+                                                       placeholder="Enter your estimate..." 
+                                                       step="any"
+                                                       autocomplete="off">
+                                                <span class="unit-display{% if not quiz.current_question or not quiz.current_question.get_unit_display_text %} d-none{% endif %}" id="unitDisplay">{% if quiz.current_question %}{{ quiz.current_question.get_unit_display_text }}{% endif %}</span>
+                                            </div>
+                                            <div class="input-help">
+                                                <i data-lucide="info"></i>
+                                                <span>Enter numbers only. Decimals are allowed.</span>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <!-- Submit Button -->
+                                    <button class="btn btn-primary btn-lg w-100 submit-answer" id="submitAnswerBtn" disabled>
+                                        <i data-lucide="send"></i>
+                                        Submit Estimate
+                                    </button>
+
+                                    <div class="zone-submit-feedback d-none" id="zoneSubmitFeedback">
+                                        <div class="zone-submit-answer">
+                                            Your estimate:
+                                            <strong id="zoneSubmittedEstimate">-</strong>
+                                        </div>
+                                        <div class="zone-submit-waiting">
+                                            Waiting for the other participants...
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Answer Submitted State -->
+                        <div id="answerSubmittedState" class="game-state d-none">
+                            <div class="submitted-card">
+                                <div class="question-timer submitted-timer">
+                                    <div class="timer-circle" id="playerTimerCircleSubmitted">
+                                        <span id="playerTimeLeftSubmitted">90</span>
+                                    </div>
+                                </div>
+                                <div class="submitted-animation">
+                                    <div class="check-animation">
+                                        <i data-lucide="check-circle" class="check-icon"></i>
+                                    </div>
+                                </div>
+                                <h2>Estimate Submitted!</h2>
+                                <p>Waiting for other participants and the next question...</p>
+                                <div class="submitted-details">
+                                    <div class="estimate-summary">
+                                        <div class="summary-item">
+                                            <span class="summary-label">Your Estimate:</span>
+                                            <span class="summary-value" id="submittedEstimate">-</span>
+                                        </div>
+                                        <div class="summary-item">
+                                            <span class="summary-label">Points Earned:</span>
+                                            <span class="summary-value points" id="pointsEarned">0</span>
+                                        </div>
+                                        <div class="summary-item">
+                                            <span class="summary-label">Accuracy:</span>
+                                            <span class="summary-value accuracy" id="accuracyPercent">0%</span>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Show Correct Answer State -->
+                        <div id="correctAnswerState" class="game-state d-none">
+                            <div class="correct-answer-card">
+                                <div class="answer-reveal">
+                                    <div class="reveal-icon">
+                                        <i data-lucide="target"></i>
+                                    </div>
+                                    <h2>Correct Answer Revealed!</h2>
+                                    <div class="answer-display">
+                                        <span class="answer-value" id="correctAnswerDisplay">-</span>
+                                    </div>
+                                </div>
+                                
+                                <div class="comparison-display">
+                                    <div class="comparison-item">
+                                        <div class="comparison-label">Your Estimate</div>
+                                        <div class="comparison-value user-estimate" id="userEstimateDisplay">-</div>
+                                    </div>
+                                    <div class="comparison-vs">VS</div>
+                                    <div class="comparison-item">
+                                        <div class="comparison-label">Correct Answer</div>
+                                        <div class="comparison-value correct-answer" id="correctAnswerComparison">-</div>
+                                    </div>
+                                </div>
+                                
+                                <div class="performance-summary">
+                                    <div class="performance-badge" id="performanceBadge">
+                                        <span class="performance-text">Good Estimate!</span>
+                                    </div>
+                                    <div class="rank-results-card" id="rankResultsCard" style="display: none;">
+                                        <div class="rank-results-title">Ranking for this question</div>
+                                        <div class="rank-results-list" id="rankResultsList"></div>
+                                    </div>
+                                    <div class="zone-explanation-card" id="zoneExplanationCard" style="display: none;">
+                                        <div class="zone-explanation-summary" id="zoneExplanationSummary"></div>
+                                        <div class="zone-range-list" id="zoneRangeList"></div>
+                                    </div>
+                                    <div class="explanation-text" id="explanationText" style="display: none;"></div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Quiz Ended State -->
+                        <div id="quizEndedState" class="game-state d-none">
+                            <div class="ended-card">
+                                <div class="ended-animation">
+                                    <i data-lucide="trophy" class="trophy-icon"></i>
+                                </div>
+                                <h2>Estimation Quiz Completed!</h2>
+                                <p>Great job with all those estimates!</p>
+                                <div class="final-score">
+                                    <div class="score-circle">
+                                        <span class="score-value">{{ participant.total_score }}</span>
+                                        <span class="score-label">points</span>
+                                    </div>
+                                </div>
+                                <!-- <div class="quiz-actions">
+                                    <a href="/estimation/result/{{ quiz.room_code }}/{{ participant.name }}/" class="btn btn-primary btn-lg">
+                                        <i data-lucide="bar-chart-3"></i>
+                                        View Detailed Results
+                                    </a>
+                                    <a href="/estimation/join/" class="btn btn-outline btn-lg">
+                                        <i data-lucide="play"></i>
+                                        Join Another Quiz
+                                    </a>
+                                </div> -->
+                            </div>
+                        </div>
+
+                        <!-- Connection Status -->
+                        <div id="connectionStatus" class="connection-status d-none">
+                            <div class="status-indicator">
+                                <i data-lucide="wifi-off"></i>
+                                <span>Reconnecting...</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </main>
+
+        <aside class="score-history-box score-box" id="scoreHistoryBox">
+            <h6 class="mb-2 score-box__title">Punkte</h6>
+            <div id="scoreHistoryList" class="score-history-list score-box__list">
+                {% for question in question_scoreboard %}
+                    <div class="score-history-row score-box__row is-{{ question.status }}" data-question-number="{{ question.number }}" data-question-id="{{ question.id }}">
+                        <div class="score-history-badge score-box__badge">{{ question.number }}</div>
+                        <div class="score-history-value score-box__value">
+                            {% if question.earned_points is not None %}
+                                <span>{{ question.earned_points }}</span>
+                                {% if question.max_points is not None %}
+                                    <span class="score-history-separator score-box__separator">/</span>
+                                    <span>{{ question.max_points }}</span>
+                                {% endif %}
+                            {% elif question.max_points is not None %}
+                                <span class="score-history-empty score-box__empty">__</span>
+                                <span class="score-history-separator score-box__separator">/</span>
+                                <span>{{ question.max_points }}</span>
+                            {% else %}
+                                <span class="score-history-empty score-box__empty">____</span>
+                            {% endif %}
+                        </div>
+                    </div>
+                {% empty %}
+                    <div class="text-muted small">Noch keine Fragen verfügbar.</div>
+                {% endfor %}
+            </div>
+            <div class="score-history-total" id="scoreHistoryTotal">0/0 Punkte</div>
+        </aside>
+    </div>
+
+    {{ question_scoreboard|json_script:"estimationQuestionScoreboardData" }}
+    {{ initial_progress_history|json_script:"estimationInitialProgressData" }}
+    {{ current_question_number|json_script:"estimationCurrentQuestionNumber" }}
+
+    <!-- Bootstrap JS -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+
+    <style>
+        /* Estimation Play Page Styles */
+        .estimation-play-page {
+            min-height: 100vh;
+            background: linear-gradient(135deg, var(--bg-secondary) 0%, var(--primary-50) 100%);
+        }
+
+        .play-container {
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .score-history-box {
+            position: fixed;
+            right: 16px;
+            top: 110px;
+            width: 180px;
+            z-index: 90;
+            background: var(--bg-primary);
+            border: 1px solid var(--border-color);
+            border-radius: var(--border-radius-lg);
+            box-shadow: var(--shadow-md);
+            padding: 0.75rem;
+        }
+
+        .score-history-list {
+            display: flex;
+            flex-direction: column;
+            gap: 0.35rem;
+            font-size: 0.875rem;
+        }
+
+        .score-history-total {
+            margin-top: 0.75rem;
+            padding-top: 0.75rem;
+            border-top: 1px solid var(--border-color);
+            font-family: var(--font-family-mono);
+            font-weight: 700;
+            color: var(--text-primary);
+            text-align: right;
+        }
+
+        /* Header */
+        .quiz-header {
+            background: var(--bg-primary);
+            border-bottom: 1px solid var(--border-color);
+            box-shadow: var(--shadow-sm);
+            padding: 1rem 0;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }
+
+        .header-content {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 1rem;
+        }
+
+        .quiz-info {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+        }
+
+        .room-code {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            background-color: var(--primary-100);
+            color: var(--primary-700);
+            padding: 0.5rem 1rem;
+            border-radius: var(--border-radius-xl);
+            font-family: var(--font-family-mono);
+            font-weight: 700;
+            font-size: 0.875rem;
+        }
+
+        .room-code i {
+            width: 16px;
+            height: 16px;
+        }
+
+        .quiz-title {
+            font-size: 1.5rem;
+            font-weight: 700;
+            color: var(--text-primary);
+            margin: 0;
+        }
+
+        .participant-info {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+        }
+
+        .participant-avatar {
+            width: 48px;
+            height: 48px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, var(--primary-500) 0%, var(--primary-600) 100%);
+            color: var(--text-white);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 700;
+            font-size: 1.25rem;
+        }
+
+        .participant-details {
+            display: flex;
+            flex-direction: column;
+        }
+
+        .participant-name {
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+
+        .participant-score {
+            color: var(--color-success);
+            font-size: 0.875rem;
+            font-weight: 500;
+        }
+
+        /* Main Content */
+        .quiz-main {
+            flex: 1;
+            display: flex;
+            align-items: center;
+            padding: 2rem 0;
+        }
+
+        .game-state {
+            animation: fadeIn 0.5s ease-out;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(20px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        /* Waiting State */
+        .waiting-card {
+            text-align: center;
+            padding: 3rem 2rem;
+            background: var(--bg-primary);
+            border-radius: var(--border-radius-xl);
+            box-shadow: var(--shadow-lg);
+        }
+
+        .waiting-animation {
+            position: relative;
+            width: 120px;
+            height: 120px;
+            margin: 0 auto 2rem;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .pulse-ring {
+            position: absolute;
+            width: 100%;
+            height: 100%;
+            border: 2px solid var(--color-primary);
+            border-radius: 50%;
+            animation: pulse 2s cubic-bezier(0.455, 0.03, 0.515, 0.955) infinite;
+            opacity: 0;
+        }
+
+        .delay-1 { animation-delay: 0.5s; }
+        .delay-2 { animation-delay: 1s; }
+
+        @keyframes pulse {
+            0% { transform: scale(0.8); opacity: 1; }
+            100% { transform: scale(1.4); opacity: 0; }
+        }
+
+        .waiting-animation i {
+            width: 48px;
+            height: 48px;
+            color: var(--color-primary);
+            z-index: 2;
+        }
+
+        .waiting-card h2 {
+            font-size: 1.75rem;
+            font-weight: 700;
+            color: var(--text-primary);
+            margin-bottom: 1rem;
+        }
+
+        .waiting-card p {
+            color: var(--text-secondary);
+            font-size: 1.125rem;
+            margin-bottom: 2rem;
+        }
+
+        .participants-count {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            background-color: var(--bg-secondary);
+            padding: 0.75rem 1.5rem;
+            border-radius: var(--border-radius-xl);
+            color: var(--text-primary);
+            font-weight: 600;
+        }
+
+        .participants-count i {
+            width: 20px;
+            height: 20px;
+            color: var(--color-primary);
+        }
+
+        /* Question State */
+        .question-card {
+            background: var(--bg-primary);
+            border-radius: var(--border-radius-xl);
+            box-shadow: var(--shadow-lg);
+            overflow: hidden;
+        }
+
+        .question-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 1.5rem 2rem;
+            background: linear-gradient(135deg, var(--primary-50) 0%, var(--secondary-50) 100%);
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .question-number {
+            font-size: 1.125rem;
+            font-weight: 700;
+            color: var(--text-primary);
+        }
+
+        .timer-circle {
+            width: 60px;
+            height: 60px;
+            border: 4px solid var(--success-300);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 700;
+            color: var(--success-600);
+            background: var(--bg-primary);
+            position: relative;
+        }
+
+        .timer-circle.warning {
+            border-color: var(--warning-300);
+            color: var(--warning-600);
+        }
+
+        .timer-circle.danger {
+            border-color: var(--error-300);
+            color: var(--error-600);
+            animation: shake 0.5s infinite;
+        }
+
+        @keyframes shake {
+            0%, 100% { transform: translateX(0); }
+            25% { transform: translateX(-2px); }
+            75% { transform: translateX(2px); }
+        }
+
+        .question-content {
+            padding: 2rem;
+        }
+
+        .question-text {
+            font-size: 1.375rem;
+            font-weight: 600;
+            color: var(--text-primary);
+            line-height: 1.6;
+            margin-bottom: 2rem;
+            text-align: center;
+        }
+
+        /* Hint Display */
+        .hint-display {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            background: var(--warning-50);
+            border: 1px solid var(--warning-200);
+            border-radius: var(--border-radius-lg);
+            padding: 1rem;
+            margin-bottom: 2rem;
+        }
+
+        .hint-icon {
+            width: 24px;
+            height: 24px;
+            color: var(--warning-600);
+            flex-shrink: 0;
+        }
+
+        .hint-text {
+            color: var(--warning-700);
+            font-weight: 500;
+            flex: 1;
+        }
+
+        /* Answer Interface */
+        .answer-interface {
+            margin-bottom: 2rem;
+        }
+
+        .answer-input-container {
+            max-width: 400px;
+            margin: 0 auto;
+        }
+
+        .answer-label {
+            display: block;
+            font-size: 1.125rem;
+            font-weight: 600;
+            color: var(--text-primary);
+            margin-bottom: 1rem;
+            text-align: center;
+        }
+
+        .input-with-unit {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+        }
+
+        .estimate-input {
+            height: 70px;
+            font-size: 1.5rem;
+            font-weight: 600;
+            text-align: center;
+            border: 3px solid var(--border-color);
+            border-radius: var(--border-radius-lg);
+            transition: all var(--transition-fast);
+            flex: 1;
+            min-width: 0;
+        }
+
+        .estimate-input:focus {
+            border-color: var(--color-primary);
+            box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.1);
+            outline: none;
+        }
+
+        .unit-display {
+            font-size: 1.125rem;
+            font-weight: 600;
+            color: var(--text-primary);
+            pointer-events: none;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+            min-width: 72px;
+            height: 70px;
+            padding: 0 1rem;
+            border: 1px solid var(--border-color);
+            border-radius: var(--border-radius-lg);
+            background: var(--bg-secondary);
+        }
+
+        .input-help {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.5rem;
+            margin-top: 0.75rem;
+            color: var(--text-muted);
+            font-size: 0.875rem;
+        }
+
+        .input-help i {
+            width: 16px;
+            height: 16px;
+        }
+
+        .zone-submit-feedback {
+            margin-top: 1rem;
+            padding: 1rem 1.25rem;
+            border: 1px solid var(--border-color);
+            border-radius: var(--border-radius-lg);
+            background: var(--bg-secondary);
+            text-align: center;
+        }
+
+        .zone-submit-answer {
+            font-size: 1rem;
+            color: var(--text-primary);
+            margin-bottom: 0.35rem;
+        }
+
+        .zone-submit-waiting {
+            font-size: 0.95rem;
+            color: var(--text-secondary);
+        }
+
+        .rank-results-card {
+            margin-top: 1rem;
+            padding: 1rem 1.25rem;
+            border: 1px solid var(--border-color);
+            border-radius: var(--border-radius-lg);
+            background: var(--bg-secondary);
+            text-align: left;
+        }
+
+        .rank-results-title {
+            font-size: 1rem;
+            font-weight: 700;
+            color: var(--text-primary);
+            margin-bottom: 0.75rem;
+        }
+
+        .rank-results-list {
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+        }
+
+        .rank-result-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 0.75rem;
+            padding: 0.65rem 0.85rem;
+            border: 1px solid var(--border-color);
+            border-radius: var(--border-radius-md);
+            background: var(--bg-primary);
+        }
+
+        .rank-result-row.is-self {
+            border-color: var(--color-primary);
+            background: rgba(59, 130, 246, 0.08);
+        }
+
+        .rank-result-position {
+            font-weight: 700;
+            color: var(--text-primary);
+            min-width: 48px;
+        }
+
+        .rank-result-name {
+            flex: 1;
+            color: var(--text-primary);
+            font-weight: 600;
+        }
+
+        .rank-result-points {
+            color: var(--color-primary);
+            font-weight: 700;
+            white-space: nowrap;
+        }
+
+        /* Submit Button */
+        .submit-answer {
+            height: 60px;
+            font-size: 1.125rem;
+            font-weight: 600;
+            transition: all var(--transition-fast);
+        }
+
+        .submit-answer:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .submit-answer.loading {
+            position: relative;
+            color: transparent !important;
+        }
+
+        .submit-answer.loading::after {
+            content: '';
+            position: absolute;
+            width: 20px;
+            height: 20px;
+            top: 50%;
+            left: 50%;
+            margin-left: -10px;
+            margin-top: -10px;
+            border: 2px solid transparent;
+            border-top-color: currentColor;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        /* Submitted State */
+        .submitted-card {
+            text-align: center;
+            padding: 3rem 2rem;
+            background: var(--bg-primary);
+            border-radius: var(--border-radius-xl);
+            box-shadow: var(--shadow-lg);
+            position: relative;
+        }
+
+        .submitted-timer {
+            position: absolute;
+            top: 1.5rem;
+            right: 1.5rem;
+        }
+
+        .submitted-animation {
+            margin-bottom: 2rem;
+        }
+
+        .check-animation {
+            width: 120px;
+            height: 120px;
+            margin: 0 auto;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .check-icon {
+            width: 64px;
+            height: 64px;
+            color: var(--color-success);
+            animation: checkPop 0.6s ease-out;
+        }
+
+        @keyframes checkPop {
+            0% { transform: scale(0); }
+            50% { transform: scale(1.2); }
+            100% { transform: scale(1); }
+        }
+
+        .submitted-details {
+            background-color: var(--bg-secondary);
+            padding: 1.5rem;
+            border-radius: var(--border-radius-lg);
+            margin-top: 2rem;
+        }
+
+        .estimate-summary {
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+        }
+
+        .summary-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .summary-label {
+            color: var(--text-secondary);
+            font-weight: 500;
+        }
+
+        .summary-value {
+            color: var(--text-primary);
+            font-weight: 700;
+        }
+
+        .summary-value.points {
+            color: var(--color-success);
+        }
+
+        .summary-value.accuracy {
+            color: var(--color-primary);
+        }
+
+        /* Correct Answer State */
+        .correct-answer-card {
+            background: var(--bg-primary);
+            border-radius: var(--border-radius-xl);
+            box-shadow: var(--shadow-lg);
+            padding: 2rem;
+            text-align: center;
+        }
+
+        .answer-reveal {
+            margin-bottom: 2rem;
+        }
+
+        .reveal-icon {
+            width: 80px;
+            height: 80px;
+            margin: 0 auto 1rem;
+            background: linear-gradient(135deg, var(--primary-500) 0%, var(--primary-600) 100%);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            animation: bounce 1s ease-out;
+        }
+
+        .reveal-icon i {
+            width: 40px;
+            height: 40px;
+            color: var(--text-white);
+        }
+
+        @keyframes bounce {
+            0% { transform: scale(0); }
+            50% { transform: scale(1.1); }
+            100% { transform: scale(1); }
+        }
+
+        .answer-display {
+            margin: 1.5rem 0;
+        }
+
+        .answer-value {
+            font-size: 2.5rem;
+            font-weight: 700;
+            color: var(--color-success);
+        }
+
+        .comparison-display {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin: 2rem 0;
+            padding: 1.5rem;
+            background: var(--bg-secondary);
+            border-radius: var(--border-radius-lg);
+        }
+
+        .comparison-item {
+            flex: 1;
+            text-align: center;
+        }
+
+        .comparison-label {
+            font-size: 0.875rem;
+            color: var(--text-muted);
+            margin-bottom: 0.5rem;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .comparison-value {
+            font-size: 1.5rem;
+            font-weight: 700;
+        }
+
+        .comparison-value.user-estimate {
+            color: var(--color-primary);
+        }
+
+        .comparison-value.correct-answer {
+            color: var(--color-success);
+        }
+
+        .comparison-vs {
+            font-size: 1rem;
+            font-weight: 700;
+            color: var(--text-muted);
+            margin: 0 1rem;
+        }
+
+        .performance-summary {
+            margin-top: 2rem;
+        }
+
+        .performance-badge {
+            display: inline-block;
+            padding: 0.75rem 1.5rem;
+            border-radius: var(--border-radius-xl);
+            font-weight: 600;
+            margin-bottom: 1rem;
+        }
+
+        .performance-badge.excellent {
+            background: var(--success-100);
+            color: var(--success-700);
+        }
+
+        .performance-badge.good {
+            background: var(--primary-100);
+            color: var(--primary-700);
+        }
+
+        .performance-badge.fair {
+            background: var(--warning-100);
+            color: var(--warning-700);
+        }
+
+        .performance-badge.poor {
+            background: var(--error-100);
+            color: var(--error-700);
+        }
+
+        .zone-explanation-card {
+            margin: 0 auto 1rem;
+            max-width: 560px;
+            padding: 1rem 1.125rem;
+            border-radius: var(--border-radius-lg);
+            background: var(--bg-secondary);
+            border: 1px solid var(--secondary-200);
+            text-align: left;
+        }
+
+        .zone-explanation-summary {
+            font-size: 0.95rem;
+            font-weight: 600;
+            color: var(--text-primary);
+            margin-bottom: 0.75rem;
+            line-height: 1.5;
+        }
+
+        .zone-range-list {
+            display: grid;
+            gap: 0.5rem;
+        }
+
+        .zone-range-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 1rem;
+            padding: 0.65rem 0.8rem;
+            border-radius: var(--border-radius-md);
+            background: var(--bg-primary);
+            border: 1px solid transparent;
+        }
+
+        .zone-range-row.active {
+            border-color: var(--primary-300);
+            background: var(--primary-50);
+        }
+
+        .zone-range-row.outside {
+            border-style: dashed;
+        }
+
+        .zone-range-meta {
+            display: flex;
+            flex-direction: column;
+            gap: 0.15rem;
+            min-width: 0;
+        }
+
+        .zone-range-title {
+            font-size: 0.95rem;
+            font-weight: 700;
+            color: var(--text-primary);
+        }
+
+        .zone-range-label {
+            font-size: 0.875rem;
+            color: var(--text-secondary);
+            line-height: 1.4;
+        }
+
+        .zone-range-points {
+            flex-shrink: 0;
+            font-size: 0.95rem;
+            font-weight: 700;
+            color: var(--text-primary);
+        }
+
+        .explanation-text {
+            color: var(--text-secondary);
+            font-style: italic;
+            line-height: 1.6;
+        }
+
+        /* Quiz Ended State */
+        .ended-card {
+            text-align: center;
+            padding: 3rem 2rem;
+            background: var(--bg-primary);
+            border-radius: var(--border-radius-xl);
+            box-shadow: var(--shadow-lg);
+        }
+
+        .ended-animation {
+            margin-bottom: 2rem;
+        }
+
+        .trophy-icon {
+            width: 80px;
+            height: 80px;
+            color: var(--warning-500);
+            animation: trophy 1s ease-out;
+        }
+
+        @keyframes trophy {
+            0% { transform: scale(0) rotate(-180deg); opacity: 0; }
+            50% { transform: scale(1.1) rotate(-10deg); opacity: 1; }
+            100% { transform: scale(1) rotate(0deg); opacity: 1; }
+        }
+
+        .final-score {
+            margin: 2rem 0;
+        }
+
+        .score-circle {
+            width: 120px;
+            height: 120px;
+            margin: 0 auto;
+            border: 4px solid var(--color-success);
+            border-radius: 50%;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            background: linear-gradient(135deg, var(--success-50) 0%, var(--success-100) 100%);
+        }
+
+        .score-value {
+            font-size: 2rem;
+            font-weight: 700;
+            color: var(--success-700);
+        }
+
+        .score-label {
+            font-size: 0.875rem;
+            color: var(--success-600);
+            font-weight: 500;
+        }
+
+        .quiz-actions {
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+            max-width: 300px;
+            margin: 0 auto;
+        }
+
+        /* Connection Status */
+        .connection-status {
+            position: fixed;
+            bottom: 2rem;
+            right: 2rem;
+            z-index: 1000;
+        }
+
+        .status-indicator {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            background-color: var(--error-500);
+            color: var(--text-white);
+            padding: 0.75rem 1rem;
+            border-radius: var(--border-radius-xl);
+            box-shadow: var(--shadow-lg);
+            font-weight: 500;
+            animation: slideIn 0.3s ease-out;
+        }
+
+        .status-indicator i {
+            width: 20px;
+            height: 20px;
+        }
+
+        /* Responsive Design */
+        @media (max-width: 768px) {
+            .header-content {
+                flex-direction: column;
+                text-align: center;
+                gap: 1rem;
+            }
+
+            .quiz-title {
+                font-size: 1.25rem;
+            }
+
+            .question-header {
+                padding: 1rem 1.5rem;
+            }
+
+            .question-content {
+                padding: 1.5rem;
+            }
+
+            .question-text {
+                font-size: 1.25rem;
+            }
+
+            .quiz-actions {
+                max-width: 100%;
+            }
+
+            .waiting-card,
+            .submitted-card,
+            .ended-card,
+            .correct-answer-card {
+                padding: 2rem 1.5rem;
+                margin: 1rem;
+            }
+
+            .comparison-display {
+                flex-direction: column;
+                gap: 1rem;
+            }
+
+            .comparison-vs {
+                transform: rotate(90deg);
+                margin: 0;
+            }
+        }
+
+        @media (max-width: 576px) {
+            .quiz-main {
+                padding: 1rem 0;
+            }
+
+            .estimate-input {
+                font-size: 1.25rem;
+                height: 60px;
+            }
+
+            .timer-circle {
+                width: 50px;
+                height: 50px;
+                font-size: 0.875rem;
+            }
+        }
+    </style>
+
+    {% include 'includes/_hub_return_to_lobby_player.html' %}
+    {% include 'includes/_game_tutorial_overlay.html' %}
+<script>
+        document.addEventListener('DOMContentLoaded', function() {
+            lucide.createIcons();
+
+            // Quiz Player Class
+            class EstimationPlayer {
+                constructor() {
+                    this.roomCode = '{{ quiz.room_code }}';
+                    this.participantName = '{{ participant.name }}';
+                    this.hubSession = '{{ hub_session }}';
+                    this.websocket = null;
+                    this.questionTimer = null;
+                    this.questionStartTime = null;
+                    this.hasAnswered = false;
+                    this.currentUnit = '';
+                    this.scoringMode = '{{ quiz.get_effective_scoring_mode }}';
+                    this.currentQuestionIndex = 0;
+                    this.currentQuestionMaxPoints = 0;
+                    this.lastPointsEarned = 0;
+                    this.lastSubmittedNumericAnswer = null;
+                    this.lastAccuracyPercentage = 0;
+                    this.scoreHistory = this.readJsonScript('estimationInitialProgressData', []);
+                    this.scoreboardQuestions = this.readJsonScript('estimationQuestionScoreboardData', []);
+                    this.currentQuestionIndex = Number(this.readJsonScript('estimationCurrentQuestionNumber', 0)) || 0;
+                    
+                    this.init();
+                }
+
+                init() {
+                    this.connectWebSocket();
+                    this.bindEvents();
+                    this.renderScoreHistory();
+                    
+                    // Start timer if there's an active question
+                    {% if quiz.current_question %}
+                        this.startQuestionTimer(90); // Default 90 seconds
+                        this.loadCurrentQuestion();
+                    {% endif %}
+                }
+
+                connectWebSocket() {
+                    const wsScheme = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+                    const wsUrl = `${wsScheme}//${window.location.host}/ws/estimation/${this.roomCode}/`;
+                    
+                    this.websocket = new WebSocket(wsUrl);
+                    
+                    this.websocket.onopen = () => {
+                        console.log('WebSocket connected');
+                        this.hideConnectionStatus();
+                        
+                        // Send join message
+                        this.websocket.send(JSON.stringify({
+                            type: 'participant_join',
+                            participant_name: this.participantName,
+                            hub_session: this.hubSession
+                        }));
+                    };
+                    
+                    this.websocket.onmessage = (event) => {
+                        const data = JSON.parse(event.data);
+                        this.handleWebSocketMessage(data);
+                    };
+                    
+                    this.websocket.onclose = () => {
+                        console.log('WebSocket disconnected');
+                        this.showConnectionStatus();
+                        // Attempt to reconnect after 3 seconds
+                        setTimeout(() => this.connectWebSocket(), 3000);
+                    };
+                    
+                    this.websocket.onerror = (error) => {
+                        console.error('WebSocket error:', error);
+                        this.showConnectionStatus();
+                    };
+                }
+
+                handleWebSocketMessage(data) {
+                    switch(data.type) {
+                        case 'quiz_started':
+                            this.onQuizStarted();
+                            break;
+
+                        case 'tutorial_start':
+                            window.gameTutorial?.showFromPayload(data);
+                            break;
+                            
+                        case 'question_started':
+                            window.gameTutorial?.forceClose();
+                            this.onQuestionStarted(data.question);
+                            break;
+                            
+                        case 'question_ended':
+                            this.onQuestionEnded(data);
+                            break;
+                            
+                        case 'quiz_ended':
+                            window.gameTutorial?.forceClose();
+                            this.onQuizEnded(data);
+                            break;
+                            
+                        case 'participant_count_updated':
+                            this.updateParticipantCount(data.count);
+                            break;
+
+                        case 'answer_submitted':
+                            this.onAnswerSubmitted(data);
+                            break;
+                            
+                        case 'show_leaderboard':
+                            window.showLeaderboard(this.hubSession);
+                            break;
+
+                        case 'hide_leaderboard':
+                            document.getElementById('leaderboardSidebar')?.classList.add('d-none');
+                            break;
+
+                        default:
+                            console.log('Unknown message type:', data.type);
+                    }
+                }
+
+                bindEvents() {
+                    // Submit answer button
+                    document.getElementById('submitAnswerBtn').addEventListener('click', () => {
+                        this.submitAnswer();
+                    });
+
+                    // Estimate input
+                    const estimateInput = document.getElementById('estimateInput');
+                    estimateInput.addEventListener('input', () => {
+                        const hasValue = estimateInput.value.trim() !== '';
+                        document.getElementById('submitAnswerBtn').disabled = !hasValue || this.hasAnswered;
+                    });
+
+                    // Allow Enter key to submit
+                    estimateInput.addEventListener('keypress', (e) => {
+                        if (e.key === 'Enter' && !document.getElementById('submitAnswerBtn').disabled) {
+                            this.submitAnswer();
+                        }
+                    });
+                }
+
+                readJsonScript(elementId, fallbackValue) {
+                    const element = document.getElementById(elementId);
+                    if (!element) return fallbackValue;
+                    try {
+                        return JSON.parse(element.textContent);
+                    } catch (error) {
+                        console.warn(`Unable to parse ${elementId}:`, error);
+                        return fallbackValue;
+                    }
+                }
+
+                moveQuestionToNextFreeScoreSlot(questionId, maxPoints = null) {
+                    const numericQuestionId = Number(questionId);
+                    if (!numericQuestionId) return null;
+
+                    const questions = Array.isArray(this.scoreboardQuestions) ? [...this.scoreboardQuestions] : [];
+                    const existingIndex = questions.findIndex((question) => Number(question?.id) === numericQuestionId);
+                    let entry = existingIndex >= 0
+                        ? questions.splice(existingIndex, 1)[0]
+                        : {
+                            id: numericQuestionId,
+                            earned_points: null,
+                            max_points: Number(maxPoints || 0),
+                            status: 'upcoming',
+                        };
+
+                    if ((entry.max_points === undefined || entry.max_points === null) && maxPoints !== null) {
+                        entry.max_points = Number(maxPoints || 0);
+                    }
+
+                    const playedCount = Array.isArray(this.scoreHistory) ? this.scoreHistory.length : 0;
+                    questions.splice(Math.min(playedCount, questions.length), 0, entry);
+                    this.scoreboardQuestions = questions.map((question, index) => ({
+                        ...question,
+                        number: index + 1,
+                    }));
+                    return this.scoreboardQuestions.find((question) => Number(question?.id) === numericQuestionId) || null;
+                }
+
+                onQuizStarted() {
+                    this.showState('waitingQuizState');
+                }
+
+                onQuestionStarted(question) {
+                    this.hasAnswered = false;
+                    this.questionStartTime = Date.now();
+                    this.currentUnit = question.unit_display || '';
+                    const currentEntry = this.moveQuestionToNextFreeScoreSlot(question.id, question.max_points);
+                    const nextQuestionNumber = Number(currentEntry?.number || question.question_number);
+                    this.currentQuestionIndex = Number.isNaN(nextQuestionNumber) || nextQuestionNumber <= 0
+                        ? this.currentQuestionIndex + 1
+                        : nextQuestionNumber;
+                    this.currentQuestionMaxPoints = parseInt(question.max_points || 0, 10) || 0;
+                    this.lastPointsEarned = 0;
+                    this.lastSubmittedNumericAnswer = null;
+                    this.lastAccuracyPercentage = 0;
+                    document.getElementById('submittedEstimate').textContent = '-';
+                    document.getElementById('pointsEarned').textContent = '0';
+                    document.getElementById('accuracyPercent').textContent = '0%';
+                    const qn = document.getElementById('currentQuestionNumber');
+                    if (qn) qn.textContent = this.currentQuestionIndex;
+                    
+                    this.loadQuestion(question);
+                    this.startQuestionTimer(question.time_limit || 90);
+                    this.renderScoreHistory();
+                    this.showState('questionState');
+                    
+                    // Focus on input
+                    setTimeout(() => {
+                        document.getElementById('estimateInput').focus();
+                    }, 500);
+                }
+
+                onQuestionEnded(data) {
+                    clearInterval(this.questionTimer);
+
+                    let pointsForQuestion = this.hasAnswered ? this.lastPointsEarned : 0;
+                    if (Array.isArray(data.rank_results)) {
+                        const ownRankResult = data.rank_results.find(r => r.participant_name === this.participantName);
+                        if (ownRankResult && typeof ownRankResult.points_earned === 'number') {
+                            pointsForQuestion = ownRankResult.points_earned;
+                        }
+                    }
+                    const maxPointsForHistory = data.max_points || this.currentQuestionMaxPoints || 0;
+
+                    this.pushScoreHistory(pointsForQuestion, maxPointsForHistory);
+                    this.showCorrectAnswer(data.correct_answer, pointsForQuestion, data.rank_results || null);
+                }
+
+                onQuizEnded(data) {
+                    clearInterval(this.questionTimer);
+                    // If final scores are provided, update the displayed score for this participant
+                    try {
+                        if (data && Array.isArray(data.final_scores)) {
+                            const me = data.final_scores.find(p => p.name === this.participantName);
+                            if (me && typeof me.total_score === 'number') {
+                                const scoreEl = document.querySelector('#quizEndedState .score-value');
+                                if (scoreEl) scoreEl.textContent = me.total_score;
+                            }
+                        }
+                    } catch (e) { console.warn('Unable to update final score:', e); }
+                    this.showState('quizEndedState');
+                }
+
+                loadCurrentQuestion() {
+                    {% if quiz.current_question %}
+                    const question = {
+                        id: {{ quiz.current_question.id }},
+                        question_number: {{ current_question_number|default:0 }},
+                        question_text: '{{ quiz.current_question.question_text|escapejs }}',
+                        unit: '{{ quiz.current_question.unit }}',
+                        unit_display: '{{ quiz.current_question.get_unit_display_text }}',
+                        max_points: {{ current_question_max_points|default:0 }},
+                        hint_text: {% if quiz.current_question.hint_text %}'{{ quiz.current_question.hint_text|escapejs }}'{% else %}null{% endif %},
+                        time_limit: 90
+                    };
+                    this.loadQuestion(question);
+                    {% endif %}
+                }
+
+                loadQuestion(question) {
+                    document.getElementById('questionText').textContent = question.question_text;
+                    
+                    // Set unit display
+                    const unitDisplay = document.getElementById('unitDisplay');
+                    if (question.unit_display) {
+                        unitDisplay.textContent = question.unit_display;
+                        unitDisplay.classList.remove('d-none');
+                    } else {
+                        unitDisplay.textContent = '';
+                        unitDisplay.classList.add('d-none');
+                    }
+                    
+                    // Show hint if available
+                    const hintDisplay = document.getElementById('hintDisplay');
+                    const hintText = document.getElementById('hintText');
+                    if (question.hint_text) {
+                        hintText.textContent = question.hint_text;
+                        hintDisplay.style.display = 'flex';
+                    } else {
+                        hintDisplay.style.display = 'none';
+                    }
+                    
+                    // Reset input
+                    const estimateInput = document.getElementById('estimateInput');
+                    estimateInput.value = '';
+                    estimateInput.disabled = false;
+                    
+                    // Reset submit button
+                    const submitBtn = document.getElementById('submitAnswerBtn');
+                    submitBtn.disabled = true;
+                    submitBtn.classList.remove('d-none');
+                    submitBtn.classList.remove('loading');
+
+                    const zoneSubmitFeedback = document.getElementById('zoneSubmitFeedback');
+                    const zoneSubmittedEstimate = document.getElementById('zoneSubmittedEstimate');
+                    if (zoneSubmitFeedback) {
+                        zoneSubmitFeedback.classList.add('d-none');
+                    }
+                    if (zoneSubmittedEstimate) {
+                        zoneSubmittedEstimate.textContent = '-';
+                    }
+                    
+                    this.currentUnit = question.unit_display || '';
+                }
+
+                startQuestionTimer(timeLimit) {
+                    let timeLeft = timeLimit;
+                    const timerElement = document.getElementById('playerTimeLeft');
+                    const circleElement = document.getElementById('playerTimerCircle');
+                    const submittedTimerElement = document.getElementById('playerTimeLeftSubmitted');
+                    const submittedCircleElement = document.getElementById('playerTimerCircleSubmitted');
+                    
+                    // Initialize both timers
+                    timerElement.textContent = timeLeft;
+                    circleElement.className = 'timer-circle';
+                    if (submittedTimerElement && submittedCircleElement) {
+                        submittedTimerElement.textContent = timeLeft;
+                        submittedCircleElement.className = 'timer-circle';
+                    }
+                    
+                    this.questionTimer = setInterval(() => {
+                        timeLeft--;
+                        timerElement.textContent = timeLeft;
+                        if (submittedTimerElement) {
+                            submittedTimerElement.textContent = timeLeft;
+                        }
+                        
+                        // Update timer circle appearance for both timers
+                        const timerClass = timeLeft <= 10 ? 'danger' : (timeLeft <= 20 ? 'warning' : '');
+                        circleElement.className = 'timer-circle ' + timerClass;
+                        if (submittedCircleElement) {
+                            submittedCircleElement.className = 'timer-circle ' + timerClass;
+                        }
+                        
+                        if (timeLeft <= 0) {
+                            clearInterval(this.questionTimer);
+                            this.onTimeUp();
+                        }
+                    }, 1000);
+                }
+
+                submitAnswer() {
+                    const estimateInput = document.getElementById('estimateInput');
+                    const userAnswer = estimateInput.value.trim();
+                    
+                    if (!userAnswer || this.hasAnswered) return;
+                    
+                    const timeTaken = (Date.now() - this.questionStartTime) / 1000;
+                    
+                    // Disable interface
+                    estimateInput.disabled = true;
+                    const submitBtn = document.getElementById('submitAnswerBtn');
+                    submitBtn.classList.add('loading');
+                    
+                    // Send answer via WebSocket
+                    this.websocket.send(JSON.stringify({
+                        type: 'participant_submit_answer',
+                        participant_name: this.participantName,
+                        hub_session: this.hubSession,
+                        user_answer: parseFloat(userAnswer),
+                        time_taken: timeTaken
+                    }));
+                    
+                    this.hasAnswered = true;
+                    
+                    if (this.scoringMode === 'zones' || this.scoringMode === 'rank') {
+                        setTimeout(() => {
+                            this.showSubmittedWaitingState(userAnswer);
+                        }, 500);
+                    } else {
+                        // Show submitted state after a brief delay
+                        setTimeout(() => {
+                            this.showState('answerSubmittedState');
+                        }, 500);
+                    }
+                }
+
+                onAnswerSubmitted(data) {
+                    //Convert accuracy percentage to 2 decimal places
+                    data.accuracy_percentage = parseFloat(data.accuracy_percentage).toFixed(2);
+                    
+                    // Update the submitted state with actual results
+                    document.getElementById('submittedEstimate').textContent = data.user_answer + (this.currentUnit ? ' ' + this.currentUnit : '');
+                    document.getElementById('pointsEarned').textContent = data.points_earned;
+                    document.getElementById('accuracyPercent').textContent = data.accuracy_percentage + '%';
+                    this.lastPointsEarned = parseInt(data.points_earned || 0, 10) || 0;
+                    this.lastSubmittedNumericAnswer = Number(data.user_answer);
+                    this.lastAccuracyPercentage = parseFloat(data.accuracy_percentage) || 0;
+                }
+
+                showSubmittedWaitingState(userAnswer) {
+                    const zoneSubmitFeedback = document.getElementById('zoneSubmitFeedback');
+                    const zoneSubmittedEstimate = document.getElementById('zoneSubmittedEstimate');
+                    const submitBtn = document.getElementById('submitAnswerBtn');
+
+                    if (zoneSubmittedEstimate) {
+                        zoneSubmittedEstimate.textContent = userAnswer + (this.currentUnit ? ' ' + this.currentUnit : '');
+                    }
+                    if (zoneSubmitFeedback) {
+                        zoneSubmitFeedback.classList.remove('d-none');
+                    }
+                    if (submitBtn) {
+                        submitBtn.classList.add('d-none');
+                        submitBtn.classList.remove('loading');
+                        submitBtn.disabled = true;
+                    }
+                }
+
+                onTimeUp() {
+                    if (this.hasAnswered) return;
+                    
+                    // Auto-submit if there's an answer
+                    const estimateInput = document.getElementById('estimateInput');
+                    if (estimateInput.value.trim()) {
+                        this.submitAnswer();
+                    }
+                }
+
+                showCorrectAnswer(correctAnswerData, pointsForQuestion = 0, rankResults = null) {
+                    document.getElementById('correctAnswerDisplay').textContent = correctAnswerData?.formatted_answer || '-';
+                    document.getElementById('userEstimateDisplay').textContent = this.hasAnswered
+                        ? document.getElementById('submittedEstimate').textContent
+                        : '-';
+                    document.getElementById('correctAnswerComparison').textContent = correctAnswerData?.formatted_answer || '-';
+                    this.renderZoneScoringExplanation(correctAnswerData, pointsForQuestion);
+                    this.renderRankResults(rankResults);
+                    
+                    // Show explanation if available
+                    if (correctAnswerData?.explanation) {
+                        document.getElementById('explanationText').textContent = correctAnswerData.explanation;
+                        document.getElementById('explanationText').style.display = 'block';
+                    } else {
+                        document.getElementById('explanationText').style.display = 'none';
+                    }
+                    
+                    const performanceBadge = document.getElementById('performanceBadge');
+                    const performanceText = performanceBadge.querySelector('.performance-text');
+
+                    if (correctAnswerData?.scoring_mode === 'rank' && Array.isArray(rankResults)) {
+                        const ownRankResult = rankResults.find(r => r.participant_name === this.participantName);
+                        const ownRankPosition = ownRankResult?.rank_position || '-';
+                        performanceBadge.className = 'performance-badge good';
+                        performanceText.textContent = `Rank #${ownRankPosition} (${pointsForQuestion} pts)`;
+                    } else {
+                        const accuracy = parseFloat(document.getElementById('accuracyPercent').textContent);
+
+                        if (accuracy >= 95) {
+                            performanceBadge.className = 'performance-badge excellent';
+                            performanceText.textContent = `Excellent Estimate! (${pointsForQuestion} pts)`;
+                        } else if (accuracy >= 80) {
+                            performanceBadge.className = 'performance-badge good';
+                            performanceText.textContent = `Great Estimate! (${pointsForQuestion} pts)`;
+                        } else if (accuracy >= 60) {
+                            performanceBadge.className = 'performance-badge fair';
+                            performanceText.textContent = `Good Try! (${pointsForQuestion} pts)`;
+                        } else {
+                            performanceBadge.className = 'performance-badge poor';
+                            performanceText.textContent = `Keep Practicing! (${pointsForQuestion} pts)`;
+                        }
+                    }
+                    
+                    this.showState('correctAnswerState');
+                }
+
+                renderRankResults(rankResults) {
+                    const rankCard = document.getElementById('rankResultsCard');
+                    const rankList = document.getElementById('rankResultsList');
+
+                    if (!rankCard || !rankList) return;
+                    if (this.scoringMode !== 'rank' || !Array.isArray(rankResults) || !rankResults.length) {
+                        rankCard.style.display = 'none';
+                        rankList.innerHTML = '';
+                        return;
+                    }
+
+                    const rows = rankResults.map(result => {
+                        const isSelf = result.participant_name === this.participantName;
+                        return `
+                            <div class="rank-result-row${isSelf ? ' is-self' : ''}">
+                                <div class="rank-result-position">#${result.rank_position}</div>
+                                <div class="rank-result-name">${this.escapeHtml(result.participant_name)}</div>
+                                <div class="rank-result-points">${result.points_earned} pts</div>
+                            </div>
+                        `;
+                    });
+
+                    rankList.innerHTML = rows.join('');
+                    rankCard.style.display = 'block';
+                }
+
+                escapeHtml(value) {
+                    return String(value ?? '')
+                        .replace(/&/g, '&amp;')
+                        .replace(/</g, '&lt;')
+                        .replace(/>/g, '&gt;')
+                        .replace(/\"/g, '&quot;')
+                        .replace(/'/g, '&#39;');
+                }
+
+                formatRevealPercentage(value) {
+                    const numericValue = Number(value);
+                    if (!Number.isFinite(numericValue)) return '-';
+                    if (Math.abs(numericValue - Math.round(numericValue)) < 0.0001) {
+                        return `${Math.round(numericValue)}`;
+                    }
+                    return numericValue.toFixed(1).replace(/\.0$/, '');
+                }
+
+                renderZoneScoringExplanation(correctAnswerData, pointsForQuestion = 0) {
+                    const zoneCard = document.getElementById('zoneExplanationCard');
+                    const zoneSummary = document.getElementById('zoneExplanationSummary');
+                    const zoneRangeList = document.getElementById('zoneRangeList');
+                    const zoneScoring = correctAnswerData?.zone_scoring;
+
+                    if (!zoneCard || !zoneSummary || !zoneRangeList) return;
+                    if (!zoneScoring || correctAnswerData?.scoring_mode !== 'zones') {
+                        zoneCard.style.display = 'none';
+                        zoneSummary.textContent = '';
+                        zoneRangeList.innerHTML = '';
+                        return;
+                    }
+
+                    const zones = Array.isArray(zoneScoring.zones) ? zoneScoring.zones : [];
+                    const hasSubmittedEstimate = this.hasAnswered && Number.isFinite(this.lastSubmittedNumericAnswer);
+                    const correctAnswer = Number(correctAnswerData?.correct_answer);
+                    let deviationPercentage = null;
+                    let matchedZone = null;
+
+                    if (hasSubmittedEstimate && zoneScoring.special_case === 'exact_zero') {
+                        matchedZone = this.lastSubmittedNumericAnswer === 0 ? zones[0] : null;
+                    } else if (hasSubmittedEstimate && Number.isFinite(correctAnswer) && correctAnswer !== 0) {
+                        deviationPercentage = Math.abs((this.lastSubmittedNumericAnswer - correctAnswer) / Math.abs(correctAnswer)) * 100;
+                        matchedZone = zones.find(zone => {
+                            const min = Number(zone.min_percentage);
+                            const max = Number(zone.max_percentage);
+                            if (!Number.isFinite(min) || !Number.isFinite(max)) return false;
+                            if (Number(zone.zone_number) === 1) {
+                                return deviationPercentage >= min && deviationPercentage <= max;
+                            }
+                            return deviationPercentage > min && deviationPercentage <= max;
+                        }) || null;
+                    }
+
+                    if (zoneScoring.special_case === 'exact_zero') {
+                        if (!hasSubmittedEstimate) {
+                            zoneSummary.textContent = `Only an exact 0 scores here. Any other estimate earns ${zoneScoring.outside_points || 0} pts.`;
+                        } else if (matchedZone) {
+                            zoneSummary.textContent = `Your estimate was exactly 0, so it earned ${pointsForQuestion} pts.`;
+                        } else {
+                            zoneSummary.textContent = `Only an exact 0 scores here. Your estimate earned ${zoneScoring.outside_points || 0} pts.`;
+                        }
+                    } else if (!hasSubmittedEstimate) {
+                        zoneSummary.textContent = `Zone mode gives fewer points the farther the estimate is from the correct answer.`;
+                    } else if (matchedZone) {
+                        zoneSummary.textContent = `Your estimate was ${this.formatRevealPercentage(deviationPercentage)}% away, so it landed in Zone ${matchedZone.zone_number} for ${pointsForQuestion} pts.`;
+                    } else {
+                        zoneSummary.textContent = `Your estimate was ${this.formatRevealPercentage(deviationPercentage)}% away, so it landed outside all scoring zones for ${zoneScoring.outside_points || 0} pts.`;
+                    }
+
+                    const zoneRows = zones.map(zone => {
+                        const isActive = matchedZone && Number(matchedZone.zone_number) === Number(zone.zone_number);
+                        const title = zoneScoring.special_case === 'exact_zero'
+                            ? `Zone ${zone.zone_number}`
+                            : `Zone ${zone.zone_number}: ${this.formatRevealPercentage(zone.min_percentage)}%-${this.formatRevealPercentage(zone.max_percentage)}% away`;
+                        const label = zoneScoring.special_case === 'exact_zero'
+                            ? 'Exact answer of 0 only'
+                            : `Approx. values: ${zone.absolute_range_display || '-'}`;
+                        return `
+                            <div class="zone-range-row${isActive ? ' active' : ''}">
+                                <div class="zone-range-meta">
+                                    <div class="zone-range-title">${title}</div>
+                                    <div class="zone-range-label">${label}</div>
+                                </div>
+                                <div class="zone-range-points">${zone.points} pts</div>
+                            </div>
+                        `;
+                    });
+
+                    const outsideActive = hasSubmittedEstimate && !matchedZone && pointsForQuestion === 0;
+                    zoneRows.push(`
+                        <div class="zone-range-row outside${outsideActive ? ' active' : ''}">
+                            <div class="zone-range-meta">
+                                <div class="zone-range-title">Outside all zones</div>
+                                <div class="zone-range-label">Farther away than the last scoring band</div>
+                            </div>
+                            <div class="zone-range-points">${zoneScoring.outside_points || 0} pts</div>
+                        </div>
+                    `);
+
+                    zoneRangeList.innerHTML = zoneRows.join('');
+                    zoneCard.style.display = 'block';
+                }
+
+                pushScoreHistory(points, maxPoints) {
+                    const questionNumber = this.currentQuestionIndex || (this.scoreHistory.length + 1);
+                    const nextEntry = {
+                        question_number: questionNumber,
+                        points: parseInt(points || 0, 10) || 0,
+                        max_points: parseInt(maxPoints || 0, 10) || 0,
+                    };
+                    const existingIndex = this.scoreHistory.findIndex((entry) => Number(entry?.question_number) === questionNumber);
+                    if (existingIndex >= 0) {
+                        this.scoreHistory[existingIndex] = nextEntry;
+                    } else {
+                        this.scoreHistory.push(nextEntry);
+                    }
+                    this.renderScoreHistory();
+                }
+
+                renderScoreHistory() {
+                    const listEl = document.getElementById('scoreHistoryList');
+                    const totalEl = document.getElementById('scoreHistoryTotal');
+                    if (!listEl) return;
+                    if (!(this.scoreboardQuestions || []).length) {
+                        listEl.innerHTML = '<div class="text-muted small">Noch keine Fragen verfügbar.</div>';
+                        if (totalEl) totalEl.textContent = '0/0 Punkte';
+                        return;
+                    }
+                    const progressByQuestionNumber = new Map(
+                        (this.scoreHistory || [])
+                            .map((entry) => [Number(entry?.question_number), entry])
+                            .filter(([questionNumber]) => !Number.isNaN(questionNumber))
+                    );
+                    const totalPoints = Array.from(progressByQuestionNumber.values())
+                        .reduce((sum, entry) => sum + (parseInt(entry?.points || 0, 10) || 0), 0);
+                    const totalMaxPoints = Array.from(progressByQuestionNumber.values())
+                        .reduce((sum, entry) => sum + (parseInt(entry?.max_points || 0, 10) || 0), 0);
+
+                    listEl.innerHTML = '';
+                    (this.scoreboardQuestions || []).forEach((question, index) => {
+                        const questionNumber = Number(question?.number) || index + 1;
+                        const progressEntry = progressByQuestionNumber.get(questionNumber);
+                        const maxPoints = progressEntry?.max_points ?? question?.max_points;
+                        const earnedPoints = progressEntry?.points;
+                        const isCurrent = this.currentQuestionIndex === questionNumber && !progressEntry;
+                        const isPlayed = !!progressEntry;
+                        const rowState = isCurrent ? 'is-current' : isPlayed ? 'is-played' : 'is-upcoming';
+                        const hasMaxPoints = maxPoints !== undefined && maxPoints !== null;
+                        const row = document.createElement('div');
+                        row.className = `score-history-row score-box__row ${rowState}`;
+                        row.dataset.questionNumber = String(questionNumber);
+                        if (question?.id !== undefined && question?.id !== null) {
+                            row.dataset.questionId = String(question.id);
+                        }
+                        row.innerHTML = `
+                            <div class="score-history-badge score-box__badge">${questionNumber}</div>
+                            <div class="score-history-value score-box__value">
+                                ${earnedPoints !== undefined && earnedPoints !== null
+                                    ? `<span>${earnedPoints}</span>${hasMaxPoints ? `<span class="score-history-separator score-box__separator">/</span><span>${maxPoints}</span>` : ''}`
+                                    : hasMaxPoints
+                                        ? `<span class="score-history-empty score-box__empty">__</span><span class="score-history-separator score-box__separator">/</span><span>${maxPoints}</span>`
+                                        : '<span class="score-history-empty score-box__empty">____</span>'
+                                }
+                            </div>
+                        `;
+                        listEl.appendChild(row);
+                    });
+
+                    if (totalEl) {
+                        totalEl.textContent = `${totalPoints}/${totalMaxPoints} Punkte`;
+                    }
+                }
+
+                showWaitingForNextQuestion() {
+                    // Create a temporary waiting state for next question
+                    // const currentState = document.querySelector('.game-state:not(.d-none)');
+                    // if (currentState) {
+                    //     currentState.innerHTML = `
+                    //         <div class="waiting-card">
+                    //             <div class="waiting-animation">
+                    //                 <div class="pulse-ring"></div>
+                    //                 <div class="pulse-ring delay-1"></div>
+                    //                 <div class="pulse-ring delay-2"></div>
+                    //                 <i data-lucide="clock"></i>
+                    //             </div>
+                    //             <h2>Waiting for Next Question</h2>
+                    //             <p>Get ready for the next challenge!</p>
+                    //         </div>
+                    //     `;
+                    //     lucide.createIcons();
+                    // }
+                    // Switch to a safe waiting state without destroying existing DOM nodes
+                    this.showState('waitingQuestionState');
+                    const waiting = document.getElementById('waitingQuestionState');
+                    if (waiting) {
+                        try { lucide.createIcons(); } catch (e) { /* ignore */ }
+                    }
+                }
+
+                showState(stateId) {
+                    // Hide all states
+                    document.querySelectorAll('.game-state').forEach(state => {
+                        state.classList.add('d-none');
+                    });
+                    
+                    // Show target state
+                    const targetState = document.getElementById(stateId);
+                    if (targetState) {
+                        targetState.classList.remove('d-none');
+                    }
+                }
+
+                updateParticipantCount(count) {
+                    const countElement = document.getElementById('waitingParticipantCount');
+                    if (countElement) {
+                        countElement.textContent = count;
+                    }
+                }
+
+                showConnectionStatus() {
+                    document.getElementById('connectionStatus').classList.remove('d-none');
+                }
+
+                hideConnectionStatus() {
+                    document.getElementById('connectionStatus').classList.add('d-none');
+                }
+            }
+
+            // Initialize Estimation Player
+            const player = new EstimationPlayer();
+
+            const lobbyReturnController = createHubLobbyReturnController({
+                sessionCode: '{{ hub_session|default_if_none:"" }}',
+                gameKey: 'estimation',
+                roomCode: '{{ quiz.room_code }}',
+                participantName: '{{ participant.name|escapejs }}',
+                csrfToken: '{{ csrf_token }}',
+            });
+
+            // Minimal Hub listener for centralized navigation
+            (function() {
+                let hubCode = null;
+                try {
+                    hubCode = localStorage.getItem('hub_session_code');
+                    console.log("[HubScript2] Retrieved hub_session_code from localStorage:", hubCode);
+                } catch (err) {
+                    console.error("[HubScript2] Error accessing localStorage:", err);
+                }
+
+                if (!hubCode) {
+                    console.warn("[HubScript2] No hub_session_code found, exiting...");
+                    return;
+                }
+
+                const wsScheme = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+                const wsUrl = `${wsScheme}//${window.location.host}/ws/hub/${hubCode}/`;
+                console.log("[HubScript2] Connecting to WebSocket:", wsUrl);
+
+                const hubWS = new WebSocket(wsUrl);
+
+                hubWS.onopen = () => {
+                    console.log("[HubScript2] WebSocket connected successfully.");
+                };
+
+                hubWS.onmessage = (event) => {
+                    console.log("[HubScript2] Message received:", event.data);
+                    try {
+                        const data = JSON.parse(event.data);
+                        console.log("[HubScript2] Parsed data:", data);
+
+                        /*if (data.type === 'navigate' && data.step) {
+                            const step = data.step;
+                            console.log("[HubScript2] Navigation requested for:", step);
+
+                            const routes = {
+                                quiz: { join: '/quiz/join/', play: '/quiz/play/' },
+                                assign: { join: '/assign/join/', play: '/assign/play/' },
+                                estimation: { join: '/estimation/join/', play: '/estimation/play/' },
+                                where: { join: '/where/join/', play: '/where/play/' },
+                                who: { join: '/who/join/', play: '/who/play/' },
+                                who_that: { join: '/who-is-that/join/', play: '/who-is-that/play/' },
+                                blackjack: { join: '/blackjack/join/', play: '/blackjack/play/' },
+                            };
+
+                            const base = routes[step.game_key];
+                            console.log("[HubScript2] Base route:", base);
+
+                            if (base && step.room_code) {
+                                const u = new URL(base, window.location.origin);
+                                u.searchParams.set('room_code', step.room_code);
+                                u.searchParams.set('nickname', player.participantName);
+                                u.searchParams.set('hub_session', hubCode);
+
+                                const joinUrl = new URL(routes[step.game_key].join, window.location.origin);
+                                const playUrl = new URL(`${routes[step.game_key].play}${step.room_code}/${encodeURIComponent(player.participantName)}/`, window.location.origin);
+
+                                // Prepare join payload
+                                const csrfToken = "{{ csrf_token }}"; // or get dynamically if rendered server-side
+                                const body = JSON.stringify({
+                                room_code: step.room_code,
+                                participant_name: player.participantName,
+                                hub_session: hubCode,
+                                });
+
+                                // if (code) {
+                                //     try { localStorage.setItem('hub_session_code', code); } catch (_) {}
+                                // }
+
+                                try {
+                                    fetch(joinUrl.toString(), {
+                                        method: 'POST',
+                                        headers: {
+                                        'Content-Type': 'application/json',
+                                        'X-CSRFToken': csrfToken,
+                                        },
+                                        body: body,
+                                        credentials: 'same-origin',
+                                    })
+                                    .then(response => response.json())
+                                    .then(data => {
+                                        if (data.success) {
+                                        console.log('[HubScript2] Join successful, redirecting to play URL');
+                                        window.location.href = playUrl.toString();
+                                        } else {
+                                        console.error('[HubScript2] Join failed, falling back to play URL');
+                                        window.location.href = playUrl.toString();
+                                        }
+                                    })
+                                } catch (error) {
+                                console.error('[HubScript2] Error joining game:', error);
+                                window.location.href = playUrl.toString();
+                                }
+                            } else {
+                                console.warn("[HubScript2] Invalid navigation info:", step);
+                            }
+
+                        } */
+                        if (data.type === 'players_recalled_to_lobby') {
+                            lobbyReturnController.returnToLobby({ markInactive: false });
+                        } else if (data.type === 'session_ended') {
+                            console.log("[HubScript2] Session ended message received.");
+                            const u = new URL(`/hub/lobby/${hubCode}/`, window.location.origin);
+                            u.searchParams.set('ended', '1');
+
+                            console.log("[HubScript2] Redirecting to lobby:", u.toString());
+                            window.location.href = u.toString();
+                        } else {
+                            console.log("[HubScript2] Unhandled message type:", data.type);
+                        }
+
+                    } catch (err) {
+                        console.error("[HubScript2] Failed to parse message:", event.data, err);
+                    }
+                };
+
+                hubWS.onerror = (err) => {
+                    console.error("[HubScript2] WebSocket error:", err);
+                };
+
+                hubWS.onclose = (e) => {
+                    console.warn("[HubScript2] WebSocket closed:", e.code, e.reason);
+                };
+            })();
+        });
+    </script>
+  {% include 'includes/_leaderboard_overlay.html' %}
+  {% include 'includes/accessibility_widget.html' %}
+</body>
+</html>

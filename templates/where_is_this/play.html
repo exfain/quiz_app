@@ -1,0 +1,1802 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Where is this?: {{ quiz.room_code }} - QuizMaster</title>
+    
+    <!-- Bootstrap 5 CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
+    
+    <!-- Leaflet CSS and JS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    
+    <!-- Custom Theme CSS -->
+    <link rel="stylesheet" href="{% static 'theme.css' %}">
+    
+    <!-- Inter Font -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body class="where-play-page">
+    <div class="play-container">
+        <!-- Header -->
+        <header class="quiz-header">
+            <div class="container">
+                <div class="header-content">
+                    <div class="quiz-info">
+                        <!-- <div class="room-code">
+                            <i data-lucide="hash"></i>
+                            {{ quiz.room_code }}
+                        </div> -->
+                        <h1 class="quiz-title">{{ quiz.title }}</h1>
+                    </div>
+                    <div class="participant-info">
+                        <div class="participant-avatar">
+                            {{ participant.name|first|upper }}
+                        </div>
+                        <div class="participant-details">
+                            <span class="participant-name">{{ participant.name }}</span>
+                            <!-- <span class="participant-score">{{ participant.total_score }} pts</span> -->
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </header>
+
+        <!-- Main Content -->
+        <main class="quiz-main">
+            <div class="container-fluid">
+                <div class="row g-4 align-items-start">
+                    <div class="col-xl-9 col-12">
+                        <!-- Waiting State -->
+                        <div id="waitingQuizState" class="game-state {% if quiz.status != 'waiting' %}d-none{% endif %}">
+                            <div class="waiting-card">
+                                <div class="waiting-animation">
+                                    <div class="pulse-ring"></div>
+                                    <div class="pulse-ring delay-1"></div>
+                                    <div class="pulse-ring delay-2"></div>
+                                    <i data-lucide="globe"></i>
+                                </div>
+                                <h2>Waiting for Location Quiz to Start</h2>
+                                <p>Get ready to explore the world! The quiz host will start the session shortly.</p>
+                                <div class="participants-count">
+                                    <i data-lucide="users"></i>
+                                    <span id="waitingParticipantCount">{{ participant_count }}</span> participants joined
+                                </div>
+                            </div>
+                        </div>
+
+                        <div id="waitingQuestionState" class="game-state d-none">
+                            <div class="waiting-card">
+                                <div class="waiting-animation">
+                                    <div class="pulse-ring"></div>
+                                    <div class="pulse-ring delay-1"></div>
+                                    <div class="pulse-ring delay-2"></div>
+                                    <i data-lucide="clock"></i>
+                                </div>
+                                <h2>Waiting for Next Question</h2>
+                                <p>Get ready for the next challenge!</p>
+                            </div>
+                        </div>
+
+                        <!-- Question State -->
+                        <div id="questionState" class="game-state {% if not quiz.current_question %}d-none{% endif %}">
+                            <div class="question-layout">
+                                <!-- Question Panel -->
+                                <div class="question-panel">
+                                    <div class="question-header">
+                                        <div class="question-number">
+                                            Question <span id="currentQuestionNumber">1</span>
+                                        </div>
+                                        <div class="question-timer">
+                                            <div class="timer-circle" id="playerTimerCircle">
+                                                <span id="playerTimeLeft">60</span>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <div class="question-content">
+                                        <div class="question-text" id="questionText">
+                                            {% if quiz.current_question %}
+                                                {{ quiz.current_question.question_text }}
+                                            {% endif %}
+                                        </div>
+
+                                        <div class="question-image" id="questionImageContainer" style="display: none;">
+                                            <img id="questionImage" src="" alt="Location hint" class="img-fluid">
+                                        </div>
+
+                                        <div class="question-meta">
+                                            <div class="meta-item">
+                                                <i data-lucide="target"></i>
+                                                <span>Max. Punkte: <span id="maxPoints">100</span></span>
+                                            </div>
+                                            <div class="meta-item">
+                                                <i data-lucide="map-pin"></i>
+                                                <span>Perfekte Distanz: <span id="perfectDistance">10</span>km</span>
+                                            </div>
+                                        </div>
+
+                                        <div class="map-instructions">
+                                            <i data-lucide="mouse-pointer"></i>
+                                            <span>Click on the map to select your answer</span>
+                                        </div>
+
+                                        <button class="btn btn-primary btn-lg w-100 submit-answer" id="submitAnswerBtn" disabled>
+                                            <i data-lucide="send"></i>
+                                            Submit Location
+                                        </button>
+                                    </div>
+                                </div>
+
+                                <!-- Map Panel -->
+                                <div class="map-panel">
+                                    <div id="gameMap" class="game-map"></div>
+                                    <div class="map-controls">
+                                        <button class="btn btn-outline btn-sm" id="clearSelectionBtn" disabled>
+                                            <i data-lucide="x"></i>
+                                            Clear Selection
+                                        </button>
+                                        <div class="selection-info" id="selectionInfo" style="display: none;">
+                                            <i data-lucide="map-pin"></i>
+                                            <span id="selectedCoords">No location selected</span>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Answer Submitted State -->
+                        <div id="answerSubmittedState" class="game-state d-none">
+                            <div class="submitted-card">
+                                <div class="question-timer submitted-timer">
+                                    <div class="timer-circle" id="playerTimerCircleSubmitted">
+                                        <span id="playerTimeLeftSubmitted">60</span>
+                                    </div>
+                                </div>
+                                <div class="submitted-animation">
+                                    <div class="check-animation">
+                                        <i data-lucide="check-circle" class="check-icon"></i>
+                                    </div>
+                                </div>
+                                <h2>Location Submitted!</h2>
+                                <p>Waiting for other participants and the next question...</p>
+                                <div class="submitted-details">
+                                    <div class="result-summary">
+                                        <div class="distance-info">
+                                            <div class="distance-value" id="submittedDistance">0km</div>
+                                            <div class="distance-label">Distance from target</div>
+                                        </div>
+                                        <div class="score-info">
+                                            <div class="score-value" id="submittedPoints">0</div>
+                                            <div class="score-label">Points earned</div>
+                                        </div>
+                                        <div class="accuracy-info">
+                                            <div class="accuracy-value" id="submittedAccuracy">0%</div>
+                                            <div class="accuracy-label">Accuracy</div>
+                                        </div>
+                                    </div>
+                                    <div class="result-map-container">
+                                        <div id="resultMap" class="result-map"></div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Quiz Ended State -->
+                        <div id="quizEndedState" class="game-state d-none">
+                            <div class="ended-card">
+                                <div class="ended-animation">
+                                    <i data-lucide="globe" class="globe-icon"></i>
+                                </div>
+                                <h2>Location Quiz Completed!</h2>
+                                <p>Thank you for exploring the world with us!</p>
+                                <div class="final-score">
+                                    <div class="score-circle">
+                                        <span class="score-value">{{ participant.total_score }}</span>
+                                        <span class="score-label">points</span>
+                                    </div>
+                                </div>
+                                <!-- <div class="quiz-actions">
+                                    <a href="/where/result/{{ quiz.room_code }}/{{ participant.name }}/" class="btn btn-primary btn-lg">
+                                        <i data-lucide="map"></i>
+                                        View Detailed Results
+                                    </a>
+                                    <a href="/where/join/" class="btn btn-outline btn-lg">
+                                        <i data-lucide="play"></i>
+                                        Join Another Quiz
+                                    </a>
+                                </div> -->
+                            </div>
+                        </div>
+
+                        <!-- Connection Status -->
+                        <div id="connectionStatus" class="connection-status d-none">
+                            <div class="status-indicator">
+                                <i data-lucide="wifi-off"></i>
+                                <span>Reconnecting...</span>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-xl-3 col-12">
+                        <aside class="where-score-box score-box" id="whereScoreBox">
+                            <h6 class="mb-2 score-box__title">Punkte</h6>
+                            <div id="whereScoreList" class="where-score-list score-box__list">
+                                {% for question in question_scoreboard %}
+                                    <div class="where-score-row score-box__row is-{{ question.status }}" data-question-number="{{ question.number }}" data-question-id="{{ question.id }}">
+                                        <div class="where-score-badge score-box__badge">{{ question.number }}</div>
+                                        <div class="where-score-value score-box__value">
+                                            {% if question.earned_points is not None %}
+                                                <span>{{ question.earned_points }}</span>
+                                            {% else %}
+                                                <span class="where-score-empty score-box__empty">__</span>
+                                            {% endif %}
+                                            <span class="score-box__separator">/</span>
+                                            <span>{{ question.max_points }}</span>
+                                        </div>
+                                    </div>
+                                {% empty %}
+                                    <div class="text-muted small">Noch keine Fragen verfügbar.</div>
+                                {% endfor %}
+                            </div>
+                            <div class="where-score-total" id="whereScoreTotal">{{ score_total_earned }}/{{ score_total_max }}</div>
+                        </aside>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    {{ question_scoreboard|json_script:"whereQuestionScoreboardData" }}
+    {{ initial_progress_history|json_script:"whereInitialProgressData" }}
+    {{ current_question_id|json_script:"whereCurrentQuestionId" }}
+
+    <!-- Bootstrap JS -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+
+    <style>
+        /* Where Play Page Styles */
+        .where-play-page {
+            min-height: 100vh;
+            background: linear-gradient(135deg, var(--bg-secondary) 0%, var(--primary-50) 100%);
+        }
+
+        .play-container {
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        /* Header - Same as Assign */
+        .quiz-header {
+            background: var(--bg-primary);
+            border-bottom: 1px solid var(--border-color);
+            box-shadow: var(--shadow-sm);
+            padding: 1rem 0;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }
+
+        .header-content {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 1rem;
+        }
+
+        .quiz-info {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+        }
+
+        .room-code {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            background-color: var(--primary-100);
+            color: var(--primary-700);
+            padding: 0.5rem 1rem;
+            border-radius: var(--border-radius-xl);
+            font-family: var(--font-family-mono);
+            font-weight: 700;
+            font-size: 0.875rem;
+        }
+
+        .room-code i {
+            width: 16px;
+            height: 16px;
+        }
+
+        .quiz-title {
+            font-size: 1.5rem;
+            font-weight: 700;
+            color: var(--text-primary);
+            margin: 0;
+        }
+
+        .participant-info {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+        }
+
+        .participant-avatar {
+            width: 48px;
+            height: 48px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, var(--primary-500) 0%, var(--primary-600) 100%);
+            color: var(--text-white);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 700;
+            font-size: 1.25rem;
+        }
+
+        .participant-details {
+            display: flex;
+            flex-direction: column;
+        }
+
+        .participant-name {
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+
+        .participant-score {
+            color: var(--color-success);
+            font-size: 0.875rem;
+            font-weight: 500;
+        }
+
+        /* Main Content */
+        .quiz-main {
+            flex: 1;
+            padding: 0;
+        }
+
+        .where-score-box {
+            position: sticky;
+            top: 96px;
+            margin: 1rem 1rem 1.5rem 0;
+        }
+
+        .where-score-list {
+            max-height: min(60vh, 32rem);
+            overflow-y: auto;
+        }
+
+        .where-score-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 0.75rem;
+        }
+
+        .where-score-value {
+            justify-content: flex-end;
+            min-width: 4.75rem;
+        }
+
+        .where-score-total {
+            margin-top: 0.75rem;
+            padding-top: 0.75rem;
+            border-top: 1px solid var(--border-color);
+            text-align: right;
+            font-weight: 700;
+            color: var(--text-primary);
+        }
+
+        .game-state {
+            animation: fadeIn 0.5s ease-out;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(20px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        /* Waiting State - Same as Assign */
+        .waiting-card {
+            text-align: center;
+            padding: 3rem 2rem;
+            background: var(--bg-primary);
+            border-radius: var(--border-radius-xl);
+            box-shadow: var(--shadow-lg);
+            margin: 2rem;
+        }
+
+        .waiting-animation {
+            position: relative;
+            width: 120px;
+            height: 120px;
+            margin: 0 auto 2rem;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .pulse-ring {
+            position: absolute;
+            width: 100%;
+            height: 100%;
+            border: 2px solid var(--color-primary);
+            border-radius: 50%;
+            animation: pulse 2s cubic-bezier(0.455, 0.03, 0.515, 0.955) infinite;
+            opacity: 0;
+        }
+
+        .delay-1 { animation-delay: 0.5s; }
+        .delay-2 { animation-delay: 1s; }
+
+        @keyframes pulse {
+            0% { transform: scale(0.8); opacity: 1; }
+            100% { transform: scale(1.4); opacity: 0; }
+        }
+
+        .waiting-animation i {
+            width: 48px;
+            height: 48px;
+            color: var(--color-primary);
+            z-index: 2;
+        }
+
+        .waiting-card h2 {
+            font-size: 1.75rem;
+            font-weight: 700;
+            color: var(--text-primary);
+            margin-bottom: 1rem;
+        }
+
+        .waiting-card p {
+            color: var(--text-secondary);
+            font-size: 1.125rem;
+            margin-bottom: 2rem;
+        }
+
+        .participants-count {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            background-color: var(--bg-secondary);
+            padding: 0.75rem 1.5rem;
+            border-radius: var(--border-radius-xl);
+            color: var(--text-primary);
+            font-weight: 600;
+        }
+
+        .participants-count i {
+            width: 20px;
+            height: 20px;
+            color: var(--color-primary);
+        }
+
+        /* Question Layout */
+        .question-layout {
+            display: grid;
+            grid-template-columns: 400px 1fr;
+            height: calc(100vh - 80px); /* Subtract header height */
+        }
+
+        .question-panel {
+            background: var(--bg-primary);
+            border-right: 1px solid var(--border-color);
+            display: flex;
+            flex-direction: column;
+            overflow-y: auto;
+        }
+
+        .question-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 1.5rem;
+            background: linear-gradient(135deg, var(--primary-50) 0%, var(--secondary-50) 100%);
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .question-number {
+            font-size: 1.125rem;
+            font-weight: 700;
+            color: var(--text-primary);
+        }
+
+        .timer-circle {
+            width: 60px;
+            height: 60px;
+            border: 4px solid var(--success-300);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 700;
+            color: var(--success-600);
+            background: var(--bg-primary);
+            position: relative;
+        }
+
+        .timer-circle.warning {
+            border-color: var(--warning-300);
+            color: var(--warning-600);
+        }
+
+        .timer-circle.danger {
+            border-color: var(--error-300);
+            color: var(--error-600);
+            animation: shake 0.5s infinite;
+        }
+
+        @keyframes shake {
+            0%, 100% { transform: translateX(0); }
+            25% { transform: translateX(-2px); }
+            75% { transform: translateX(2px); }
+        }
+
+        .question-content {
+            flex: 1;
+            padding: 2rem;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .question-text {
+            font-size: 1.25rem;
+            font-weight: 600;
+            color: var(--text-primary);
+            line-height: 1.6;
+            margin-bottom: 1.5rem;
+            text-align: center;
+        }
+
+        .question-image {
+            margin-bottom: 1.5rem;
+            text-align: center;
+        }
+
+        .question-image img {
+            max-width: 100%;
+            max-height: 200px;
+            border-radius: var(--border-radius-lg);
+            box-shadow: var(--shadow-md);
+        }
+
+        .question-hint {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            padding: 1rem;
+            background: var(--primary-50);
+            border-radius: var(--border-radius);
+            margin-bottom: 1.5rem;
+            color: var(--primary-700);
+        }
+
+        .question-hint i {
+            width: 20px;
+            height: 20px;
+            flex-shrink: 0;
+        }
+
+        .question-meta {
+            display: flex;
+            flex-direction: column;
+            gap: 0.75rem;
+            margin-bottom: 1.5rem;
+            padding: 1rem;
+            background: var(--bg-secondary);
+            border-radius: var(--border-radius);
+        }
+
+        .meta-item {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            font-size: 0.875rem;
+            color: var(--text-secondary);
+        }
+
+        .meta-item i {
+            width: 16px;
+            height: 16px;
+            color: var(--color-primary);
+        }
+
+        .badge {
+            padding: 0.25rem 0.5rem;
+            border-radius: var(--border-radius-sm);
+            font-size: 0.75rem;
+            font-weight: 500;
+        }
+
+
+        .map-instructions {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            justify-content: center;
+            margin-bottom: 1.5rem;
+            padding: 0.75rem;
+            background: var(--secondary-50);
+            border-radius: var(--border-radius);
+            color: var(--secondary-700);
+            font-weight: 500;
+        }
+
+        .map-instructions i {
+            width: 20px;
+            height: 20px;
+        }
+
+        .submit-answer {
+            height: 60px;
+            font-size: 1.125rem;
+            font-weight: 600;
+            transition: all var(--transition-fast);
+            margin-top: auto;
+        }
+
+        .submit-answer:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .submit-answer.loading {
+            position: relative;
+            color: transparent !important;
+        }
+
+        .submit-answer.loading::after {
+            content: '';
+            position: absolute;
+            width: 20px;
+            height: 20px;
+            top: 50%;
+            left: 50%;
+            margin-left: -10px;
+            margin-top: -10px;
+            border: 2px solid transparent;
+            border-top-color: currentColor;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        /* Map Panel */
+        .map-panel {
+            position: relative;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        .game-map {
+            flex: 1;
+            width: 100%;
+            min-height: 0;
+            cursor: crosshair;
+        }
+
+        .map-controls {
+            flex-shrink: 0;
+            padding: 1rem;
+            background: var(--bg-primary);
+            border-top: 1px solid var(--border-color);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .selection-info {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            color: var(--text-primary);
+            font-weight: 500;
+            font-size: 0.875rem;
+        }
+
+        .selection-info i {
+            width: 16px;
+            height: 16px;
+            color: var(--color-primary);
+        }
+
+        /* Answer Submitted State */
+        .submitted-card {
+            text-align: center;
+            padding: 2rem;
+            background: var(--bg-primary);
+            border-radius: var(--border-radius-xl);
+            box-shadow: var(--shadow-lg);
+            margin: 2rem;
+            max-width: 800px;
+            margin-left: auto;
+            margin-right: auto;
+            position: relative;
+        }
+
+        .submitted-timer {
+            position: absolute;
+            top: 1.5rem;
+            right: 1.5rem;
+        }
+
+        .submitted-animation {
+            margin-bottom: 2rem;
+        }
+
+        .check-animation {
+            width: 120px;
+            height: 120px;
+            margin: 0 auto;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .check-icon {
+            width: 64px;
+            height: 64px;
+            color: var(--color-success);
+            animation: checkPop 0.6s ease-out;
+        }
+
+        @keyframes checkPop {
+            0% { transform: scale(0); }
+            50% { transform: scale(1.2); }
+            100% { transform: scale(1); }
+        }
+
+        .submitted-details {
+            margin-top: 2rem;
+        }
+
+        .result-summary {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 1rem;
+            margin-bottom: 2rem;
+        }
+
+        .distance-info, .score-info, .accuracy-info {
+            padding: 1rem;
+            background: var(--bg-secondary);
+            border-radius: var(--border-radius);
+            text-align: center;
+        }
+
+        .distance-value, .score-value, .accuracy-value {
+            font-size: 1.5rem;
+            font-weight: 700;
+            margin-bottom: 0.25rem;
+        }
+
+        .distance-value {
+            color: var(--color-primary);
+        }
+
+        .score-value {
+            color: var(--color-success);
+        }
+
+        .accuracy-value {
+            color: var(--color-secondary);
+        }
+
+        .distance-label, .score-label, .accuracy-label {
+            font-size: 0.875rem;
+            color: var(--text-muted);
+            font-weight: 500;
+        }
+
+        .result-map-container {
+            height: 300px;
+            border-radius: var(--border-radius-lg);
+            overflow: hidden;
+            border: 1px solid var(--border-color);
+        }
+
+        .result-map {
+            width: 100%;
+            height: 100%;
+        }
+
+        /* Quiz Ended State */
+        .ended-card {
+            text-align: center;
+            padding: 3rem 2rem;
+            background: var(--bg-primary);
+            border-radius: var(--border-radius-xl);
+            box-shadow: var(--shadow-lg);
+            margin: 2rem;
+        }
+
+        .ended-animation {
+            margin-bottom: 2rem;
+        }
+
+        .globe-icon {
+            width: 80px;
+            height: 80px;
+            color: var(--color-primary);
+            animation: globe 1s ease-out;
+        }
+
+        @keyframes globe {
+            0% { transform: scale(0) rotate(-180deg); opacity: 0; }
+            50% { transform: scale(1.1) rotate(-10deg); opacity: 1; }
+            100% { transform: scale(1) rotate(0deg); opacity: 1; }
+        }
+
+        .final-score {
+            margin: 2rem 0;
+        }
+
+        .score-circle {
+            width: 120px;
+            height: 120px;
+            margin: 0 auto;
+            border: 4px solid var(--color-success);
+            border-radius: 50%;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            background: linear-gradient(135deg, var(--success-50) 0%, var(--success-100) 100%);
+        }
+
+        .score-value {
+            font-size: 2rem;
+            font-weight: 700;
+            color: var(--success-700);
+        }
+
+        .score-label {
+            font-size: 0.875rem;
+            color: var(--success-600);
+            font-weight: 500;
+        }
+
+        .quiz-actions {
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+            max-width: 300px;
+            margin: 0 auto;
+        }
+
+        /* Connection Status */
+        .connection-status {
+            position: fixed;
+            bottom: 2rem;
+            right: 2rem;
+            z-index: 1000;
+        }
+
+        .status-indicator {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            background-color: var(--error-500);
+            color: var(--text-white);
+            padding: 0.75rem 1rem;
+            border-radius: var(--border-radius-xl);
+            box-shadow: var(--shadow-lg);
+            font-weight: 500;
+            animation: slideIn 0.3s ease-out;
+        }
+
+        .status-indicator i {
+            width: 20px;
+            height: 20px;
+        }
+
+        /* Responsive Design */
+        @media (max-width: 1200px) {
+            .question-layout {
+                grid-template-columns: 350px 1fr;
+            }
+
+            .where-score-box {
+                position: static;
+                margin: 0 1rem 1.5rem;
+            }
+
+            .where-score-list {
+                max-height: none;
+            }
+        }
+
+        @media (max-width: 992px) {
+            .question-layout {
+                grid-template-columns: 1fr;
+                grid-template-rows: auto 1fr;
+                height: calc(100vh - 80px);
+            }
+
+            .question-panel {
+                border-right: none;
+                border-bottom: 1px solid var(--border-color);
+                max-height: 40vh;
+            }
+
+            .game-map {
+                height: 60vh;
+            }
+        }
+
+        @media (max-width: 768px) {
+            .header-content {
+                flex-direction: column;
+                text-align: center;
+                gap: 1rem;
+            }
+
+            .quiz-title {
+                font-size: 1.25rem;
+            }
+
+            .question-header {
+                padding: 1rem;
+            }
+
+            .question-content {
+                padding: 1.5rem;
+            }
+
+            .question-text {
+                font-size: 1.125rem;
+            }
+
+            .result-summary {
+                grid-template-columns: 1fr;
+            }
+
+            .quiz-actions {
+                max-width: 100%;
+            }
+
+            .waiting-card,
+            .submitted-card,
+            .ended-card {
+                padding: 2rem 1.5rem;
+                margin: 1rem;
+            }
+
+            .question-layout {
+                height: calc(100vh - 120px);
+            }
+        }
+
+        @media (max-width: 576px) {
+            .quiz-main {
+                padding: 0;
+            }
+
+            .question-content {
+                padding: 1rem;
+            }
+
+            .timer-circle {
+                width: 50px;
+                height: 50px;
+                font-size: 0.875rem;
+            }
+        }
+    </style>
+
+    {% include 'includes/_hub_return_to_lobby_player.html' %}
+    {% include 'includes/_game_tutorial_overlay.html' %}
+<script>
+        document.addEventListener('DOMContentLoaded', function() {
+            lucide.createIcons();
+
+            // Where Quiz Player Class
+            class WherePlayer {
+                constructor() {
+                    this.roomCode = '{{ quiz.room_code }}';
+                    this.participantName = '{{ participant.name }}';
+                    this.hubSession = '{{ hub_session }}';
+                    this.websocket = null;
+                    this.questionTimer = null;
+                    this.questionStartTime = null;
+                    this.gameMap = null;
+                    this.resultMap = null;
+                    this.selectedMarker = null;
+                    this.selectedLatitude = null;
+                    this.selectedLongitude = null;
+                    this.hasAnswered = false;
+                    this.scoreboardQuestions = this.readJsonScript('whereQuestionScoreboardData', []);
+                    this.progressHistory = this.readJsonScript('whereInitialProgressData', []);
+                    this.currentQuestionId = this.readJsonScript('whereCurrentQuestionId', null);
+                    
+                    this.init();
+                }
+
+                init() {
+                    this.initializeMaps();
+                    this.connectWebSocket();
+                    this.bindEvents();
+                    this.renderScoreHistory();
+                    
+                    // Start timer if there's an active question
+                    {% if quiz.current_question %}
+                        this.startQuestionTimer({{ quiz.current_question.time_limit }});
+                        this.loadCurrentQuestion();
+                    {% endif %}
+                }
+
+                initializeMaps() {
+                    // Initialize game map
+                    this.gameMap = L.map('gameMap', {
+                        center: [20, 0],
+                        zoom: 2,
+                        minZoom: 2,
+                        maxZoom: 15,
+                    });
+
+                    L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
+                        attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors © <a href="https://carto.com/">CARTO</a>',
+                        subdomains: 'abcd',
+                        maxZoom: 19
+                    }).addTo(this.gameMap);
+
+                    // Add click handler for map
+                    this.gameMap.on('click', (e) => {
+                        this.selectLocation(e.latlng.lat, e.latlng.lng);
+                    });
+
+                    // Korrekte Größe sicherstellen (doppeltes rAF wartet auf vollständiges Layout)
+                    requestAnimationFrame(() => {
+                        requestAnimationFrame(() => {
+                            this.gameMap.invalidateSize({ animate: false });
+                        });
+                    });
+                }
+
+                connectWebSocket() {
+                    const wsScheme = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+                    const wsUrl = `${wsScheme}//${window.location.host}/ws/where/${this.roomCode}/`;
+                    
+                    this.websocket = new WebSocket(wsUrl);
+                    
+                    this.websocket.onopen = () => {
+                        console.log('WebSocket connected');
+                        this.hideConnectionStatus();
+                        
+                        // Send join message
+                        this.websocket.send(JSON.stringify({
+                            type: 'participant_join',
+                            participant_name: this.participantName,
+                            hub_session: this.hubSession
+                        }));
+                    };
+                    
+                    this.websocket.onmessage = (event) => {
+                        const data = JSON.parse(event.data);
+                        this.handleWebSocketMessage(data);
+                    };
+                    
+                    this.websocket.onclose = () => {
+                        console.log('WebSocket disconnected');
+                        this.showConnectionStatus();
+                        setTimeout(() => this.connectWebSocket(), 3000);
+                    };
+                    
+                    this.websocket.onerror = (error) => {
+                        console.error('WebSocket error:', error);
+                        this.showConnectionStatus();
+                    };
+                }
+
+                handleWebSocketMessage(data) {
+                    switch(data.type) {
+                        case 'quiz_started':
+                            this.onQuizStarted();
+                            break;
+
+                        case 'tutorial_start':
+                            window.gameTutorial?.showFromPayload(data);
+                            break;
+                            
+                        case 'question_started':
+                            window.gameTutorial?.forceClose();
+                            this.onQuestionStarted(data.question);
+                            break;
+                            
+                        case 'question_ended':
+                            this.onQuestionEnded();
+                            break;
+                            
+                        case 'quiz_ended':
+                            window.gameTutorial?.forceClose();
+                            this.onQuizEnded(data);
+                            break;
+                            
+                        case 'participant_count_updated':
+                            this.updateParticipantCount(data.count);
+                            break;
+
+                        case 'answer_submitted':
+                            this.onAnswerSubmitted(data);
+                            break;
+                            
+                        case 'show_leaderboard':
+                            window.showLeaderboard(this.hubSession);
+                            break;
+
+                        case 'hide_leaderboard':
+                            document.getElementById('leaderboardSidebar')?.classList.add('d-none');
+                            break;
+
+                        default:
+                            console.log('Unknown message type:', data.type);
+                    }
+                }
+
+                bindEvents() {
+                    // Submit answer button
+                    document.getElementById('submitAnswerBtn').addEventListener('click', () => {
+                        this.submitAnswer();
+                    });
+                    
+                    // Clear selection button
+                    document.getElementById('clearSelectionBtn').addEventListener('click', () => {
+                        this.clearSelection();
+                    });
+                }
+
+                selectLocation(lat, lng) {
+                    if (this.hasAnswered) return;
+                    
+                    this.selectedLatitude = lat;
+                    this.selectedLongitude = lng;
+                    
+                    // Remove previous marker
+                    if (this.selectedMarker) {
+                        this.gameMap.removeLayer(this.selectedMarker);
+                    }
+                    
+                    // Add new marker
+                    this.selectedMarker = L.marker([lat, lng], {
+                        icon: L.icon({
+                            iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-red.png',
+                            shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/0.7.7/images/marker-shadow.png',
+                            iconSize: [25, 41],
+                            iconAnchor: [12, 41],
+                            popupAnchor: [1, -34],
+                            shadowSize: [41, 41]
+                        })
+                    }).addTo(this.gameMap);
+                    
+                    // Update UI
+                    document.getElementById('selectedCoords').textContent = `${lat.toFixed(4)}°, ${lng.toFixed(4)}°`;
+                    document.getElementById('selectionInfo').style.display = 'flex';
+                    document.getElementById('clearSelectionBtn').disabled = false;
+                    document.getElementById('submitAnswerBtn').disabled = false;
+                }
+
+                clearSelection() {
+                    this.selectedLatitude = null;
+                    this.selectedLongitude = null;
+                    
+                    if (this.selectedMarker) {
+                        this.gameMap.removeLayer(this.selectedMarker);
+                        this.selectedMarker = null;
+                    }
+                    
+                    document.getElementById('selectedCoords').textContent = 'No location selected';
+                    document.getElementById('selectionInfo').style.display = 'none';
+                    document.getElementById('clearSelectionBtn').disabled = true;
+                    document.getElementById('submitAnswerBtn').disabled = true;
+                }
+
+                onQuizStarted() {
+                    this.showState('waitingQuizState');
+                }
+
+                onQuestionStarted(question) {
+                    this.hasAnswered = false;
+                    this.clearSelection();
+                    this.questionStartTime = Date.now();
+                    this.setCurrentQuestion(question.id, question.points);
+
+                    // Click-Handler wiederherstellen (wurde beim Absenden entfernt)
+                    this.gameMap.off('click');
+                    this.gameMap.on('click', (e) => {
+                        this.selectLocation(e.latlng.lat, e.latlng.lng);
+                    });
+
+                    this.loadQuestion(question);
+                    this.startQuestionTimer(question.time_limit);
+                    this.showState('questionState');
+                }
+
+                onQuestionEnded() {
+                    clearInterval(this.questionTimer);
+                    this.markCurrentQuestionUnansweredIfNeeded();
+                    this.currentQuestionId = null;
+                    this.renderScoreHistory();
+                }
+
+                onQuizEnded(data) {
+                    clearInterval(this.questionTimer);
+                    this.markCurrentQuestionUnansweredIfNeeded();
+                    this.currentQuestionId = null;
+                    this.renderScoreHistory();
+                    // If final scores are provided, update the displayed score for this participant
+                    try {
+                        if (data && Array.isArray(data.final_scores)) {
+                            const me = data.final_scores.find(p => p.name === this.participantName);
+                            if (me && typeof me.total_score === 'number') {
+                                const scoreEl = document.querySelector('#quizEndedState .score-value');
+                                if (scoreEl) scoreEl.textContent = me.total_score;
+                            }
+                        }
+                    } catch (e) { console.warn('Unable to update final score:', e); }
+                    this.showState('quizEndedState');
+                }
+
+                onAnswerSubmitted(data) {
+                    // Update submitted details
+                    document.getElementById('submittedDistance').textContent = data.formatted_distance;
+                    document.getElementById('submittedPoints').textContent = data.points_earned;
+                    document.getElementById('submittedAccuracy').textContent = data.accuracy_percentage + '%';
+                    this.pushProgressEntry(Number(data.points_earned || 0));
+                    this.renderScoreHistory();
+                    
+                    // Show result on map
+                    this.showResultOnMap(data.correct_latitude, data.correct_longitude);
+                }
+
+                readJsonScript(scriptId, fallbackValue) {
+                    const script = document.getElementById(scriptId);
+                    if (!script) return fallbackValue;
+                    try {
+                        return JSON.parse(script.textContent);
+                    } catch (error) {
+                        console.warn(`Unable to parse ${scriptId}:`, error);
+                        return fallbackValue;
+                    }
+                }
+
+                setCurrentQuestion(questionId, maxPoints = null) {
+                    this.currentQuestionId = questionId ?? null;
+                    this.moveQuestionToNextFreeScoreSlot(questionId, maxPoints);
+                    this.renderScoreHistory();
+                }
+
+                moveQuestionToNextFreeScoreSlot(questionId, maxPoints = null) {
+                    if (questionId === undefined || questionId === null) return null;
+                    const numericQuestionId = Number(questionId);
+                    const questions = Array.isArray(this.scoreboardQuestions) ? [...this.scoreboardQuestions] : [];
+                    const existingIndex = questions.findIndex(
+                        (question) => Number(question?.id) === numericQuestionId
+                    );
+                    let entry = existingIndex >= 0
+                        ? questions.splice(existingIndex, 1)[0]
+                        : {
+                            id: numericQuestionId,
+                            earned_points: null,
+                            max_points: Number(maxPoints || 0),
+                            status: 'upcoming',
+                        };
+
+                    if ((entry.max_points === undefined || entry.max_points === null) && maxPoints !== null) {
+                        entry.max_points = Number(maxPoints || 0);
+                    }
+
+                    const playedCount = Array.isArray(this.progressHistory) ? this.progressHistory.length : 0;
+                    questions.splice(Math.min(playedCount, questions.length), 0, entry);
+                    this.scoreboardQuestions = questions.map((question, index) => ({
+                        ...question,
+                        number: index + 1,
+                    }));
+                    return this.scoreboardQuestions.find((question) => Number(question?.id) === numericQuestionId) || null;
+                }
+
+                ensureScoreboardEntry(questionId, maxPoints = null) {
+                    if (questionId === undefined || questionId === null) return null;
+                    const numericQuestionId = Number(questionId);
+                    let entry = (this.scoreboardQuestions || []).find(
+                        (question) => Number(question?.id) === numericQuestionId
+                    );
+                    if (!entry) {
+                        entry = {
+                            id: numericQuestionId,
+                            number: (this.scoreboardQuestions || []).length + 1,
+                            earned_points: null,
+                            max_points: Number(maxPoints || 0),
+                            status: 'current',
+                        };
+                        this.scoreboardQuestions = [...(this.scoreboardQuestions || []), entry];
+                    } else if ((entry.max_points === undefined || entry.max_points === null) && maxPoints !== null) {
+                        entry.max_points = Number(maxPoints || 0);
+                    }
+                    return entry;
+                }
+
+                getCurrentQuestionNumber() {
+                    const currentQuestionId = Number(this.currentQuestionId);
+                    if (Number.isNaN(currentQuestionId)) return null;
+                    const entry = (this.scoreboardQuestions || []).find(
+                        (question) => Number(question?.id) === currentQuestionId
+                    );
+                    return entry ? Number(entry.number) : null;
+                }
+
+                pushProgressEntry(pointsEarned) {
+                    const questionNumber = this.getCurrentQuestionNumber();
+                    const currentQuestionId = Number(this.currentQuestionId);
+                    if (questionNumber === null || Number.isNaN(currentQuestionId)) return;
+                    const scoreEntry = this.ensureScoreboardEntry(currentQuestionId);
+                    const maxPoints = Number(scoreEntry?.max_points || 0);
+                    this.progressHistory = (this.progressHistory || []).filter(
+                        (entry) => Number(entry?.question_id) !== currentQuestionId
+                    );
+                    this.progressHistory.push({
+                        question_id: currentQuestionId,
+                        question_number: questionNumber,
+                        points: Number(pointsEarned || 0),
+                        max_points: maxPoints,
+                    });
+                }
+
+                markCurrentQuestionUnansweredIfNeeded() {
+                    const questionNumber = this.getCurrentQuestionNumber();
+                    const currentQuestionId = Number(this.currentQuestionId);
+                    if (questionNumber === null || Number.isNaN(currentQuestionId)) return;
+                    const alreadyTracked = (this.progressHistory || []).some(
+                        (entry) => Number(entry?.question_id) === currentQuestionId
+                    );
+                    if (alreadyTracked) return;
+                    const scoreEntry = this.ensureScoreboardEntry(currentQuestionId);
+                    this.progressHistory = [
+                        ...(this.progressHistory || []),
+                        {
+                            question_id: currentQuestionId,
+                            question_number: questionNumber,
+                            points: 0,
+                            max_points: Number(scoreEntry?.max_points || 0),
+                        }
+                    ];
+                }
+
+                loadCurrentQuestion() {
+                    {% if quiz.current_question %}
+                    const question = {
+                        id: {{ quiz.current_question.id }},
+                        question_text: '{{ quiz.current_question.question_text|escapejs }}',
+                        time_limit: {{ quiz.current_question.time_limit }},
+                        points: {{ quiz.current_question.points }},
+                        image_url: {% if quiz.current_question.image %}'{{ quiz.current_question.image.url }}'{% else %}null{% endif %}
+                    };
+                    this.loadQuestion(question);
+                    {% endif %}
+                }
+
+                loadQuestion(question) {
+                    document.getElementById('questionText').textContent = question.question_text;
+                    document.getElementById('maxPoints').textContent = question.points;
+
+                    // Show image if available
+                    const imageContainer = document.getElementById('questionImageContainer');
+                    const imageEl = document.getElementById('questionImage');
+                    if (question.image_url) {
+                        imageEl.src = question.image_url;
+                        imageContainer.style.display = 'block';
+                    } else {
+                        imageContainer.style.display = 'none';
+                    }
+                }
+
+                startQuestionTimer(timeLimit) {
+                    let timeLeft = timeLimit;
+                    const timerElement = document.getElementById('playerTimeLeft');
+                    const circleElement = document.getElementById('playerTimerCircle');
+                    const submittedTimerElement = document.getElementById('playerTimeLeftSubmitted');
+                    const submittedCircleElement = document.getElementById('playerTimerCircleSubmitted');
+                    
+                    // Initialize both timers
+                    timerElement.textContent = timeLeft;
+                    circleElement.className = 'timer-circle';
+                    if (submittedTimerElement && submittedCircleElement) {
+                        submittedTimerElement.textContent = timeLeft;
+                        submittedCircleElement.className = 'timer-circle';
+                    }
+                    
+                    this.questionTimer = setInterval(() => {
+                        timeLeft--;
+                        timerElement.textContent = timeLeft;
+                        if (submittedTimerElement) {
+                            submittedTimerElement.textContent = timeLeft;
+                        }
+                        
+                        // Update timer circle appearance for both timers
+                        circleElement.className = 'timer-circle';
+                        if (timeLeft <= 10) {
+                            circleElement.classList.add('danger');
+                            if (submittedCircleElement) submittedCircleElement.className = 'timer-circle danger';
+                        } else if (timeLeft <= 20) {
+                            circleElement.classList.add('warning');
+                            if (submittedCircleElement) submittedCircleElement.className = 'timer-circle warning';
+                        } else if (submittedCircleElement) {
+                            submittedCircleElement.className = 'timer-circle';
+                        }
+                        
+                        if (timeLeft <= 0) {
+                            clearInterval(this.questionTimer);
+                            this.onTimeUp();
+                        }
+                    }, 1000);
+                }
+
+                submitAnswer() {
+                    if (this.selectedLatitude === null || this.selectedLongitude === null || this.hasAnswered) return;
+                    
+                    const timeTaken = (Date.now() - this.questionStartTime) / 1000;
+                    
+                    // Disable map interaction
+                    this.gameMap.off('click');
+                    document.getElementById('gameMap').style.cursor = 'default';
+                    
+                    // Send answer via WebSocket
+                    this.websocket.send(JSON.stringify({
+                        type: 'participant_submit_answer',
+                        participant_name: this.participantName,
+                        hub_session: this.hubSession,
+                        latitude: this.selectedLatitude,
+                        longitude: this.selectedLongitude,
+                        time_taken: timeTaken
+                    }));
+                    
+                    this.hasAnswered = true;
+                    
+                    // Show submitted state after a brief delay
+                    setTimeout(() => {
+                        this.showState('answerSubmittedState');
+                    }, 500);
+                }
+
+                showResultOnMap(correctLat, correctLng) {
+                    if (this.resultMap) {
+                        this.resultMap.remove();
+                    }
+                    // Initialize result map
+                    this.resultMap = L.map('resultMap', {
+                        center: [correctLat, correctLng],
+                        zoom: 6
+                    });
+                    
+                    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                        attribution: '© OpenStreetMap contributors'
+                    }).addTo(this.resultMap);
+                    
+                    // Add user's guess marker (red)
+                    L.marker([this.selectedLatitude, this.selectedLongitude], {
+                        icon: L.icon({
+                            iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-red.png',
+                            shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/0.7.7/images/marker-shadow.png',
+                            iconSize: [25, 41],
+                            iconAnchor: [12, 41],
+                            popupAnchor: [1, -34],
+                            shadowSize: [41, 41]
+                        })
+                    }).addTo(this.resultMap).bindPopup('Your guess');
+                    
+                    // Add correct location marker (green)
+                    L.marker([correctLat, correctLng], {
+                        icon: L.icon({
+                            iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-green.png',
+                            shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/0.7.7/images/marker-shadow.png',
+                            iconSize: [25, 41],
+                            iconAnchor: [12, 41],
+                            popupAnchor: [1, -34],
+                            shadowSize: [41, 41]
+                        })
+                    }).addTo(this.resultMap).bindPopup('Correct location');
+                    
+                    // Add line between them
+                    L.polyline([
+                        [this.selectedLatitude, this.selectedLongitude],
+                        [correctLat, correctLng]
+                    ], {
+                        color: 'red',
+                        weight: 3,
+                        opacity: 0.7
+                    }).addTo(this.resultMap);
+                    
+                    // Fit bounds to show both markers
+                    const bounds = L.latLngBounds([
+                        [this.selectedLatitude, this.selectedLongitude],
+                        [correctLat, correctLng]
+                    ]);
+                    this.resultMap.fitBounds(bounds, { padding: [20, 20] });
+                }
+
+                onTimeUp() {
+                    if (this.hasAnswered) return;
+                    
+                    // Auto-submit if location is selected
+                    if (this.selectedLatitude !== null && this.selectedLongitude !== null) {
+                        this.submitAnswer();
+                    }
+                }
+
+                showWaitingForNextQuestion() {
+                    // Create a temporary waiting state for next question
+                    // const currentState = document.querySelector('.game-state:not(.d-none)');
+                    // if (currentState) {
+                    //     currentState.innerHTML = `
+                    //         <div class="waiting-card">
+                    //             <div class="waiting-animation">
+                    //                 <div class="pulse-ring"></div>
+                    //                 <div class="pulse-ring delay-1"></div>
+                    //                 <div class="pulse-ring delay-2"></div>
+                    //                 <i data-lucide="clock"></i>
+                    //             </div>
+                    //             <h2>Waiting for Next Question</h2>
+                    //             <p>Get ready for the next location challenge!</p>
+                    //         </div>
+                    //     `;
+                    //     lucide.createIcons();
+                    // }
+                    // Switch to a safe waiting state without destroying existing DOM nodes
+                    this.showState('waitingQuestionState');
+                    const waiting = document.getElementById('waitingQuestionState');
+                    if (waiting) {
+                        try { lucide.createIcons(); } catch (e) { /* ignore */ }
+                    }
+                }
+
+                showState(stateId) {
+                    // Hide all states
+                    document.querySelectorAll('.game-state').forEach(state => {
+                        state.classList.add('d-none');
+                    });
+
+                    // Show target state
+                    const targetState = document.getElementById(stateId);
+                    if (targetState) {
+                        targetState.classList.remove('d-none');
+                    }
+
+                    // Karte neu berechnen sobald questionState sichtbar wird
+                    if (stateId === 'questionState' && this.gameMap) {
+                        document.getElementById('gameMap').style.cursor = 'crosshair';
+                        // requestAnimationFrame stellt sicher dass das Layout fertig gerendert ist
+                        requestAnimationFrame(() => {
+                            requestAnimationFrame(() => {
+                                this.gameMap.invalidateSize({ animate: false });
+                            });
+                        });
+                    }
+                }
+
+                updateParticipantCount(count) {
+                    const countElement = document.getElementById('waitingParticipantCount');
+                    if (countElement) {
+                        countElement.textContent = count;
+                    }
+                }
+
+                renderScoreHistory() {
+                    const list = document.getElementById('whereScoreList');
+                    const totalElement = document.getElementById('whereScoreTotal');
+                    if (!list) return;
+
+                    list.innerHTML = '';
+                    if (!(this.scoreboardQuestions || []).length) {
+                        list.innerHTML = '<div class="text-muted small">Noch keine Fragen verfügbar.</div>';
+                        if (totalElement) {
+                            totalElement.textContent = '0/0';
+                        }
+                        return;
+                    }
+
+                    const progressByQuestionId = new Map(
+                        (this.progressHistory || [])
+                            .map((entry) => [Number(entry?.question_id), entry])
+                            .filter(([questionId]) => !Number.isNaN(questionId))
+                    );
+
+                    let totalEarned = 0;
+                    let totalMax = 0;
+
+                    (this.scoreboardQuestions || []).forEach((question, index) => {
+                        const questionId = Number(question?.id);
+                        const questionNumber = Number(question?.number) || index + 1;
+                        const maxPoints = Number(question?.max_points || 0);
+                        const progressEntry = progressByQuestionId.get(questionId);
+                        const isCurrent = !progressEntry && this.currentQuestionId !== null && questionId === Number(this.currentQuestionId);
+                        const rowState = progressEntry ? 'is-played' : isCurrent ? 'is-current' : 'is-upcoming';
+
+                        if (progressEntry) {
+                            totalEarned += Number(progressEntry.points || 0);
+                            totalMax += Number(progressEntry.max_points || maxPoints || 0);
+                        }
+
+                        const row = document.createElement('div');
+                        row.className = `where-score-row score-box__row ${rowState}`;
+                        row.dataset.questionNumber = String(questionNumber);
+                        row.dataset.questionId = String(questionId);
+                        row.innerHTML = `
+                            <div class="where-score-badge score-box__badge">${questionNumber}</div>
+                            <div class="where-score-value score-box__value">
+                                ${progressEntry ? `<span>${Number(progressEntry.points || 0)}</span>` : '<span class="where-score-empty score-box__empty">__</span>'}
+                                <span class="score-box__separator">/</span>
+                                <span>${Number(progressEntry?.max_points || maxPoints || 0)}</span>
+                            </div>
+                        `;
+                        list.appendChild(row);
+                    });
+
+                    if (totalElement) {
+                        totalElement.textContent = `${totalEarned}/${totalMax}`;
+                    }
+                }
+
+                showConnectionStatus() {
+                    document.getElementById('connectionStatus').classList.remove('d-none');
+                }
+
+                hideConnectionStatus() {
+                    document.getElementById('connectionStatus').classList.add('d-none');
+                }
+            }
+
+            // Initialize Where Player
+            const player = new WherePlayer();
+
+            const lobbyReturnController = createHubLobbyReturnController({
+                sessionCode: '{{ hub_session|default_if_none:"" }}',
+                gameKey: 'where',
+                roomCode: '{{ quiz.room_code }}',
+                participantName: '{{ participant.name|escapejs }}',
+                csrfToken: '{{ csrf_token }}',
+            });
+            
+            // Minimal Hub listener for centralized navigation
+            (function() {
+                let hubCode = null;
+                try {
+                    hubCode = localStorage.getItem('hub_session_code');
+                    console.log("[HubScript2] Retrieved hub_session_code from localStorage:", hubCode);
+                } catch (err) {
+                    console.error("[HubScript2] Error accessing localStorage:", err);
+                }
+
+                if (!hubCode) {
+                    console.warn("[HubScript2] No hub_session_code found, exiting...");
+                    return;
+                }
+
+                const wsScheme = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+                const wsUrl = `${wsScheme}//${window.location.host}/ws/hub/${hubCode}/`;
+                console.log("[HubScript2] Connecting to WebSocket:", wsUrl);
+
+                const hubWS = new WebSocket(wsUrl);
+
+                hubWS.onopen = () => {
+                    console.log("[HubScript2] WebSocket connected successfully.");
+                };
+
+                hubWS.onmessage = (event) => {
+                    console.log("[HubScript2] Message received:", event.data);
+                    try {
+                        const data = JSON.parse(event.data);
+                        console.log("[HubScript2] Parsed data:", data);
+
+                        /*if (data.type === 'navigate' && data.step) {
+                            const step = data.step;
+                            console.log("[HubScript2] Navigation requested for:", step);
+
+                            const routes = {
+                                quiz: { join: '/quiz/join/', play: '/quiz/play/' },
+                                assign: { join: '/assign/join/', play: '/assign/play/' },
+                                estimation: { join: '/estimation/join/', play: '/estimation/play/' },
+                                where: { join: '/where/join/', play: '/where/play/' },
+                                who: { join: '/who/join/', play: '/who/play/' },
+                                who_that: { join: '/who-is-that/join/', play: '/who-is-that/play/' },
+                                blackjack: { join: '/blackjack/join/', play: '/blackjack/play/' },
+                            };
+
+                            const base = routes[step.game_key];
+                            console.log("[HubScript2] Base route:", base);
+
+                            if (base && step.room_code) {
+                                const u = new URL(base, window.location.origin);
+                                u.searchParams.set('room_code', step.room_code);
+                                u.searchParams.set('nickname', player.participantName);
+                                u.searchParams.set('hub_session', hubCode);
+
+                                const joinUrl = new URL(routes[step.game_key].join, window.location.origin);
+                                const playUrl = new URL(`${routes[step.game_key].play}${step.room_code}/${encodeURIComponent(player.participantName)}/`, window.location.origin);
+
+                                // Prepare join payload
+                                const csrfToken = "{{ csrf_token }}"; // or get dynamically if rendered server-side
+                                const body = JSON.stringify({
+                                room_code: step.room_code,
+                                participant_name: player.participantName,
+                                hub_session: hubCode,
+                                });
+
+                                // if (code) {
+                                //     try { localStorage.setItem('hub_session_code', code); } catch (_) {}
+                                // }
+
+                                try {
+                                    fetch(joinUrl.toString(), {
+                                        method: 'POST',
+                                        headers: {
+                                        'Content-Type': 'application/json',
+                                        'X-CSRFToken': csrfToken,
+                                        },
+                                        body: body,
+                                        credentials: 'same-origin',
+                                    })
+                                    .then(response => response.json())
+                                    .then(data => {
+                                        console.log('[HubScript2] Join response:', data);
+                                        if (data.success) {
+                                        console.log('[HubScript2] Join successful, redirecting to play URL');
+                                        window.location.href = playUrl.toString();
+                                        } else {
+                                        console.error('[HubScript2] Join failed, falling back to play URL');
+                                        window.location.href = playUrl.toString();
+                                        }
+                                    })
+                                } catch (error) {
+                                console.error('[HubScript2] Error joining game:', error);
+                                window.location.href = playUrl.toString();
+                                }
+                            } else {
+                                console.warn("[HubScript2] Invalid navigation info:", step);
+                            }
+
+                        }*/
+                        if (data.type === 'players_recalled_to_lobby') {
+                            lobbyReturnController.returnToLobby({ markInactive: false });
+                        } else if (data.type === 'session_ended') {
+                            console.log("[HubScript2] Session ended message received.");
+                            const u = new URL(`/hub/lobby/${hubCode}/`, window.location.origin);
+                            u.searchParams.set('ended', '1');
+
+                            console.log("[HubScript2] Redirecting to lobby:", u.toString());
+                            window.location.href = u.toString();
+                        } else {
+                            console.log("[HubScript2] Unhandled message type:", data.type);
+                        }
+
+                    } catch (err) {
+                        console.error("[HubScript2] Failed to parse message:", event.data, err);
+                    }
+                };
+
+                hubWS.onerror = (err) => {
+                    console.error("[HubScript2] WebSocket error:", err);
+                };
+
+                hubWS.onclose = (e) => {
+                    console.warn("[HubScript2] WebSocket closed:", e.code, e.reason);
+                };
+            })();
+        });
+    </script>
+  {% include 'includes/_leaderboard_overlay.html' %}
+  {% include 'includes/accessibility_widget.html' %}
+</body>
+</html>

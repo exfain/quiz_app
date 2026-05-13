@@ -1,0 +1,196 @@
+<!-- Accessibility Widget: font size +/- and high-contrast toggle -->
+<style>
+  /* ── Widget bar ── */
+  #a11y-bar {
+    position: fixed;
+    bottom: 1rem;
+    right: 1rem;
+    display: flex;
+    align-items: center;
+    gap: 0.2rem;
+    background: rgba(25, 25, 25, 0.80);
+    border-radius: 2rem;
+    padding: 0.35rem 0.55rem;
+    z-index: 99999;
+    backdrop-filter: blur(6px);
+    box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+    opacity: 0.45;
+    transition: opacity 0.2s;
+  }
+  #a11y-bar:hover, #a11y-bar:focus-within { opacity: 1; }
+  #a11y-bar button {
+    border: none;
+    background: transparent;
+    color: #fff;
+    font-size: 0.85rem;
+    font-weight: 700;
+    padding: 0.3rem 0.55rem;
+    border-radius: 1rem;
+    cursor: pointer;
+    line-height: 1;
+    transition: background 0.15s;
+    white-space: nowrap;
+  }
+  #a11y-bar button:hover  { background: rgba(255,255,255,0.2); }
+  #a11y-bar button:focus  { outline: 2px solid #ff0; outline-offset: 1px; }
+  #a11y-bar .a11y-sep {
+    width: 1px;
+    height: 1.2rem;
+    background: rgba(255,255,255,0.3);
+    margin: 0 0.1rem;
+    flex-shrink: 0;
+  }
+  #a11y-contrast-btn.a11y-on { color: #ff0 !important; }
+
+  /* ── High-contrast mode (class "hc" on <html>) ── */
+  html.hc,
+  html.hc body {
+    background: #000 !important;
+    color: #fff !important;
+  }
+  html.hc *:not(#a11y-bar):not(#a11y-bar *) {
+    border-color: #555 !important;
+  }
+  /* Cards / panels */
+  html.hc .card,
+  html.hc .question-card,
+  html.hc .submitted-card,
+  html.hc .leaderboard-card,
+  html.hc .vote-card,
+  html.hc .join-card,
+  html.hc .result-card {
+    background: #111 !important;
+    border-color: #fff !important;
+    color: #fff !important;
+  }
+  /* Buttons */
+  html.hc .btn-primary,
+  html.hc .submit-answer,
+  html.hc button.btn:not(#a11y-bar button) {
+    background: #ff0 !important;
+    color: #000 !important;
+    border-color: #ff0 !important;
+  }
+  html.hc .btn-outline-secondary:not(#a11y-bar button),
+  html.hc .btn-secondary:not(#a11y-bar button) {
+    background: #333 !important;
+    color: #fff !important;
+    border-color: #fff !important;
+  }
+  html.hc .btn-danger:not(#a11y-bar button) {
+    background: #f44 !important;
+    color: #fff !important;
+    border-color: #f44 !important;
+  }
+  /* Inputs */
+  html.hc input,
+  html.hc textarea,
+  html.hc select {
+    background: #111 !important;
+    color: #fff !important;
+    border-color: #aaa !important;
+  }
+  html.hc input::placeholder { color: #aaa !important; }
+  /* Links */
+  html.hc a { color: #ff0 !important; }
+  /* Tables */
+  html.hc table,
+  html.hc th,
+  html.hc td {
+    background: #111 !important;
+    color: #fff !important;
+    border-color: #555 !important;
+  }
+  html.hc th { background: #222 !important; }
+  html.hc tr:nth-child(even) td { background: #1a1a1a !important; }
+  /* Answer/option boxes */
+  html.hc .answer-card,
+  html.hc .option-box,
+  html.hc .answer-option,
+  html.hc .choice-item {
+    background: #222 !important;
+    border-color: #aaa !important;
+    color: #fff !important;
+  }
+  html.hc .answer-card:hover,
+  html.hc .option-box:hover { border-color: #ff0 !important; }
+  /* Lobby-specific */
+  html.hc .lb-rank,
+  html.hc .lb-name,
+  html.hc .lb-score  { color: #fff !important; }
+  html.hc .lb-rank-gold   { color: #ffd700 !important; }
+  html.hc .lb-rank-silver { color: #d0d0d0 !important; }
+  html.hc .lb-rank-bronze { color: #cd7f32 !important; }
+  html.hc .online  { color: #0f0 !important; }
+  html.hc .offline { color: #f44 !important; }
+  /* Bootstrap utility overrides */
+  html.hc .bg-white,
+  html.hc .bg-light { background: #111 !important; }
+  html.hc .text-muted,
+  html.hc .text-secondary { color: #ccc !important; }
+  html.hc .text-dark { color: #fff !important; }
+  html.hc .border { border-color: #555 !important; }
+  /* Progress bars */
+  html.hc .progress { background: #333 !important; }
+  html.hc .progress-bar { background: #ff0 !important; color: #000 !important; }
+  /* Timer circles */
+  html.hc .timer-circle { border-color: #ff0 !important; color: #ff0 !important; }
+  /* Ladder */
+  html.hc .ladder-row,
+  html.hc .triangle-container { background: #222 !important; color: #fff !important; }
+  html.hc .triangle-container .number { color: #ff0 !important; }
+  /* Map canvas is untouched intentionally */
+</style>
+
+<div id="a11y-bar" role="toolbar" aria-label="Barrierefreiheit">
+  <button id="a11y-font-down" title="Schrift kleiner" aria-label="Schriftgröße verringern">A−</button>
+  <button id="a11y-font-up"   title="Schrift größer"  aria-label="Schriftgröße vergrößern">A+</button>
+  <div class="a11y-sep" role="separator"></div>
+  <button id="a11y-contrast-btn" title="Hoher Kontrast umschalten" aria-label="Hoher Kontrast umschalten" aria-pressed="false">◐</button>
+</div>
+
+<script>
+(function () {
+  var LS_SIZE     = 'a11y_font_size';
+  var LS_CONTRAST = 'a11y_high_contrast';
+  var MIN = 80, MAX = 150, STEP = 10;
+
+  function getSize() {
+    return parseInt(localStorage.getItem(LS_SIZE) || '100', 10);
+  }
+  function applySize(size) {
+    document.documentElement.style.fontSize = size + '%';
+  }
+
+  function getContrast() {
+    return localStorage.getItem(LS_CONTRAST) === '1';
+  }
+  function applyContrast(on) {
+    document.documentElement.classList.toggle('hc', on);
+    var btn = document.getElementById('a11y-contrast-btn');
+    if (!btn) return;
+    btn.classList.toggle('a11y-on', on);
+    btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+  }
+
+  // Apply persisted settings immediately
+  applySize(getSize());
+  applyContrast(getContrast());
+
+  document.getElementById('a11y-font-down').addEventListener('click', function () {
+    var s = Math.max(MIN, getSize() - STEP);
+    localStorage.setItem(LS_SIZE, s);
+    applySize(s);
+  });
+  document.getElementById('a11y-font-up').addEventListener('click', function () {
+    var s = Math.min(MAX, getSize() + STEP);
+    localStorage.setItem(LS_SIZE, s);
+    applySize(s);
+  });
+  document.getElementById('a11y-contrast-btn').addEventListener('click', function () {
+    var on = !getContrast();
+    localStorage.setItem(LS_CONTRAST, on ? '1' : '0');
+    applyContrast(on);
+  });
+}());
+</script>

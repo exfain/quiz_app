@@ -1,0 +1,961 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Leaderboard - Where is this?</title>
+    
+    <!-- Bootstrap 5 CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
+    
+    <!-- Custom Theme CSS -->
+    <link rel="stylesheet" href="{% static 'theme.css' %}">
+    
+    <!-- Inter Font -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body class="where-leaderboard-page">
+    <div class="leaderboard-container">
+
+        <!-- Header -->
+        <header class="leaderboard-header">
+            <div class="container">
+                <div class="header-content">
+                    <div class="header-main">
+                        <div class="trophy-icon">
+                            <i data-lucide="trophy"></i>
+                        </div>
+                        <h1>Global Leaderboard</h1>
+                        <p>Top geography quiz performers from around the world</p>
+                    </div>
+                </div>
+            </div>
+        </header>
+
+        <!-- Filters -->
+        <section class="filters-section">
+            <div class="container">
+                <div class="filters-content">
+                    <div class="stat-details">
+                        <div class="stat-item">
+                            <span class="stat-label">Games</span>
+                            <span class="stat-value">{{ page_obj.paginator.count }}</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Leaderboard Content -->
+        <main class="leaderboard-main">
+            <div class="container">
+                <div class="row">
+                    <div class="col-12">
+                        <div class="leaderboard-card">
+                            {% if page_obj.object_list %}
+                                <!-- Top 3 Podium (only show on first page) -->
+                                {% if page_obj.number == 1 and page_obj.object_list|length >= 3 %}
+                                <div class="podium-section">
+                                    <div class="podium">
+                                        <!-- 2nd Place -->
+                                        <div class="podium-place second">
+                                            <div class="podium-avatar">
+                                                <div class="avatar-circle silver">
+                                                    <i data-lucide="medal"></i>
+                                                </div>
+                                                <div class="rank-badge silver">#2</div>
+                                            </div>
+                                            <div class="podium-info">
+                                                <h4>{{ page_obj.object_list.1.player_name }}</h4>
+                                                <div class="podium-score">{{ page_obj.object_list.1.total_score }}</div>
+                                                <div class="podium-meta">
+                                                    <span class="accuracy">{{ page_obj.object_list.1.get_accuracy_percentage }}%</span>
+                                                </div>
+                                                <div class="podium-date">{{ page_obj.object_list.1.completed_at|timesince }} ago</div>
+                                            </div>
+                                        </div>
+
+                                        <!-- 1st Place -->
+                                        <div class="podium-place first">
+                                            <div class="podium-avatar">
+                                                <div class="avatar-circle gold">
+                                                    <i data-lucide="crown"></i>
+                                                </div>
+                                                <div class="rank-badge gold">#1</div>
+                                            </div>
+                                            <div class="podium-info">
+                                                <h4>{{ page_obj.object_list.0.player_name }}</h4>
+                                                <div class="podium-score">{{ page_obj.object_list.0.total_score }}</div>
+                                                <div class="podium-meta">
+                                                    <span class="accuracy">{{ page_obj.object_list.0.get_accuracy_percentage }}%</span>
+                                                </div>
+                                                <div class="podium-date">{{ page_obj.object_list.0.completed_at|timesince }} ago</div>
+                                            </div>
+                                        </div>
+
+                                        <!-- 3rd Place -->
+                                        <div class="podium-place third">
+                                            <div class="podium-avatar">
+                                                <div class="avatar-circle bronze">
+                                                    <i data-lucide="medal"></i>
+                                                </div>
+                                                <div class="rank-badge bronze">#3</div>
+                                            </div>
+                                            <div class="podium-info">
+                                                <h4>{{ page_obj.object_list.2.player_name }}</h4>
+                                                <div class="podium-score">{{ page_obj.object_list.2.total_score }}</div>
+                                                <div class="podium-meta">
+                                                    <span class="accuracy">{{ page_obj.object_list.2.get_accuracy_percentage }}%</span>
+                                                </div>
+                                                <div class="podium-date">{{ page_obj.object_list.2.completed_at|timesince }} ago</div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                                {% endif %}
+
+                                <!-- Full Rankings List -->
+                                <div class="rankings-section">
+                                    <div class="section-header">
+                                        <h3>All Rankings</h3>
+                                        {% if page_obj.paginator.num_pages > 1 %}
+                                        <div class="page-info">
+                                            Page {{ page_obj.number }} of {{ page_obj.paginator.num_pages }}
+                                        </div>
+                                        {% endif %}
+                                    </div>
+
+                                    <div class="rankings-list">
+                                        {% for session in page_obj.object_list %}
+                                        {% with rank=forloop.counter|add:page_obj.start_index|add:"-1" %}
+                                        <div class="ranking-item {% if forloop.counter <= 3 and page_obj.number == 1 %}top-three{% endif %}">
+                                            <div class="ranking-rank">
+                                                {% if rank <= 3 and page_obj.number == 1 %}
+                                                    <i data-lucide="medal" class="medal rank-{{ rank }}"></i>
+                                                {% else %}
+                                                    <span class="rank-number">#{{ rank }}</span>
+                                                {% endif %}
+                                            </div>
+                                            
+                                            <div class="ranking-avatar">
+                                                <div class="avatar-circle">
+                                                    {{ session.player_name|first|upper }}
+                                                </div>
+                                            </div>
+                                            
+                                            <div class="ranking-info">
+                                                <div class="player-name">{{ session.player_name }}</div>
+                                                <div class="player-meta">
+                                                    <span class="game-date">{{ session.completed_at|timesince }} ago</span>
+                                                </div>
+                                            </div>
+                                            
+                                            <div class="ranking-stats">
+                                                <div class="stat-item primary">
+                                                    <div class="stat-value">{{ session.total_score }}</div>
+                                                    <div class="stat-label">Points</div>
+                                                </div>
+                                                <div class="stat-item">
+                                                    <div class="stat-value">{{ session.get_accuracy_percentage }}%</div>
+                                                    <div class="stat-label">Accuracy</div>
+                                                </div>
+                                                <div class="stat-item">
+                                                    <div class="stat-value">{{ session.get_duration_formatted }}</div>
+                                                    <div class="stat-label">Time</div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                        {% endwith %}
+                                        {% endfor %}
+                                    </div>
+                                </div>
+
+                                <!-- Pagination -->
+                                {% if page_obj.paginator.num_pages > 1 %}
+                                <div class="pagination-section">
+                                    <nav aria-label="Leaderboard pagination">
+                                        <ul class="pagination">
+                                            {% if page_obj.has_previous %}
+                                            <li class="page-item">
+                                                <a class="page-link" href="?page={{ page_obj.previous_page_number }}">
+                                                    <i data-lucide="chevron-left"></i>
+                                                    Previous
+                                                </a>
+                                            </li>
+                                            {% endif %}
+
+                                            {% for num in page_obj.paginator.page_range %}
+                                                {% if page_obj.number == num %}
+                                                <li class="page-item active">
+                                                    <span class="page-link">{{ num }}</span>
+                                                </li>
+                                                {% elif num > page_obj.number|add:'-3' and num < page_obj.number|add:'3' %}
+                                                <li class="page-item">
+                                                    <a class="page-link" href="?page={{ num }}">{{ num }}</a>
+                                                </li>
+                                                {% endif %}
+                                            {% endfor %}
+
+                                            {% if page_obj.has_next %}
+                                            <li class="page-item">
+                                                <a class="page-link" href="?page={{ page_obj.next_page_number }}">
+                                                    Next
+                                                    <i data-lucide="chevron-right"></i>
+                                                </a>
+                                            </li>
+                                            {% endif %}
+                                        </ul>
+                                    </nav>
+                                </div>
+                                {% endif %}
+
+                            {% else %}
+                                <!-- Empty State -->
+                                <div class="empty-leaderboard">
+                                    <div class="empty-icon">
+                                        <i data-lucide="trophy"></i>
+                                    </div>
+                                    <h3>No Players Yet!</h3>
+                                    <p>Be the first to complete a geography challenge and claim your spot on the leaderboard.</p>
+                                    <a href="{% url 'where_is_this:entry' %}" class="btn btn-primary btn-lg">
+                                        <i data-lucide="play"></i>
+                                        Start Playing
+                                    </a>
+                                </div>
+                            {% endif %}
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </main>
+
+        <!-- Call to Action -->
+        <section class="cta-section">
+            <div class="container">
+                <div class="cta-content">
+                    <h2>Ready to Challenge Yourself?</h2>
+                    <p>Test your geography knowledge and see if you can make it to the top!</p>
+                    <a href="{% url 'where_is_this:entry' %}" class="btn btn-primary btn-lg">
+                        <i data-lucide="play"></i>
+                        Play Now
+                    </a>
+                </div>
+            </div>
+        </section>
+
+        <!-- Footer -->
+        <footer class="game-footer">
+            <div class="container">
+                <div class="footer-content">
+                    <p>&copy; 2025 QuizMaster. Test your geography knowledge!</p>
+                </div>
+            </div>
+        </footer>
+    </div>
+
+    <!-- Bootstrap JS -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+
+    <style>
+        /* Where is this Leaderboard Page Styles */
+        .where-leaderboard-page {
+            min-height: 100vh;
+            background: var(--bg-secondary);
+        }
+
+        /* Navigation */
+        .game-nav {
+            background: var(--bg-primary);
+            border-bottom: 1px solid var(--border-color);
+            padding: 1rem 0;
+        }
+
+        .nav-content {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .brand {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            color: var(--color-primary);
+            font-weight: 700;
+            font-size: 1.25rem;
+            text-decoration: none;
+        }
+
+        .brand i {
+            width: 32px;
+            height: 32px;
+        }
+
+        .nav-links {
+            display: flex;
+            gap: 1rem;
+        }
+
+        .nav-link {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            color: var(--text-secondary);
+            text-decoration: none;
+            padding: 0.5rem 1rem;
+            border-radius: var(--border-radius);
+            transition: all var(--transition-fast);
+            font-weight: 500;
+        }
+
+        .nav-link:hover {
+            color: var(--color-primary);
+            background: var(--primary-50);
+        }
+
+        /* Header */
+        .leaderboard-header {
+            background: linear-gradient(135deg, var(--primary-500) 0%, var(--secondary-500) 100%);
+            color: var(--text-white);
+            padding: 4rem 0;
+            text-align: center;
+        }
+
+        .trophy-icon {
+            width: 80px;
+            height: 80px;
+            background: rgba(255, 255, 255, 0.2);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 0 auto 2rem;
+        }
+
+        .trophy-icon i {
+            width: 40px;
+            height: 40px;
+        }
+
+        .leaderboard-header h1 {
+            font-size: 3rem;
+            font-weight: 700;
+            margin-bottom: 1rem;
+            text-shadow: 0 2px 10px rgba(0, 0, 0, 0.2);
+        }
+
+        .leaderboard-header p {
+            font-size: 1.25rem;
+            opacity: 0.9;
+            margin: 0;
+        }
+
+        /* Filters */
+        .filters-section {
+            background: var(--bg-primary);
+            border-bottom: 1px solid var(--border-color);
+            padding: 2rem 0;
+        }
+
+        .filters-content {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 2rem;
+        }
+
+        .filter-tabs {
+            display: flex;
+            gap: 0.5rem;
+            background: var(--bg-secondary);
+            padding: 0.5rem;
+            border-radius: var(--border-radius-lg);
+        }
+
+        .filter-tab {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.75rem 1rem;
+            border-radius: var(--border-radius);
+            color: var(--text-secondary);
+            text-decoration: none;
+            font-weight: 500;
+            transition: all var(--transition-fast);
+            white-space: nowrap;
+        }
+
+        .filter-tab:hover {
+            color: var(--color-primary);
+            background: var(--primary-50);
+        }
+
+        .filter-tab.active {
+            color: var(--text-white);
+            background: var(--color-primary);
+            box-shadow: var(--shadow-sm);
+        }
+
+        .filter-tab i {
+            width: 18px;
+            height: 18px;
+        }
+
+        .stat-header {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.5rem;
+            margin-bottom: 0.5rem;
+        }
+
+        .stat-header i {
+            width: 18px;
+            height: 18px;
+            color: var(--color-primary);
+        }
+
+        .stat-details {
+            display: flex;
+            gap: 1rem;
+        }
+
+        .stat-item {
+            text-align: center;
+        }
+
+        .stat-label {
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .stat-value {
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+
+        /* Main Content */
+        .leaderboard-main {
+            padding: 3rem 0;
+        }
+
+        .leaderboard-card {
+            background: var(--bg-primary);
+            border-radius: var(--border-radius-xl);
+            box-shadow: var(--shadow-lg);
+            overflow: hidden;
+        }
+
+        /* Podium */
+        .podium-section {
+            background: linear-gradient(135deg, var(--primary-50) 0%, var(--secondary-50) 100%);
+            padding: 3rem 2rem;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .podium {
+            display: flex;
+            align-items: flex-end;
+            justify-content: center;
+            gap: 2rem;
+            max-width: 800px;
+            margin: 0 auto;
+        }
+
+        .podium-place {
+            text-align: center;
+            flex: 1;
+            max-width: 200px;
+        }
+
+        .podium-place.first {
+            order: 2;
+        }
+
+        .podium-place.second {
+            order: 1;
+        }
+
+        .podium-place.third {
+            order: 3;
+        }
+
+        .podium-avatar {
+            position: relative;
+            margin-bottom: 1rem;
+        }
+
+        .avatar-circle {
+            width: 80px;
+            height: 80px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 0 auto 0.5rem;
+            font-weight: 700;
+            color: var(--text-white);
+            position: relative;
+        }
+
+        .avatar-circle.gold {
+            background: linear-gradient(135deg, #FFD700 0%, #FFA500 100%);
+            box-shadow: 0 4px 15px rgba(255, 215, 0, 0.4);
+        }
+
+        .avatar-circle.silver {
+            background: linear-gradient(135deg, #C0C0C0 0%, #A0A0A0 100%);
+            box-shadow: 0 4px 15px rgba(192, 192, 192, 0.4);
+        }
+
+        .avatar-circle.bronze {
+            background: linear-gradient(135deg, #CD7F32 0%, #B8660A 100%);
+            box-shadow: 0 4px 15px rgba(205, 127, 50, 0.4);
+        }
+
+        .podium-place.first .avatar-circle {
+            width: 100px;
+            height: 100px;
+        }
+
+        .avatar-circle i {
+            width: 40px;
+            height: 40px;
+        }
+
+        .podium-place.first .avatar-circle i {
+            width: 50px;
+            height: 50px;
+        }
+
+        .rank-badge {
+            position: absolute;
+            bottom: -5px;
+            right: -5px;
+            width: 32px;
+            height: 32px;
+            border-radius: 50%;
+            color: var(--text-white);
+            font-weight: 700;
+            font-size: 0.875rem;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border: 3px solid var(--bg-primary);
+        }
+
+        .rank-badge.gold {
+            background: #FFD700;
+            color: #B8860B;
+        }
+
+        .rank-badge.silver {
+            background: #C0C0C0;
+            color: #696969;
+        }
+
+        .rank-badge.bronze {
+            background: #CD7F32;
+            color: #8B4513;
+        }
+
+        .podium-info h4 {
+            font-weight: 700;
+            color: var(--text-primary);
+            margin-bottom: 0.5rem;
+        }
+
+        .podium-score {
+            font-size: 1.5rem;
+            font-weight: 700;
+            color: var(--color-success);
+            margin-bottom: 0.75rem;
+        }
+
+        .podium-place.first .podium-score {
+            font-size: 1.75rem;
+        }
+
+        .podium-meta {
+            display: flex;
+            justify-content: center;
+            gap: 1rem;
+            margin-bottom: 0.5rem;
+        }
+
+        .podium-date {
+            font-size: 0.875rem;
+            color: var(--text-muted);
+        }
+
+        /* Rankings */
+        .rankings-section {
+            padding: 2rem;
+        }
+
+        .section-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 2rem;
+            padding-bottom: 1rem;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .section-header h3 {
+            font-weight: 700;
+            color: var(--text-primary);
+            margin: 0;
+        }
+
+        .page-info {
+            color: var(--text-muted);
+            font-weight: 500;
+        }
+
+        .rankings-list {
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+        }
+
+        .ranking-item {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            padding: 1rem 1.5rem;
+            background: var(--bg-secondary);
+            border-radius: var(--border-radius-lg);
+            transition: all var(--transition-fast);
+            border: 1px solid transparent;
+        }
+
+        .ranking-item:hover {
+            background: var(--bg-tertiary);
+            border-color: var(--primary-200);
+            box-shadow: var(--shadow-sm);
+        }
+
+        .ranking-item.top-three {
+            background: linear-gradient(135deg, var(--primary-50) 0%, var(--secondary-50) 100%);
+            border-color: var(--primary-200);
+        }
+
+        .ranking-rank {
+            width: 40px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            flex-shrink: 0;
+        }
+
+        .medal {
+            width: 24px;
+            height: 24px;
+        }
+
+        .medal.rank-1 {
+            color: #FFD700;
+        }
+
+        .medal.rank-2 {
+            color: #C0C0C0;
+        }
+
+        .medal.rank-3 {
+            color: #CD7F32;
+        }
+
+        .rank-number {
+            font-weight: 700;
+            color: var(--text-muted);
+            font-size: 1.125rem;
+        }
+
+        .ranking-avatar .avatar-circle {
+            width: 50px;
+            height: 50px;
+            background: var(--color-primary);
+            color: var(--text-white);
+            font-weight: 700;
+            flex-shrink: 0;
+        }
+
+        .ranking-info {
+            flex: 1;
+        }
+
+        .player-name {
+            font-weight: 600;
+            color: var(--text-primary);
+            margin-bottom: 0.25rem;
+            font-size: 1.125rem;
+        }
+
+        .player-meta {
+            display: flex;
+            gap: 1rem;
+            font-size: 0.875rem;
+        }
+
+        .game-date {
+            color: var(--text-muted);
+        }
+
+        .ranking-stats {
+            display: flex;
+            gap: 1.5rem;
+        }
+
+        .ranking-stats .stat-item {
+            text-align: center;
+        }
+
+        .ranking-stats .stat-value {
+            font-weight: 700;
+            color: var(--text-primary);
+            margin-bottom: 0.25rem;
+        }
+
+        .ranking-stats .stat-item.primary .stat-value {
+            color: var(--color-success);
+            font-size: 1.25rem;
+        }
+
+        .ranking-stats .stat-label {
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        /* Pagination */
+        .pagination-section {
+            padding: 2rem;
+            border-top: 1px solid var(--border-color);
+            display: flex;
+            justify-content: center;
+        }
+
+        .pagination {
+            display: flex;
+            gap: 0.5rem;
+        }
+
+        .page-item {
+            list-style: none;
+        }
+
+        .page-link {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.75rem 1rem;
+            color: var(--text-secondary);
+            text-decoration: none;
+            border: 1px solid var(--border-color);
+            border-radius: var(--border-radius);
+            transition: all var(--transition-fast);
+            font-weight: 500;
+        }
+
+        .page-link:hover {
+            color: var(--color-primary);
+            background: var(--primary-50);
+            border-color: var(--primary-200);
+        }
+
+        .page-item.active .page-link {
+            color: var(--text-white);
+            background: var(--color-primary);
+            border-color: var(--color-primary);
+        }
+
+        .page-link i {
+            width: 16px;
+            height: 16px;
+        }
+
+        /* Empty State */
+        .empty-leaderboard {
+            text-align: center;
+            padding: 4rem 2rem;
+        }
+
+        .empty-icon {
+            width: 100px;
+            height: 100px;
+            background: var(--primary-100);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 0 auto 2rem;
+        }
+
+        .empty-icon i {
+            width: 50px;
+            height: 50px;
+            color: var(--color-primary);
+        }
+
+        .empty-leaderboard h3 {
+            font-weight: 700;
+            color: var(--text-primary);
+            margin-bottom: 1rem;
+        }
+
+        .empty-leaderboard p {
+            color: var(--text-secondary);
+            font-size: 1.125rem;
+            margin-bottom: 2rem;
+        }
+
+        /* CTA Section */
+        .cta-section {
+            background: linear-gradient(135deg, var(--primary-500) 0%, var(--secondary-500) 100%);
+            color: var(--text-white);
+            padding: 4rem 0;
+            text-align: center;
+        }
+
+        .cta-content h2 {
+            font-size: 2rem;
+            font-weight: 700;
+            margin-bottom: 1rem;
+        }
+
+        .cta-content p {
+            font-size: 1.25rem;
+            margin-bottom: 2rem;
+            opacity: 0.9;
+        }
+
+        /* Footer */
+        .game-footer {
+            background: var(--bg-primary);
+            border-top: 1px solid var(--border-color);
+            padding: 2rem 0;
+            text-align: center;
+        }
+
+        .footer-content p {
+            margin: 0;
+            color: var(--text-muted);
+        }
+
+        /* Responsive Design */
+        @media (max-width: 768px) {
+            .leaderboard-header h1 {
+                font-size: 2rem;
+            }
+
+            .filters-content {
+                flex-direction: column;
+                gap: 1.5rem;
+            }
+
+            .filter-tabs {
+                order: 2;
+            }
+
+            .podium {
+                flex-direction: column;
+                gap: 1rem;
+            }
+
+            .podium-place {
+                order: unset !important;
+                max-width: unset;
+            }
+
+            .ranking-item {
+                padding: 0.75rem 1rem;
+            }
+
+            .ranking-stats {
+                flex-direction: column;
+                gap: 0.5rem;
+            }
+
+            .ranking-stats .stat-item {
+                text-align: left;
+            }
+
+            .podium-meta {
+                flex-direction: column;
+                gap: 0.5rem;
+            }
+        }
+
+        @media (max-width: 576px) {
+            .ranking-item {
+                flex-direction: column;
+                align-items: flex-start;
+                gap: 0.75rem;
+            }
+
+            .ranking-rank {
+                align-self: center;
+            }
+
+            .filter-tabs {
+                flex-wrap: wrap;
+            }
+
+            .page-link {
+                padding: 0.5rem 0.75rem;
+            }
+        }
+    </style>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            lucide.createIcons();
+
+            // Add scroll animations
+            const observerOptions = {
+                threshold: 0.1,
+                rootMargin: '0px 0px -50px 0px'
+            };
+
+            const observer = new IntersectionObserver((entries) => {
+                entries.forEach(entry => {
+                    if (entry.isIntersecting) {
+                        entry.target.style.opacity = '1';
+                        entry.target.style.transform = 'translateY(0)';
+                    }
+                });
+            }, observerOptions);
+
+            // Animate ranking items
+            const rankingItems = document.querySelectorAll('.ranking-item');
+            rankingItems.forEach((item, index) => {
+                item.style.opacity = '0';
+                item.style.transform = 'translateY(20px)';
+                item.style.transition = 'opacity 0.5s ease-out, transform 0.5s ease-out';
+                item.style.transitionDelay = `${index * 0.1}s`;
+                observer.observe(item);
+            });
+
+            // Animate podium items
+            const podiumPlaces = document.querySelectorAll('.podium-place');
+            podiumPlaces.forEach((place, index) => {
+                place.style.opacity = '0';
+                place.style.transform = 'translateY(30px)';
+                place.style.transition = 'opacity 0.6s ease-out, transform 0.6s ease-out';
+                place.style.transitionDelay = `${index * 0.2}s`;
+                observer.observe(place);
+            });
+        });
+    </script>
+</body>
+</html>

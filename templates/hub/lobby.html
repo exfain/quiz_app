@@ -1,0 +1,692 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Lobby · {{ session_name }}</title>
+    <style>
+      body { 
+        font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji"; 
+        margin: 2rem; 
+      }
+      .card { 
+        max-width: 720px; 
+        margin: 0 auto; 
+        padding: 1.5rem; 
+        border: 1px solid #e5e7eb; 
+        border-radius: 12px; 
+      }
+      h2 { margin-top: 0; }
+      .input-group { 
+        display: flex; 
+        gap: 0.5rem; 
+        margin-bottom: 0.5rem;
+        align-items: flex-start;
+      }
+      .input-wrapper {
+        flex-grow: 1;
+      }
+      input { 
+        width: 100%;
+        padding: .5rem .75rem; 
+        border: 1px solid #d1d5db; 
+        border-radius: 8px; 
+        box-sizing: border-box;
+      }
+      .error { 
+        color: #dc2626; 
+        font-size: .875rem;
+        margin-top: 0.25rem;
+        min-height: 1.25rem;
+      }
+      .success { 
+        color: #16a34a; 
+        font-size: .875rem;
+        margin-top: 0.25rem;
+        min-height: 1.25rem;
+      }
+      #joinBtn {
+        background: linear-gradient(135deg, #3b82f6, #2563eb);
+        border: none;
+        color: white;
+        padding: 0.65rem 1.5rem;
+        border-radius: 8px;
+        font-weight: 500;
+        transition: all 0.2s ease;
+      }
+      #joinBtn:hover:not(:disabled) {
+        box-shadow: 0 4px 12px rgba(37, 99, 235, 0.3);
+      }
+      #joinBtn:disabled {
+        background: #9ca3af;
+        cursor: not-allowed;
+        transform: none;
+        box-shadow: none;
+      }
+      ul { 
+        padding-left: 1.5rem; 
+        margin-top: 1rem;
+      }
+      .muted { 
+        color: #6b7280; 
+        font-size: .9rem; 
+      }
+      .status-message {
+        margin-top: 0.5rem;
+        padding: 0.5rem;
+        border-radius: 4px;
+        font-size: 0.875rem;
+      }
+      .status-error {
+        background-color: #fee2e2;
+        color: #b91c1c;
+      }
+      .status-success {
+        background-color: #dcfce7;
+        color: #166534;
+      }
+      /* --- Modern lobby additions --- */
+      :root {
+        --bg: #0b0f17;
+        --panel: #0f172a;
+        --panel-2: #111827;
+        --text: #e5e7eb;
+        --muted: #94a3b8;
+        --primary: #22d3ee;
+        --primary-2: #a78bfa;
+        --accent: #10b981;
+        --danger: #ef4444;
+      }
+      @keyframes gradientBG {
+        0% { background-position: 0% 50%; }
+        50% { background-position: 100% 50%; }
+        100% { background-position: 0% 50%; }
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        color: var(--text);
+        background: linear-gradient(-45deg, #050816, #0b1026, #1a1f4a, #2b2f77);
+        background-size: 400% 400%;
+        animation: gradientBG 15s ease infinite;
+        position: relative;
+      }
+      .container { padding: 2rem 1rem 3rem; max-width: 1200px; margin: 0 auto; }
+      .header { text-align:center; margin-bottom:1.25rem; }
+      .title { font-weight:700; font-size: clamp(1.25rem, 1.5vw + 1rem, 1.75rem); letter-spacing:.5px; }
+      .share { font-size:.9rem; color: var(--muted); }
+      code { background: rgba(15, 23, 42, .8); color: var(--text); padding:.25rem .5rem; border-radius:6px; border:1px solid rgba(148,163,184,.25); }
+      .card { background: linear-gradient(180deg, rgba(17,24,39,.85), rgba(15,23,42,.85)); border:2px solid rgba(255, 255, 255, 0.5); border-radius:14px; box-shadow: 0 10px 30px rgba(0,0,0,.35), inset 0 1px rgba(255,255,255,.03); padding:1rem; backdrop-filter: blur(6px); }
+      .join-card { max-width:760px; margin:0 auto 1.25rem; }
+      .lobby-wrap { display:grid; gap:1.25rem; }
+      .lobby-top { display:flex; align-items:center; justify-content:space-between; }
+      .pill { font-size:.85rem; color:var(--muted); border:1px solid rgba(148,163,184,.25); background: rgba(15,23,42,.5); padding:.35rem .6rem; border-radius:999px; }
+      .online { color:#86efac; font-size: .75rem; }
+      .offline { color:#ef4444; font-size: .75rem; }
+
+      /* Voting */
+      .vote-section { margin-top: 1.5rem; }
+      .vote-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: .9rem; }
+      .vote-card { padding: .9rem 1rem; border-radius: 12px; background: linear-gradient(180deg, rgba(17,24,39,.75), rgba(15,23,42,.9)); border: 1px solid rgba(167,139,250,.18); cursor: pointer; transition: border-color .2s, transform .15s; position: relative; }
+      .vote-card.voted { border-color: var(--primary); background: linear-gradient(180deg, rgba(34,211,238,.1), rgba(15,23,42,.9)); }
+      .vote-card-name { font-weight: 600; font-size: .95rem; margin-bottom: .4rem; }
+      .vote-bar-wrap { height: 4px; background: rgba(148,163,184,.15); border-radius: 2px; margin-top: .6rem; }
+      .vote-bar { height: 4px; background: var(--primary); border-radius: 2px; transition: width .4s ease; }
+      .vote-count { font-size: .75rem; color: var(--muted); margin-top: .3rem; }
+      .vote-check { position: absolute; top: .6rem; right: .7rem; color: var(--primary); font-size: .85rem; display: none; }
+      .vote-card.voted .vote-check { display: block; }
+
+      /* Leaderboard */
+      .leaderboard-section { margin-top: 1.5rem; }
+      .section-title { font-size: .85rem; color: var(--muted); border: 1px solid rgba(148,163,184,.25); background: rgba(15,23,42,.5); padding: .35rem .6rem; border-radius: 999px; display: inline-block; margin-bottom: .9rem; }
+      .lb-table { width: 100%; border-collapse: collapse; }
+      .lb-table th { font-size: .75rem; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; padding: .4rem .75rem; text-align: left; border-bottom: 1px solid rgba(148,163,184,.15); }
+      .lb-table td { padding: .55rem .75rem; border-bottom: 1px solid rgba(148,163,184,.07); font-size: .9rem; }
+      .lb-rank { font-weight: 700; width: 2rem; color: var(--muted); }
+      .lb-rank.gold { color: #fbbf24; }
+      .lb-rank.silver { color: #94a3b8; }
+      .lb-rank.bronze { color: #c07b3a; }
+      .lb-name { font-weight: 600; }
+      .lb-score { text-align: center; font-weight: 700; color: var(--primary); }
+      .lb-games { text-align: center; color: var(--muted); font-size: .8rem; }
+      .lb-table th.lb-score, .lb-table th.lb-games { text-align: center; }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <div class="header">
+        <div class="title" id="lobbyTitle">{{ session_name }}</div>
+      </div>
+
+      <div id="joinCard" class="card join-card">
+        <div class="input-group">
+          <div class="input-wrapper">
+            <input 
+              id="nickname" 
+              maxlength="30" 
+              placeholder="Your nickname" 
+              autocomplete="off"
+              spellcheck="false"
+            />
+            <div id="nicknameStatus" class="error"></div>
+          </div>
+          <button id="joinBtn" disabled>Join</button>
+        </div>
+        <div id="statusMessage" class="status-message" style="display: none;"></div>
+      </div>
+
+      <div class="vote-section" id="voteSection" style="display:none;">
+        <div class="card">
+          <div class="section-title">Vote for the next game</div>
+          <div class="vote-grid" id="voteGrid"></div>
+        </div>
+      </div>
+
+      <div class="leaderboard-section" id="leaderboardSection" style="display:none;">
+        <div class="card">
+          <div class="section-title">Leaderboard</div>
+          <table class="lb-table">
+            <thead>
+              <tr>
+                <th class="lb-rank">#</th>
+                <th>Player</th>
+                <th class="lb-score">Points</th>
+              </tr>
+            </thead>
+            <tbody id="leaderboardBody"></tbody>
+          </table>
+        </div>
+      </div>
+      <div class="share" style="text-align:center; margin-top:2rem; padding-bottom:1rem;">Share link: <code>{{ request.scheme }}://{{ request.get_host }}/hub/lobby/{{ session_code }}/</code></div>
+    </div>
+
+    <script>
+      const code = '{{ session_code }}';
+      const ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws/hub/' + code + '/');
+      const takenNicknames = new Set();
+      let lobbyNicknames = [];
+      let nicknameCheckTimeout = null;
+      let currentNickname = '';
+
+      // DOM elements
+      const nicknameInput = document.getElementById('nickname');
+      const nicknameStatus = document.getElementById('nicknameStatus');
+      const joinBtn = document.getElementById('joinBtn');
+      const statusMessage = document.getElementById('statusMessage');
+      const joinCard = document.getElementById('joinCard');
+
+      // Populate known participants from server-side context
+      const dbParticipants = {{ participants|safe }};
+      (dbParticipants || []).forEach(p => {
+        takenNicknames.add(p.nickname.toLowerCase());
+        lobbyNicknames.push(p.nickname);
+      });
+      // Initialize
+
+      // WebSocket event handlers
+      ws.onopen = () => {
+        // Request current state
+        ws.send(JSON.stringify({ type: 'get_state' }));
+
+        // If nickname is provided via query, prefill and auto-join
+        try {
+          const qp = new URLSearchParams(window.location.search);
+          const nick = qp.get('nickname');
+          if (nick) {
+            nicknameInput.value = nick;
+            updateNicknameStatus();
+            // slight delay to allow takenNicknames render
+            setTimeout(() => {
+              if (!joinBtn.disabled) {
+                joinBtn.click();
+              }
+            }, 300);
+          }
+        } catch(_) {}
+      };
+
+      ws.onmessage = (e) => {
+        const data = JSON.parse(e.data);
+        console.log('Received message:', data);
+
+        if (data.type === 'session_ended') {
+          renderSessionEnded();
+          return;
+        }
+        
+        // Handle redirection to active game if available
+        if (data.type === 'lobby_join_success') {
+
+          // Check for active game and redirect if needed
+          (function() {
+            
+            // Check if there's an active game from the server-side context
+            const activeGameKey = data.game_key;
+            const activeRoomCode = data.room_code;
+            const nickname = nicknameInput.value.trim();
+
+            if (activeGameKey && activeRoomCode && nickname) {
+              const routes = {
+                quiz: { join: '/quiz/join/', play: '/quiz/play/' },
+                clue_rush: { join: '/clue-rush/join/', play: '/clue-rush/play/' },
+                assign: { join: '/assign/join/', play: '/assign/play/' },
+                estimation: { join: '/estimation/join/', play: '/estimation/play/' },
+                where: { join: '/where/join/', play: '/where/play/' },
+                who: { join: '/who/join/', play: '/who/play/' },
+                who_that: { join: '/who-is-that/join/', play: '/who-is-that/play/' },
+                blackjack: { join: '/blackjack/join/', play: '/blackjack/play/' },
+                sorting_ladder: { join: '/sorting-ladder/join/', play: '/sorting-ladder/play/' },
+              };
+              
+              const code = '{{ session_code }}';
+              const joinRoute = new URL(routes[activeGameKey]?.join, window.location.origin);
+              const playRoute = new URL(`${routes[activeGameKey]?.play}${activeRoomCode}/${encodeURIComponent(nickname)}/?hub_session=${code}`, window.location.origin);
+              
+              // Prepare join payload
+              const csrfToken = "{{ csrf_token }}"; // or get dynamically if rendered server-side
+              const body = JSON.stringify({
+                room_code: activeRoomCode,
+                participant_name: nickname,
+                hub_session: code,
+              });
+
+              if (code) {
+                try { localStorage.setItem('hub_session_code', code); } catch (_) {}
+              }
+
+              try {
+                fetch(joinRoute.toString(), {
+                  method: 'POST',
+                  headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRFToken': csrfToken,
+                  },
+                  body: body,
+                  credentials: 'same-origin',
+                })
+                .then(response => response.json())
+                .then(data => {
+                  console.log('Join response:', data);
+                  if (data.success) {
+                    console.log('Join successful, redirecting to play URL');
+                    window.location.href = playRoute.toString();
+                  } else {
+                    console.error('Join failed, falling back to play URL ');
+                    window.location.href = playRoute.toString();
+                  }
+                })
+              } catch (error) {
+                console.error('Error joining game:', error);
+              }
+            }
+          })();
+
+          return;
+        }
+
+        if (data.type === 'vote_update') {
+          renderVotes(data.votes);
+          return;
+        }
+
+        if (data.type === 'scoreboard_visibility') {
+          setScoreboardVisible(data.visible);
+          if (data.visible) fetchLeaderboard();
+        }
+
+        if (data.type === 'state') {
+          // Update known participants
+          lobbyNicknames = [];
+          (data.participants || []).forEach(p => {
+            takenNicknames.add(p.nickname.toLowerCase());
+            lobbyNicknames.push(p.nickname);
+          });
+          // Update available games for voting
+          currentSteps = data.steps || [];
+          refreshVotes();
+          updateNicknameStatus();
+          maybeHideJoin();
+          // Sync scoreboard visibility from session state
+          if (typeof data.scoreboard_visible === 'boolean') {
+            setScoreboardVisible(data.scoreboard_visible);
+            if (data.scoreboard_visible) fetchLeaderboard();
+          }
+        }
+
+        if (data.type === 'join_success') {
+          // Successfully joined
+          showStatus('Successfully joined the lobby!', 'success');
+          nicknameInput.disabled = true;
+          joinBtn.disabled = true;
+          joinBtn.textContent = 'Joined';
+          currentNickname = nicknameInput.value.trim();
+          const titleEl = document.getElementById('lobbyTitle');
+          if (titleEl) titleEl.textContent = '{{ session_name }} (' + currentNickname + ')';
+        }
+
+        if (data.type === 'join_error') {
+          showStatus(data.message || 'Failed to join', 'error');
+          joinBtn.disabled = false;
+        }
+
+        if (data.type === 'navigate' && data.step) {
+          const step = data.step;
+          const routes = {
+            quiz: { join: '/quiz/join/', play: '/quiz/play/' },
+            clue_rush: { join: '/clue-rush/join/', play: '/clue-rush/play/' },
+            assign: { join: '/assign/join/', play: '/assign/play/' },
+            estimation: { join: '/estimation/join/', play: '/estimation/play/' },
+            where: { join: '/where/join/', play: '/where/play/' },
+            who: { join: '/who/join/', play: '/who/play/' },
+            who_that: { join: '/who-is-that/join/', play: '/who-is-that/play/' },
+            blackjack: { join: '/blackjack/join/', play: '/blackjack/play/' },
+            sorting_ladder: { join: '/sorting-ladder/join/', play: '/sorting-ladder/play/' },
+          };
+          
+          if (step.room_code && routes[step.game_key]) {
+            const nickname = currentNickname || nicknameInput.value.trim();
+            const joinUrl = new URL(routes[step.game_key].join, window.location.origin);
+            const playUrl = new URL(`${routes[step.game_key].play}${step.room_code}/${encodeURIComponent(nickname)}/?hub_session=${code}`, window.location.origin);
+
+            // Prepare join payload
+            const csrfToken = "{{ csrf_token }}"; // or get dynamically if rendered server-side
+            const body = JSON.stringify({
+              room_code: step.room_code,
+              participant_name: nickname,
+              hub_session: code,
+            });
+
+            if (code) {
+                try { localStorage.setItem('hub_session_code', code); } catch (_) {}
+            }
+
+            try {
+              fetch(joinUrl.toString(), {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  'X-CSRFToken': csrfToken,
+                },
+                body: body,
+                credentials: 'same-origin',
+              })
+              .then(response => response.json())
+              .then(data => {
+                console.log('Join response:', data);
+                if (data.success) {
+                  console.log('Join successful, redirecting to play URL');
+                  window.location.href = playUrl.toString();
+                } else {
+                  console.error('Join failed, falling back to play URL ');
+                  window.location.href = playUrl.toString();
+                }
+              })
+            } catch (error) {
+              console.error('Error joining game:', error);
+              window.location.href = playUrl.toString();
+            }
+
+          }
+        }
+      };
+
+      ws.onclose = () => {
+        console.log('WebSocket disconnected');
+
+        //Retrieve the nickname from the nicknameInput
+        const nickname = nicknameInput.value.trim();
+        //Add nickname to the query string
+        const qp = new URLSearchParams(window.location.search);
+        qp.set('nickname', nickname);
+        const newUrl = `${window.location.pathname}?${qp.toString()}`;
+        
+        setTimeout(() => {
+            console.log('WebSocket reconnecting...');
+            window.location.href = newUrl;
+        }, 2000);
+      };
+      // Input validation
+      nicknameInput.addEventListener('input', () => {
+        // Clean and validate nickname
+        let nickname = nicknameInput.value.trim();
+        nicknameInput.value = nickname;
+        
+        // Clear any existing timeout
+        if (nicknameCheckTimeout) {
+          clearTimeout(nicknameCheckTimeout);
+        }
+        
+        // Only check if we have enough characters
+        if (nickname.length >= 2) {
+          nicknameCheckTimeout = setTimeout(() => {
+            updateNicknameStatus();
+          }, 300); // Debounce 300ms
+        } else {
+          updateNicknameStatus();
+        }
+      });
+
+      // Join button click handler
+      joinBtn.addEventListener('click', () => {
+        const nickname = nicknameInput.value.trim();
+        if (!isValidNickname(nickname)) return;
+        
+        showStatus('Please Wait...', 'info');
+        
+        ws.send(JSON.stringify({ 
+          type: 'join', 
+          nickname: nickname 
+        }));
+        
+        joinBtn.disabled = true;
+        nicknameInput.disabled = true;
+
+        // Update URL with nickname
+        const url = new URL(window.location.href);
+        url.searchParams.set('nickname', encodeURIComponent(nickname));
+        window.history.pushState({}, '', url);
+        //window.location.href = url.toString();
+        
+      });
+
+
+
+      function cameFromGame() {
+        try {
+          const ref = document.referrer || '';
+          if (/\/play\//.test(ref)) return true;
+          const qp = new URLSearchParams(window.location.search);
+          if (qp.get('return') === '1' || qp.get('back') === '1' || qp.get('from') === 'game') return true;
+        } catch(_) {}
+        return false;
+      }
+
+      function maybeHideJoin() {
+        if (!joinCard) return;
+        const nick = nicknameInput.value.trim();
+        const alreadyIn = nick && takenNicknames.has(nick.toLowerCase());
+        if (cameFromGame() || alreadyIn) {
+          joinCard.style.display = 'none';
+          if (nick) {
+            currentNickname = nick;
+            const titleEl = document.getElementById('lobbyTitle');
+            if (titleEl) titleEl.textContent = '{{ session_name }} (' + nick + ')';
+          }
+        }
+      }
+      function updateNicknameStatus() {
+        const nickname = nicknameInput.value.trim();
+        const isValid = isValidNickname(nickname);
+        
+        if (nickname.length === 0) {
+          nicknameStatus.textContent = 'Enter a nickname';
+          nicknameStatus.className = 'error';
+          joinBtn.disabled = true;
+          joinBtn.textContent = 'Join';
+          return;
+        }
+
+        if (nickname.length < 2) {
+          nicknameStatus.textContent = 'Nickname too short (min 2 characters)';
+          nicknameStatus.className = 'error';
+          joinBtn.disabled = true;
+          joinBtn.textContent = 'Join';
+          return;
+        }
+        
+        if (takenNicknames.has(nickname.toLowerCase())) {
+          nicknameStatus.textContent = '↩ Welcome back! Continue as "' + nickname + '"?';
+          nicknameStatus.className = 'success';
+          joinBtn.disabled = false;
+          joinBtn.textContent = 'Continue';
+          return;
+        }
+
+        // Valid nickname
+        nicknameStatus.textContent = '✓ Available';
+        nicknameStatus.className = 'success';
+        joinBtn.disabled = false;
+        joinBtn.textContent = 'Join';
+      }
+
+      function isValidNickname(nickname) {
+        // A taken nickname is valid too (rejoin scenario)
+        return nickname.length >= 2;
+      }
+
+      function showStatus(message, type = 'info') {
+        statusMessage.textContent = message;
+        statusMessage.className = `status-message status-${type}`;
+        statusMessage.style.display = 'block';
+        
+        // Auto-hide success messages after 3 seconds
+        if (type === 'success') {
+          setTimeout(() => {
+            statusMessage.style.display = 'none';
+          }, 3000);
+        }
+      }
+
+
+      function renderSessionEnded() {
+        try { localStorage.removeItem('hub_session_code'); } catch (_) {}
+
+        window.location.href = `/hub/session/${code}/leaderboard/`;
+        
+        const container = document.getElementById('joinCard');
+        if (!container) return;
+        container.innerHTML = `
+          <h2>Session Ended</h2>
+          <p class="muted">Session ${code} has ended. Thanks for playing!</p>
+          <div style="margin-top:1rem;">
+            <a href="/hub/lobby/${code}/" class="" style="text-decoration:none;">Return to Lobby</a>
+          </div>
+        `;
+      }
+      // Initial hide check
+      maybeHideJoin();
+
+      // Voting
+      const voteSection = document.getElementById('voteSection');
+      const voteGrid = document.getElementById('voteGrid');
+      let myVotedOrder = null;
+      let currentSteps = [];
+
+      const gameNames = {
+        quiz: 'Quiz', assign: 'Assign', estimation: 'Estimation',
+        where: 'Where Is This', who: 'Who Is Lying', who_that: 'Who Is That',
+        blackjack: 'Black Jack', sorting_ladder: 'Sorting Ladder', clue_rush: 'Clue Rush',
+      };
+
+      function renderVotes(votes) {
+        if (!votes || votes.length === 0) return;
+        voteSection.style.display = '';
+        const maxCount = Math.max(...votes.map(v => v.count), 1);
+        voteGrid.innerHTML = '';
+        votes.forEach(v => {
+          const pct = Math.round((v.count / maxCount) * 100);
+          const isVoted = myVotedOrder === v.step_order;
+          const typeLabel = gameNames[v.game_key] || v.game_key;
+          const displayName = v.title ? `${v.title} (${typeLabel})` : typeLabel;
+          const card = document.createElement('div');
+          card.className = 'vote-card' + (isVoted ? ' voted' : '');
+          card.dataset.order = v.step_order;
+          card.innerHTML = `
+            <span class="vote-check">✓ Your vote</span>
+            <div class="vote-card-name">${displayName}</div>
+            <div class="vote-bar-wrap"><div class="vote-bar" style="width:${pct}%"></div></div>
+            <div class="vote-count">${v.count} vote${v.count !== 1 ? 's' : ''}</div>
+          `;
+          card.addEventListener('click', () => castVote(v.step_order));
+          voteGrid.appendChild(card);
+        });
+      }
+
+      function castVote(stepOrder) {
+        const nickname = currentNickname || nicknameInput.value.trim();
+        if (!nickname) return;
+        myVotedOrder = stepOrder;
+        ws.send(JSON.stringify({ type: 'vote', nickname, step_order: stepOrder }));
+      }
+
+      function refreshVotes() {
+        if (currentSteps.length === 0) return;
+        fetch(`/hub/api/session/${code}/votes/`)
+          .then(r => r.json())
+          .then(data => renderVotes(data.votes))
+          .catch(() => {});
+      }
+
+      // Leaderboard
+      const leaderboardSection = document.getElementById('leaderboardSection');
+      const leaderboardBody = document.getElementById('leaderboardBody');
+      const rankLabels = ['gold', 'silver', 'bronze'];
+      let scoreboardVisible = false;
+
+      function setScoreboardVisible(visible) {
+        scoreboardVisible = visible;
+        leaderboardSection.style.display = visible ? '' : 'none';
+      }
+
+      function fetchLeaderboard() {
+        if (!scoreboardVisible) return;
+        fetch(`/hub/api/session/${code}/leaderboard/`)
+          .then(r => r.json())
+          .then(data => {
+            let players = data.participants || [];
+
+            // If no game data yet, build list from known lobby participants with 0 points
+            if (players.length === 0 && lobbyNicknames.length > 0) {
+              players = lobbyNicknames.map(name => ({
+                name: name,
+                weighted_score: 0,
+                games_played: 0,
+              }));
+            }
+
+            if (players.length === 0) return;
+
+            leaderboardBody.innerHTML = '';
+            const onlineSet = new Set(lobbyNicknames.map(n => n.toLowerCase()));
+            players.forEach((p, i) => {
+              const rankClass = rankLabels[i] || '';
+              const isOnline = onlineSet.has(p.name.toLowerCase());
+              const dotHtml = isOnline ? '<span class="online">●</span> ' : '<span class="offline">●</span> ';
+              const tr = document.createElement('tr');
+              tr.innerHTML = `
+                <td class="lb-rank ${rankClass}">${i + 1}</td>
+                <td class="lb-name" ${p.name.toLowerCase() === (currentNickname || nicknameInput.value.trim()).toLowerCase() ? 'style="text-decoration:underline;"' : ''}>${dotHtml}${p.name}</td>
+                <td class="lb-score">${p.weighted_score}</td>
+              `;
+              leaderboardBody.appendChild(tr);
+            });
+          })
+          .catch(() => {});
+      }
+
+      setInterval(fetchLeaderboard, 10000);
+    </script>
+  {% include 'includes/accessibility_widget.html' %}
+  </body>
+</html>

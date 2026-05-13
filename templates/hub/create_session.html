@@ -1,0 +1,449 @@
+{% extends "admin_dashboard/base.html" %}
+{% load static %}
+
+{% block title %}Create Session - QuizMaster Admin{% endblock %}
+{% block page_title %}Create Game Session{% endblock %}
+{% block page_subtitle %}Session einrichten und Spiele hinzufügen{% endblock %}
+
+{% block content %}
+<div class="wizard-container">
+    {% if error %}
+        <div class="alert alert-danger mb-4">{{ error }}</div>
+    {% endif %}
+
+    <form method="post" id="createSessionForm" novalidate>
+        {% csrf_token %}
+
+        <!-- Session Details -->
+        <div class="card mb-4">
+            <div class="card-body">
+                <h5 class="mb-3">Session Details</h5>
+                <div class="row g-3">
+                    <div class="col-md-8">
+                        <label class="form-label fw-semibold">Session Name <span class="text-danger">*</span></label>
+                        <input type="text" name="name" id="sessionName" class="form-control" placeholder="z.B. Freitagsquiz" required>
+                    </div>
+                    <div class="col-md-4">
+                        <label class="form-label fw-semibold">Custom Code <small class="text-muted fw-normal">(optional)</small></label>
+                        <input type="text" name="code" class="form-control" placeholder="Leer = zufällig">
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Game Plan (selected games in order) -->
+        <div class="card mb-4">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h5 class="mb-0">Game Plan</h5>
+                <span class="text-muted small">Spiele in der gewünschten Reihenfolge</span>
+            </div>
+            <div class="card-body p-0">
+                <div id="gamePlan" class="game-plan-list">
+                    <div id="gamePlanEmpty" class="text-center py-5 text-muted">
+                        <i data-lucide="layers" style="width:32px;height:32px;opacity:.3;"></i>
+                        <p class="mt-2 mb-0">Noch keine Spiele ausgewählt.<br>Klicke unten auf ein Spiel um es hinzuzufügen.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Available Game Instances -->
+        <div class="card mb-4">
+            <div class="card-header">
+                <div class="d-flex flex-wrap justify-content-between align-items-center gap-2">
+                    <div>
+                        <h5 class="mb-1">Verfügbare Spiele</h5>
+                        <p class="text-muted small mb-0">Klicke auf ein Spiel um es zum Game Plan hinzuzufügen</p>
+                    </div>
+                    <div class="d-flex gap-2">
+                        <select id="typeFilterSelect" class="form-select form-select-sm" style="min-width:160px;">
+                            <option value="">Alle Spieltypen</option>
+                        </select>
+                        <input type="text" id="gameSearchInput" class="form-control form-control-sm"
+                               placeholder="Nach Name suchen…" style="min-width:180px;max-width:240px;">
+                    </div>
+                </div>
+            </div>
+            <div class="card-body p-0">
+                {% if all_game_instances %}
+                <div class="table-responsive" style="max-height: 460px; overflow-y: auto;">
+                    <table class="table table-hover mb-0 table-sticky-header">
+                        <thead class="table-light">
+                            <tr>
+                                <th>Name</th>
+                                <th>Typ</th>
+                                <th>Fragen</th>
+                                <th></th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for game in all_game_instances %}
+                            <tr class="game-instance-row" style="cursor:pointer;"
+                                data-game-key="{{ game.game_key }}"
+                                data-room-code="{{ game.room_code }}"
+                                data-title="{{ game.title }}"
+                                data-icon="{{ game.icon }}"
+                                data-label="{{ game.label }}"
+                                data-q-count="{{ game.question_count }}">
+                                <td><strong>{{ game.title }}</strong></td>
+                                <td><span class="badge bg-light text-dark border">{{ game.label }}</span></td>
+                                <td class="text-muted">{{ game.question_count }} Fragen</td>
+                                <td class="text-end">
+                                    <button type="button" class="btn btn-sm btn-outline-primary add-game-btn">
+                                        <i data-lucide="plus" style="width:14px;height:14px;"></i> Hinzufügen
+                                    </button>
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+                {% else %}
+                <div class="text-center py-5 text-muted">
+                    <i data-lucide="gamepad-2" style="width:32px;height:32px;opacity:.3;"></i>
+                    <p class="mt-2 mb-0">Noch keine Spiele erstellt.<br>
+                        <a href="{% url 'admin_dashboard:manage_games' %}">Hier Spiele anlegen</a>
+                    </p>
+                </div>
+                {% endif %}
+            </div>
+        </div>
+
+        <input type="hidden" name="games_order" id="gamesOrder" value="[]">
+
+        <div class="d-flex justify-content-between align-items-center">
+            <a href="{% url 'admin_dashboard:sessions_overview' %}" class="btn btn-outline-secondary btn-lg" id="cancelBtn">
+                <i data-lucide="arrow-left" class="me-1"></i> Abbrechen
+            </a>
+            <button type="submit" class="btn btn-success btn-lg" id="submitBtn" disabled>
+                <i data-lucide="check" class="me-1"></i> Session erstellen
+            </button>
+        </div>
+    </form>
+</div>
+
+<!-- Ungespeicherte Änderungen Modal -->
+<div class="modal fade" id="unsavedModal" tabindex="-1" aria-labelledby="unsavedModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-header border-0 pb-0">
+                <h5 class="modal-title" id="unsavedModalLabel">
+                    <i data-lucide="alert-triangle" style="width:20px;height:20px;color:var(--bs-warning);vertical-align:text-bottom;" class="me-2"></i>
+                    Ungespeicherte Änderungen
+                </h5>
+            </div>
+            <div class="modal-body pt-2">
+                Möchtest du die Session speichern oder die Änderungen verwerfen?
+            </div>
+            <div class="modal-footer border-0 pt-0">
+                <button type="button" class="btn btn-outline-danger" id="discardBtn">
+                    <i data-lucide="trash-2" class="me-1" style="width:15px;height:15px;"></i> Verwerfen
+                </button>
+                <button type="button" class="btn btn-success" id="saveFromModalBtn">
+                    <i data-lucide="check" class="me-1" style="width:15px;height:15px;"></i> Session erstellen
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+.wizard-container {
+    max-width: 860px;
+    margin: 0 auto;
+    padding: 1.5rem 1rem;
+}
+
+.game-plan-list {
+    min-height: 60px;
+}
+
+.game-plan-item {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    padding: 0.75rem 1.25rem;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.game-plan-item:last-child {
+    border-bottom: none;
+}
+
+.game-plan-order {
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    background: var(--color-primary, #0d6efd);
+    color: #fff;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 700;
+    font-size: 0.8rem;
+    flex-shrink: 0;
+}
+
+.game-plan-icon {
+    width: 36px;
+    height: 36px;
+    border-radius: 8px;
+    background: var(--color-primary-light, #e8f0fe);
+    color: var(--color-primary, #0d6efd);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+}
+
+.game-plan-info {
+    flex: 1;
+}
+
+.game-plan-title {
+    font-weight: 600;
+    font-size: 0.95rem;
+}
+
+.game-plan-meta {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+}
+
+.game-instance-row:hover td {
+    background: var(--bg-secondary);
+}
+
+.game-plan-drag-handle {
+    cursor: grab;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    padding: 0 4px;
+}
+
+.game-plan-item.dragging {
+    opacity: 0.4;
+}
+
+.game-plan-item.drag-over {
+    border-top: 2px solid var(--color-primary, #0d6efd);
+}
+
+.table-sticky-header thead th {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    background: var(--bs-light, #f8f9fa);
+}
+</style>
+
+<script>
+let gamePlan = []; // [{game_key, room_code, title, label, icon, q_count}]
+
+function renderPlan() {
+    const list = document.getElementById('gamePlan');
+    const empty = document.getElementById('gamePlanEmpty');
+
+    // Remove only rendered game items, keep the empty placeholder in DOM
+    list.querySelectorAll('.game-plan-item').forEach(el => el.remove());
+
+    if (!gamePlan.length) {
+        empty.style.display = '';
+        document.getElementById('submitBtn').disabled = true;
+        return;
+    }
+
+    empty.style.display = 'none';
+
+    gamePlan.forEach((entry, idx) => {
+        const div = document.createElement('div');
+        div.className = 'game-plan-item';
+        div.draggable = true;
+        div.dataset.idx = idx;
+        div.innerHTML = `
+            <div class="game-plan-drag-handle" title="Ziehen zum Sortieren">
+                <i data-lucide="grip-vertical" style="width:16px;height:16px;color:#adb5bd;"></i>
+            </div>
+            <div class="game-plan-order">${idx + 1}</div>
+            <div class="game-plan-icon"><i data-lucide="${entry.icon}" style="width:18px;height:18px;"></i></div>
+            <div class="game-plan-info">
+                <div class="game-plan-title">${entry.title}</div>
+                <div class="game-plan-meta">${entry.label} · ${entry.q_count} Fragen</div>
+            </div>
+            <div class="d-flex gap-1 me-1">
+                <button type="button" class="btn btn-sm btn-outline-secondary move-up-btn" data-idx="${idx}" ${idx === 0 ? 'disabled' : ''} title="Nach oben">
+                    <i data-lucide="chevron-up" style="width:13px;height:13px;"></i>
+                </button>
+                <button type="button" class="btn btn-sm btn-outline-secondary move-down-btn" data-idx="${idx}" ${idx === gamePlan.length - 1 ? 'disabled' : ''} title="Nach unten">
+                    <i data-lucide="chevron-down" style="width:13px;height:13px;"></i>
+                </button>
+            </div>
+            <button type="button" class="btn btn-sm btn-outline-danger remove-plan-btn" data-idx="${idx}">
+                <i data-lucide="x" style="width:14px;height:14px;"></i>
+            </button>
+        `;
+        list.appendChild(div);
+    });
+
+    // Drag-and-drop
+    let dragSrcIdx = null;
+    list.querySelectorAll('.game-plan-item').forEach(item => {
+        item.addEventListener('dragstart', e => {
+            dragSrcIdx = parseInt(item.dataset.idx);
+            item.classList.add('dragging');
+            e.dataTransfer.effectAllowed = 'move';
+        });
+        item.addEventListener('dragend', () => item.classList.remove('dragging'));
+        item.addEventListener('dragover', e => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; item.classList.add('drag-over'); });
+        item.addEventListener('dragleave', () => item.classList.remove('drag-over'));
+        item.addEventListener('drop', e => {
+            e.preventDefault();
+            item.classList.remove('drag-over');
+            const targetIdx = parseInt(item.dataset.idx);
+            if (dragSrcIdx === null || dragSrcIdx === targetIdx) return;
+            const moved = gamePlan.splice(dragSrcIdx, 1)[0];
+            gamePlan.splice(targetIdx, 0, moved);
+            renderPlan();
+        });
+    });
+
+    lucide.createIcons();
+    document.getElementById('gamesOrder').value = JSON.stringify(
+        gamePlan.map(e => ({ game_key: e.game_key, room_code: e.room_code, title: e.title }))
+    );
+    document.getElementById('submitBtn').disabled = false;
+}
+
+document.addEventListener('DOMContentLoaded', function() {
+    lucide.createIcons();
+
+    // Add game to plan
+    document.querySelectorAll('.game-instance-row').forEach(row => {
+        row.addEventListener('click', function(e) {
+            if (e.target.closest('.remove-plan-btn,.move-up-btn,.move-down-btn')) return;
+            gamePlan.push({
+                game_key: this.dataset.gameKey,
+                room_code: this.dataset.roomCode,
+                title: this.dataset.title,
+                label: this.dataset.label,
+                icon: this.dataset.icon,
+                q_count: this.dataset.qCount,
+            });
+            renderPlan();
+        });
+    });
+
+    // Move / Remove from plan (event delegation)
+    document.getElementById('gamePlan').addEventListener('click', function(e) {
+        const removeBtn = e.target.closest('.remove-plan-btn');
+        if (removeBtn) { gamePlan.splice(parseInt(removeBtn.dataset.idx), 1); renderPlan(); return; }
+
+        const upBtn = e.target.closest('.move-up-btn');
+        if (upBtn) {
+            const i = parseInt(upBtn.dataset.idx);
+            if (i > 0) { [gamePlan[i - 1], gamePlan[i]] = [gamePlan[i], gamePlan[i - 1]]; renderPlan(); }
+            return;
+        }
+
+        const downBtn = e.target.closest('.move-down-btn');
+        if (downBtn) {
+            const i = parseInt(downBtn.dataset.idx);
+            if (i < gamePlan.length - 1) { [gamePlan[i], gamePlan[i + 1]] = [gamePlan[i + 1], gamePlan[i]]; renderPlan(); }
+        }
+    });
+
+    document.getElementById('createSessionForm').addEventListener('submit', function(e) {
+        const name = document.getElementById('sessionName').value.trim();
+        if (!name) { e.preventDefault(); alert('Bitte einen Session-Namen eingeben.'); return; }
+        if (!gamePlan.length) { e.preventDefault(); alert('Bitte mindestens ein Spiel hinzufügen.'); return; }
+        isDirty = false;  // Form wird abgeschickt – kein beforeunload nötig
+    });
+
+    // --- Ungespeicherte Änderungen ---
+    let isDirty = false;
+    let pendingNavUrl = null;
+
+    function markDirty() { isDirty = true; }
+
+    document.getElementById('sessionName').addEventListener('input', markDirty);
+    document.querySelector('input[name="code"]').addEventListener('input', markDirty);
+
+    // gamePlan-Mutationen tracken (renderPlan wird nach jeder Änderung aufgerufen)
+    const _origRenderPlan = renderPlan;
+    // Hinweis: renderPlan ist als function-Deklaration im gleichen Scope definiert,
+    // deshalb wird hier ein Wrapper-Aufruf nach jedem gamePlan-Push/-Splice gemacht.
+    // Einfachste Lösung: auf gamePlan.length prüfen statt renderPlan zu wrappen.
+    document.getElementById('gamePlan').addEventListener('click', markDirty);
+    document.querySelectorAll('.game-instance-row').forEach(row => {
+        row.addEventListener('click', markDirty);
+    });
+
+    // beforeunload für Browser-Zurück / Tab schließen
+    window.addEventListener('beforeunload', e => {
+        if (!isDirty) return;
+        e.preventDefault();
+        e.returnValue = '';
+    });
+
+    // Alle Navigations-Links abfangen
+    const unsavedModal = new bootstrap.Modal(document.getElementById('unsavedModal'));
+
+    document.addEventListener('click', e => {
+        if (!isDirty) return;
+        const link = e.target.closest('a[href]');
+        if (!link) return;
+        const href = link.getAttribute('href');
+        if (!href || href === '#' || href.startsWith('javascript:')) return;
+        e.preventDefault();
+        pendingNavUrl = href;
+        lucide.createIcons();
+        unsavedModal.show();
+    });
+
+    document.getElementById('discardBtn').addEventListener('click', () => {
+        isDirty = false;
+        unsavedModal.hide();
+        window.location.href = pendingNavUrl;
+    });
+
+    document.getElementById('saveFromModalBtn').addEventListener('click', () => {
+        unsavedModal.hide();
+        document.getElementById('createSessionForm').requestSubmit();
+    });
+
+    // --- Filter & Suche ---
+    let activeTypeFilter = '';
+
+    function applyFilters() {
+        const search = (document.getElementById('gameSearchInput')?.value || '').toLowerCase().trim();
+        document.querySelectorAll('.game-instance-row').forEach(row => {
+            const matchesType = !activeTypeFilter || row.dataset.gameKey === activeTypeFilter;
+            const matchesSearch = !search || row.dataset.title.toLowerCase().includes(search);
+            row.style.display = (matchesType && matchesSearch) ? '' : 'none';
+        });
+    }
+
+    // Dropdown-Optionen dynamisch aus den vorhandenen Zeilen aufbauen
+    const typesMap = new Map();
+    document.querySelectorAll('.game-instance-row').forEach(r => {
+        if (!typesMap.has(r.dataset.gameKey)) typesMap.set(r.dataset.gameKey, r.dataset.label);
+    });
+
+    const typeSelect = document.getElementById('typeFilterSelect');
+    typesMap.forEach((label, key) => {
+        const opt = document.createElement('option');
+        opt.value = key;
+        opt.textContent = label;
+        typeSelect.appendChild(opt);
+    });
+
+    typeSelect.addEventListener('change', () => {
+        activeTypeFilter = typeSelect.value;
+        applyFilters();
+    });
+
+    document.getElementById('gameSearchInput')?.addEventListener('input', applyFilters);
+});
+</script>
+{% endblock %}

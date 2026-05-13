@@ -1,0 +1,1945 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Who is Lying?: {{ quiz.room_code }} - QuizMaster</title>
+    
+    <!-- Bootstrap 5 CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
+    
+    <!-- Custom Theme CSS -->
+    <link rel="stylesheet" href="{% static 'theme.css' %}">
+    
+    <!-- Inter Font -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body class="who-play-page">
+    <div class="play-container">
+        <!-- Header -->
+        <header class="quiz-header">
+            <div class="container">
+                <div class="header-content">
+                    <div class="quiz-info">
+                        <!-- <div class="room-code">
+                            <i data-lucide="hash"></i>
+                            {{ quiz.room_code }}
+                        </div> -->
+                        <h1 class="quiz-title">{{ quiz.title }}</h1>
+                    </div>
+                    <div class="participant-info">
+                        <div class="participant-avatar">
+                            {{ participant.name|first|upper }}
+                        </div>
+                        <div class="participant-details">
+                            <span class="participant-name">{{ participant.name }}</span>
+                            <!-- <span class="participant-score">{{ participant.total_score }} pts</span> -->
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </header>
+
+        <!-- Main Content -->
+        <main class="quiz-main">
+            <div class="container">
+                <div class="row justify-content-center">
+                    <div class="col-lg-10">
+                        <!-- Waiting State -->
+                        <div id="waitingQuizState" class="game-state {% if quiz.status != 'waiting' %}d-none{% endif %}">
+                            <div class="waiting-card">
+                                <div class="waiting-animation">
+                                    <div class="pulse-ring"></div>
+                                    <div class="pulse-ring delay-1"></div>
+                                    <div class="pulse-ring delay-2"></div>
+                                    <i data-lucide="user-search"></i>
+                                </div>
+                                <h2>Waiting for Who is Lying? Quiz to Start</h2>
+                                <p>Get ready to detect lies! The quiz host will start the session shortly.</p>
+                                <div class="participants-count">
+                                    <i data-lucide="users"></i>
+                                    <span id="waitingParticipantCount">{{ participant_count }}</span> participants joined
+                                </div>
+                            </div>
+                        </div>
+
+                        <div id="waitingQuestionState" class="game-state d-none">
+                            <div class="waiting-card">
+                                <div class="waiting-animation">
+                                    <div class="pulse-ring"></div>
+                                    <div class="pulse-ring delay-1"></div>
+                                    <div class="pulse-ring delay-2"></div>
+                                    <i data-lucide="clock"></i>
+                                </div>
+                                <h2>Waiting for Next Question</h2>
+                                <p>Get ready for the next challenge!</p>
+                            </div>
+                        </div>
+
+                        <!-- Question State -->
+                        <div id="questionState" class="game-state {% if not quiz.current_question %}d-none{% endif %}">
+                            <div class="question-card">
+                                <!-- Question Header -->
+                                <div class="question-header">
+                                    <div class="question-number">
+                                        Question <span id="currentQuestionNumber">1</span>
+                                    </div>
+                                    <div class="question-timer">
+                                        <div class="timer-circle" id="playerTimerCircle">
+                                            <span id="playerTimeLeft">60</span>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <!-- Question Content -->
+                                <div class="question-content">
+                                    <div class="statement-text" id="statementText">
+                                        {% if quiz.current_question %}
+                                            {{ quiz.current_question.statement }}
+                                        {% endif %}
+                                    </div>
+
+                                    <!-- Single Person Interface -->
+                                    <div class="people-interface" id="peopleInterface">
+                                        <div class="selection-instructions">
+                                            <h4>Nur der aktuelle Name ist aktiv</h4>
+                                            <p>Drücke <strong>„lügt“</strong>, wenn die gezeigte Person lügt. Sonst nicht drücken.</p>
+                                        </div>
+
+                                        <div class="current-person-card text-center" id="currentPersonCard">
+                                            <div class="person-name" id="currentPersonName">-</div>
+                                            <button class="btn btn-danger btn-lg mt-3" id="accuseLiarBtn">lügt</button>
+                                        </div>
+
+                                        <div class="selection-summary">
+                                            <div class="summary-text" id="personProgressText">Person 1/1</div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Answer Submitted State -->
+                        <div id="answerSubmittedState" class="game-state d-none">
+                            <div class="submitted-card">
+                                <div class="submitted-animation">
+                                    <div class="check-animation">
+                                        <i data-lucide="check-circle" class="check-icon"></i>
+                                    </div>
+                                </div>
+                                <h2>Frage #<span id="completedQuestionNumber">1</span> beendet.</h2>
+                                <p>Warte auf die n&auml;chste Frage...</p>
+                                <div class="submitted-details">
+                                    <div class="score-breakdown">
+                                        <div class="score-item">
+                                            <span class="score-label">Correct Identifications:</span>
+                                            <span class="score-value" id="correctIdentifications">0</span>
+                                        </div>
+                                        <div class="score-item">
+                                            <span class="score-label">Points Earned:</span>
+                                            <span class="score-value" id="pointsEarned">0</span>
+                                        </div>
+                                    </div>
+                                    
+                                    <!-- Results Breakdown -->
+                                    <div class="results-breakdown" id="resultsBreakdown">
+                                        <div class="breakdown-section correct-liars" id="correctLiarsSection" style="display: none;">
+                                            <h6><i data-lucide="check-circle"></i> Correctly Identified Liars</h6>
+                                            <div class="people-tags" id="correctLiarsTags"></div>
+                                        </div>
+                                        <div class="breakdown-section missed-liars" id="missedLiarsSection" style="display: none;">
+                                            <h6><i data-lucide="eye-off"></i> Missed Liars</h6>
+                                            <div class="people-tags" id="missedLiarsTags"></div>
+                                        </div>
+                                        <div class="breakdown-section false-accusations" id="falseAccusationsSection" style="display: none;">
+                                            <h6><i data-lucide="x-circle"></i> False Accusations</h6>
+                                            <div class="people-tags" id="falseAccusationsTags"></div>
+                                        </div>
+                                        <div class="breakdown-section correct-truth" id="correctTruthSection" style="display: none;">
+                                            <h6><i data-lucide="user-check"></i> Correctly Identified Truth Tellers</h6>
+                                            <div class="people-tags" id="correctTruthTags"></div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div id="setRevealState" class="game-state d-none">
+                            <div class="submitted-card reveal-card">
+                                <div class="reveal-header">
+                                    <div>
+                                        <h2 class="mb-1">Set-Auflösung</h2>
+                                        <p class="reveal-subtitle mb-0" id="revealStatementText">-</p>
+                                    </div>
+                                    <div class="reveal-total-points">
+                                        <span class="reveal-total-label">Set-Punkte</span>
+                                        <span class="reveal-total-value neutral" id="revealSetPoints">0</span>
+                                    </div>
+                                </div>
+                                <div class="reveal-legend">
+                                    <span class="reveal-legend-item"><strong>Status:</strong> lügt / lügt nicht</span>
+                                    <span class="reveal-legend-item"><strong>Aktion:</strong> gedrückt / nicht gedrückt</span>
+                                </div>
+                                <div class="reveal-list" id="setRevealList"></div>
+                            </div>
+                        </div>
+
+                        <!-- Quiz Ended State -->
+                        <div id="quizEndedState" class="game-state d-none">
+                            <div class="ended-card">
+                                <div class="ended-animation">
+                                    <i data-lucide="award" class="award-icon"></i>
+                                </div>
+                                <h2>Who is Lying? Quiz Completed!</h2>
+                                <p>Great job detecting lies and truth!</p>
+                                <div class="final-score">
+                                    <div class="score-circle">
+                                        <span class="score-value">{{ participant.total_score }}</span>
+                                        <span class="score-label">points</span>
+                                    </div>
+                                </div>
+                                <!-- <div class="quiz-actions">
+                                    <a href="/who/result/{{ quiz.room_code }}/{{ participant.name }}/" class="btn btn-primary btn-lg">
+                                        <i data-lucide="bar-chart-3"></i>
+                                        View Detailed Results
+                                    </a>
+                                    <a href="/who/join/" class="btn btn-outline btn-lg">
+                                        <i data-lucide="play"></i>
+                                        Join Another Quiz
+                                    </a>
+                                </div> -->
+                            </div>
+                        </div>
+
+                        <!-- Connection Status -->
+                        <div id="connectionStatus" class="connection-status d-none">
+                            <div class="status-indicator">
+                                <i data-lucide="wifi-off"></i>
+                                <span>Reconnecting...</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </main>
+
+        <aside class="score-history-box score-box" id="scoreHistoryBox">
+            <h6 class="mb-2 score-box__title">Punkte</h6>
+            <div id="scoreHistoryList" class="score-history-list score-box__list">
+                {% for question in question_scoreboard %}
+                    <div class="score-history-row score-box__row is-{{ question.status }}" data-question-number="{{ question.number }}" data-question-id="{{ question.id }}">
+                        <div class="score-history-badge score-box__badge">{{ question.number }}</div>
+                        <div class="score-history-value score-box__value">
+                            {% if question.earned_points is not None %}
+                                <span>{{ question.earned_points }}</span>
+                                {% if question.max_points is not None %}
+                                    <span class="score-history-separator score-box__separator">/</span>
+                                    <span>{{ question.max_points }}</span>
+                                {% endif %}
+                            {% elif question.max_points is not None %}
+                                <span class="score-history-empty score-box__empty">__</span>
+                                <span class="score-history-separator score-box__separator">/</span>
+                                <span>{{ question.max_points }}</span>
+                            {% else %}
+                                <span class="score-history-empty score-box__empty">____</span>
+                            {% endif %}
+                        </div>
+                    </div>
+                {% empty %}
+                    <div class="text-muted small">Noch keine Runden verfügbar.</div>
+                {% endfor %}
+            </div>
+            <div class="score-history-total" id="scoreHistoryTotal">0/0 Punkte</div>
+        </aside>
+    </div>
+
+    {{ question_scoreboard|json_script:"whoQuestionScoreboardData" }}
+    {{ initial_progress_history|json_script:"whoInitialProgressData" }}
+    {{ current_question_number|json_script:"whoCurrentQuestionNumber" }}
+
+    <!-- Bootstrap JS -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+
+    <style>
+        /* Who Play Page Styles */
+        .who-play-page {
+            min-height: 100vh;
+            background: linear-gradient(135deg, var(--bg-secondary) 0%, var(--error-50) 100%);
+        }
+
+        .play-container {
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .score-history-box {
+            position: fixed;
+            right: 16px;
+            top: 110px;
+            width: 180px;
+            z-index: 90;
+            background: var(--bg-primary);
+            border: 1px solid var(--border-color);
+            border-radius: var(--border-radius-lg);
+            box-shadow: var(--shadow-md);
+            padding: 0.75rem;
+        }
+
+        .score-history-list {
+            display: flex;
+            flex-direction: column;
+            gap: 0.35rem;
+            font-size: 0.875rem;
+        }
+
+        .score-history-total {
+            margin-top: 0.75rem;
+            padding-top: 0.75rem;
+            border-top: 1px solid var(--border-color);
+            font-weight: 700;
+            color: var(--text-primary);
+            text-align: right;
+        }
+
+        /* Header */
+        .quiz-header {
+            background: var(--bg-primary);
+            border-bottom: 1px solid var(--border-color);
+            box-shadow: var(--shadow-sm);
+            padding: 1rem 0;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }
+
+        .header-content {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 1rem;
+        }
+
+        .quiz-info {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+        }
+
+        .room-code {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            background-color: var(--error-100);
+            color: var(--error-700);
+            padding: 0.5rem 1rem;
+            border-radius: var(--border-radius-xl);
+            font-family: var(--font-family-mono);
+            font-weight: 700;
+            font-size: 0.875rem;
+        }
+
+        .room-code i {
+            width: 16px;
+            height: 16px;
+        }
+
+        .quiz-title {
+            font-size: 1.5rem;
+            font-weight: 700;
+            color: var(--text-primary);
+            margin: 0;
+        }
+
+        .participant-info {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+        }
+
+        .participant-avatar {
+            width: 48px;
+            height: 48px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, var(--error-500) 0%, var(--error-600) 100%);
+            color: var(--text-white);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 700;
+            font-size: 1.25rem;
+        }
+
+        .participant-details {
+            display: flex;
+            flex-direction: column;
+        }
+
+        .participant-name {
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+
+        .participant-score {
+            color: var(--color-success);
+            font-size: 0.875rem;
+            font-weight: 500;
+        }
+
+        /* Main Content */
+        .quiz-main {
+            flex: 1;
+            display: flex;
+            align-items: center;
+            padding: 2rem 0;
+        }
+
+        .game-state {
+            animation: fadeIn 0.5s ease-out;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(20px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        /* Waiting State */
+        .waiting-card {
+            text-align: center;
+            padding: 3rem 2rem;
+            background: var(--bg-primary);
+            border-radius: var(--border-radius-xl);
+            box-shadow: var(--shadow-lg);
+        }
+
+        .waiting-animation {
+            position: relative;
+            width: 120px;
+            height: 120px;
+            margin: 0 auto 2rem;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .pulse-ring {
+            position: absolute;
+            width: 100%;
+            height: 100%;
+            border: 2px solid var(--error-500);
+            border-radius: 50%;
+            animation: pulse 2s cubic-bezier(0.455, 0.03, 0.515, 0.955) infinite;
+            opacity: 0;
+        }
+
+        .delay-1 { animation-delay: 0.5s; }
+        .delay-2 { animation-delay: 1s; }
+
+        @keyframes pulse {
+            0% { transform: scale(0.8); opacity: 1; }
+            100% { transform: scale(1.4); opacity: 0; }
+        }
+
+        .waiting-animation i {
+            width: 48px;
+            height: 48px;
+            color: var(--error-500);
+            z-index: 2;
+        }
+
+        .waiting-card h2 {
+            font-size: 1.75rem;
+            font-weight: 700;
+            color: var(--text-primary);
+            margin-bottom: 1rem;
+        }
+
+        .waiting-card p {
+            color: var(--text-secondary);
+            font-size: 1.125rem;
+            margin-bottom: 2rem;
+        }
+
+        .participants-count {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            background-color: var(--bg-secondary);
+            padding: 0.75rem 1.5rem;
+            border-radius: var(--border-radius-xl);
+            color: var(--text-primary);
+            font-weight: 600;
+        }
+
+        .participants-count i {
+            width: 20px;
+            height: 20px;
+            color: var(--error-500);
+        }
+
+        /* Question State */
+        .question-card {
+            background: var(--bg-primary);
+            border-radius: var(--border-radius-xl);
+            box-shadow: var(--shadow-lg);
+            overflow: hidden;
+        }
+
+        .question-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 1.5rem 2rem;
+            background: linear-gradient(135deg, var(--error-50) 0%, var(--warning-50) 100%);
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .question-number {
+            font-size: 1.125rem;
+            font-weight: 700;
+            color: var(--text-primary);
+        }
+
+        .timer-circle {
+            width: 60px;
+            height: 60px;
+            border: 4px solid var(--success-300);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 700;
+            color: var(--success-600);
+            background: var(--bg-primary);
+            position: relative;
+        }
+
+        .timer-circle.warning {
+            border-color: var(--warning-300);
+            color: var(--warning-600);
+        }
+
+        .timer-circle.danger {
+            border-color: var(--error-300);
+            color: var(--error-600);
+            animation: shake 0.5s infinite;
+        }
+
+        @keyframes shake {
+            0%, 100% { transform: translateX(0); }
+            25% { transform: translateX(-2px); }
+            75% { transform: translateX(2px); }
+        }
+
+        .question-content {
+            padding: 2rem;
+        }
+
+        .statement-text {
+            font-size: 1.5rem;
+            font-weight: 600;
+            color: var(--text-primary);
+            line-height: 1.6;
+            margin-bottom: 2rem;
+            text-align: center;
+            padding: 1.5rem;
+            background: var(--warning-50);
+            border-left: 4px solid var(--warning-500);
+            border-radius: var(--border-radius);
+        }
+
+        /* People Selection Interface */
+        .people-interface {
+            margin-bottom: 2rem;
+        }
+
+        .selection-instructions {
+            display: none;
+            text-align: center;
+            margin-bottom: 2rem;
+        }
+
+        .selection-instructions h4 {
+            color: var(--error-600);
+            margin-bottom: 0.5rem;
+            font-weight: 600;
+        }
+
+        .selection-instructions p {
+            color: var(--text-secondary);
+            margin: 0;
+        }
+
+        .people-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 1rem;
+            margin-bottom: 2rem;
+        }
+
+        /* Person Card */
+        .person-card {
+            background: var(--bg-secondary);
+            border: 2px solid var(--border-color);
+            border-radius: var(--border-radius-lg);
+            padding: 1.5rem;
+            text-align: center;
+            cursor: pointer;
+            transition: all var(--transition-fast);
+            position: relative;
+            user-select: none;
+        }
+
+        .person-card:hover {
+            border-color: var(--error-300);
+            box-shadow: var(--shadow-md);
+        }
+
+        .person-card.selected {
+            background: var(--error-50);
+            border-color: var(--error-500);
+            transform: translateY(-2px);
+            box-shadow: var(--shadow-md);
+        }
+
+        .person-card.selected::before {
+            content: '';
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            width: 20px;
+            height: 20px;
+            background: var(--error-500);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .person-card.selected::after {
+            content: '✓';
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            width: 20px;
+            height: 20px;
+            color: white;
+            font-size: 12px;
+            font-weight: bold;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .person-name {
+            font-size: 1.125rem;
+            font-weight: 600;
+            color: var(--text-primary);
+            margin-bottom: 0.5rem;
+        }
+
+        .person-card.selected .person-name {
+            color: var(--error-700);
+        }
+
+        .person-status {
+            font-size: 0.875rem;
+            color: var(--text-muted);
+        }
+
+        .person-card.selected .person-status {
+            color: var(--error-600);
+            font-weight: 500;
+        }
+
+        /* Selection Summary */
+        .selection-summary {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 1rem;
+            background: var(--bg-secondary);
+            border-radius: var(--border-radius);
+            border: 1px solid var(--border-color);
+        }
+
+        .summary-text {
+            font-weight: 500;
+            color: var(--text-primary);
+        }
+
+        .liars-text {
+            color: var(--error-600);
+            font-weight: 600;
+        }
+
+        /* Submit Button */
+        .submit-answer {
+            height: 60px;
+            font-size: 1.125rem;
+            font-weight: 600;
+            transition: all var(--transition-fast);
+            background: linear-gradient(135deg, var(--error-500) 0%, var(--error-600) 100%);
+            border-color: var(--error-600);
+        }
+
+        .submit-answer:hover {
+            background: linear-gradient(135deg, var(--error-600) 0%, var(--error-700) 100%);
+            box-shadow: var(--shadow-lg);
+        }
+
+        .submit-answer.loading {
+            position: relative;
+            color: transparent !important;
+        }
+
+        .submit-answer.loading::after {
+            content: '';
+            position: absolute;
+            width: 20px;
+            height: 20px;
+            top: 50%;
+            left: 50%;
+            margin-left: -10px;
+            margin-top: -10px;
+            border: 2px solid transparent;
+            border-top-color: currentColor;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        /* Answer Submitted State */
+        .submitted-card {
+            text-align: center;
+            padding: 3rem 2rem;
+            background: var(--bg-primary);
+            border-radius: var(--border-radius-xl);
+            box-shadow: var(--shadow-lg);
+            position: relative;
+        }
+
+        .submitted-timer {
+            position: absolute;
+            top: 1.5rem;
+            right: 1.5rem;
+        }
+
+        .submitted-animation {
+            margin-bottom: 2rem;
+        }
+
+        .check-animation {
+            width: 120px;
+            height: 120px;
+            margin: 0 auto;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .check-icon {
+            width: 64px;
+            height: 64px;
+            color: var(--color-success);
+            animation: checkPop 0.6s ease-out;
+        }
+
+        @keyframes checkPop {
+            0% { transform: scale(0); }
+            50% { transform: scale(1.2); }
+            100% { transform: scale(1); }
+        }
+
+        .submitted-details {
+            background-color: var(--bg-secondary);
+            padding: 1.5rem;
+            border-radius: var(--border-radius-lg);
+            margin-top: 2rem;
+            text-align: left;
+        }
+
+        .reveal-card {
+            max-width: 980px;
+        }
+
+        .reveal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 1rem;
+            margin-bottom: 1.5rem;
+        }
+
+        .reveal-subtitle {
+            color: var(--text-secondary);
+            font-size: 1rem;
+        }
+
+        .reveal-total-points {
+            min-width: 120px;
+            padding: 0.9rem 1rem;
+            border-radius: var(--border-radius-lg);
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            text-align: center;
+        }
+
+        .reveal-total-label {
+            display: block;
+            color: var(--text-secondary);
+            font-size: 0.85rem;
+            margin-bottom: 0.25rem;
+        }
+
+        .reveal-total-value {
+            display: block;
+            font-size: 1.5rem;
+            font-weight: 700;
+            color: var(--text-primary);
+        }
+
+        .reveal-total-value.positive {
+            color: var(--success-700);
+        }
+
+        .reveal-total-value.negative {
+            color: var(--error-700);
+        }
+
+        .reveal-total-value.neutral {
+            color: var(--text-secondary);
+        }
+
+        .reveal-legend {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 1rem;
+            margin-bottom: 1rem;
+            color: var(--text-secondary);
+            font-size: 0.9rem;
+        }
+
+        .reveal-list {
+            display: flex;
+            flex-direction: column;
+            gap: 0.75rem;
+        }
+
+        .reveal-row {
+            display: grid;
+            grid-template-columns: minmax(160px, 1.3fr) minmax(120px, 1fr) minmax(140px, 1fr) 90px;
+            gap: 0.75rem;
+            align-items: center;
+            padding: 0.9rem 1rem;
+            border: 1px solid var(--border-color);
+            border-radius: var(--border-radius-lg);
+            background: var(--bg-secondary);
+        }
+
+        .reveal-person-name {
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+
+        .reveal-chip {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 36px;
+            padding: 0.35rem 0.75rem;
+            border-radius: 999px;
+            font-size: 0.875rem;
+            font-weight: 600;
+            border: 1px solid transparent;
+        }
+
+        .reveal-chip.liar {
+            background: var(--error-100);
+            color: var(--error-700);
+            border-color: var(--error-200);
+        }
+
+        .reveal-chip.truth {
+            background: var(--success-100);
+            color: var(--success-700);
+            border-color: var(--success-200);
+        }
+
+        .reveal-chip.selected {
+            background: var(--primary-100);
+            color: var(--primary-700);
+            border-color: var(--primary-200);
+        }
+
+        .reveal-chip.idle {
+            background: var(--secondary-100);
+            color: var(--secondary-700);
+            border-color: var(--secondary-200);
+        }
+
+        .reveal-points {
+            justify-self: end;
+            font-weight: 700;
+            font-size: 1rem;
+        }
+
+        .reveal-points.positive {
+            color: var(--success-700);
+        }
+
+        .reveal-points.negative {
+            color: var(--error-700);
+        }
+
+        .reveal-points.neutral {
+            color: var(--text-secondary);
+        }
+
+        .score-breakdown {
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+            margin-bottom: 1.5rem;
+        }
+
+        .score-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .score-label {
+            color: var(--text-secondary);
+            font-weight: 500;
+        }
+
+        .score-value {
+            color: var(--text-primary);
+            font-weight: 700;
+        }
+
+        /* Results Breakdown */
+        .results-breakdown {
+            border-top: 1px solid var(--border-color);
+            padding-top: 1.5rem;
+        }
+
+        .breakdown-section {
+            margin-bottom: 1.5rem;
+        }
+
+        .breakdown-section h6 {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            font-size: 0.875rem;
+            font-weight: 600;
+            margin-bottom: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .breakdown-section.correct-liars h6 {
+            color: var(--success-600);
+        }
+
+        .breakdown-section.missed-liars h6 {
+            color: var(--warning-600);
+        }
+
+        .breakdown-section.false-accusations h6 {
+            color: var(--error-600);
+        }
+
+        .breakdown-section.correct-truth h6 {
+            color: var(--secondary-600);
+        }
+
+        .breakdown-section h6 i {
+            width: 16px;
+            height: 16px;
+        }
+
+        .people-tags {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.5rem;
+        }
+
+        .person-tag {
+            padding: 0.25rem 0.75rem;
+            border-radius: var(--border-radius);
+            font-size: 0.875rem;
+            font-weight: 500;
+        }
+
+        .person-tag.correct-liar {
+            background: var(--success-100);
+            color: var(--success-700);
+        }
+
+        .person-tag.missed-liar {
+            background: var(--warning-100);
+            color: var(--warning-700);
+        }
+
+        .person-tag.false-accusation {
+            background: var(--error-100);
+            color: var(--error-700);
+        }
+
+        .person-tag.correct-truth {
+            background: var(--secondary-100);
+            color: var(--secondary-700);
+        }
+
+        /* Quiz Ended State */
+        .ended-card {
+            text-align: center;
+            padding: 3rem 2rem;
+            background: var(--bg-primary);
+            border-radius: var(--border-radius-xl);
+            box-shadow: var(--shadow-lg);
+        }
+
+        .ended-animation {
+            margin-bottom: 2rem;
+        }
+
+        .award-icon {
+            width: 80px;
+            height: 80px;
+            color: var(--warning-500);
+            animation: award 1s ease-out;
+        }
+
+        @keyframes award {
+            0% { transform: scale(0) rotate(-180deg); opacity: 0; }
+            50% { transform: scale(1.1) rotate(-10deg); opacity: 1; }
+            100% { transform: scale(1) rotate(0deg); opacity: 1; }
+        }
+
+        .final-score {
+            margin: 2rem 0;
+        }
+
+        .score-circle {
+            width: 120px;
+            height: 120px;
+            margin: 0 auto;
+            border: 4px solid var(--color-success);
+            border-radius: 50%;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            background: linear-gradient(135deg, var(--success-50) 0%, var(--success-100) 100%);
+        }
+
+        .score-value {
+            font-size: 2rem;
+            font-weight: 700;
+            color: var(--success-700);
+        }
+
+        .score-label {
+            font-size: 0.875rem;
+            color: var(--success-600);
+            font-weight: 500;
+        }
+
+        .quiz-actions {
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+            max-width: 300px;
+            margin: 0 auto;
+        }
+
+        /* Connection Status */
+        .connection-status {
+            position: fixed;
+            bottom: 2rem;
+            right: 2rem;
+            z-index: 1000;
+        }
+
+        .status-indicator {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            background-color: var(--error-500);
+            color: var(--text-white);
+            padding: 0.75rem 1rem;
+            border-radius: var(--border-radius-xl);
+            box-shadow: var(--shadow-lg);
+            font-weight: 500;
+            animation: slideIn 0.3s ease-out;
+        }
+
+        .status-indicator i {
+            width: 20px;
+            height: 20px;
+        }
+
+        /* Responsive Design */
+        @media (max-width: 768px) {
+            .header-content {
+                flex-direction: column;
+                text-align: center;
+                gap: 1rem;
+            }
+
+            .quiz-title {
+                font-size: 1.25rem;
+            }
+
+            .question-header {
+                padding: 1rem 1.5rem;
+            }
+
+            .question-content {
+                padding: 1.5rem;
+            }
+
+            .statement-text {
+                font-size: 1.125rem;
+                padding: 1rem;
+            }
+
+            .people-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .quiz-actions {
+                max-width: 100%;
+            }
+
+            .waiting-card,
+            .submitted-card,
+            .ended-card {
+                padding: 2rem 1.5rem;
+                margin: 1rem;
+            }
+
+            .selection-summary {
+                flex-direction: column;
+                gap: 1rem;
+            }
+
+            .reveal-header {
+                flex-direction: column;
+                align-items: stretch;
+            }
+
+            .reveal-row {
+                grid-template-columns: 1fr;
+            }
+
+            .reveal-points {
+                justify-self: start;
+            }
+        }
+
+        @media (max-width: 576px) {
+            .quiz-main {
+                padding: 1rem 0;
+            }
+
+            .timer-circle {
+                width: 50px;
+                height: 50px;
+                font-size: 0.875rem;
+            }
+        }
+
+        .reveal-row-results {
+            grid-template-columns: minmax(160px, 1.4fr) minmax(130px, 1fr) minmax(130px, 1fr);
+        }
+
+        .reveal-chip.correct {
+            background: var(--success-100);
+            color: var(--success-700);
+            border-color: var(--success-200);
+        }
+
+        .reveal-chip.wrong {
+            background: var(--warning-100);
+            color: var(--warning-700);
+            border-color: var(--warning-200);
+        }
+
+        @media (max-width: 768px) {
+            .reveal-row-results {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+
+    {% include 'includes/_hub_return_to_lobby_player.html' %}
+    {% include 'includes/_game_tutorial_overlay.html' %}
+<script>
+        document.addEventListener('DOMContentLoaded', function() {
+            lucide.createIcons();
+
+            // Quiz Player Class
+            class WhoPlayer {
+                constructor() {
+                    this.roomCode = '{{ quiz.room_code }}';
+                    this.participantName = '{{ participant.name }}';
+                    this.hubSession = '{{ hub_session }}';
+                    this.websocket = null;
+                    this.questionTimer = null;
+                    this.questionStartTime = null;
+                    this.selectedPeople = new Set();
+                    this.hasAnswered = false;
+                    this.peopleSequence = [];
+                    this.currentPersonPosition = 0;
+                    this.currentTimePerPerson = 60;
+                    this.scoreHistory = this.readJsonScript('whoInitialProgressData', []);
+                    this.scoreboardQuestions = this.readJsonScript('whoQuestionScoreboardData', []);
+                    this.currentQuestionIndex = Number(this.readJsonScript('whoCurrentQuestionNumber', 0)) || 0;
+                    this.currentQuestionStatement = '';
+                    this.currentSetResult = null;
+                    this.questionHasEnded = false;
+                    
+                    this.init();
+                }
+
+                init() {
+                    this.connectWebSocket();
+                    this.bindEvents();
+                    this.renderScoreHistory();
+                    
+                    // Start timer if there's an active question
+                    {% if quiz.current_question %}
+                        this.loadCurrentQuestion();
+                        this.startQuestionTimer({{ quiz.current_question.time_limit }});
+                    {% endif %}
+                }
+
+                connectWebSocket() {
+                    const wsScheme = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+                    const wsUrl = `${wsScheme}//${window.location.host}/ws/who/${this.roomCode}/`;
+                    
+                    this.websocket = new WebSocket(wsUrl);
+                    
+                    this.websocket.onopen = () => {
+                        console.log('WebSocket connected');
+                        this.hideConnectionStatus();
+                        
+                        // Send join message
+                        this.websocket.send(JSON.stringify({
+                            type: 'participant_join',
+                            participant_name: this.participantName,
+                            hub_session: this.hubSession
+                        }));
+                    };
+                    
+                    this.websocket.onmessage = (event) => {
+                        const data = JSON.parse(event.data);
+                        this.handleWebSocketMessage(data);
+                    };
+                    
+                    this.websocket.onclose = () => {
+                        console.log('WebSocket disconnected');
+                        this.showConnectionStatus();
+                        // Attempt to reconnect after 3 seconds
+                        setTimeout(() => this.connectWebSocket(), 3000);
+                    };
+                    
+                    this.websocket.onerror = (error) => {
+                        console.error('WebSocket error:', error);
+                        this.showConnectionStatus();
+                    };
+                }
+
+                handleWebSocketMessage(data) {
+                    switch(data.type) {
+                        case 'quiz_started':
+                            this.onQuizStarted();
+                            break;
+
+                        case 'tutorial_start':
+                            window.gameTutorial?.showFromPayload(data);
+                            break;
+                            
+                        case 'question_started':
+                            window.gameTutorial?.forceClose();
+                            this.onQuestionStarted(data.question);
+                            break;
+                            
+                        case 'question_ended':
+                            this.onQuestionEnded();
+                            break;
+                            
+                        case 'quiz_ended':
+                            window.gameTutorial?.forceClose();
+                            this.onQuizEnded(data);
+                            break;
+                            
+                        case 'participant_count_updated':
+                            this.updateParticipantCount(data.count);
+                            break;
+
+                        case 'answer_submitted':
+                            this.onAnswerSubmitted(data);
+                            break;
+
+                        case 'time_per_person_updated':
+                            this.currentTimePerPerson = parseInt(data.time_per_person || this.currentTimePerPerson, 10) || this.currentTimePerPerson;
+                            break;
+                            
+                        case 'show_leaderboard':
+                            window.showLeaderboard(this.hubSession);
+                            break;
+
+                        case 'hide_leaderboard':
+                            document.getElementById('leaderboardSidebar')?.classList.add('d-none');
+                            break;
+
+                        default:
+                            console.log('Unknown message type:', data.type);
+                    }
+                }
+
+                bindEvents() {
+                    document.getElementById('accuseLiarBtn').addEventListener('click', () => {
+                        this.accuseCurrentPerson();
+                    });
+                }
+
+                onQuizStarted() {
+                    this.showState('waitingQuizState');
+                }
+
+                onQuestionStarted(question) {
+                    this.hasAnswered = false;
+                    this.selectedPeople.clear();
+                    this.questionStartTime = Date.now();
+                    const currentEntry = this.moveQuestionToNextFreeScoreSlot(question?.id, question?.total_possible_points);
+                    this.currentQuestionIndex = Number(currentEntry?.number || question?.question_number) || (this.currentQuestionIndex + 1) || 1;
+                    this.currentPersonPosition = 0;
+                    this.questionHasEnded = false;
+                    this.currentSetResult = null;
+                    
+                    this.loadQuestion(question);
+                    this.showState('questionState');
+                    this.startQuestionTimer(question.time_limit);
+                    this.renderScoreHistory();
+                }
+
+                onQuestionEnded() {
+                    clearInterval(this.questionTimer);
+                    this.questionHasEnded = true;
+                    if (!this.hasAnswered) {
+                        this.submitAnswer();
+                        return;
+                    }
+                    this.showRevealState();
+                }
+
+                onQuizEnded(data) {
+                    clearInterval(this.questionTimer);
+                    // If final scores are provided, update the displayed score for this participant
+                    try {
+                        if (data && Array.isArray(data.final_scores)) {
+                            const me = data.final_scores.find(p => p.name === this.participantName);
+                            if (me && typeof me.total_score === 'number') {
+                                const scoreEl = document.querySelector('#quizEndedState .score-value');
+                                if (scoreEl) scoreEl.textContent = me.total_score;
+                            }
+                        }
+                    } catch (e) { console.warn('Unable to update final score:', e); }
+                    this.showState('quizEndedState');
+                }
+
+                loadCurrentQuestion() {
+                    {% if quiz.current_question %}
+                    const question = {
+                        id: {{ quiz.current_question.id }},
+                        question_number: {{ current_question_number|default:0 }},
+                        statement: '{{ quiz.current_question.statement|escapejs }}',
+                        time_limit: {{ quiz.current_question.time_limit }},
+                        people: {{ quiz.current_question.get_randomized_people.people|safe }},
+                        total_possible_points: {{ quiz.current_question.get_total_possible_points }}
+                    };
+                    this.loadQuestion(question);
+                    {% endif %}
+                }
+
+                loadQuestion(question) {
+                    document.getElementById('statementText').textContent = question.statement;
+                    this.currentQuestionStatement = question.statement || '';
+                    this.peopleSequence = Array.isArray(question.people) ? question.people : [];
+                    this.showCurrentPerson();
+                }
+
+                showCurrentPerson() {
+                    const current = this.peopleSequence[this.currentPersonPosition];
+                    const nameEl = document.getElementById('currentPersonName');
+                    const progressEl = document.getElementById('personProgressText');
+                    const accuseBtn = document.getElementById('accuseLiarBtn');
+                    if (!nameEl || !progressEl || !accuseBtn) return;
+                    if (!current) {
+                        nameEl.textContent = '-';
+                        progressEl.textContent = 'Person 0/0';
+                        accuseBtn.disabled = true;
+                        return;
+                    }
+                    nameEl.textContent = current.name;
+                    progressEl.textContent = `Person ${this.currentPersonPosition + 1}/${this.peopleSequence.length}`;
+                    accuseBtn.disabled = this.selectedPeople.has(current.id);
+                }
+
+                accuseCurrentPerson() {
+                    if (this.hasAnswered) return;
+                    const current = this.peopleSequence[this.currentPersonPosition];
+                    if (!current) return;
+                    this.selectedPeople.add(current.id);
+                    const accuseBtn = document.getElementById('accuseLiarBtn');
+                    if (accuseBtn) accuseBtn.disabled = true;
+                }
+
+                advanceToNextPerson() {
+                    if (this.hasAnswered) return;
+                    this.currentPersonPosition += 1;
+                    if (this.currentPersonPosition >= this.peopleSequence.length) {
+                        this.submitAnswer();
+                        return;
+                    }
+                    this.showCurrentPerson();
+                    this.startQuestionTimer(this.currentTimePerPerson);
+                }
+
+                startQuestionTimer(timeLimit) {
+                    clearInterval(this.questionTimer);
+                    this.currentTimePerPerson = timeLimit;
+                    let timeLeft = timeLimit;
+                    const timerElement = document.getElementById('playerTimeLeft');
+                    const circleElement = document.getElementById('playerTimerCircle');
+                    const submittedTimerElement = document.getElementById('playerTimeLeftSubmitted');
+                    const submittedCircleElement = document.getElementById('playerTimerCircleSubmitted');
+                    
+                    timerElement.textContent = timeLeft;
+                    circleElement.className = 'timer-circle';
+                    if (submittedTimerElement && submittedCircleElement) {
+                        submittedTimerElement.textContent = timeLeft;
+                        submittedCircleElement.className = 'timer-circle';
+                    }
+                    
+                    this.questionTimer = setInterval(() => {
+                        timeLeft--;
+                        timerElement.textContent = timeLeft;
+                        if (submittedTimerElement) {
+                            submittedTimerElement.textContent = timeLeft;
+                        }
+                        
+                        // Update timer circle appearance (both timers)
+                        circleElement.className = 'timer-circle';
+                        if (timeLeft <= 10) {
+                            circleElement.classList.add('danger');
+                            if (submittedCircleElement) submittedCircleElement.className = 'timer-circle danger';
+                        } else if (timeLeft <= 20) {
+                            circleElement.classList.add('warning');
+                            if (submittedCircleElement) submittedCircleElement.className = 'timer-circle warning';
+                        } else if (submittedCircleElement) {
+                            submittedCircleElement.className = 'timer-circle';
+                        }
+                        
+                        if (timeLeft <= 0) {
+                            clearInterval(this.questionTimer);
+                            this.advanceToNextPerson();
+                        }
+                    }, 1000);
+                }
+
+                submitAnswer() {
+                    if (this.hasAnswered) return;
+                    
+                    const timeTaken = (Date.now() - this.questionStartTime) / 1000;
+                    const selectedLiars = Array.from(this.selectedPeople);
+                    const completedQuestionNumber = document.getElementById('completedQuestionNumber');
+                    if (completedQuestionNumber) {
+                        completedQuestionNumber.textContent = String(this.currentQuestionIndex || (this.scoreHistory.length + 1));
+                    }
+                    
+                    const accuseBtn = document.getElementById('accuseLiarBtn');
+                    if (accuseBtn) accuseBtn.disabled = true;
+                    
+                    // Send answer via WebSocket
+                    this.websocket.send(JSON.stringify({
+                        type: 'participant_submit_answer',
+                        participant_name: this.participantName,
+                        hub_session: this.hubSession,
+                        selected_liars: selectedLiars,
+                        time_taken: timeTaken
+                    }));
+                    
+                    this.hasAnswered = true;
+                    
+                    if (!this.questionHasEnded) {
+                        // Show submitted state after a brief delay
+                        setTimeout(() => {
+                            this.showState('answerSubmittedState');
+                        }, 500);
+                    }
+                }
+
+                onAnswerSubmitted(data) {
+                    this.currentSetResult = data;
+                    // Update submitted state with results
+                    document.getElementById('correctIdentifications').textContent = data.correct_identifications;
+                    document.getElementById('pointsEarned').textContent = data.points_earned;
+                    this.pushScoreHistory(parseInt(data.points_earned || 0, 10) || 0);
+                    
+                    // Show detailed breakdown
+                    this.showResultsBreakdown(data.analysis);
+                    if (this.questionHasEnded) {
+                        this.showRevealState();
+                    }
+                }
+
+                readJsonScript(elementId, fallbackValue) {
+                    const element = document.getElementById(elementId);
+                    if (!element) return fallbackValue;
+                    try {
+                        return JSON.parse(element.textContent);
+                    } catch (error) {
+                        console.warn(`Unable to parse ${elementId}`, error);
+                        return fallbackValue;
+                    }
+                }
+
+                moveQuestionToNextFreeScoreSlot(questionId, maxPoints = null) {
+                    const numericQuestionId = Number(questionId);
+                    if (!numericQuestionId) return null;
+
+                    const questions = Array.isArray(this.scoreboardQuestions) ? [...this.scoreboardQuestions] : [];
+                    const existingIndex = questions.findIndex((question) => Number(question?.id) === numericQuestionId);
+                    let entry = existingIndex >= 0
+                        ? questions.splice(existingIndex, 1)[0]
+                        : {
+                            id: numericQuestionId,
+                            earned_points: null,
+                            max_points: Number(maxPoints || 0),
+                            status: 'upcoming',
+                        };
+
+                    if ((entry.max_points === undefined || entry.max_points === null) && maxPoints !== null) {
+                        entry.max_points = Number(maxPoints || 0);
+                    }
+
+                    const playedCount = Array.isArray(this.scoreHistory) ? this.scoreHistory.length : 0;
+                    questions.splice(Math.min(playedCount, questions.length), 0, entry);
+                    this.scoreboardQuestions = questions.map((question, index) => ({
+                        ...question,
+                        number: index + 1,
+                    }));
+                    return this.scoreboardQuestions.find((question) => Number(question?.id) === numericQuestionId) || null;
+                }
+
+                showResultsBreakdown(analysis) {
+                    const sections = {
+                        'correctLiarsSection': analysis.correct_liars,
+                        'missedLiarsSection': analysis.missed_liars,
+                        'falseAccusationsSection': analysis.false_accusations,
+                        'correctTruthSection': analysis.correct_truth_tellers
+                    };
+                    
+                    const tagClasses = {
+                        'correctLiarsTags': 'correct-liar',
+                        'missedLiarsTags': 'missed-liar',
+                        'falseAccusationsTags': 'false-accusation',
+                        'correctTruthTags': 'correct-truth'
+                    };
+                    
+                    for (const [sectionId, people] of Object.entries(sections)) {
+                        const section = document.getElementById(sectionId);
+                        const tagsContainer = document.getElementById(sectionId.replace('Section', 'Tags'));
+                        
+                        if (people && people.length > 0) {
+                            section.style.display = 'block';
+                            
+                            const tagClass = tagClasses[sectionId.replace('Section', 'Tags')];
+                            tagsContainer.innerHTML = people.map(person => 
+                                `<span class="person-tag ${tagClass}">${person}</span>`
+                            ).join('');
+                        } else {
+                            section.style.display = 'none';
+                        }
+                    }
+                }
+
+                showWaitingForNextQuestion() {
+                    // Create a temporary waiting state for next question
+                    // const currentState = document.querySelector('.game-state:not(.d-none)');
+                    // if (currentState) {
+                    //     currentState.innerHTML = `
+                    //         <div class="waiting-card">
+                    //             <div class="waiting-animation">
+                    //                 <div class="pulse-ring"></div>
+                    //                 <div class="pulse-ring delay-1"></div>
+                    //                 <div class="pulse-ring delay-2"></div>
+                    //                 <i data-lucide="clock"></i>
+                    //             </div>
+                    //             <h2>Waiting for Next Question</h2>
+                    //             <p>Get ready for the next challenge!</p>
+                    //         </div>
+                    //     `;
+                    //     lucide.createIcons();
+                    // }
+                    // Switch to a safe waiting state without destroying existing DOM nodes
+                    this.showState('waitingQuestionState');
+                    const waiting = document.getElementById('waitingQuestionState');
+                    if (waiting) {
+                        try { lucide.createIcons(); } catch (e) { /* ignore */ }
+                    }
+                }
+
+                showRevealState() {
+                    if (!this.currentSetResult) return;
+
+                    const revealList = document.getElementById('setRevealList');
+                    const revealPoints = document.getElementById('revealSetPoints');
+                    const revealStatement = document.getElementById('revealStatementText');
+                    if (!revealList || !revealPoints || !revealStatement) return;
+
+                    const personResults = Array.isArray(this.currentSetResult.person_results)
+                        ? this.currentSetResult.person_results
+                        : [];
+
+                    revealStatement.textContent = this.currentQuestionStatement || 'Auflösung des gerade gespielten Sets';
+                    revealPoints.textContent = this.formatPoints(this.currentSetResult.points_earned);
+                    revealPoints.className = `reveal-total-value ${this.getPointsClass(this.currentSetResult.points_earned)}`;
+
+                    revealList.innerHTML = personResults.map(person => `
+                        <div class="reveal-row">
+                            <div class="reveal-person-name">${this.escapeHtml(person.name)}</div>
+                            <div><span class="reveal-chip ${person.is_lying ? 'liar' : 'truth'}">${person.is_lying ? 'lügt' : 'lügt nicht'}</span></div>
+                            <div><span class="reveal-chip ${person.was_selected ? 'selected' : 'idle'}">${person.was_selected ? 'gedrückt' : 'nicht gedrückt'}</span></div>
+                            <div class="reveal-points ${this.getPointsClass(person.points_effect)}">${this.formatPoints(person.points_effect)}</div>
+                        </div>
+                    `).join('');
+
+                    this.showState('setRevealState');
+                }
+
+                pushScoreHistory(points) {
+                    const questionNumber = this.currentQuestionIndex || (this.scoreHistory.length + 1);
+                    const scoreboardQuestion = (this.scoreboardQuestions || []).find((entry) => {
+                        return Number(entry?.number) === questionNumber;
+                    });
+                    const nextEntry = {
+                        question_number: questionNumber,
+                        points: parseInt(points || 0, 10) || 0,
+                        max_points: parseInt(scoreboardQuestion?.max_points || 0, 10) || 0,
+                    };
+                    const existingIndex = this.scoreHistory.findIndex((entry) => Number(entry?.question_number) === questionNumber);
+                    if (existingIndex >= 0) {
+                        this.scoreHistory.splice(existingIndex, 1, nextEntry);
+                    } else {
+                        this.scoreHistory.push(nextEntry);
+                    }
+                    this.renderScoreHistory();
+                }
+
+                renderScoreHistory() {
+                    const listEl = document.getElementById('scoreHistoryList');
+                    const totalEl = document.getElementById('scoreHistoryTotal');
+                    if (!listEl) return;
+                    if (!(this.scoreboardQuestions || []).length) {
+                        listEl.innerHTML = '<div class="text-muted small">Noch keine Runden verfügbar.</div>';
+                        if (totalEl) totalEl.textContent = '0/0 Punkte';
+                        return;
+                    }
+
+                    const progressByQuestionNumber = new Map(
+                        (this.scoreHistory || [])
+                            .map((entry) => [Number(entry?.question_number), entry])
+                            .filter(([questionNumber]) => !Number.isNaN(questionNumber))
+                    );
+                    const totalPoints = Array.from(progressByQuestionNumber.values())
+                        .reduce((sum, entry) => sum + (parseInt(entry?.points || 0, 10) || 0), 0);
+                    const totalMaxPoints = Array.from(progressByQuestionNumber.values())
+                        .reduce((sum, entry) => sum + (parseInt(entry?.max_points || 0, 10) || 0), 0);
+
+                    listEl.innerHTML = '';
+                    (this.scoreboardQuestions || []).forEach((question, index) => {
+                        const questionNumber = Number(question?.number) || index + 1;
+                        const progressEntry = progressByQuestionNumber.get(questionNumber);
+                        const maxPoints = progressEntry?.max_points ?? question?.max_points;
+                        const earnedPoints = progressEntry?.points;
+                        const isCurrent = this.currentQuestionIndex === questionNumber && !progressEntry;
+                        const isPlayed = !!progressEntry;
+                        const rowState = isCurrent ? 'is-current' : isPlayed ? 'is-played' : 'is-upcoming';
+                        const hasMaxPoints = maxPoints !== undefined && maxPoints !== null;
+                        const row = document.createElement('div');
+                        row.className = `score-history-row score-box__row ${rowState}`;
+                        row.dataset.questionNumber = String(questionNumber);
+                        if (question?.id !== undefined && question?.id !== null) {
+                            row.dataset.questionId = String(question.id);
+                        }
+                        row.innerHTML = `
+                            <div class="score-history-badge score-box__badge">${questionNumber}</div>
+                            <div class="score-history-value score-box__value">
+                                ${earnedPoints !== undefined && earnedPoints !== null
+                                    ? `<span>${earnedPoints}</span>${hasMaxPoints ? `<span class="score-history-separator score-box__separator">/</span><span>${maxPoints}</span>` : ''}`
+                                    : hasMaxPoints
+                                        ? `<span class="score-history-empty score-box__empty">__</span><span class="score-history-separator score-box__separator">/</span><span>${maxPoints}</span>`
+                                        : '<span class="score-history-empty score-box__empty">____</span>'
+                                }
+                            </div>
+                        `;
+                        listEl.appendChild(row);
+                    });
+
+                    if (totalEl) {
+                        totalEl.textContent = `${totalPoints}/${totalMaxPoints} Punkte`;
+                    }
+                }
+
+                showState(stateId) {
+                    // Hide all states
+                    document.querySelectorAll('.game-state').forEach(state => {
+                        state.classList.add('d-none');
+                    });
+                    
+                    // Show target state
+                    const targetState = document.getElementById(stateId);
+                    if (targetState) {
+                        targetState.classList.remove('d-none');
+                    }
+                }
+
+                updateParticipantCount(count) {
+                    const countElement = document.getElementById('waitingParticipantCount');
+                    if (countElement) {
+                        countElement.textContent = count;
+                    }
+                }
+
+                showConnectionStatus() {
+                    document.getElementById('connectionStatus').classList.remove('d-none');
+                }
+
+                hideConnectionStatus() {
+                    document.getElementById('connectionStatus').classList.add('d-none');
+                }
+
+                getPointsClass(points) {
+                    const numericPoints = parseInt(points, 10) || 0;
+                    if (numericPoints > 0) return 'positive';
+                    if (numericPoints < 0) return 'negative';
+                    return 'neutral';
+                }
+
+                formatPoints(points) {
+                    const numericPoints = parseInt(points, 10) || 0;
+                    if (numericPoints > 0) return `+${numericPoints}`;
+                    return `${numericPoints}`;
+                }
+
+                escapeHtml(value) {
+                    return String(value ?? '')
+                        .replace(/&/g, '&amp;')
+                        .replace(/</g, '&lt;')
+                        .replace(/>/g, '&gt;')
+                        .replace(/"/g, '&quot;')
+                        .replace(/'/g, '&#39;');
+                }
+            }
+
+            WhoPlayer.prototype.showRevealState = function() {
+                if (!this.currentSetResult) return;
+
+                const revealList = document.getElementById('setRevealList');
+                const revealPoints = document.getElementById('revealSetPoints');
+                const revealStatement = document.getElementById('revealStatementText');
+                const revealLegend = document.querySelector('#setRevealState .reveal-legend');
+                if (!revealList || !revealPoints || !revealStatement) return;
+
+                const personResults = Array.isArray(this.currentSetResult.person_results)
+                    ? this.currentSetResult.person_results
+                    : [];
+
+                revealStatement.textContent = this.currentQuestionStatement || 'Aufl\u00f6sung des gerade gespielten Sets';
+                revealPoints.textContent = this.formatPoints(this.currentSetResult.points_earned);
+                revealPoints.className = `reveal-total-value ${this.getPointsClass(this.currentSetResult.points_earned)}`;
+
+                if (revealLegend) {
+                    revealLegend.innerHTML = `
+                        <span class="reveal-legend-item"><strong>Wahrheit:</strong> l\u00fcgt / l\u00fcgt nicht</span>
+                        <span class="reveal-legend-item"><strong>Dein Urteil:</strong> richtig / falsch</span>
+                    `;
+                }
+
+                revealList.innerHTML = personResults.map(person => {
+                    const wasCorrect = typeof person.was_correct === 'boolean'
+                        ? person.was_correct
+                        : person.is_lying === person.was_selected;
+                    return `
+                        <div class="reveal-row reveal-row-results">
+                            <div class="reveal-person-name">${this.escapeHtml(person.name)}</div>
+                            <div><span class="reveal-chip ${person.is_lying ? 'liar' : 'truth'}">${person.is_lying ? 'l\u00fcgt' : 'l\u00fcgt nicht'}</span></div>
+                            <div><span class="reveal-chip ${wasCorrect ? 'correct' : 'wrong'}">${wasCorrect ? 'richtig' : 'falsch'}</span></div>
+                        </div>
+                    `;
+                }).join('');
+
+                this.showState('setRevealState');
+            };
+
+            // Initialize Who Player
+            const player = new WhoPlayer();
+
+            const lobbyReturnController = createHubLobbyReturnController({
+                sessionCode: '{{ hub_session|default_if_none:"" }}',
+                gameKey: 'who',
+                roomCode: '{{ quiz.room_code }}',
+                participantName: '{{ participant.name|escapejs }}',
+                csrfToken: '{{ csrf_token }}',
+            });
+
+            // Minimal Hub listener for centralized navigation
+            (function() {
+                let hubCode = null;
+                try {
+                    hubCode = localStorage.getItem('hub_session_code');
+                    console.log("[HubScript2] Retrieved hub_session_code from localStorage:", hubCode);
+                } catch (err) {
+                    console.error("[HubScript2] Error accessing localStorage:", err);
+                }
+
+                if (!hubCode) {
+                    console.warn("[HubScript2] No hub_session_code found, exiting...");
+                    return;
+                }
+
+                const wsScheme = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+                const wsUrl = `${wsScheme}//${window.location.host}/ws/hub/${hubCode}/`;
+                console.log("[HubScript2] Connecting to WebSocket:", wsUrl);
+
+                const hubWS = new WebSocket(wsUrl);
+
+                hubWS.onopen = () => {
+                    console.log("[HubScript2] WebSocket connected successfully.");
+                };
+
+                hubWS.onmessage = (event) => {
+                    console.log("[HubScript2] Message received:", event.data);
+                    try {
+                        const data = JSON.parse(event.data);
+                        console.log("[HubScript2] Parsed data:", data);
+
+                        /*if (data.type === 'navigate' && data.step) {
+                            const step = data.step;
+                            console.log("[HubScript2] Navigation requested for:", step);
+
+                            const routes = {
+                                quiz: { join: '/quiz/join/', play: '/quiz/play/' },
+                                assign: { join: '/assign/join/', play: '/assign/play/' },
+                                estimation: { join: '/estimation/join/', play: '/estimation/play/' },
+                                where: { join: '/where/join/', play: '/where/play/' },
+                                who: { join: '/who/join/', play: '/who/play/' },
+                                who_that: { join: '/who-is-that/join/', play: '/who-is-that/play/' },
+                                blackjack: { join: '/blackjack/join/', play: '/blackjack/play/' },
+                            };
+
+                            const base = routes[step.game_key];
+                            console.log("[HubScript2] Base route:", base);
+
+                            if (base && step.room_code) {
+                                const u = new URL(base, window.location.origin);
+                                u.searchParams.set('room_code', step.room_code);
+                                u.searchParams.set('nickname', player.participantName);
+                                u.searchParams.set('hub_session', hubCode);
+
+                                const joinUrl = new URL(routes[step.game_key].join, window.location.origin);
+                                const playUrl = new URL(`${routes[step.game_key].play}${step.room_code}/${encodeURIComponent(player.participantName)}/`, window.location.origin);
+
+                                // Prepare join payload
+                                const csrfToken = "{{ csrf_token }}"; // or get dynamically if rendered server-side
+                                const body = JSON.stringify({
+                                room_code: step.room_code,
+                                participant_name: player.participantName,
+                                hub_session: hubCode,
+                                });
+
+                                // if (code) {
+                                //     try { localStorage.setItem('hub_session_code', code); } catch (_) {}
+                                // }
+
+                                try {
+                                    fetch(joinUrl.toString(), {
+                                        method: 'POST',
+                                        headers: {
+                                        'Content-Type': 'application/json',
+                                        'X-CSRFToken': csrfToken,
+                                        },
+                                        body: body,
+                                        credentials: 'same-origin',
+                                    })
+                                    .then(response => response.json())
+                                    .then(data => {
+                                        if (data.success) {
+                                        console.log('[HubScript2] Join successful, redirecting to play URL');
+                                        window.location.href = playUrl.toString();
+                                        } else {
+                                        console.error('[HubScript2] Join failed, falling back to play URL');
+                                        window.location.href = playUrl.toString();
+                                        }
+                                    })
+                                } catch (error) {
+                                console.error('[HubScript2] Error joining game:', error);
+                                window.location.href = playUrl.toString();
+                                }
+                            } else {
+                                console.warn("[HubScript2] Invalid navigation info:", step);
+                            }
+
+                        }*/
+                        if (data.type === 'players_recalled_to_lobby') {
+                            lobbyReturnController.returnToLobby({ markInactive: false });
+                        } else if (data.type === 'session_ended') {
+                            console.log("[HubScript2] Session ended message received.");
+                            const u = new URL(`/hub/lobby/${hubCode}/`, window.location.origin);
+                            u.searchParams.set('ended', '1');
+
+                            console.log("[HubScript2] Redirecting to lobby:", u.toString());
+                            window.location.href = u.toString();
+                        } else {
+                            console.log("[HubScript2] Unhandled message type:", data.type);
+                        }
+
+                    } catch (err) {
+                        console.error("[HubScript2] Failed to parse message:", event.data, err);
+                    }
+                };
+
+                hubWS.onerror = (err) => {
+                    console.error("[HubScript2] WebSocket error:", err);
+                };
+
+                hubWS.onclose = (e) => {
+                    console.warn("[HubScript2] WebSocket closed:", e.code, e.reason);
+                };
+            })();
+
+        });
+    </script>
+  {% include 'includes/_leaderboard_overlay.html' %}
+  {% include 'includes/accessibility_widget.html' %}
+</body>
+</html>

@@ -1,0 +1,1750 @@
+import json
+import asyncio
+import random
+from channels.generic.websocket import AsyncWebsocketConsumer
+from channels.db import database_sync_to_async
+from django.utils import timezone
+from games_hub.active_game_guard import resolve_session_game_activation_for_room
+from games_hub.lobby_return_flow import ensure_session_players_ready_for_game_start_for_room
+
+from .models import (
+    SortingLadderGame,
+    SortingLadderParticipant,
+    SortingQuestion,
+    SortingItem,
+    RoundSubmission,
+    SortingLadderSession,
+)
+from games_hub.models import HubGameStep, HubSession
+
+
+class SortingLadderGameConsumer(AsyncWebsocketConsumer):
+    _pending_round_orders = {}
+
+    @classmethod
+    def _participant_state_key(cls, participant_name, hub_session_code):
+        return f"{(hub_session_code or '').strip()}::{(participant_name or '').strip().lower()}"
+
+    @classmethod
+    def _pending_round_key(cls, room_code, question_id, round_number, participant_name, hub_session_code):
+        return (
+            room_code,
+            int(question_id or 0),
+            int(round_number or 0),
+            cls._participant_state_key(participant_name, hub_session_code),
+        )
+
+    @classmethod
+    def _get_pending_round_order(cls, room_code, question_id, round_number, participant_name, hub_session_code):
+        return cls._pending_round_orders.get(
+            cls._pending_round_key(room_code, question_id, round_number, participant_name, hub_session_code),
+            [],
+        )
+
+    @classmethod
+    def _set_pending_round_order(cls, room_code, question_id, round_number, participant_name, hub_session_code, ordered_item_ids):
+        cls._pending_round_orders[
+            cls._pending_round_key(room_code, question_id, round_number, participant_name, hub_session_code)
+        ] = list(ordered_item_ids or [])
+
+    @classmethod
+    def _pop_pending_round_order(cls, room_code, question_id, round_number, participant_name, hub_session_code):
+        return cls._pending_round_orders.pop(
+            cls._pending_round_key(room_code, question_id, round_number, participant_name, hub_session_code),
+            [],
+        )
+
+    @classmethod
+    def _clear_room_pending_round_orders(cls, room_code):
+        for key in list(cls._pending_round_orders.keys()):
+            if key[0] == room_code:
+                del cls._pending_round_orders[key]
+
+    async def connect(self):
+        self.room_code = self.scope['url_route']['kwargs']['room_code']
+        self.room_group_name = f'sortingladder_{self.room_code}'
+
+        await self.channel_layer.group_add(
+            self.room_group_name,
+            self.channel_name
+        )
+
+        await self.accept()
+
+        await self.send(text_data=json.dumps({
+            'type': 'connection_established',
+            'message': 'Connected to sorting ladder session'
+        }))
+
+    async def disconnect(self, close_code):
+        await self.channel_layer.group_discard(
+            self.room_group_name,
+            self.channel_name
+        )
+
+    async def receive(self, text_data):
+        try:
+            data = json.loads(text_data)
+        except json.JSONDecodeError:
+            await self.send(text_data=json.dumps({
+                'type': 'error',
+                'message': 'Invalid JSON'
+            }))
+            return
+
+        msg_type = data.get('type')
+        print("SortingLadderGame Consumer:", msg_type)
+
+        if msg_type == 'admin_start_quiz':
+            await self.handle_admin_start_quiz(data)
+        elif msg_type == 'admin_set_topic':
+            # Legacy handler (topic-based flow). Kept for backwards compatibility.
+            await self.handle_admin_set_topic(data)
+        elif msg_type == 'admin_start_round':
+            await self.handle_admin_start_round(data)
+        elif msg_type == 'admin_end_round':
+            await self.handle_admin_end_round(data)
+        elif msg_type == 'admin_end_quiz':
+            await self.handle_admin_end_quiz(data)
+        elif msg_type == 'admin_set_inactive':
+            await self.handle_admin_set_inactive(data)
+        elif msg_type == 'admin_send_question':
+            await self.handle_admin_send_question(data)
+        elif msg_type == 'admin_end_question':
+            await self.handle_admin_end_question(data)
+        elif msg_type == 'participant_join':
+            await self.handle_participant_join(data)
+        elif msg_type == 'participant_submit_move':
+            # Legacy move submission (gap placement). Kept for backwards compatibility.
+            await self.handle_participant_submit_move(data)
+        elif msg_type == 'participant_submit_round':
+            await self.handle_participant_submit_round(data)
+        elif msg_type == 'participant_update_selection':
+            await self.handle_participant_update_selection(data)
+        elif msg_type == 'ping':
+            await self.handle_ping()
+        elif msg_type == 'admin_show_leaderboard':
+            await self.handle_admin_show_leaderboard()
+        elif msg_type == 'admin_hide_leaderboard':
+            await self.handle_admin_hide_leaderboard()
+
+    # -------- Admin handlers --------
+
+    async def handle_admin_start_quiz(self, data):
+        lobby_ready = await database_sync_to_async(ensure_session_players_ready_for_game_start_for_room)(
+            'sorting_ladder',
+            self.room_code,
+        )
+        if not lobby_ready.get('allowed', True):
+            await self.send(text_data=json.dumps({
+                'type': 'participants_not_in_lobby',
+                'message': lobby_ready.get('message') or 'Noch nicht alle Teilnehmer sind in der Lobby.',
+                'not_in_lobby_count': lobby_ready.get('not_in_lobby_count', 0),
+                'participants_not_in_lobby': lobby_ready.get('participants_not_in_lobby', []),
+            }))
+            return
+        quiz = await self.get_quiz()
+        if not quiz:
+            return
+        activation = await database_sync_to_async(resolve_session_game_activation_for_room)(
+            'sorting_ladder',
+            self.room_code,
+        )
+        if not activation.get('success'):
+            payload = {
+                'type': 'active_game_conflict' if activation.get('conflict') else 'error',
+                'message': activation.get('message') or activation.get('error') or 'Unable to start this game.',
+            }
+            if activation.get('active_game'):
+                payload['active_game'] = activation['active_game']
+            await self.send(text_data=json.dumps(payload))
+            return
+        show_tutorial = bool(data.get('show_tutorial', True))
+        await self.start_quiz_db(quiz.id)
+        tutorial_payload = None
+        if quiz.tutorial_enabled and show_tutorial:
+            await self.set_tutorial_active_db(quiz.id, True)
+            tutorial_payload = await self.get_tutorial_payload(quiz.id)
+        else:
+            await self.set_tutorial_active_db(quiz.id, False)
+
+        await self.channel_layer.group_send(
+            self.room_group_name,
+            {
+                'type': 'quiz_started',
+                'message': 'Sorting Ladder quiz has started!'
+            }
+        )
+
+        await self.hub_mirror_event('quiz_started', {
+            'room_code': self.room_code,
+            'game_key': 'sorting_ladder',
+        })
+        if tutorial_payload:
+            await self.channel_layer.group_send(
+                self.room_group_name,
+                {
+                    'type': 'tutorial_start',
+                    **tutorial_payload,
+                }
+            )
+
+    async def handle_admin_set_topic(self, data):
+        """
+        Admin chooses which SortingQuestion (topic) to play.
+        Also initializes the SortingLadderSession with 2 reference items.
+        """
+        topic_id = data.get('topic_id')
+        time_limit = data.get('time_limit_seconds')
+
+        quiz = await self.get_quiz()
+        if not quiz:
+            return
+
+        topic = await self.get_topic(topic_id)
+        if not topic:
+            await self.send(text_data=json.dumps({
+                'type': 'error',
+                'message': 'Invalid topic selected.'
+            }))
+            return
+
+        # Initialize session: two reference items + upcoming active items
+        session_payload = await self.initialize_session_for_topic(
+            quiz_id=quiz.id,
+            topic_id=topic.id,
+            time_limit_seconds=time_limit
+        )
+        if not session_payload:
+            await self.send(text_data=json.dumps({
+                'type': 'error',
+                'message': 'Not enough items for this topic (need at least 3).'
+            }))
+            return
+
+        await self.channel_layer.group_send(
+            self.room_group_name,
+            {
+                'type': 'topic_selected',
+                'topic': {
+                    'id': topic.id,
+                    'title': topic.question_text,
+                    'description': topic.description,
+                },
+                'session': session_payload,
+            }
+        )
+
+        await self.hub_mirror_event('topic_selected', {
+            'room_code': self.room_code,
+            'game_key': 'sorting_ladder',
+            'topic_id': topic.id,
+        })
+
+    async def handle_admin_start_round(self, data):
+        """
+        Admin explicitly moves to the next round (next active element).
+        """
+        quiz = await self.get_quiz()
+        if not quiz:
+            return
+
+        round_state = await self.start_next_round_db(quiz.id)
+        if not round_state:
+            await self.channel_layer.group_send(
+                self.room_group_name,
+                {
+                    'type': 'no_more_rounds',
+                    'message': 'All elements have been placed.'
+                }
+            )
+            await self.hub_mirror_event('no_more_rounds', {
+                'room_code': self.room_code,
+                'game_key': 'sorting_ladder',
+            })
+            return
+
+        await self.set_tutorial_active_db(quiz.id, False)
+
+        for auto_result in round_state.get('auto_results', []):
+            progress_history = await self.get_participant_progress_history(
+                auto_result['participant_name'],
+                auto_result['hub_session_code'],
+            )
+            await self.channel_layer.group_send(
+                self.room_group_name,
+                {
+                    'type': 'round_result',
+                    'participant_name': auto_result['participant_name'],
+                    **auto_result['result'],
+                    'progress_history': progress_history,
+                }
+            )
+
+        await self.channel_layer.group_send(
+            self.room_group_name,
+            {
+                'type': 'round_started',
+                'round': round_state
+            }
+        )
+
+        await self.hub_mirror_event('round_started', {
+            'room_code': self.room_code,
+            'game_key': 'sorting_ladder',
+            'round': round_state,
+        })
+        await self.broadcast_round_answer_status(quiz.id)
+
+    async def handle_admin_end_round(self, data):
+        """
+        Ends the current round: freeze submissions and show who is still alive.
+        """
+        quiz = await self.get_quiz()
+        if not quiz:
+            return
+
+        round_end_payload = await self.end_round_db(quiz.id)
+
+        await self.channel_layer.group_send(
+            self.room_group_name,
+            {
+                'type': 'round_ended',
+                'survivors': round_end_payload.get('survivors', []),
+                'has_next_round': round_end_payload.get('has_next_round', False),
+            }
+        )
+
+        await self.hub_mirror_event('round_ended', {
+            'room_code': self.room_code,
+            'game_key': 'sorting_ladder',
+            'survivors': round_end_payload.get('survivors', []),
+            'has_next_round': round_end_payload.get('has_next_round', False),
+        })
+
+    async def handle_admin_end_quiz(self, data):
+        """
+        Ends the entire game and broadcasts the final standings (rounds survived).
+        """
+        quiz = await self.get_quiz()
+        if not quiz:
+            return
+
+        await self.end_quiz_db(quiz.id)
+        final_scores = await self.get_final_scores()
+
+        await self.channel_layer.group_send(
+            self.room_group_name,
+            {
+                'type': 'quiz_ended',
+                'message': 'Sorting Ladder quiz has ended.',
+                'final_scores': final_scores,
+            }
+        )
+
+        await self.hub_mirror_event('quiz_ended', {
+            'room_code': self.room_code,
+            'game_key': 'sorting_ladder',
+            'final_scores': final_scores,
+        })
+
+    async def handle_admin_set_inactive(self, data):
+        """Pause the game without clearing its current progress."""
+        quiz = await self.get_quiz()
+        if quiz and quiz.status == 'active':
+            await self.set_quiz_inactive_db(quiz.id)
+            await self.channel_layer.group_send(
+                self.room_group_name,
+                {
+                    'type': 'quiz_inactive',
+                    'message': 'Game has been set inactive.',
+                }
+            )
+
+    async def handle_admin_send_question(self, data):
+        """Admin selects a SortingQuestion to play for this quiz.
+
+        This initializes a shared shuffled order of SortingItem records and
+        broadcasts the question + shuffled items to all participants.
+        """
+        question_id = data.get('question_id')
+        custom_time_limit = data.get('custom_time_limit')
+
+        quiz = await self.get_quiz()
+        if not quiz:
+            return
+
+        payload = await self.initialize_question_for_quiz(
+            quiz_id=quiz.id,
+            question_id=question_id,
+            time_limit_seconds=custom_time_limit,
+        )
+        if not payload:
+            await self.send(text_data=json.dumps({
+                'type': 'error',
+                'message': 'Unable to start question. Ensure it has at least 2 items.',
+            }))
+            return
+
+        await self.set_tutorial_active_db(quiz.id, False)
+
+        await self.channel_layer.group_send(
+            self.room_group_name,
+            {
+                'type': 'question_started',
+                'payload': payload,
+            }
+        )
+        await self.broadcast_round_answer_status(quiz.id)
+
+        await self.hub_mirror_event('question_started', {
+            'room_code': self.room_code,
+            'game_key': 'sorting_ladder',
+            **payload,
+        })
+
+    async def handle_admin_end_question(self, data):
+        """Ends the current question early, preventing further round submissions."""
+        quiz = await self.get_quiz()
+        if not quiz:
+            return
+
+        end_payload = await self.end_question_db(quiz.id)
+
+        for auto_result in (end_payload or {}).get('auto_results', []):
+            progress_history = await self.get_participant_progress_history(
+                auto_result['participant_name'],
+                auto_result['hub_session_code'],
+            )
+            await self.channel_layer.group_send(
+                self.room_group_name,
+                {
+                    'type': 'round_result',
+                    'participant_name': auto_result['participant_name'],
+                    **auto_result['result'],
+                    'progress_history': progress_history,
+                }
+            )
+
+        await self.channel_layer.group_send(
+            self.room_group_name,
+            {
+                'type': 'question_ended',
+                'message': 'Question has ended.',
+                'reveal_solution': True,
+                'correct_order_ids': (end_payload or {}).get('correct_order_ids', []),
+            }
+        )
+
+        await self.hub_mirror_event('question_ended', {
+            'room_code': self.room_code,
+            'game_key': 'sorting_ladder',
+        })
+
+    # -------- Participant handlers --------
+
+    async def handle_participant_join(self, data):
+        """
+        Player joins the room.
+        """
+        name = data.get('name')
+        hub_session_code = data.get('hub_session_code')
+
+        if not name:
+            await self.send(text_data=json.dumps({
+                'type': 'error',
+                'message': 'Name is required to join.'
+            }))
+            return
+
+        participant_payload = await self.get_or_create_participant(name, hub_session_code)
+        if not participant_payload:
+            await self.send(text_data=json.dumps({
+                'type': 'error',
+                'message': 'Unable to join game.'
+            }))
+            return
+
+        await self.channel_layer.group_send(
+            self.room_group_name,
+            {
+                'type': 'participant_joined',
+                'participant': participant_payload
+            }
+        )
+
+        await self.hub_mirror_event('participant_joined', {
+            'room_code': self.room_code,
+            'game_key': 'sorting_ladder',
+            'participant': participant_payload,
+        })
+
+        progress_history = await self.get_participant_progress_history(name, hub_session_code)
+        await self.send(text_data=json.dumps({
+            'type': 'progress_history',
+            'history': progress_history,
+        }))
+
+        # If game is already active, send quiz_started directly to this participant
+        game = await self.get_quiz()
+        if game and game.status == 'active':
+            await self.send(text_data=json.dumps({
+                'type': 'quiz_started',
+                'message': 'Game is already in progress'
+            }))
+            tutorial_payload = await self.get_tutorial_payload(game.id)
+            if tutorial_payload:
+                await self.send(text_data=json.dumps({
+                    'type': 'tutorial_start',
+                    **tutorial_payload,
+                }))
+            snapshot = await self.get_rejoin_snapshot(name, hub_session_code)
+            if snapshot.get('question_payload'):
+                await self.send(text_data=json.dumps({
+                    'type': 'question_started',
+                    **snapshot['question_payload'],
+                }))
+            if snapshot.get('latest_round_result'):
+                await self.send(text_data=json.dumps({
+                    'type': 'round_result',
+                    'participant_name': name,
+                    **snapshot['latest_round_result'],
+                }))
+            if snapshot.get('round_started'):
+                await self.send(text_data=json.dumps({
+                    'type': 'round_started',
+                    'round': snapshot['round_started'],
+                }))
+
+    async def handle_participant_submit_move(self, data):
+        """
+        Player attempts to place the active element between two reference items.
+
+        Expected payload:
+        - participant_name
+        - hub_session_code
+        - placed_after_id (or null)
+        - placed_before_id (or null)
+        """
+        participant_name = data.get('participant_name')
+        hub_session_code = data.get('hub_session_code')
+        placed_after_id = data.get('placed_after_id')
+        placed_before_id = data.get('placed_before_id')
+
+        if not participant_name or not hub_session_code:
+            await self.send(text_data=json.dumps({
+                'type': 'error',
+                'message': 'Invalid participant.'
+            }))
+            return
+
+        result = await self.save_round_submission(
+            participant_name=participant_name,
+            hub_session_code=hub_session_code,
+            placed_after_id=placed_after_id,
+            placed_before_id=placed_before_id,
+        )
+
+        if not result:
+            await self.send(text_data=json.dumps({
+                'type': 'round_submission_rejected',
+                'message': 'Legacy move submissions are not supported. Submit ordered_item_ids instead.',
+            }))
+            return
+
+        await self.channel_layer.group_send(
+            self.room_group_name,
+            {
+                'type': 'move_submitted',
+                'participant_name': participant_name,
+                'is_correct': result['is_correct'],
+                'rounds_survived': result['rounds_survived'],
+                'is_eliminated': result['is_eliminated'],
+            }
+        )
+
+        await self.hub_mirror_event('move_submitted', {
+            'room_code': self.room_code,
+            'game_key': 'sorting_ladder',
+            **result,
+            'participant_name': participant_name,
+        })
+
+    async def handle_participant_submit_round(self, data):
+        """Participant submits their full ordering of visible items for this round.
+
+        Expected payload:
+        - participant_name
+        - hub_session_code
+        - ordered_item_ids: list of SortingItem IDs in the order the player chose
+        """
+        participant_name = data.get('participant_name')
+        hub_session_code = data.get('hub_session_code')
+        ordered_item_ids = data.get('ordered_item_ids') or []
+        round_time_out = data.get('round_time_out', False)
+
+        if not participant_name or not hub_session_code or not isinstance(ordered_item_ids, list):
+            await self.send(text_data=json.dumps({
+                'type': 'error',
+                'message': 'Invalid round submission.',
+            }))
+            return
+
+        result = await self.save_round_full_order(
+            participant_name=participant_name,
+            hub_session_code=hub_session_code,
+            ordered_item_ids=ordered_item_ids,
+            round_time_out=round_time_out,
+        )
+        print("result  ", result)
+
+        if not result:
+            # Could be late submission, invalid state, or player already eliminated
+            await self.send(text_data=json.dumps({
+                'type': 'round_submission_rejected',
+                'message': 'Round submission rejected. Please try again.',
+            }))
+            return
+
+        progress_history = await self.get_participant_progress_history(participant_name, hub_session_code)
+        result['progress_history'] = progress_history
+
+        await self.channel_layer.group_send(
+            self.room_group_name,
+            {
+                'type': 'round_result',
+                'participant_name': participant_name,
+                **result,
+            }
+        )
+
+        await self.hub_mirror_event('round_result', {
+            'room_code': self.room_code,
+            'game_key': 'sorting_ladder',
+            'participant_name': participant_name,
+            **result,
+        })
+        quiz = await self.get_quiz()
+        if quiz:
+            await self.broadcast_round_answer_status(quiz.id)
+
+    async def handle_participant_update_selection(self, data):
+        """Persist the current, not-yet-logged ladder state for host-side early round ends."""
+        participant_name = data.get('participant_name')
+        hub_session_code = data.get('hub_session_code')
+        ordered_item_ids = data.get('ordered_item_ids') or []
+
+        if not participant_name or not hub_session_code or not isinstance(ordered_item_ids, list):
+            return
+
+        updated = await self.update_pending_round_selection_db(
+            participant_name=participant_name,
+            hub_session_code=hub_session_code,
+            ordered_item_ids=ordered_item_ids,
+        )
+        if not updated:
+            return
+
+        quiz = await self.get_quiz()
+        if quiz:
+            await self.broadcast_round_answer_status(quiz.id)
+
+    async def handle_admin_show_leaderboard(self):
+        await self.channel_layer.group_send(
+            self.room_group_name,
+            {'type': 'show_leaderboard'}
+        )
+
+    async def show_leaderboard(self, event):
+        await self.send(text_data=json.dumps({'type': 'show_leaderboard'}))
+
+    async def handle_admin_hide_leaderboard(self):
+        await self.channel_layer.group_send(
+            self.room_group_name,
+            {'type': 'hide_leaderboard'}
+        )
+
+    async def hide_leaderboard(self, event):
+        await self.send(text_data=json.dumps({'type': 'hide_leaderboard'}))
+
+    async def handle_ping(self):
+        await self.send(text_data=json.dumps({
+            'type': 'pong',
+            'timestamp': timezone.now().isoformat()
+        }))
+
+    # -------- Group event handlers (for group_send) --------
+
+    async def quiz_started(self, event):
+        await self.send(text_data=json.dumps({
+            'type': 'quiz_started',
+            'message': event.get('message', '')
+        }))
+
+    async def tutorial_start(self, event):
+        await self.send(text_data=json.dumps({
+            'type': 'tutorial_start',
+            'game_title': event.get('game_title'),
+            'tutorial_title': event.get('tutorial_title'),
+            'tutorial_text': event.get('tutorial_text'),
+        }))
+
+    async def topic_selected(self, event):
+        await self.send(text_data=json.dumps({
+            'type': 'topic_selected',
+            'topic': event['topic'],
+            'session': event['session'],
+        }))
+
+    async def round_started(self, event):
+        await self.send(text_data=json.dumps({
+            'type': 'round_started',
+            'round': event['round'],
+        }))
+
+    async def round_ended(self, event):
+        await self.send(text_data=json.dumps({
+            'type': 'round_ended',
+            'survivors': event['survivors'],
+            'has_next_round': event.get('has_next_round', False),
+        }))
+
+    async def no_more_rounds(self, event):
+        await self.send(text_data=json.dumps({
+            'type': 'no_more_rounds',
+            'message': event.get('message', '')
+        }))
+
+    async def participant_joined(self, event):
+        await self.send(text_data=json.dumps({
+            'type': 'participant_joined',
+            'participant': event['participant'],
+        }))
+
+    async def move_submitted(self, event):
+        await self.send(text_data=json.dumps({
+            'type': 'move_submitted',
+            'participant_name': event['participant_name'],
+            'is_correct': event['is_correct'],
+            'rounds_survived': event['rounds_survived'],
+            'is_eliminated': event['is_eliminated'],
+        }))
+
+    async def quiz_ended(self, event):
+        await self.send(text_data=json.dumps({
+            'type': 'quiz_ended',
+            'message': event.get('message', ''),
+            'final_scores': event.get('final_scores', []),
+        }))
+
+    async def quiz_inactive(self, event):
+        await self.send(text_data=json.dumps({
+            'type': 'quiz_inactive',
+            'message': event.get('message', 'Game has been set inactive.'),
+        }))
+
+    async def question_started(self, event):
+        await self.send(text_data=json.dumps({
+            'type': 'question_started',
+            **event['payload'],
+        }))
+
+    async def question_ended(self, event):
+        await self.send(text_data=json.dumps({
+            'type': 'question_ended',
+            'message': event.get('message', ''),
+            'reveal_solution': bool(event.get('reveal_solution')),
+            'correct_order_ids': event.get('correct_order_ids', []),
+        }))
+
+    async def round_result(self, event):
+        await self.send(text_data=json.dumps({
+            'type': 'round_result',
+            'participant_name': event['participant_name'],
+            'round_number': event.get('round_number'),
+            'is_correct': event['is_correct'],
+            'rounds_survived': event['rounds_survived'],
+            'is_eliminated': event['is_eliminated'],
+            'points': event['points'],
+            'has_more_rounds': event['has_more_rounds'],
+            'per_question_rounds': event.get('per_question_rounds'),
+            'correct_order_ids': event.get('correct_order_ids'),
+            'progress_history': event.get('progress_history', []),
+        }))
+
+    async def round_answer_status(self, event):
+        await self.send(text_data=json.dumps({
+            'type': 'round_answer_status',
+            'round_number': event.get('round_number'),
+            'statuses': event.get('statuses', []),
+        }))
+
+    # -------- DB helpers --------
+
+    @database_sync_to_async
+    def get_quiz(self):
+        try:
+            return SortingLadderGame.objects.get(room_code=self.room_code)
+        except SortingLadderGame.DoesNotExist:
+            return None
+
+    @database_sync_to_async
+    def start_quiz_db(self, quiz_id):
+        try:
+            quiz = SortingLadderGame.objects.get(id=quiz_id)
+            quiz.start_quiz()
+        except SortingLadderGame.DoesNotExist:
+            pass
+
+    @database_sync_to_async
+    def set_tutorial_active_db(self, quiz_id, active):
+        try:
+            quiz = SortingLadderGame.objects.get(id=quiz_id)
+            quiz.tutorial_active = bool(active)
+            quiz.save(update_fields=['tutorial_active'])
+        except SortingLadderGame.DoesNotExist:
+            pass
+
+    @database_sync_to_async
+    def get_tutorial_payload(self, quiz_id):
+        try:
+            quiz = SortingLadderGame.objects.get(id=quiz_id)
+            if not quiz.tutorial_enabled or not quiz.tutorial_active:
+                return None
+            return {
+                'game_title': quiz.title,
+                'tutorial_title': quiz.tutorial_title or 'Tutorial',
+                'tutorial_text': quiz.tutorial_text or '',
+            }
+        except SortingLadderGame.DoesNotExist:
+            return None
+
+    @database_sync_to_async
+    def end_quiz_db(self, quiz_id):
+        try:
+            quiz = SortingLadderGame.objects.get(id=quiz_id)
+            quiz.end_quiz()
+        except SortingLadderGame.DoesNotExist:
+            pass
+
+    @database_sync_to_async
+    def set_quiz_inactive_db(self, quiz_id):
+        try:
+            quiz = SortingLadderGame.objects.get(id=quiz_id)
+            quiz.status = 'inactive'
+            quiz.save(update_fields=['status'])
+        except SortingLadderGame.DoesNotExist:
+            pass
+
+    @database_sync_to_async
+    def get_topic(self, topic_id):
+        try:
+            return SortingQuestion.objects.get(id=topic_id, is_active=True)
+        except SortingQuestion.DoesNotExist:
+            return None
+
+    @database_sync_to_async
+    def initialize_session_for_topic(self, quiz_id, topic_id, time_limit_seconds=None):
+        """
+        Creates/updates SortingLadderSession:
+        - Picks two reference items (smallest and largest).
+        - Ensures there is at least one remaining item to be the first active element.
+        """
+        try:
+            quiz = SortingLadderGame.objects.get(id=quiz_id)
+            topic = SortingQuestion.objects.get(id=topic_id)
+        except (SortingLadderGame.DoesNotExist, SortingQuestion.DoesNotExist):
+            return None
+
+        elements = list(topic.elements.order_by('correct_rank'))
+        if len(elements) < 3:
+            return None
+
+        smallest = elements[0]
+        largest = elements[-1]
+
+        session, _ = SortingLadderSession.objects.get_or_create(quiz=quiz)
+        session.placed_elements.clear()
+        session.placed_elements.add(smallest, largest)
+        session.active_element = None
+        session.current_round = 0
+        session.is_round_active = False
+
+        if time_limit_seconds:
+            try:
+                session.time_limit_seconds = int(time_limit_seconds)
+            except (TypeError, ValueError):
+                pass
+
+        session.round_start_time = None
+        session.round_end_time = None
+        session.save()
+
+        quiz.current_question = topic
+        quiz.save()
+
+        return {
+            'current_round': session.current_round,
+            'time_limit_seconds': session.time_limit_seconds,
+            'placed_elements': [
+                {'id': smallest.id, 'text': smallest.text},
+                {'id': largest.id, 'text': largest.text},
+            ],
+            'active_element': None,
+        }
+
+    @database_sync_to_async
+    def initialize_question_for_quiz(self, quiz_id, question_id, time_limit_seconds=None):
+        """Initialize SortingLadderSession for a specific SortingQuestion.
+
+        This sets a shared shuffled order of items for the current question,
+        stores it on the session, and returns a payload for clients.
+        """
+        try:
+            quiz = SortingLadderGame.objects.get(id=quiz_id)
+            question = SortingQuestion.objects.get(id=question_id, is_active=True)
+        except (SortingLadderGame.DoesNotExist, SortingQuestion.DoesNotExist):
+            return None
+
+        elements = list(question.elements.all())
+        if len(elements) < 2:
+            return None
+
+        # Shuffle once for all participants; if a starting_item is defined,
+        # ensure it appears first in the shuffled order.
+        shuffled = elements[:]
+        random.shuffle(shuffled)
+        starting_item_id = question.starting_item_id
+        if starting_item_id:
+            idx = next((i for i, e in enumerate(shuffled) if e.id == starting_item_id), None)
+            if idx is not None and idx != 0:
+                shuffled.insert(0, shuffled.pop(idx))
+        shuffled_ids = [str(e.id) for e in shuffled]
+
+        session, _ = SortingLadderSession.objects.get_or_create(quiz=quiz)
+        session.shuffled_item_ids = ",".join(shuffled_ids)
+        session.current_round = 1
+        session.is_round_active = True
+
+        # Determine the effective per-round time limit: explicit override from
+        # the admin/session if provided, otherwise fall back to the
+        # SortingQuestion.round_time_limit field.
+        effective_time_limit = time_limit_seconds if time_limit_seconds is not None else question.round_time_limit
+
+        # Persist the effective time on the session so future rounds and
+        # clients have a consistent source of truth.
+        try:
+            session.time_limit_seconds = int(effective_time_limit)
+        except (TypeError, ValueError):
+            # If something goes wrong, keep the existing value but avoid crash.
+            pass
+
+        session.round_start_time = timezone.now()
+        session.round_end_time = timezone.now() + timezone.timedelta(seconds=session.time_limit_seconds)
+        session.placed_elements.clear()
+        session.active_element = None
+        session.save()
+        self._clear_room_pending_round_orders(quiz.room_code)
+
+        # Replay-safety: if the same question is started again in the same quiz,
+        # old submissions for that (quiz, question) must not leak into the new run.
+        RoundSubmission.objects.filter(quiz=quiz, question=question).delete()
+
+        # Elimination is scoped to the current question/set. Reset it when a
+        # new question starts so participants can play the next set.
+        quiz.participants.filter(is_eliminated=True).update(is_eliminated=False)
+        for participant in quiz.participants.all():
+            try:
+                participant.calculate_total_score()
+            except Exception:
+                pass
+
+        quiz.current_question = question
+        quiz.save(update_fields=['current_question'])
+
+        return {
+            'question': {
+                'id': question.id,
+                'text': question.question_text,
+                'description': question.description,
+                'upper_label': question.upper_label,
+                'lower_label': question.lower_label,
+                'points': question.points,
+                'time_limit': effective_time_limit,
+            },
+            'items': [
+                {'id': e.id, 'text': e.text}
+                for e in shuffled
+            ],
+            'time_limit_seconds': effective_time_limit,
+        }
+
+    def _save_round_full_order_sync(self, quiz, session, participant, question, ordered_item_ids, round_time_out=False):
+        """Synchronous core implementation used by explicit submits and host-forced resolution."""
+        # Ensure shuffled_item_ids is initialized so we can consistently
+        # reason about remaining rounds even on a timeout-only submission.
+        if not session.shuffled_item_ids:
+            all_ids = list(question.elements.values_list('id', flat=True))
+            if not all_ids:
+                print("No elements found")
+                return None
+            session.shuffled_item_ids = ",".join(str(i) for i in all_ids)
+            session.save(update_fields=['shuffled_item_ids'])
+
+        shuffled_ids = [int(x) for x in session.shuffled_item_ids.split(',') if x]
+
+        # Do not accept submissions if question is no longer active.
+        now = timezone.now()
+        if not session.is_round_active:
+            return None
+        round_has_timed_out = bool(session.round_end_time and now > session.round_end_time)
+        if round_has_timed_out and not round_time_out:
+            has_visible_order = isinstance(ordered_item_ids, list) and len(ordered_item_ids) > 0
+            if not has_visible_order:
+                return None
+
+        # Ignore submissions from already eliminated participants.
+        if participant.is_eliminated:
+            return None
+
+        # If the round ended due to timeout, we record a failed submission
+        # without requiring any ordered_item_ids and without modifying the
+        # shuffled order.
+        if round_time_out:
+            played_rounds = RoundSubmission.objects.filter(
+                quiz=quiz,
+                participant=participant,
+                question=question,
+            ).count()
+            round_number = played_rounds + 1
+            RoundSubmission.objects.create(
+                quiz=quiz,
+                participant=participant,
+                question=question,
+                all_elements=[],
+            )
+            if not participant.is_eliminated:
+                participant.is_eliminated = True
+                participant.save(update_fields=['is_eliminated'])
+
+            correct_rounds_for_question = RoundSubmission.objects.filter(
+                quiz=quiz,
+                participant=participant,
+                question=question,
+                is_correct=True,
+            ).count()
+            points_for_question = correct_rounds_for_question * question.points
+
+            total_rounds_for_participant = RoundSubmission.objects.filter(
+                quiz=quiz,
+                participant=participant,
+                question=question,
+            ).count()
+
+            try:
+                participant.calculate_total_score()
+            except Exception:
+                pass
+
+            has_more_rounds = (not participant.is_eliminated) and total_rounds_for_participant < len(shuffled_ids) - 1
+
+            full_sorted_ids = list(SortingItem.objects.filter(topic=question).order_by('correct_rank'))
+            full_sorted_ids = [item.id for item in full_sorted_ids]
+
+            return {
+                'round_number': round_number,
+                'is_correct': False,
+                'rounds_survived': participant.rounds_survived,
+                'is_eliminated': participant.is_eliminated,
+                'points': points_for_question,
+                'has_more_rounds': bool(has_more_rounds),
+                'per_question_rounds': correct_rounds_for_question,
+                'correct_order_ids': [] if bool(has_more_rounds) else full_sorted_ids,
+            }
+
+        try:
+            visible_ids = [int(x) for x in ordered_item_ids]
+        except (TypeError, ValueError):
+            print("Invalid visible IDs")
+            return None
+
+        if not visible_ids:
+            print("No visible IDs")
+            return None
+
+        if len(set(visible_ids)) != len(visible_ids):
+            print("Duplicate IDs")
+            return None
+        if any(i not in shuffled_ids for i in visible_ids):
+            print("Invalid IDs")
+            return None
+
+        played_rounds = RoundSubmission.objects.filter(
+            quiz=quiz,
+            participant=participant,
+            question=question,
+        ).count()
+        max_rounds = max(len(shuffled_ids) - 1, 0)
+        if played_rounds >= max_rounds:
+            return None
+
+        expected_round = played_rounds + 1
+        expected_count = min(expected_round + 1, len(shuffled_ids))
+        if len(visible_ids) != expected_count:
+            return None
+
+        previous_correct = (
+            RoundSubmission.objects
+            .filter(
+                quiz=quiz,
+                participant=participant,
+                question=question,
+                is_correct=True,
+            )
+            .order_by('-submitted_at')
+            .first()
+        )
+        if previous_correct and isinstance(previous_correct.all_elements, list) and previous_correct.all_elements:
+            try:
+                locked_ids = [int(x) for x in previous_correct.all_elements]
+            except (TypeError, ValueError):
+                locked_ids = []
+        else:
+            locked_ids = [shuffled_ids[0]] if shuffled_ids else []
+
+        if len(locked_ids) != max(expected_count - 1, 0):
+            return None
+
+        new_ids = [i for i in visible_ids if i not in locked_ids]
+        if len(new_ids) != 1:
+            return None
+        reduced_visible = [i for i in visible_ids if i != new_ids[0]]
+        if reduced_visible != locked_ids:
+            return None
+
+        submission = RoundSubmission.objects.create(
+            quiz=quiz,
+            participant=participant,
+            question=question,
+            all_elements=visible_ids,
+        )
+
+        items = list(SortingItem.objects.filter(id__in=visible_ids))
+        if len(items) != len(visible_ids):
+            print("Invalid items")
+            return None
+        rank_map = {item.id: item.correct_rank for item in items}
+        sorted_visible_ids = sorted(visible_ids, key=lambda i: rank_map[i])
+
+        if submission.is_correct:
+            participant.rounds_survived += 1
+            participant.save(update_fields=['rounds_survived'])
+        else:
+            participant.is_eliminated = True
+            participant.save(update_fields=['is_eliminated'])
+
+        total_rounds_for_participant = RoundSubmission.objects.filter(
+            quiz=quiz,
+            participant=participant,
+            question=question,
+        ).count()
+        has_more_rounds = (not participant.is_eliminated) and total_rounds_for_participant < len(shuffled_ids) - 1
+
+        correct_rounds_for_question = RoundSubmission.objects.filter(
+            quiz=quiz,
+            participant=participant,
+            question=question,
+            is_correct=True,
+        ).count()
+        points_for_question = correct_rounds_for_question * question.points
+
+        try:
+            participant.calculate_total_score()
+        except Exception:
+            pass
+
+        full_sorted_ids = list(
+            SortingItem.objects.filter(topic=question).order_by('correct_rank').values_list('id', flat=True)
+        )
+
+        return {
+            'round_number': expected_round,
+            'is_correct': submission.is_correct,
+            'rounds_survived': participant.rounds_survived,
+            'is_eliminated': participant.is_eliminated,
+            'points': points_for_question,
+            'has_more_rounds': bool(has_more_rounds),
+            'per_question_rounds': correct_rounds_for_question,
+            'correct_order_ids': sorted_visible_ids if bool(has_more_rounds) else full_sorted_ids,
+        }
+
+    def _finalize_pending_round_for_participant(self, quiz, session, question, participant):
+        current_round = max(int(session.current_round or 0), 1)
+        submitted_count = RoundSubmission.objects.filter(
+            quiz=quiz,
+            participant=participant,
+            question=question,
+        ).count()
+        if submitted_count >= current_round:
+            self._pop_pending_round_order(
+                quiz.room_code,
+                question.id,
+                current_round,
+                participant.name,
+                participant.hub_session_code,
+            )
+            return None
+
+        pending_order = self._pop_pending_round_order(
+            quiz.room_code,
+            question.id,
+            current_round,
+            participant.name,
+            participant.hub_session_code,
+        )
+
+        result = None
+        if pending_order:
+            result = self._save_round_full_order_sync(
+                quiz=quiz,
+                session=session,
+                participant=participant,
+                question=question,
+                ordered_item_ids=pending_order,
+                round_time_out=False,
+            )
+
+        if not result:
+            result = self._save_round_full_order_sync(
+                quiz=quiz,
+                session=session,
+                participant=participant,
+                question=question,
+                ordered_item_ids=[],
+                round_time_out=True,
+            )
+
+        if not result:
+            return None
+
+        return {
+            'participant_name': participant.name,
+            'hub_session_code': participant.hub_session_code,
+            'result': result,
+        }
+
+    @database_sync_to_async
+    def start_next_round_db(self, quiz_id):
+        """
+        Chooses the next active element and starts the round.
+        """
+        try:
+            quiz = SortingLadderGame.objects.select_related('session', 'current_question').get(id=quiz_id)
+            session = quiz.session
+            topic = quiz.current_question
+        except (SortingLadderGame.DoesNotExist, SortingLadderSession.DoesNotExist, AttributeError):
+            return None
+
+        if not topic:
+            return None
+
+        # Current question-based flow: advance round marker/timer without
+        # changing ordering logic.
+        if session.shuffled_item_ids:
+            try:
+                shuffled_ids = [int(x) for x in session.shuffled_item_ids.split(',') if x]
+            except ValueError:
+                shuffled_ids = []
+            max_rounds = max(len(shuffled_ids) - 1, 0)
+            if session.current_round >= max_rounds:
+                return None
+
+            auto_results = []
+            active_participants = list(
+                quiz.participants.filter(is_active=True, is_eliminated=False)
+            )
+            for participant in active_participants:
+                auto_result = self._finalize_pending_round_for_participant(quiz, session, topic, participant)
+                if auto_result:
+                    auto_results.append(auto_result)
+
+            session.current_round += 1
+            session.is_round_active = True
+            session.round_start_time = timezone.now()
+            session.round_end_time = timezone.now() + timezone.timedelta(seconds=session.time_limit_seconds)
+            session.save(update_fields=['current_round', 'is_round_active', 'round_start_time', 'round_end_time'])
+
+            return {
+                'round_number': session.current_round,
+                'time_limit_seconds': session.time_limit_seconds,
+                'auto_results': auto_results,
+            }
+
+        placed_ids = list(session.placed_elements.values_list('id', flat=True))
+        active_id = session.active_element_id
+
+        remaining = topic.elements.exclude(id__in=placed_ids + ([active_id] if active_id else [])) \
+                                  .order_by('correct_rank')
+        next_element = remaining.first()
+        if not next_element:
+            return None
+
+        session.start_next_round(next_element)
+
+        return {
+            'round_number': session.current_round,
+            'time_limit_seconds': session.time_limit_seconds,
+            'active_element': {
+                'id': session.active_element.id,
+                'text': session.active_element.text,
+            },
+            'placed_elements': list(
+                session.placed_elements.order_by('correct_rank')
+                .values('id', 'text')
+            ),
+        }
+
+    async def broadcast_round_answer_status(self, quiz_id):
+        status_payload = await self.get_round_answer_status_db(quiz_id)
+        if not status_payload:
+            return
+        await self.channel_layer.group_send(
+            self.room_group_name,
+            {
+                'type': 'round_answer_status',
+                **status_payload,
+            }
+        )
+
+    @database_sync_to_async
+    def get_round_answer_status_db(self, quiz_id):
+        try:
+            quiz = SortingLadderGame.objects.select_related('session', 'current_question').get(id=quiz_id)
+            session = quiz.session
+            question = quiz.current_question
+        except (SortingLadderGame.DoesNotExist, SortingLadderSession.DoesNotExist, AttributeError):
+            return None
+
+        if not question:
+            return None
+
+        current_round = max(int(session.current_round or 0), 1)
+        try:
+            shuffled_ids = [int(x) for x in session.shuffled_item_ids.split(',') if x]
+        except ValueError:
+            shuffled_ids = []
+        expected_count = min(current_round + 1, len(shuffled_ids)) if shuffled_ids else 0
+        active_participants_qs = quiz.participants.filter(is_active=True, is_eliminated=False)
+        active_hub_session_code = self._get_hub_session_code_for_room_sync()
+        if active_hub_session_code:
+            active_participants_qs = active_participants_qs.filter(hub_session_code=active_hub_session_code)
+        active_participants = list(
+            active_participants_qs.order_by('name').values('id', 'name', 'hub_session_code')
+        )
+
+        statuses = []
+        for participant in active_participants:
+            submissions_count = RoundSubmission.objects.filter(
+                quiz=quiz,
+                participant_id=participant['id'],
+                question=question,
+            ).count()
+            pending_order = self._get_pending_round_order(
+                quiz.room_code,
+                question.id,
+                current_round,
+                participant['name'],
+                participant.get('hub_session_code'),
+            )
+            statuses.append({
+                'participant_name': participant['name'],
+                'has_answered': submissions_count >= current_round or (expected_count > 0 and len(pending_order) == expected_count),
+            })
+
+        return {
+            'round_number': current_round,
+            'statuses': statuses,
+        }
+
+    @database_sync_to_async
+    def end_round_db(self, quiz_id):
+        """
+        Ends the current round and returns list of surviving participants.
+        """
+        try:
+            quiz = SortingLadderGame.objects.select_related('session').get(id=quiz_id)
+            session = quiz.session
+        except (SortingLadderGame.DoesNotExist, SortingLadderSession.DoesNotExist, AttributeError):
+            return []
+
+        session.end_round()
+
+        survivors = list(
+            quiz.participants.filter(is_eliminated=False, is_active=True)
+            .values('id', 'name', 'rounds_survived')
+        )
+
+        has_next_round = False
+        if quiz.current_question and session.shuffled_item_ids:
+            try:
+                shuffled_ids = [int(x) for x in session.shuffled_item_ids.split(',') if x]
+            except ValueError:
+                shuffled_ids = []
+            max_rounds = max(len(shuffled_ids) - 1, 0)
+            has_next_round = session.current_round < max_rounds
+
+        return {
+            'survivors': survivors,
+            'has_next_round': bool(has_next_round),
+        }
+
+    @database_sync_to_async
+    def end_question_db(self, quiz_id):
+        """Mark the current question as ended on the session."""
+        try:
+            quiz = SortingLadderGame.objects.select_related('session').get(id=quiz_id)
+            session = quiz.session
+        except (SortingLadderGame.DoesNotExist, SortingLadderSession.DoesNotExist, AttributeError):
+            return
+
+        auto_results = []
+        correct_order_ids = []
+        if quiz.current_question:
+            if session.is_round_active:
+                active_participants = list(
+                    quiz.participants.filter(is_active=True, is_eliminated=False)
+                )
+                for participant in active_participants:
+                    auto_result = self._finalize_pending_round_for_participant(
+                        quiz,
+                        session,
+                        quiz.current_question,
+                        participant,
+                    )
+                    if auto_result:
+                        auto_results.append(auto_result)
+            correct_order_ids = list(
+                SortingItem.objects.filter(topic=quiz.current_question)
+                .order_by('correct_rank')
+                .values_list('id', flat=True)
+            )
+
+        # Reset current question to None
+        quiz.current_question = None
+        quiz.save()
+        
+        session.is_round_active = False
+        session.round_end_time = timezone.now()
+        session.save(update_fields=['is_round_active', 'round_end_time'])
+        self._clear_room_pending_round_orders(quiz.room_code)
+
+        return {
+            'correct_order_ids': correct_order_ids,
+            'auto_results': auto_results,
+        }
+
+    @database_sync_to_async
+    def get_or_create_participant(self, name, hub_session_code):
+        try:
+            quiz = SortingLadderGame.objects.get(room_code=self.room_code)
+        except SortingLadderGame.DoesNotExist:
+            return None
+
+        participant, _ = SortingLadderParticipant.objects.get_or_create(
+            quiz=quiz,
+            name=name,
+            hub_session_code=hub_session_code,
+        )
+        participant.is_active = True
+        participant.save()
+
+        return {
+            'id': participant.id,
+            'name': participant.name,
+            'rounds_survived': participant.rounds_survived,
+            'is_eliminated': participant.is_eliminated,
+        }
+
+    @database_sync_to_async
+    def get_rejoin_snapshot(self, participant_name, hub_session_code):
+        """Return minimal server-authoritative snapshot for participant rejoin."""
+        try:
+            quiz = SortingLadderGame.objects.select_related('session', 'current_question').get(room_code=self.room_code)
+            session = quiz.session
+            question = quiz.current_question
+            participant = quiz.participants.get(name=participant_name, hub_session_code=hub_session_code)
+        except (SortingLadderGame.DoesNotExist, SortingLadderSession.DoesNotExist, SortingLadderParticipant.DoesNotExist, AttributeError):
+            return {}
+
+        if not question or not session.shuffled_item_ids:
+            return {}
+
+        try:
+            shuffled_ids = [int(x) for x in session.shuffled_item_ids.split(',') if x]
+        except ValueError:
+            return {}
+        if not shuffled_ids:
+            return {}
+
+        item_map = {item.id: item for item in SortingItem.objects.filter(id__in=shuffled_ids)}
+        shuffled_items = [item_map[i] for i in shuffled_ids if i in item_map]
+        if not shuffled_items:
+            return {}
+
+        question_payload = {
+            'question': {
+                'id': question.id,
+                'text': question.question_text,
+                'description': question.description,
+                'upper_label': question.upper_label,
+                'lower_label': question.lower_label,
+                'points': question.points,
+                'time_limit': session.time_limit_seconds,
+            },
+            'items': [{'id': i.id, 'text': i.text} for i in shuffled_items],
+            'time_limit_seconds': session.time_limit_seconds,
+        }
+
+        submissions = list(
+            RoundSubmission.objects.filter(
+                quiz=quiz,
+                participant=participant,
+                question=question,
+            ).order_by('submitted_at')
+        )
+        latest_round_result = None
+        round_started = None
+        max_rounds = max(len(shuffled_ids) - 1, 0)
+
+        if submissions:
+            latest = submissions[-1]
+            correct_rounds = sum(1 for s in submissions if s.is_correct)
+            points_for_question = correct_rounds * question.points
+            has_more_rounds = (not participant.is_eliminated) and len(submissions) < max_rounds
+
+            visible_ids = latest.all_elements if isinstance(latest.all_elements, list) else []
+            try:
+                visible_ids = [int(x) for x in visible_ids]
+            except (TypeError, ValueError):
+                visible_ids = []
+
+            if visible_ids:
+                vis_items = list(SortingItem.objects.filter(id__in=visible_ids))
+                vis_rank = {i.id: i.correct_rank for i in vis_items}
+                sorted_visible = sorted([i for i in visible_ids if i in vis_rank], key=lambda i: vis_rank[i])
+            else:
+                sorted_visible = []
+
+            full_sorted = list(
+                SortingItem.objects.filter(topic=question).order_by('correct_rank').values_list('id', flat=True)
+            )
+
+            latest_round_result = {
+                'round_number': len(submissions),
+                'is_correct': latest.is_correct,
+                'rounds_survived': participant.rounds_survived,
+                'is_eliminated': participant.is_eliminated,
+                'points': points_for_question,
+                'has_more_rounds': bool(has_more_rounds),
+                'per_question_rounds': correct_rounds,
+                'correct_order_ids': sorted_visible if has_more_rounds else full_sorted,
+            }
+
+        # If participant has not submitted the current server round yet and is
+        # still active, explicitly sync round start so interaction unlocks.
+        if session.is_round_active and not participant.is_eliminated and len(submissions) < int(session.current_round or 0):
+            round_started = {
+                'round_number': session.current_round,
+                'time_limit_seconds': session.time_limit_seconds,
+            }
+
+        return {
+            'question_payload': question_payload,
+            'latest_round_result': latest_round_result,
+            'round_started': round_started,
+        }
+
+    @database_sync_to_async
+    def update_pending_round_selection_db(self, participant_name, hub_session_code, ordered_item_ids):
+        try:
+            quiz = SortingLadderGame.objects.select_related('session', 'current_question').get(room_code=self.room_code)
+            session = quiz.session
+            question = quiz.current_question
+            participant = quiz.participants.get(name=participant_name, hub_session_code=hub_session_code)
+        except (SortingLadderGame.DoesNotExist, SortingLadderSession.DoesNotExist, SortingLadderParticipant.DoesNotExist, AttributeError):
+            return False
+
+        if quiz.status != 'active':
+            return False
+        if not question or not session.is_round_active or participant.is_eliminated:
+            return False
+
+        try:
+            normalized_ids = [int(x) for x in ordered_item_ids]
+        except (TypeError, ValueError):
+            normalized_ids = []
+
+        try:
+            shuffled_ids = [int(x) for x in session.shuffled_item_ids.split(',') if x]
+        except ValueError:
+            shuffled_ids = []
+
+        if len(set(normalized_ids)) != len(normalized_ids):
+            normalized_ids = []
+        elif shuffled_ids and any(item_id not in shuffled_ids for item_id in normalized_ids):
+            normalized_ids = []
+
+        self._set_pending_round_order(
+            quiz.room_code,
+            question.id,
+            max(int(session.current_round or 0), 1),
+            participant_name,
+            hub_session_code,
+            normalized_ids,
+        )
+        return True
+
+    @database_sync_to_async
+    def save_round_submission(self, participant_name, hub_session_code, placed_after_id, placed_before_id):
+        # Legacy gap-placement flow intentionally disabled:
+        # RoundSubmission no longer has element/placed_* fields.
+        return None
+
+    @database_sync_to_async
+    def save_round_full_order(self, participant_name, hub_session_code, ordered_item_ids, round_time_out=False):
+        """Validate and persist a participant's result for this round."""
+        try:
+            quiz = SortingLadderGame.objects.select_related('session', 'current_question').get(room_code=self.room_code)
+            session = quiz.session
+            participant = quiz.participants.get(name=participant_name, hub_session_code=hub_session_code)
+        except (SortingLadderGame.DoesNotExist, SortingLadderSession.DoesNotExist, SortingLadderParticipant.DoesNotExist, AttributeError):
+            return None
+
+        if quiz.status != 'active':
+            return None
+        question = quiz.current_question
+        if not question:
+            print("No question found")
+            return None
+
+        if round_time_out and not ordered_item_ids:
+            pending_order = self._get_pending_round_order(
+                quiz.room_code,
+                question.id,
+                max(int(session.current_round or 0), 1),
+                participant_name,
+                hub_session_code,
+            )
+            if pending_order:
+                ordered_item_ids = pending_order
+                round_time_out = False
+
+        result = self._save_round_full_order_sync(
+            quiz=quiz,
+            session=session,
+            participant=participant,
+            question=question,
+            ordered_item_ids=ordered_item_ids,
+            round_time_out=round_time_out,
+        )
+        if result:
+            self._pop_pending_round_order(
+                quiz.room_code,
+                question.id,
+                result.get('round_number'),
+                participant_name,
+                hub_session_code,
+            )
+        return result
+
+    @database_sync_to_async
+    def get_final_scores(self):
+        try:
+            quiz = SortingLadderGame.objects.get(room_code=self.room_code)
+        except SortingLadderGame.DoesNotExist:
+            return []
+
+        qs = quiz.participants.order_by('-rounds_survived', 'name') \
+                              .values('name', 'rounds_survived', 'is_eliminated')
+        return list(qs)
+
+    @database_sync_to_async
+    def get_participant_progress_history(self, participant_name, hub_session_code):
+        try:
+            quiz = SortingLadderGame.objects.select_related('current_question').get(room_code=self.room_code)
+            participant = quiz.participants.get(name=participant_name, hub_session_code=hub_session_code)
+        except (SortingLadderGame.DoesNotExist, SortingLadderParticipant.DoesNotExist):
+            return []
+
+        submissions = (
+            RoundSubmission.objects
+            .filter(quiz=quiz, participant=participant)
+            .select_related('question')
+            .order_by('submitted_at', 'id')
+        )
+
+        grouped = {}
+        for sub in submissions:
+            qid = sub.question_id
+            entry = grouped.get(qid)
+            if not entry:
+                max_rounds = max(sub.question.elements.count() - 1, 0)
+                entry = {
+                    'question_id': qid,
+                    'first_submitted_at': sub.submitted_at,
+                    'survived_rounds': 0,
+                    'max_rounds': max_rounds,
+                    'submission_count': 0,
+                }
+                grouped[qid] = entry
+            entry['submission_count'] += 1
+            if sub.is_correct:
+                entry['survived_rounds'] += 1
+
+        completed = []
+        current_question_id = quiz.current_question_id
+        for entry in grouped.values():
+            is_current_question = entry['question_id'] == current_question_id
+            is_complete_current = participant.is_eliminated or entry['submission_count'] >= entry['max_rounds']
+            if (not is_current_question) or is_complete_current:
+                completed.append(entry)
+
+        completed.sort(key=lambda e: (e['first_submitted_at'], e['question_id']))
+
+        history = []
+        for index, entry in enumerate(completed, start=1):
+            history.append({
+                'question_number': index,
+                'survived_rounds': entry['survived_rounds'],
+                'max_rounds': entry['max_rounds'],
+            })
+        return history
+
+    # --- Hub mirroring helpers ---
+
+    def _get_hub_session_code_for_room_sync(self):
+        try:
+            qs = HubGameStep.objects.select_related('session') \
+                .filter(game_key='sorting_ladder', room_code=self.room_code)
+            active = qs.filter(session__ended_at__isnull=True).order_by('-id').first()
+            step = active or qs.order_by('-id').first()
+            return step.session.code if step else None
+        except Exception:
+            return None
+
+    @database_sync_to_async
+    def _get_hub_session_code_for_room(self):
+        return self._get_hub_session_code_for_room_sync()
+
+    async def hub_mirror_event(self, event_type: str, payload: dict):
+        session_code = await self._get_hub_session_code_for_room()
+        if not session_code:
+            return
+        group_name = f'hub_{session_code}'
+        await self.channel_layer.group_send(group_name, {
+            'type': 'hub_event',
+            'event': {
+                'type': event_type,
+                **payload,
+            }
+        })

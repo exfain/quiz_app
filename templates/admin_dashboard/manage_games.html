@@ -1,0 +1,2646 @@
+{% extends "admin_dashboard/base.html" %}
+
+{% block title %}Manage Games - QuizMaster Admin{% endblock %}
+{% block page_title %}{% if edit_mode %}Edit Game{% else %}New Game{% endif %}{% endblock %}
+{% block page_subtitle %}{% if edit_mode %}Update title and assigned questions{% else %}Create a new game instance{% endif %}{% endblock %}
+
+{% block content %}
+<style>
+.drag-over { background-color: #e8f4ff !important; outline: 2px dashed #0d6efd; }
+.blackjack-set-builder-card { border: 1px solid #dee2e6; }
+.blackjack-set-summary {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 1rem;
+}
+.blackjack-set-card {
+    border: 1px solid #dee2e6;
+    border-radius: .75rem;
+    background: #f8f9fa;
+    padding: 1rem;
+}
+.blackjack-set-card h6 { margin: 0; }
+.blackjack-set-card ul {
+    margin: .75rem 0 0;
+    padding-left: 1rem;
+}
+.blackjack-set-card li { margin-bottom: .25rem; }
+.blackjack-set-empty {
+    color: #6c757d;
+    font-size: .875rem;
+    margin-top: .75rem;
+}
+</style>
+<div class="container-fluid py-4">
+
+    <!-- Header -->
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <h2 class="mb-0">{% if edit_mode %}Edit Game{% else %}New Game{% endif %}</h2>
+        <a href="{% url 'admin_dashboard:manage_games' %}" class="btn btn-outline-secondary btn-sm">
+            <i data-lucide="arrow-left" style="width:14px;height:14px;" class="me-1"></i>Back to Overview
+        </a>
+    </div>
+
+    <!-- Step 1: Name + Type -->
+    <div class="card border-0 shadow-sm mb-4">
+        <div class="card-body">
+            <div class="row g-3">
+                <div class="col-md-5">
+                    <label class="form-label fw-semibold">Game Name *</label>
+                    <input type="text" class="form-control" id="newGameTitle" placeholder="z.B. Geografie">
+                    <input type="text" class="form-control mt-2" id="newGameInternalDescription" placeholder="Interne Beschreibung (nur für Admins)">
+                </div>
+                <div class="col-md-4">
+                    <label class="form-label fw-semibold">Game Type *</label>
+                    <select class="form-select" id="newGameType" {% if edit_mode %}disabled{% endif %}>
+                        <option value="" disabled {% if not edit_mode %}selected{% endif %}>Select game type…</option>
+                        <option value="quiz" {% if game_type == 'quiz' %}selected{% endif %}>Quick Quiz</option>
+                        <option value="estimation" {% if game_type == 'estimation' %}selected{% endif %}>Estimation</option>
+                        <option value="assign" {% if game_type == 'assign' %}selected{% endif %}>Assign</option>
+                        <option value="where" {% if game_type == 'where' %}selected{% endif %}>Where Is This?</option>
+                        <option value="who" {% if game_type == 'who' %}selected{% endif %}>Who Is Lying?</option>
+                        <option value="who_that" {% if game_type == 'who_that' %}selected{% endif %}>Who Is That?</option>
+                        <option value="blackjack" {% if game_type == 'blackjack' %}selected{% endif %}>Black Jack Quiz</option>
+                        <option value="clue_rush" {% if game_type == 'clue_rush' %}selected{% endif %}>Clue Rush</option>
+                        <option value="sorting_ladder" {% if game_type == 'sorting_ladder' %}selected{% endif %}>Sorting Ladder</option>
+                    </select>
+                </div>
+                <div class="col-md-3 d-none" id="estimationGameModeWrap">
+                    <label class="form-label fw-semibold">Default-Modus</label>
+                    <select class="form-select" id="estimationScoringMode">
+                        <option value="zones">Zonen</option>
+                        <option value="rank">Ranking</option>
+                    </select>
+                </div>
+                <div class="col-md-3 d-none" id="blackjackGameModeWrap">
+                    <label class="form-label fw-semibold">Bewertungsmodus</label>
+                    <select class="form-select" id="blackjackScoringMode">
+                        <option value="simple">einfach</option>
+                        <option value="rank">Ranking</option>
+                    </select>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Type-specific content (shown after type selection) -->
+    <div id="gameTypeContent" style="display:none;">
+
+        <div class="card border-0 shadow-sm mb-4">
+            <div class="card-header bg-white border-0 py-3">
+                <h5 class="mb-0">
+                    <i data-lucide="book-open" style="width:18px;height:18px;" class="me-2"></i>Tutorial
+                </h5>
+            </div>
+            <div class="card-body">
+                <div class="form-check form-switch mb-3">
+                    <input class="form-check-input" type="checkbox" id="gameTutorialEnabled">
+                    <label class="form-check-label fw-semibold" for="gameTutorialEnabled">Tutorial for this game aktivieren</label>
+                </div>
+                <div id="gameTutorialFields" class="d-none">
+                    <div class="mb-3">
+                        <label class="form-label fw-semibold" for="gameTutorialTitle">Tutorial-Titel</label>
+                        <input type="text" class="form-control" id="gameTutorialTitle" placeholder="Kurzer Tutorial-Titel">
+                    </div>
+                    <div class="mb-0">
+                        <label class="form-label fw-semibold" for="gameTutorialText">Tutorial-Text</label>
+                        <textarea class="form-control" id="gameTutorialText" rows="5" placeholder="Erklärung, die Teilnehmer vor der ersten echten Frage oder dem ersten echten Set sehen sollen"></textarea>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ── QUICK QUIZ ─────────────────────────────────────────────── -->
+        <div id="section-quiz" class="type-section" style="display:none;">
+
+            <!-- Assigned Questions -->
+            <div class="card border-0 shadow-sm mb-4">
+                <div class="card-header bg-white border-0 py-3 d-flex align-items-center gap-2">
+                    <h5 class="mb-0">
+                        <i data-lucide="list-checks" style="width:18px;height:18px;" class="me-2"></i>Assigned Questions
+                    </h5>
+                    <span class="badge bg-primary" id="assignedCountBadge">0</span>
+                </div>
+                <div class="card-body p-0">
+                    <div style="max-height: 490px; overflow-y: auto;">
+                        <table class="table table-hover mb-0">
+                            <thead class="table-light sticky-top">
+                                <tr>
+                                    <th style="width:28px;"></th>
+                                    <th>Question</th>
+                                    <th>Type</th>
+                                    <th>Points</th>
+                                    <th>Time (s)</th>
+                                    <th style="width:50px;"></th>
+                                </tr>
+                            </thead>
+                            <tbody id="assignedQuestionsBody">
+                                <tr id="assignedEmptyRow">
+                                    <td colspan="6" class="text-center py-3 text-muted">No questions assigned yet</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Add / Edit Question -->
+            <div class="card border-0 shadow-sm mb-4" id="quizQuestionFormCard">
+                <div class="card-header bg-white border-0 py-3 d-flex justify-content-between align-items-center">
+                    <h5 class="mb-0" id="quizQuestionFormTitle">
+                        <i data-lucide="help-circle" style="width:18px;height:18px;" class="me-2"></i>Add New Question
+                    </h5>
+                    <button class="btn btn-sm btn-outline-secondary" id="quizResetFormBtn" type="button">
+                        <i data-lucide="rotate-ccw" style="width:14px;height:14px;"></i> Reset
+                    </button>
+                </div>
+                <div class="card-body">
+                    <form id="quizAddQuestionForm">
+                        {% csrf_token %}
+                        <input type="hidden" id="quizQuestionId" name="question_id" />
+                        <div class="mb-3">
+                            <label class="form-label">Question Text *</label>
+                            <textarea class="form-control" id="quizQuestionText" name="question_text" rows="3"
+                                      placeholder="Enter question here…" required></textarea>
+                        </div>
+                        <div class="row">
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <label class="form-label">Question Type</label>
+                                    <select class="form-control" id="quizQuestionType" name="question_type" required>
+                                        <option value="" disabled selected>Select type…</option>
+                                        <option value="multiple_choice">Multiple Choice</option>
+                                        <option value="true_false">True/False</option>
+                                        <option value="short_answer">Short Answer</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="col-md-3">
+                                <div class="mb-3">
+                                    <label class="form-label">Points</label>
+                                    <input type="number" class="form-control" id="quizPoints" name="points"
+                                           value="10" min="1" max="100" required>
+                                </div>
+                            </div>
+                            <div class="col-md-3">
+                                <div class="mb-3">
+                                    <label class="form-label">Zeit (Sek)</label>
+                                    <input type="number" class="form-control" id="quizTimeLimit" name="time_limit"
+                                           value="30" min="10" max="300" required>
+                                </div>
+                            </div>
+                        </div>
+                        <!-- Multiple Choice Options -->
+                        <div id="quizMCOptions" style="display:none;">
+                            <h6 class="mb-3">Answer Options</h6>
+                            <div class="row">
+                                <div class="col-md-6 mb-3">
+                                    <label class="form-label">Option A</label>
+                                    <input type="text" class="form-control" id="quizOptA" name="option_a" placeholder="Enter option A">
+                                </div>
+                                <div class="col-md-6 mb-3">
+                                    <label class="form-label">Option B</label>
+                                    <input type="text" class="form-control" id="quizOptB" name="option_b" placeholder="Enter option B">
+                                </div>
+                            </div>
+                            <div class="row">
+                                <div class="col-md-6 mb-3">
+                                    <label class="form-label">Option C (Optional)</label>
+                                    <input type="text" class="form-control" id="quizOptC" name="option_c" placeholder="Enter option C">
+                                </div>
+                                <div class="col-md-6 mb-3">
+                                    <label class="form-label">Option D (Optional)</label>
+                                    <input type="text" class="form-control" id="quizOptD" name="option_d" placeholder="Enter option D">
+                                </div>
+                            </div>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">Correct Answer *</label>
+                            <select class="form-control" id="quizCorrectAnswerSelect" style="display:none;"></select>
+                            <input type="text" class="form-control" id="quizCorrectAnswer"
+                                   placeholder="For Multiple Choice: A, B, C or D" style="display:none;">
+                            <div id="quizShortAnswerBuilder" style="display:none;">
+                                <div id="quizShortAnswerFieldsContainer" class="d-flex flex-column gap-3"></div>
+                                <div class="d-flex gap-2 mt-3">
+                                    <button type="button" class="btn btn-sm btn-outline-secondary" id="quizAddTextFieldBtn">
+                                        <i data-lucide="plus" style="width:14px;height:14px;"></i> Weiteres Textfeld hinzufügen
+                                    </button>
+                                    <button type="button" class="btn btn-sm btn-outline-danger" id="quizRemoveTextFieldBtn" style="display:none;">
+                                        <i data-lucide="minus" style="width:14px;height:14px;"></i> Letztes Textfeld entfernen
+                                    </button>
+                                </div>
+                            </div>
+                            <small class="form-text text-muted" id="quizAnswerHelp">Select a question type first.</small>
+                        </div>
+                        <div class="d-flex justify-content-end">
+                            <button type="submit" class="btn btn-primary" id="quizSubmitQuestionBtn">
+                                <i data-lucide="plus" style="width:15px;height:15px;" class="me-1"></i>Add Question
+                            </button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+
+            <!-- Question Bank with checkboxes -->
+            <div class="card border-0 shadow-sm mb-4">
+                <div class="card-header bg-white border-0 py-3 d-flex justify-content-between align-items-center">
+                    <div class="d-flex align-items-center gap-2">
+                        <h5 class="mb-0">
+                            <i data-lucide="database" style="width:18px;height:18px;" class="me-2"></i>Question Bank
+                        </h5>
+                        <span class="badge bg-secondary" id="quizBankCountBadge">0</span>
+                    </div>
+                    <div class="d-flex align-items-center gap-2">
+                        <span class="badge bg-primary" id="quizSelectedBadge">0 selected</span>
+                        <input type="text" class="form-control form-control-sm" id="quizBankSearch"
+                               placeholder="Search…" style="width:180px;">
+                    </div>
+                </div>
+                <div class="card-body p-0">
+                    <div class="table-responsive">
+                        <table class="table table-hover mb-0">
+                            <thead class="table-light">
+                                <tr>
+                                    <th style="width:36px;"><input type="checkbox" id="quizSelectAll"></th>
+                                    <th>Question</th>
+                                    <th>Type</th>
+                                    <th>Points</th>
+                                    <th>Time (s)</th>
+                                    <th>Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody id="quizBankTableBody">
+                                <tr><td colspan="6" class="text-center py-4 text-muted">Loading…</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                    <div class="d-flex justify-content-between align-items-center px-3 py-2 border-top">
+                        <div class="text-muted small" id="quizBankInfo"></div>
+                        <ul class="pagination pagination-sm mb-0" id="quizBankPagination"></ul>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <!-- ── END QUICK QUIZ ─────────────────────────────────────────── -->
+
+        <!-- ── OTHER TYPES ───────────────────────────────────────────── -->
+        <div id="section-generic" class="type-section" style="display:none;">
+
+            <!-- Assigned Questions -->
+            <div class="card border-0 shadow-sm mb-4">
+                <div class="card-header bg-white border-0 py-3 d-flex align-items-center gap-2">
+                    <h5 class="mb-0">
+                        <i data-lucide="list-checks" style="width:18px;height:18px;" class="me-2"></i>Assigned Questions
+                    </h5>
+                    <span class="badge bg-primary" id="genericAssignedCountBadge">0</span>
+                </div>
+                <div class="card-body p-0">
+                    <div style="max-height:300px;overflow-y:auto;">
+                        <table class="table table-hover mb-0">
+                            <thead class="table-light sticky-top" id="genericAssignedHead"></thead>
+                            <tbody id="genericAssignedBody">
+                                <tr><td colspan="10" class="text-center py-3 text-muted">No questions assigned yet</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <div class="card border-0 shadow-sm mb-4 d-none" id="blackjackSetBuilderCard">
+                <div class="card-body">
+                    <div class="d-flex flex-column flex-lg-row justify-content-between align-items-lg-center gap-3">
+                        <div>
+                            <h5 class="mb-1">Black Jack Sets</h5>
+                            <p class="text-muted small mb-0">Create explicit sets and assign each selected question to a concrete set.</p>
+                        </div>
+                        <button type="button" class="btn btn-outline-primary btn-sm" id="addManageBlackjackSetBtn">
+                            <i data-lucide="plus" style="width:14px;height:14px;" class="me-1"></i>Add Set
+                        </button>
+                    </div>
+                    <div class="blackjack-set-summary mt-3" id="manageBlackjackSetSummary"></div>
+                </div>
+            </div>
+
+            <!-- Add New Question (per-type forms) -->
+            <div class="card border-0 shadow-sm mb-4" id="genericQuestionFormCard">
+                <div class="card-header bg-white border-0 py-3 d-flex justify-content-between align-items-center">
+                    <h5 class="mb-0" id="genericFormTitle">
+                        <i data-lucide="help-circle" style="width:18px;height:18px;" class="me-2"></i>Add New Question
+                    </h5>
+                    <button class="btn btn-sm btn-outline-secondary" id="genericResetFormBtn" type="button">
+                        <i data-lucide="rotate-ccw" style="width:14px;height:14px;"></i> Reset
+                    </button>
+                </div>
+                <div class="card-body">
+
+                    <!-- ESTIMATION -->
+                    <div id="generic-form-estimation" class="generic-type-form d-none">
+                        <input type="hidden" id="est-id">
+                        <div class="mb-3"><label class="form-label">Frage *</label>
+                            <textarea class="form-control" id="est-question" rows="2" placeholder="z.B. Wie hoch ist der Eiffelturm in Metern?"></textarea></div>
+                        <div class="row g-3 mb-3">
+                            <div class="col-md-3"><label class="form-label">Richtige Antwort *</label>
+                                <input type="number" step="any" class="form-control" id="est-answer" placeholder="324"></div>
+                            <div class="col-md-3"><label class="form-label">Einheit</label>
+                                <select class="form-select" id="est-unit">
+                                    <option value="number">Zahl</option>
+                                    <option value="meters">m</option>
+                                    <option value="kilometers">km</option>
+                                    <option value="feet">ft</option>
+                                    <option value="inches">in</option>
+                                    <option value="centimeters">cm</option>
+                                    <option value="years">Jahre</option>
+                                    <option value="months">Monate</option>
+                                    <option value="days">Tage</option>
+                                    <option value="hours">Stunden</option>
+                                    <option value="minutes">Minuten</option>
+                                    <option value="seconds">Sekunden</option>
+                                    <option value="kilograms">kg</option>
+                                    <option value="pounds">lbs</option>
+                                    <option value="grams">g</option>
+                                    <option value="tons">Tonnen</option>
+                                    <option value="liters">L</option>
+                                    <option value="gallons">gal</option>
+                                    <option value="milliliters">mL</option>
+                                    <option value="degrees">°</option>
+                                    <option value="fahrenheit">°F</option>
+                                    <option value="celsius">°C</option>
+                                    <option value="dollars">$</option>
+                                    <option value="euros">€</option>
+                                    <option value="percent">%</option>
+                                    <option value="people">Personen</option>
+                                    <option value="calories">cal</option>
+                                    <option value="watts">W</option>
+                                    <option value="miles">mi</option>
+                                    <option value="mph">mph</option>
+                                    <option value="kmh">km/h</option>
+                                </select></div>
+                        </div>
+                        <div class="row g-3 mb-3 est-zone-only">
+                            <div class="col-md-3"><label class="form-label">Toleranz %</label>
+                                <input type="number" class="form-control" id="est-tolerance" value="10" min="1" max="50"></div>
+                            <div class="col-md-3"><label class="form-label">Anzahl der Zonen</label>
+                                <input type="number" class="form-control" id="est-zone-count" value="5" min="1" step="1"></div>
+                            <div class="col-md-3 d-flex align-items-end">
+                                <div class="form-check form-switch mb-2">
+                                    <input class="form-check-input" type="checkbox" id="est-manual-points-enabled">
+                                    <label class="form-check-label" for="est-manual-points-enabled">Punkte manuell definieren</label>
+                                </div>
+                            </div>
+                            <div class="col-md-3 d-none" id="est-manual-points-group"><label class="form-label">Punkte</label>
+                                <input type="number" class="form-control" id="est-points" value="10" min="1"></div>
+                        </div>
+                        <div class="alert alert-info py-2 small est-zone-only" id="est-zone-overview"></div>
+                        <div class="row g-3 mb-3">
+                            <div class="col-md-3"><label class="form-label">Zeit (Sek)</label>
+                                <input type="number" class="form-control" id="est-time" value="30" min="10"></div>
+                        </div>
+                        <div class="d-flex justify-content-end">
+                            <button type="button" class="btn btn-primary generic-submit-btn" id="est-submit">
+                                <i data-lucide="plus" style="width:15px;height:15px;" class="me-1"></i>Add Question
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- ASSIGN -->
+                    <div id="generic-form-assign" class="generic-type-form d-none">
+                        <input type="hidden" id="asgn-id">
+                        <div class="mb-3"><label class="form-label">Thema / Frage *</label>
+                            <input type="text" class="form-control" id="asgn-question" placeholder="z.B. Hauptstädte Europa"></div>
+                        <div class="row g-3 mb-3">
+                            <div class="col-md-3"><label class="form-label">Zeit (Sek)</label>
+                                <input type="number" class="form-control" id="asgn-time" value="30" min="10"></div>
+                        </div>
+                        <div class="row g-3 mb-3">
+                            <div class="col-md-6">
+                                <label class="form-label fw-semibold">Links (Diese Items müssen..)</label>
+                                <div id="asgn-left-container" class="mb-2"></div>
+                                <button type="button" class="btn btn-sm btn-outline-secondary" id="asgn-add-left">
+                                    <i data-lucide="plus" style="width:14px;height:14px;"></i> Links hinzufügen
+                                </button>
+                            </div>
+                            <div class="col-md-6">
+                                <label class="form-label fw-semibold">Rechts (..diesen Items zugeorndet werden)</label>
+                                <div id="asgn-right-container" class="mb-2"></div>
+                                <button type="button" class="btn btn-sm btn-outline-secondary" id="asgn-add-right">
+                                    <i data-lucide="plus" style="width:14px;height:14px;"></i> Rechts hinzufügen
+                                </button>
+                            </div>
+                        </div>
+                        <div class="d-flex justify-content-end">
+                            <button type="button" class="btn btn-primary generic-submit-btn" id="asgn-submit">
+                                <i data-lucide="plus" style="width:15px;height:15px;" class="me-1"></i>Add Question
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- WHERE IS THIS -->
+                    <div id="generic-form-where" class="generic-type-form d-none">
+                        <input type="hidden" id="where-id">
+                        <div class="mb-3"><label class="form-label">Ortsbezeichnung *</label>
+                            <input type="text" class="form-control" id="where-question" placeholder="z.B. Eiffelturm, Paris"></div>
+                        <div class="row g-3 mb-3">
+                            <div class="col-md-6"><label class="form-label">Breitengrad *</label>
+                                <input type="number" step="any" class="form-control" id="where-lat" placeholder="48.8584"></div>
+                            <div class="col-md-6"><label class="form-label">Längengrad *</label>
+                                <input type="number" step="any" class="form-control" id="where-lng" placeholder="2.2945"></div>
+                        </div>
+                        <div class="row g-3 mb-3">
+                            <div class="col-md-6"><label class="form-label">Punkte</label>
+                                <input type="number" class="form-control" id="where-points" value="10" min="1"></div>
+                            <div class="col-md-6"><label class="form-label">Zeit (Sek)</label>
+                                <input type="number" class="form-control" id="where-time" value="30" min="10"></div>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">Bild <small class="text-muted">(optional)</small></label>
+                            <input type="file" class="form-control" id="where-image" accept="image/*">
+                            <div id="where-image-preview-container" style="display:none; margin-top:0.5rem;">
+                                <img id="where-image-preview" src="" alt="Preview" style="max-width:200px; max-height:150px; border-radius:4px; border:1px solid #dee2e6;">
+                                <button type="button" class="btn btn-sm btn-outline-danger ms-2" onclick="document.getElementById('where-image').value=''; document.getElementById('where-image-preview-container').style.display='none';">
+                                    <i data-lucide="x"></i> Entfernen
+                                </button>
+                            </div>
+                        </div>
+                        <div class="d-flex justify-content-end">
+                            <button type="button" class="btn btn-primary generic-submit-btn" id="where-submit">
+                                <i data-lucide="plus" style="width:15px;height:15px;" class="me-1"></i>Add Question
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- WHO IS LYING -->
+                    <div id="generic-form-who" class="generic-type-form d-none">
+                        <input type="hidden" id="who-id">
+                        <div class="mb-3"><label class="form-label">Aussage / Kontext *</label>
+                            <textarea class="form-control" id="who-statement" rows="2" placeholder="z.B. Einer von uns hat Paris besucht…"></textarea></div>
+                        <div class="row g-3 mb-3">
+                            <div class="col-md-3"><label class="form-label">Punkte</label>
+                                <input type="number" class="form-control" id="who-points" value="10" min="1"></div>
+                            <div class="col-md-3"><label class="form-label">Zeit (Sek)</label>
+                                <input type="number" class="form-control" id="who-time" value="10" min="5"></div>
+                        </div>
+                        <label class="form-label fw-semibold">Personen * <small class="text-muted fw-normal">(mind. 2, mind. 1 Lügner)</small></label>
+                        <div id="who-people-container" class="mb-2"></div>
+                        <button type="button" class="btn btn-sm btn-outline-secondary mb-3" id="who-add-person">
+                            <i data-lucide="plus" style="width:14px;height:14px;"></i> Person hinzufügen
+                        </button>
+                        <div class="d-flex justify-content-end">
+                            <button type="button" class="btn btn-primary generic-submit-btn" id="who-submit">
+                                <i data-lucide="plus" style="width:15px;height:15px;" class="me-1"></i>Add Question
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- WHO IS THAT -->
+                    <div id="generic-form-who_that" class="generic-type-form d-none">
+                        <input type="hidden" id="whot-id">
+                        <div class="mb-3"><label class="form-label">Name der Person *</label>
+                            <input type="text" class="form-control" id="whot-answer" placeholder="z.B. Albert Einstein"></div>
+                        <div class="mb-3"><label class="form-label">Alternative Antworten <small class="text-muted">(optional, kommagetrennt)</small></label>
+                            <input type="text" class="form-control" id="whot-alt" placeholder="z.B. Einstein, A. Einstein"></div>
+                        <div class="mb-3">
+                            <label class="form-label">Bild *</label>
+                            <input type="file" class="form-control" id="whot-image" accept="image/*">
+                            <div id="whot-image-preview-container" style="display:none; margin-top:0.5rem;">
+                                <img id="whot-image-preview" src="" alt="Preview" style="max-width:200px; max-height:200px; border-radius:4px; border:1px solid #dee2e6;">
+                                <button type="button" class="btn btn-sm btn-outline-danger ms-2" onclick="document.getElementById('whot-image').value=''; document.getElementById('whot-image-preview-container').style.display='none';">
+                                    <i data-lucide="x"></i> Entfernen
+                                </button>
+                            </div>
+                        </div>
+                        <div class="row g-3 mb-3">
+                            <div class="col-md-4"><label class="form-label">Zeit (Sek)</label>
+                                <input type="number" class="form-control" id="whot-time" value="30" min="10"></div>
+                        </div>
+                        <div class="d-flex justify-content-end">
+                            <button type="button" class="btn btn-primary generic-submit-btn" id="whot-submit">
+                                <i data-lucide="plus" style="width:15px;height:15px;" class="me-1"></i>Add Question
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- BLACKJACK -->
+                    <div id="generic-form-blackjack" class="generic-type-form d-none">
+                        <input type="hidden" id="bj-id">
+                        <div class="mb-3"><label class="form-label">Frage *</label>
+                            <textarea class="form-control" id="bj-question" rows="2" placeholder="z.B. In welchem Jahr wurde…"></textarea></div>
+                        <div class="mb-3"><label class="form-label">Richtige Antwort * <small class="text-muted">(Zahl)</small></label>
+                            <input type="number" class="form-control" id="bj-answer" placeholder="z.B. 1969"></div>
+                        <div class="row g-3 mb-3">
+                            <div class="col-md-6"><label class="form-label">Zeit (Sek)</label>
+                                <input type="number" class="form-control" id="bj-time" value="30" min="10" max="120"></div>
+                        </div>
+                        <div class="d-flex justify-content-end">
+                            <button type="button" class="btn btn-primary generic-submit-btn" id="bj-submit">
+                                <i data-lucide="plus" style="width:15px;height:15px;" class="me-1"></i>Add Question
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- CLUE RUSH -->
+                    <div id="generic-form-clue_rush" class="generic-type-form d-none">
+                        <input type="hidden" id="cr-id">
+                        <div class="mb-3"><label class="form-label">Frage *</label>
+                            <input type="text" class="form-control" id="cr-question-text" placeholder="z. B. Welches Land wird gesucht?" required>
+                            <small class="text-muted">Wird auf Teilnehmerseite als Frage angezeigt.</small></div>
+                        <div class="mb-3"><label class="form-label">Gesuchter Begriff (Antwort) *</label>
+                            <input type="text" class="form-control" id="cr-answer" placeholder="z.B. Eiffelturm"></div>
+                        <div class="row g-3 mb-3">
+                            <div class="col-md-3"><label class="form-label">Punkte</label>
+                                <input type="number" class="form-control" id="cr-points" value="12" min="1"></div>
+                        </div>
+                        <label class="form-label fw-semibold">Clues * <small class="text-muted fw-normal">(mind. 1, Dauer in Sek)</small></label>
+                        <div id="cr-clues-container" class="mb-2"></div>
+                        <button type="button" class="btn btn-sm btn-outline-secondary mb-3" id="cr-add-clue">
+                            <i data-lucide="plus" style="width:14px;height:14px;"></i> Clue hinzufügen
+                        </button>
+                        <div class="d-flex justify-content-end">
+                            <button type="button" class="btn btn-primary generic-submit-btn" id="cr-submit">
+                                <i data-lucide="plus" style="width:15px;height:15px;" class="me-1"></i>Add Question
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- SORTING LADDER -->
+                    <div id="generic-form-sorting_ladder" class="generic-type-form d-none">
+                        <input type="hidden" id="sl-id">
+                        <div class="row g-3 mb-3">
+                            <div class="col-md-8"><label class="form-label">Thema *</label>
+                                <input type="text" class="form-control" id="sl-title" placeholder="z.B. Länder nach Einwohnern sortieren"></div>
+                            <div class="col-md-4"><label class="form-label">Beschreibung <small class="text-muted">(optional)</small></label>
+                                <input type="text" class="form-control" id="sl-desc" placeholder="Kurze Beschreibung"></div>
+                        </div>
+                        <div class="row g-3 mb-3">
+                            <div class="col-md-3"><label class="form-label">Punkte</label>
+                                <input type="number" class="form-control" id="sl-points" value="10" min="1"></div>
+                            <div class="col-md-3"><label class="form-label">Zeit (Sek)</label>
+                                <input type="number" class="form-control" id="sl-time" value="60" min="10"></div>
+                            <div class="col-md-3"><label class="form-label">Label oben</label>
+                                <input type="text" class="form-control" id="sl-upper" value="Aufsteigend"></div>
+                            <div class="col-md-3"><label class="form-label">Label unten</label>
+                                <input type="text" class="form-control" id="sl-lower" value="Absteigend"></div>
+                        </div>
+                        <label class="form-label fw-semibold">Items * <small class="text-muted fw-normal">(in korrekter Reihenfolge)</small></label>
+                        <div id="sl-items-container" class="mb-2"></div>
+                        <button type="button" class="btn btn-sm btn-outline-secondary mb-3" id="sl-add-item">
+                            <i data-lucide="plus" style="width:14px;height:14px;"></i> Item hinzufügen
+                        </button>
+                        <div class="mb-3">
+                            <label class="form-label" for="sl-starting-item">Startendes Item <small class="text-muted fw-normal">(wird zuerst links angezeigt)</small></label>
+                            <select class="form-select form-select-sm" id="sl-starting-item">
+                                <option value="">— Zufällig —</option>
+                            </select>
+                        </div>
+                        <div class="d-flex justify-content-end">
+                            <button type="button" class="btn btn-primary generic-submit-btn" id="sl-submit">
+                                <i data-lucide="plus" style="width:15px;height:15px;" class="me-1"></i>Add Topic
+                            </button>
+                        </div>
+                    </div>
+
+                </div>
+            </div>
+
+            <!-- Question Bank -->
+            <div class="card border-0 shadow-sm mb-4">
+                <div class="card-header bg-white border-0 py-3 d-flex justify-content-between align-items-center">
+                    <div class="d-flex align-items-center gap-2">
+                        <h5 class="mb-0">
+                            <i data-lucide="database" style="width:18px;height:18px;" class="me-2"></i>Question Bank
+                        </h5>
+                        <span class="badge bg-secondary" id="genericBankCountBadge">0</span>
+                    </div>
+                    <div class="d-flex align-items-center gap-2">
+                        <span class="badge bg-primary" id="genericSelectedBadge">0 selected</span>
+                        <input type="text" class="form-control form-control-sm" id="genericBankSearch"
+                               placeholder="Search…" style="width:180px;">
+                    </div>
+                </div>
+                <div class="card-body p-0">
+                    <div class="table-responsive">
+                        <table class="table table-hover mb-0">
+                            <thead class="table-light">
+                                <tr id="genericTableHead"></tr>
+                            </thead>
+                            <tbody id="genericBankTableBody">
+                                <tr><td colspan="6" class="text-center py-4 text-muted">Loading…</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                    <div class="d-flex justify-content-between align-items-center px-3 py-2 border-top">
+                        <div class="text-muted small" id="genericBankInfo"></div>
+                        <ul class="pagination pagination-sm mb-0" id="genericBankPagination"></ul>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <!-- ── END OTHER TYPES ───────────────────────────────────────── -->
+
+        <!-- Create Game Button -->
+        <div class="d-flex justify-content-end gap-2 mb-5">
+            <button type="button" class="btn btn-outline-secondary" id="cancelGameBtn">Cancel</button>
+            <button type="button" class="btn btn-primary btn-lg" id="createGameBtn">
+                <i data-lucide="save" style="width:16px;height:16px;" class="me-1"></i>
+                {% if edit_mode %}Save Changes{% else %}Create Game{% endif %}
+            </button>
+        </div>
+    </div>
+
+</div>
+
+<!-- Delete Confirmation Modal -->
+<div class="modal fade" id="deleteQuizQuestionModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Delete Question</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <p>Are you sure you want to delete this question? This action cannot be undone.</p>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-danger" id="confirmDeleteQuizQuestionBtn">Delete</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+const CSRF = '{{ csrf_token }}';
+const EDIT_MODE = {{ edit_mode|default:False|lower }};
+const EDIT_GAME_ID = {{ game_id|default:"null" }};
+const EDIT_GAME_TYPE = "{{ game_type|default:'' }}";
+const EDIT_GAME_TITLE = "{{ game_title|default:''|escapejs }}";
+const EDIT_GAME_INTERNAL_DESCRIPTION = "{{ game_internal_description|default:''|escapejs }}";
+const EDIT_TUTORIAL_ENABLED = {{ game_tutorial_enabled|default:False|yesno:"true,false" }};
+const EDIT_TUTORIAL_TITLE = "{{ game_tutorial_title|default:''|escapejs }}";
+const EDIT_TUTORIAL_TEXT = "{{ game_tutorial_text|default:''|escapejs }}";
+const EDIT_ESTIMATION_SCORING_MODE = "{{ game_scoring_mode|default:'zones'|escapejs }}";
+const EDIT_BLACKJACK_SCORING_MODE = "{{ game_scoring_mode|default:'simple'|escapejs }}";
+const EDIT_SELECTED_IDS = new Set({{ selected_ids_json|default:"[]" }});
+
+// ── Game type config ──────────────────────────────────────────────────────────
+const GAME_CONFIG = {
+    quiz:           { createUrl: '/admin-dashboard/quiz/create-custom/',            updateUrl: '/admin-dashboard/quiz/update-custom/',            gameIdKey: 'quiz_id',  idKey: 'question_ids',
+                      selectedUrl: id => `/admin-dashboard/quiz/${id}/selected-questions/` },
+    estimation:     { questionsUrl: '/admin-dashboard/estimation/questions/',        createUrl: '/admin-dashboard/estimation/create-custom/',     updateUrl: '/admin-dashboard/estimation/update-custom/',     gameIdKey: 'quiz_id',  idKey: 'question_ids',
+                      selectedUrl: id => `/admin-dashboard/estimation/${id}/selected-questions/`,
+                      columns: [{key:'question_text',label:'Question'},{key:'correct_answer',label:'Answer'},{key:'unit',label:'Unit'},{key:'points_display',label:'Zonenpunkte'}] },
+    assign:         { questionsUrl: '/admin-dashboard/assign/questions/',            createUrl: '/admin-dashboard/assign/create-custom/',         updateUrl: '/admin-dashboard/assign/update-custom/',         gameIdKey: 'quiz_id',  idKey: 'question_ids',
+                      selectedUrl: id => `/admin-dashboard/assign/${id}/selected-questions/`,
+                      columns: [{key:'question_text',label:'Topic'},{key:'time_limit',label:'Time (s)'}] },
+    where:          { questionsUrl: '/admin-dashboard/where/questions/',             createUrl: '/admin-dashboard/where/quiz/create-custom/',     updateUrl: '/admin-dashboard/where/quiz/update-custom/',     gameIdKey: 'quiz_id',  idKey: 'question_ids',
+                      selectedUrl: id => `/admin-dashboard/where/${id}/selected-questions/`,
+                      columns: [{key:'question_text',label:'Location'},{key:'points',label:'Points'}] },
+    who:            { questionsUrl: '/admin-dashboard/who/questions/',               createUrl: '/admin-dashboard/who/create-custom/',            updateUrl: '/admin-dashboard/who/update-custom/',            gameIdKey: 'quiz_id',  idKey: 'question_ids',
+                      selectedUrl: id => `/admin-dashboard/who/${id}/selected-questions/`,
+                      columns: [{key:'statement',label:'Statement'},{key:'people_count',label:'People'},{key:'points',label:'Points'}] },
+    who_that:       { questionsUrl: '/admin-dashboard/who-that/questions/',          createUrl: '/admin-dashboard/who-that/create-custom/',       updateUrl: '/admin-dashboard/who-that/update-custom/',       gameIdKey: 'quiz_id',  idKey: 'question_ids',
+                      selectedUrl: id => `/admin-dashboard/who-that/${id}/selected-questions/`,
+                      columns: [{key:'question_text',label:'Question'},{key:'correct_answer',label:'Answer'}] },
+    blackjack:      { questionsUrl: '/admin-dashboard/black-jack/questions/',        createUrl: '/admin-dashboard/blackjack/create-custom/',      updateUrl: '/admin-dashboard/blackjack/update-custom/',      gameIdKey: 'quiz_id',  idKey: 'question_ids',
+                      selectedUrl: id => `/admin-dashboard/blackjack/${id}/selected-questions/`,
+                      columns: [{key:'question_text',label:'Question'},{key:'correct_answer',label:'Answer'},{key:'time_limit',label:'Time (s)'}] },
+    clue_rush:      { questionsUrl: '/admin-dashboard/clue-rush/questions/',         createUrl: '/admin-dashboard/clue-rush/create-custom/',      updateUrl: '/admin-dashboard/clue-rush/update-custom/',      gameIdKey: 'game_id',  idKey: 'question_ids',
+                      selectedUrl: id => `/admin-dashboard/clue-rush/${id}/selected-questions/`,
+                      columns: [{key:'question_text',label:'Question'},{key:'answer',label:'Answer'},{key:'points',label:'Points'},{key:'time_limit',label:'Time (s)'}] },
+    sorting_ladder: { questionsUrl: '/admin-dashboard/sorting-ladder/topics/',       createUrl: '/admin-dashboard/sorting-ladder/create-custom/', updateUrl: '/admin-dashboard/sorting-ladder/update-custom/', gameIdKey: 'quiz_id',  idKey: 'topic_ids', dataKey: 'topics',
+                      selectedUrl: id => `/admin-dashboard/sorting-ladder/${id}/selected-topics/`,
+                      columns: [{key:'title',label:'Topic'},{key:'description',label:'Description'},{key:'item_count',label:'Items'}] },
+};
+
+let currentType = null;
+const quizSelectedIds = new Set();
+const quizSelectedQuestions = new Map(); // id → {id, question_text, question_type, points, time_limit}
+const genericSelectedIds = new Set();
+const genericSelectedItems = new Map(); // id → full item data
+let itemsRef = []; // reference to last loaded generic bank items
+let blackJackSetCount = 1;
+const blackJackQuestionSetAssignments = new Map();
+
+function isBlackJackTypeActive() {
+    return currentType === 'blackjack';
+}
+
+function normalizeBlackJackSetNumber(rawValue) {
+    const parsed = parseInt(rawValue, 10);
+    if (!Number.isFinite(parsed) || parsed < 1) return 1;
+    return Math.min(parsed, Math.max(1, blackJackSetCount));
+}
+
+function getOrderedGenericSelectedIds() {
+    return Array.from(genericSelectedItems.keys()).filter(id => genericSelectedIds.has(id));
+}
+
+function buildManageBlackJackQuestionSets() {
+    const orderedIds = getOrderedGenericSelectedIds();
+    if (!orderedIds.length) return [];
+
+    const sets = Array.from({ length: Math.max(1, blackJackSetCount) }, () => []);
+    orderedIds.forEach(questionId => {
+        const setNumber = normalizeBlackJackSetNumber(blackJackQuestionSetAssignments.get(questionId) || 1);
+        sets[setNumber - 1].push(questionId);
+    });
+    return sets.filter(questionSet => questionSet.length > 0);
+}
+
+function getManageBlackJackSetOptions(selectedSetNumber) {
+    const normalized = normalizeBlackJackSetNumber(selectedSetNumber);
+    let html = '';
+    for (let setNumber = 1; setNumber <= Math.max(1, blackJackSetCount); setNumber += 1) {
+        html += `<option value="${setNumber}" ${setNumber === normalized ? 'selected' : ''}>Set ${setNumber}</option>`;
+    }
+    return html;
+}
+
+function syncManageBlackJackSetSummary() {
+    const setBuilderCard = document.getElementById('blackjackSetBuilderCard');
+    const summary = document.getElementById('manageBlackjackSetSummary');
+    if (!setBuilderCard || !summary) return;
+
+    setBuilderCard.classList.toggle('d-none', !isBlackJackTypeActive());
+    if (!isBlackJackTypeActive()) return;
+
+    const questionSets = buildManageBlackJackQuestionSets();
+    const questionTextById = new Map(
+        Array.from(genericSelectedItems.values()).map(item => [item.id, item.question_text || `Question ${item.id}`])
+    );
+
+    summary.innerHTML = '';
+    for (let setNumber = 1; setNumber <= Math.max(1, blackJackSetCount); setNumber += 1) {
+        const questionSet = questionSets[setNumber - 1] || [];
+        const card = document.createElement('div');
+        card.className = 'blackjack-set-card';
+        card.innerHTML = `
+            <div class="d-flex justify-content-between align-items-center gap-2">
+                <div>
+                    <h6>Set ${setNumber}</h6>
+                    <div class="text-muted small">${questionSet.length} question${questionSet.length === 1 ? '' : 's'}</div>
+                </div>
+                <button type="button" class="btn btn-sm btn-outline-danger remove-manage-blackjack-set-btn" data-set-number="${setNumber}" ${blackJackSetCount <= 1 ? 'disabled' : ''}>
+                    <i data-lucide="trash-2" style="width:13px;height:13px;"></i>
+                </button>
+            </div>
+        `;
+        if (questionSet.length) {
+            const list = document.createElement('ul');
+            questionSet.forEach((questionId, index) => {
+                const item = document.createElement('li');
+                item.textContent = `F${index + 1}: ${questionTextById.get(questionId) || `Question ${questionId}`}`;
+                list.appendChild(item);
+            });
+            card.appendChild(list);
+        } else {
+            const empty = document.createElement('div');
+            empty.className = 'blackjack-set-empty';
+            empty.textContent = 'No questions assigned yet.';
+            card.appendChild(empty);
+        }
+        summary.appendChild(card);
+    }
+
+    document.querySelectorAll('.manage-blackjack-set-select').forEach(select => {
+        const questionId = parseInt(select.dataset.id, 10);
+        const selectedSet = normalizeBlackJackSetNumber(blackJackQuestionSetAssignments.get(questionId) || 1);
+        select.innerHTML = getManageBlackJackSetOptions(selectedSet);
+        select.disabled = !genericSelectedIds.has(questionId);
+    });
+
+    lucide.createIcons({ scope: summary });
+}
+
+function assignManageBlackJackQuestionToSet(questionId, rawSetNumber) {
+    const normalizedSet = normalizeBlackJackSetNumber(rawSetNumber);
+    blackJackQuestionSetAssignments.set(questionId, normalizedSet);
+}
+
+function setManageBlackJackQuestionSelection(questionId, isSelected, itemData = null) {
+    if (isSelected) {
+        if (itemData && !genericSelectedItems.has(questionId)) {
+            genericSelectedItems.set(questionId, itemData);
+        }
+        if (!blackJackQuestionSetAssignments.has(questionId)) {
+            blackJackQuestionSetAssignments.set(questionId, 1);
+        }
+    } else {
+        blackJackQuestionSetAssignments.delete(questionId);
+    }
+}
+
+function resetManageBlackJackSetBuilder() {
+    blackJackSetCount = 1;
+    blackJackQuestionSetAssignments.clear();
+    syncManageBlackJackSetSummary();
+}
+
+function loadManageBlackJackQuestionSets(questionSets, selectedQuestionIds) {
+    blackJackQuestionSetAssignments.clear();
+    let derivedSetCount = 0;
+    (questionSets || []).forEach((questionSet, index) => {
+        const setNumber = index + 1;
+        derivedSetCount = setNumber;
+        (questionSet || []).forEach(questionId => {
+            blackJackQuestionSetAssignments.set(parseInt(questionId, 10), setNumber);
+        });
+    });
+
+    const normalizedSelectedIds = (selectedQuestionIds || []).map(id => parseInt(id, 10)).filter(Number.isFinite);
+    normalizedSelectedIds.forEach(questionId => {
+        if (!blackJackQuestionSetAssignments.has(questionId)) {
+            blackJackQuestionSetAssignments.set(questionId, 1);
+        }
+    });
+
+    blackJackSetCount = Math.max(1, derivedSetCount || (normalizedSelectedIds.length ? 1 : 1));
+    syncManageBlackJackSetSummary();
+}
+
+function removeManageBlackJackSet(setNumber) {
+    if (blackJackSetCount <= 1) return;
+    const normalizedSetNumber = normalizeBlackJackSetNumber(setNumber);
+    blackJackQuestionSetAssignments.forEach((assignedSetNumber, questionId) => {
+        if (assignedSetNumber === normalizedSetNumber) {
+            blackJackQuestionSetAssignments.set(questionId, Math.max(1, normalizedSetNumber - 1));
+        } else if (assignedSetNumber > normalizedSetNumber) {
+            blackJackQuestionSetAssignments.set(questionId, assignedSetNumber - 1);
+        }
+    });
+    blackJackSetCount = Math.max(1, blackJackSetCount - 1);
+    syncManageBlackJackSetSummary();
+}
+
+function normalizeEstimationScoringMode(mode) {
+    return mode === 'rank' ? 'rank' : 'zones';
+}
+
+function syncTutorialConfigUi() {
+    const wrapper = document.getElementById('gameTutorialFields');
+    const enabled = document.getElementById('gameTutorialEnabled')?.checked;
+    if (!wrapper) return;
+    wrapper.classList.toggle('d-none', !enabled);
+}
+
+function formatEstimationZoneNumber(value) {
+    if (!Number.isFinite(value)) return '';
+    const rounded = Math.round(value * 100) / 100;
+    return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(2).replace(/\.?0+$/, '');
+}
+
+function buildEstimationZoneOverview(answer, tolerance, zoneCount, manualPoints, manualMaxPoints) {
+    zoneCount = Math.max(1, parseInt(zoneCount, 10) || 1);
+    tolerance = parseFloat(tolerance) || 0;
+    const maxPoints = manualPoints ? Math.max(1, parseInt(manualMaxPoints, 10) || 1) : zoneCount;
+    if (!Number.isFinite(answer) || tolerance <= 0) {
+        return 'Richtige Antwort und Toleranz eingeben, um die Zonen-Uebersicht zu sehen.';
+    }
+    const rows = [];
+    if (answer === 0) {
+        rows.push(`<li>${maxPoints} P - Bereich: exakt 0</li>`);
+        rows.push('<li>0 P - Bereich: alle anderen Antworten</li>');
+    } else {
+        for (let zone = 1; zone <= zoneCount; zone++) {
+            const delta = Math.abs(answer) * (tolerance * zone / 100);
+            const points = Math.max(0, maxPoints - zone + 1);
+            rows.push(`<li>${points} P - Bereich: ${formatEstimationZoneNumber(answer - delta)} - ${formatEstimationZoneNumber(answer + delta)}</li>`);
+        }
+        const outerDelta = Math.abs(answer) * (tolerance * zoneCount / 100);
+        rows.push(`<li>0 P - Bereich: weniger als ${formatEstimationZoneNumber(answer - outerDelta)} oder mehr als ${formatEstimationZoneNumber(answer + outerDelta)}</li>`);
+    }
+    const modeText = manualPoints
+        ? `Manuell: innerste Zone = ${maxPoints} Punkte, jede weitere Zone 1 Punkt weniger.`
+        : `Automatisch: innerste Zone = ${zoneCount} Punkte, jede weitere Zone 1 Punkt weniger.`;
+    return `<div class="fw-semibold mb-1">Zonen-Uebersicht</div><div class="mb-1">${modeText}</div><ul class="mb-0 ps-3">${rows.join('')}</ul>`;
+}
+
+function updateEstimationScoringUi() {
+    const isRanking = normalizeEstimationScoringMode(document.getElementById('estimationScoringMode').value) === 'rank';
+    document.querySelectorAll('.est-zone-only').forEach(el => el.classList.toggle('d-none', isRanking));
+    const manualPoints = document.getElementById('est-manual-points-enabled').checked && !isRanking;
+    document.getElementById('est-manual-points-group').classList.toggle('d-none', !manualPoints);
+    document.getElementById('est-zone-overview').innerHTML = buildEstimationZoneOverview(
+        parseFloat(document.getElementById('est-answer').value),
+        document.getElementById('est-tolerance').value,
+        document.getElementById('est-zone-count').value,
+        manualPoints,
+        document.getElementById('est-points').value
+    );
+}
+
+// ── Generic question detail + update URLs ─────────────────────────────────────
+const GENERIC_DETAIL_URL = {
+    estimation:     id => `/admin-dashboard/estimation/question/${id}/`,
+    assign:         id => `/admin-dashboard/assign/question/${id}/`,
+    where:          id => `/admin-dashboard/where/question/${id}/`,
+    who:            id => `/admin-dashboard/who/question/${id}/`,
+    who_that:       id => `/admin-dashboard/who-that/question/${id}/`,
+    blackjack:      id => `/admin-dashboard/blackjack/question/${id}/`,
+    clue_rush:      id => `/admin-dashboard/clue-rush/question/${id}/`,
+    sorting_ladder: id => `/admin-dashboard/sorting-ladder/topic/${id}/`,
+};
+
+const GENERIC_UPDATE_URL = {
+    estimation:     '/admin-dashboard/estimation/update-question/',
+    assign:         '/admin-dashboard/assign/update-question/',
+    where:          '/admin-dashboard/where/question/update/',
+    who:            '/admin-dashboard/who/update-question/',
+    who_that:       '/admin-dashboard/who-that/update-question/',
+    blackjack:      '/admin-dashboard/blackjack/update-question/',
+    clue_rush:      '/admin-dashboard/clue-rush/update-question/',
+    sorting_ladder: '/admin-dashboard/sorting-ladder/topics/update/',
+};
+
+// Fetch item details and populate form for editing
+function loadGenericItemForEdit(id) {
+    const urlFn = GENERIC_DETAIL_URL[currentType];
+    if (!urlFn) return;
+    fetch(urlFn(id), { headers: { 'X-CSRFToken': getCookie('csrftoken') } })
+    .then(r => r.json())
+    .then(data => {
+        if (!data.success) throw new Error(data.error || 'Laden fehlgeschlagen.');
+        const q = data.question || data.topic;
+        setGenericFormForEdit(currentType, q);
+    })
+    .catch(err => showNotification(err.message, 'danger'));
+}
+
+// Populate form fields for editing a generic question
+function setGenericFormForEdit(type, q) {
+    resetGenericForm();
+
+    // Switch title + button mode
+    document.getElementById('genericFormTitle').innerHTML =
+        '<i data-lucide="edit" style="width:18px;height:18px;" class="me-2"></i>Edit Question';
+    document.querySelectorAll('.generic-submit-btn').forEach(b => {
+        b.innerHTML = '<i data-lucide="save" style="width:15px;height:15px;" class="me-1"></i>Save Changes';
+        b.dataset.mode = 'edit';
+    });
+
+    if (type === 'estimation') {
+        document.getElementById('est-id').value = q.id;
+        document.getElementById('est-question').value = q.question_text || '';
+        document.getElementById('est-answer').value = q.correct_answer ?? '';
+        document.getElementById('est-unit').value = q.unit || 'number';
+        document.getElementById('est-tolerance').value = q.tolerance_percentage ?? 10;
+        document.getElementById('est-zone-count').value = q.zone_count ?? 5;
+        document.getElementById('est-points').value = q.max_points ?? 10;
+        document.getElementById('est-manual-points-enabled').checked = !!q.use_manual_points;
+        updateEstimationScoringUi();
+    } else if (type === 'assign') {
+        document.getElementById('asgn-id').value = q.id;
+        document.getElementById('asgn-question').value = q.question_text || '';
+        document.getElementById('asgn-time').value = q.time_limit ?? 30;
+        // Rebuild left/right item lists
+        const leftC = document.getElementById('asgn-left-container');
+        const rightC = document.getElementById('asgn-right-container');
+        leftC.innerHTML = ''; rightC.innerHTML = '';
+        (q.left_items || []).forEach(text => {
+            addAsgnLeft(); leftC.lastElementChild.querySelector('.asgn-left').value = text;
+        });
+        (q.right_items || []).forEach(text => {
+            addAsgnRight(); rightC.lastElementChild.querySelector('.asgn-right').value = text;
+        });
+        if (!leftC.children.length) addAsgnLeft();
+        if (!rightC.children.length) addAsgnRight();
+    } else if (type === 'where') {
+        document.getElementById('where-id').value = q.id;
+        document.getElementById('where-question').value = q.question_text || '';
+        document.getElementById('where-lat').value = q.latitude ?? '';
+        document.getElementById('where-lng').value = q.longitude ?? '';
+        document.getElementById('where-points').value = q.points ?? 10;
+        document.getElementById('where-time').value = q.time_limit ?? 30;
+        if (q.image) {
+            document.getElementById('where-image-preview').src = q.image;
+            document.getElementById('where-image-preview-container').style.display = 'block';
+        }
+    } else if (type === 'who') {
+        document.getElementById('who-id').value = q.id;
+        document.getElementById('who-statement').value = q.statement || '';
+        document.getElementById('who-points').value = q.points ?? 10;
+        document.getElementById('who-time').value = q.time_limit ?? 30;
+        const pplC = document.getElementById('who-people-container');
+        pplC.innerHTML = '';
+        (q.people || []).forEach(p => {
+            addWhoPerson();
+            const row = pplC.lastElementChild;
+            row.querySelector('.who-person-name').value = p.name || '';
+            row.querySelector('.who-person-liar').checked = !!p.is_lying;
+        });
+        if (pplC.children.length < 2) { addWhoPerson(); addWhoPerson(); }
+    } else if (type === 'who_that') {
+        document.getElementById('whot-id').value = q.id;
+        document.getElementById('whot-answer').value = q.correct_answer || '';
+        document.getElementById('whot-alt').value = q.alternative_answers || '';
+        document.getElementById('whot-time').value = q.time_limit ?? 30;
+        if (q.image) {
+            document.getElementById('whot-image-preview').src = q.image;
+            document.getElementById('whot-image-preview-container').style.display = 'block';
+        }
+    } else if (type === 'blackjack') {
+        document.getElementById('bj-id').value = q.id;
+        document.getElementById('bj-question').value = q.question_text || '';
+        document.getElementById('bj-answer').value = q.correct_answer ?? '';
+        document.getElementById('bj-time').value = q.time_limit ?? 30;
+    } else if (type === 'clue_rush') {
+        document.getElementById('cr-id').value = q.id;
+        document.getElementById('cr-question-text').value = q.question_text || '';
+        document.getElementById('cr-answer').value = q.answer || '';
+        document.getElementById('cr-points').value = q.points ?? 12;
+        const cluesC = document.getElementById('cr-clues-container');
+        cluesC.innerHTML = '';
+        (q.clues || []).forEach(c => {
+            addCrClue();
+            const row = cluesC.lastElementChild;
+            row.querySelector('.cr-clue-text').value = c.clue_text || '';
+            row.querySelector('.cr-clue-dur').value = c.duration ?? 10;
+        });
+        if (!cluesC.children.length) addCrClue();
+    } else if (type === 'sorting_ladder') {
+        document.getElementById('sl-id').value = q.id;
+        document.getElementById('sl-title').value = q.title || '';
+        document.getElementById('sl-desc').value = q.description || '';
+        document.getElementById('sl-points').value = q.points ?? 10;
+        document.getElementById('sl-time').value = q.round_time_limit ?? 60;
+        document.getElementById('sl-upper').value = q.upper_label || 'Aufsteigend';
+        document.getElementById('sl-lower').value = q.lower_label || 'Absteigend';
+        const itemsC = document.getElementById('sl-items-container');
+        itemsC.innerHTML = '';
+        (q.items || []).forEach(it => {
+            addSlItem();
+            itemsC.lastElementChild.querySelector('.sl-item-text').value = it.text || '';
+        });
+        if (itemsC.children.length < 2) { addSlItem(); addSlItem(); }
+        // Rebuild starting-item dropdown
+        const startSel = document.getElementById('sl-starting-item');
+        startSel.innerHTML = '<option value="">— Zufällig —</option>';
+        (q.items || []).forEach(it => {
+            const opt = document.createElement('option');
+            opt.value = it.order;
+            opt.textContent = it.text;
+            if (q.starting_item_order !== null && parseFloat(q.starting_item_order) === parseFloat(it.order)) opt.selected = true;
+            startSel.appendChild(opt);
+        });
+    }
+
+    document.getElementById('genericQuestionFormCard').scrollIntoView({ behavior: 'smooth' });
+    lucide.createIcons();
+}
+
+// ── Type selection ────────────────────────────────────────────────────────────
+function activateType(type) {
+    currentType = type;
+    document.getElementById('estimationGameModeWrap').classList.toggle('d-none', type !== 'estimation');
+    document.getElementById('blackjackGameModeWrap').classList.toggle('d-none', type !== 'blackjack');
+    document.getElementById('blackjackSetBuilderCard').classList.toggle('d-none', type !== 'blackjack');
+    document.querySelectorAll('.type-section').forEach(s => s.style.display = 'none');
+    document.getElementById('gameTypeContent').style.display = 'block';
+    if (currentType === 'quiz') {
+        document.getElementById('section-quiz').style.display = 'block';
+        loadQuizBank(1);
+    } else {
+        document.getElementById('section-generic').style.display = 'block';
+        document.querySelectorAll('.generic-type-form').forEach(f => f.classList.add('d-none'));
+        const formEl = document.getElementById(`generic-form-${type}`);
+        if (formEl) formEl.classList.remove('d-none');
+        // Init dynamic lists on first show
+        if (type === 'assign' && !document.getElementById('asgn-left-container').children.length) { addAsgnLeft(); addAsgnRight(); }
+        if (type === 'who' && !document.getElementById('who-people-container').children.length) { addWhoPerson(); addWhoPerson(); }
+        if (type === 'clue_rush' && !document.getElementById('cr-clues-container').children.length) addCrClue();
+        if (type === 'sorting_ladder' && !document.getElementById('sl-items-container').children.length) { addSlItem(); addSlItem(); }
+        if (type === 'blackjack' && !blackJackQuestionSetAssignments.size) {
+            resetManageBlackJackSetBuilder();
+        } else if (type === 'blackjack') {
+            syncManageBlackJackSetSummary();
+        }
+        loadGenericBank(1);
+        renderGenericAssigned();
+    }
+    if (type === 'estimation') updateEstimationScoringUi();
+    syncTutorialConfigUi();
+    lucide.createIcons();
+}
+
+document.getElementById('newGameType').addEventListener('change', function () {
+    if (!EDIT_MODE) {
+        quizSelectedIds.clear();
+        quizSelectedQuestions.clear();
+        genericSelectedIds.clear();
+        genericSelectedItems.clear();
+        resetManageBlackJackSetBuilder();
+    }
+    activateType(this.value);
+});
+document.getElementById('estimationScoringMode').addEventListener('change', updateEstimationScoringUi);
+document.getElementById('gameTutorialEnabled').addEventListener('change', syncTutorialConfigUi);
+['est-answer', 'est-tolerance', 'est-zone-count', 'est-points', 'est-manual-points-enabled'].forEach(id => {
+    document.getElementById(id).addEventListener('input', updateEstimationScoringUi);
+    document.getElementById(id).addEventListener('change', updateEstimationScoringUi);
+});
+
+// ── Cancel ────────────────────────────────────────────────────────────────────
+document.getElementById('cancelGameBtn').addEventListener('click', () => {
+    document.getElementById('newGameTitle').value = '';
+    document.getElementById('newGameType').value = '';
+    document.getElementById('estimationScoringMode').value = 'zones';
+    document.getElementById('blackjackScoringMode').value = 'simple';
+    document.getElementById('gameTutorialEnabled').checked = false;
+    document.getElementById('gameTutorialTitle').value = '';
+    document.getElementById('gameTutorialText').value = '';
+    document.getElementById('estimationGameModeWrap').classList.add('d-none');
+    document.getElementById('blackjackGameModeWrap').classList.add('d-none');
+    currentType = null;
+    quizSelectedIds.clear();
+    quizSelectedQuestions.clear();
+    genericSelectedIds.clear();
+    genericSelectedItems.clear();
+    resetManageBlackJackSetBuilder();
+    document.getElementById('gameTypeContent').style.display = 'none';
+    document.querySelectorAll('.type-section').forEach(s => s.style.display = 'none');
+    syncTutorialConfigUi();
+});
+
+// ── Create / Save Game ────────────────────────────────────────────────────────
+document.getElementById('createGameBtn').addEventListener('click', function () {
+    const title = document.getElementById('newGameTitle').value.trim();
+    if (!title) { alert('Please enter a game name.'); return; }
+    if (!currentType) return;
+
+    const cfg = GAME_CONFIG[currentType];
+    const internalDescription = document.getElementById('newGameInternalDescription').value.trim();
+    const payload = {
+        title,
+        internal_description: internalDescription,
+        tutorial_enabled: document.getElementById('gameTutorialEnabled').checked,
+        tutorial_title: document.getElementById('gameTutorialTitle').value.trim(),
+        tutorial_text: document.getElementById('gameTutorialText').value.trim(),
+    };
+    if (currentType === 'quiz') {
+        payload[cfg.idKey] = Array.from(quizSelectedIds);
+    } else if (currentType === 'blackjack') {
+        const questionSets = buildManageBlackJackQuestionSets();
+        payload[cfg.idKey] = questionSets.flat();
+        payload.question_sets = questionSets;
+        payload.set_sizes = questionSets.map(questionSet => questionSet.length).join(',');
+    } else {
+        payload[cfg.idKey] = Array.from(genericSelectedIds);
+    }
+    if (currentType === 'estimation') {
+        payload.scoring_mode = normalizeEstimationScoringMode(document.getElementById('estimationScoringMode').value);
+    } else if (currentType === 'blackjack') {
+        payload.scoring_mode = document.getElementById('blackjackScoringMode').value === 'rank' ? 'rank' : 'simple';
+    }
+
+    const isEdit = EDIT_MODE && EDIT_GAME_ID;
+    let url, label;
+    if (isEdit) {
+        url = cfg.updateUrl;
+        payload[cfg.gameIdKey] = EDIT_GAME_ID;
+        label = 'Save Changes';
+    } else {
+        url = cfg.createUrl;
+        label = 'Create Game';
+    }
+
+    this.disabled = true;
+    this.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Saving…';
+
+    fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-CSRFToken': CSRF },
+        body: JSON.stringify(payload),
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.success) {
+            window.location.href = '{% url "admin_dashboard:manage_games" %}';
+        } else {
+            alert('Error: ' + (data.error || 'Unknown error'));
+            this.disabled = false;
+            this.innerHTML = `<i data-lucide="save" style="width:16px;height:16px;" class="me-1"></i>${label}`;
+            lucide.createIcons();
+        }
+    })
+    .catch(() => {
+        alert('Request failed.');
+        this.disabled = false;
+        this.innerHTML = `<i data-lucide="save" style="width:16px;height:16px;" class="me-1"></i>${label}`;
+        lucide.createIcons();
+    });
+});
+
+// ── Edit mode init ────────────────────────────────────────────────────────────
+function initEditMode() {
+    if (!EDIT_MODE || !EDIT_GAME_TYPE) return;
+
+    // Pre-fill title and internal description
+    document.getElementById('newGameTitle').value = EDIT_GAME_TITLE;
+    document.getElementById('newGameInternalDescription').value = EDIT_GAME_INTERNAL_DESCRIPTION;
+    document.getElementById('gameTutorialEnabled').checked = EDIT_TUTORIAL_ENABLED;
+    document.getElementById('gameTutorialTitle').value = EDIT_TUTORIAL_TITLE;
+    document.getElementById('gameTutorialText').value = EDIT_TUTORIAL_TEXT;
+    syncTutorialConfigUi();
+
+    // Pre-populate selected IDs from server
+    EDIT_SELECTED_IDS.forEach(id => quizSelectedIds.add(id));
+
+    // Update button label
+    const btn = document.getElementById('createGameBtn');
+    btn.innerHTML = '<i data-lucide="save" style="width:16px;height:16px;" class="me-1"></i>Save Changes';
+
+    // Activate the type section (bank will load with pre-checked rows)
+    activateType(EDIT_GAME_TYPE);
+    if (EDIT_GAME_TYPE === 'estimation') {
+        document.getElementById('estimationScoringMode').value =
+            normalizeEstimationScoringMode(EDIT_ESTIMATION_SCORING_MODE);
+        updateEstimationScoringUi();
+    } else if (EDIT_GAME_TYPE === 'blackjack') {
+        document.getElementById('blackjackScoringMode').value =
+            EDIT_BLACKJACK_SCORING_MODE === 'rank' ? 'rank' : 'simple';
+    }
+
+    // Load assigned question details for the "Assigned Questions" card
+    if (EDIT_GAME_TYPE === 'quiz' && EDIT_SELECTED_IDS.size > 0) {
+        const cfg = GAME_CONFIG['quiz'];
+        fetch(cfg.selectedUrl(EDIT_GAME_ID), { headers: { 'X-CSRFToken': CSRF } })
+        .then(r => r.json())
+        .then(data => {
+            const questions = data.questions || [];
+            questions.forEach(q => {
+                if (EDIT_SELECTED_IDS.has(q.id)) {
+                    quizSelectedQuestions.set(q.id, {
+                        id: q.id,
+                        question_text: q.question_text,
+                        question_type: q.question_type,
+                        points: q.points,
+                        time_limit: q.time_limit,
+                    });
+                }
+            });
+            renderAssignedQuestions();
+            updateQuizSelectedBadge();
+        });
+    } else if (EDIT_GAME_TYPE !== 'quiz' && EDIT_SELECTED_IDS.size > 0) {
+        EDIT_SELECTED_IDS.forEach(id => genericSelectedIds.add(id));
+        updateGenericSelectedBadge();
+        // Load selected item details for Assigned panel
+        const cfg = GAME_CONFIG[EDIT_GAME_TYPE];
+        if (cfg && cfg.selectedUrl) {
+            fetch(cfg.selectedUrl(EDIT_GAME_ID), { headers: { 'X-CSRFToken': CSRF } })
+            .then(r => r.json())
+            .then(data => {
+                const key = cfg.dataKey || 'questions';
+                const items = data[key] || data.questions || data.topics || [];
+                items.forEach(item => { if (genericSelectedIds.has(item.id)) genericSelectedItems.set(item.id, item); });
+                if (EDIT_GAME_TYPE === 'blackjack') {
+                    loadManageBlackJackQuestionSets(data.question_sets || [], items.map(item => item.id));
+                }
+                renderGenericAssigned();
+            });
+        }
+    }
+}
+
+document.addEventListener('DOMContentLoaded', () => { if (EDIT_MODE) initEditMode(); });
+
+// ════════════════════════════════════════════════════════════════════════════
+// QUICK QUIZ section
+// ════════════════════════════════════════════════════════════════════════════
+let quizBankPage = 1;
+let quizSearchTimeout = null;
+
+function getCookie(name) {
+    let v = null;
+    document.cookie.split(';').forEach(c => {
+        c = c.trim();
+        if (c.startsWith(name + '=')) v = decodeURIComponent(c.slice(name.length + 1));
+    });
+    return v;
+}
+
+function showNotification(msg, type = 'success') {
+    const el = document.createElement('div');
+    el.className = `alert alert-${type}`;
+    el.style.cssText = 'position:fixed;top:20px;right:20px;z-index:9999;min-width:250px;opacity:0;transform:translateX(100%);transition:all .3s ease;';
+    el.textContent = msg;
+    document.body.appendChild(el);
+    setTimeout(() => { el.style.opacity = '1'; el.style.transform = 'translateX(0)'; }, 50);
+    setTimeout(() => { el.style.opacity = '0'; el.style.transform = 'translateX(100%)'; setTimeout(() => el.remove(), 300); }, 3000);
+}
+
+// Question type logic
+const quizQType = document.getElementById('quizQuestionType');
+const quizMCOpts = document.getElementById('quizMCOptions');
+const quizCASelect = document.getElementById('quizCorrectAnswerSelect');
+const quizCAText = document.getElementById('quizCorrectAnswer');
+const quizAnswerHelp = document.getElementById('quizAnswerHelp');
+const quizShortAnswerBuilder = document.getElementById('quizShortAnswerBuilder');
+const quizShortAnswerFieldsContainer = document.getElementById('quizShortAnswerFieldsContainer');
+const quizAddTextFieldBtn = document.getElementById('quizAddTextFieldBtn');
+const quizRemoveTextFieldBtn = document.getElementById('quizRemoveTextFieldBtn');
+let quizShortAnswerFieldState = [{ answer: '', label: '' }];
+
+function updateQuizCorrectAnswerSelect(preselect) {
+    const opts = ['A','B','C','D'].map(k => ({ key: k, el: document.getElementById('quizOpt' + k) }));
+    const prev = preselect !== undefined ? preselect : quizCASelect.value;
+    quizCASelect.innerHTML = '';
+    opts.forEach(({key, el}) => {
+        const val = el ? el.value.trim() : '';
+        if (!val) return;
+        const o = document.createElement('option');
+        o.value = key; o.textContent = `${key}: ${val}`;
+        quizCASelect.appendChild(o);
+    });
+    if (prev && quizCASelect.querySelector(`option[value="${prev}"]`)) quizCASelect.value = prev;
+}
+
+['quizOptA','quizOptB','quizOptC','quizOptD'].forEach(id => {
+    document.getElementById(id).addEventListener('input', () => {
+        if (quizQType.value === 'multiple_choice') updateQuizCorrectAnswerSelect();
+    });
+});
+
+function setQuizShortAnswerFieldState(fields) {
+    const safeFields = Array.isArray(fields) && fields.length ? fields : [{ answer: '', label: '' }];
+    quizShortAnswerFieldState = safeFields.slice(0, 4).map(field => ({
+        answer: field.answer || field.correct_answer || '',
+        label: field.label || '',
+    }));
+    renderQuizShortAnswerFields();
+}
+
+function renderQuizShortAnswerFields() {
+    const isShortAnswer = quizQType.value === 'short_answer';
+    const multiField = quizShortAnswerFieldState.length > 1;
+
+    quizShortAnswerFieldsContainer.innerHTML = quizShortAnswerFieldState.map((field, index) => {
+        const answerName = index === 0 ? 'correct_answer' : `correct_answer_${index + 1}`;
+        const labelName = `answer_label_${index + 1}`;
+        return `
+            <div class="border rounded-3 p-3 bg-light-subtle">
+                ${multiField ? `
+                    <div class="mb-2">
+                        <label class="form-label">Feld ${index + 1} Label *</label>
+                        <input type="text" class="form-control quiz-short-answer-label"
+                               data-index="${index}" data-name="${labelName}"
+                               value="${field.label || ''}" placeholder="z. B. Vorname">
+                    </div>
+                ` : ''}
+                <div>
+                    <label class="form-label">Antwortfeld ${index + 1} *</label>
+                    <input type="text" class="form-control quiz-short-answer-value"
+                           data-index="${index}" data-name="${answerName}"
+                           value="${field.answer || ''}" placeholder="Korrekte Antwort eingeben">
+                </div>
+            </div>
+        `;
+    }).join('');
+
+    quizShortAnswerBuilder.style.display = isShortAnswer ? 'block' : 'none';
+    quizAddTextFieldBtn.style.display = isShortAnswer && quizShortAnswerFieldState.length < 4 ? 'inline-flex' : 'none';
+    quizRemoveTextFieldBtn.style.display = isShortAnswer && quizShortAnswerFieldState.length > 1 ? 'inline-flex' : 'none';
+
+    quizShortAnswerFieldsContainer.querySelectorAll('.quiz-short-answer-value').forEach(input => {
+        input.name = isShortAnswer ? input.dataset.name : '';
+        input.required = isShortAnswer;
+        input.addEventListener('input', () => {
+            const index = parseInt(input.dataset.index, 10);
+            quizShortAnswerFieldState[index].answer = input.value;
+        });
+    });
+    quizShortAnswerFieldsContainer.querySelectorAll('.quiz-short-answer-label').forEach(input => {
+        input.name = isShortAnswer && multiField ? input.dataset.name : '';
+        input.required = isShortAnswer && multiField;
+        input.addEventListener('input', () => {
+            const index = parseInt(input.dataset.index, 10);
+            quizShortAnswerFieldState[index].label = input.value;
+        });
+    });
+}
+
+quizAddTextFieldBtn.addEventListener('click', () => {
+    if (quizShortAnswerFieldState.length >= 4) return;
+    quizShortAnswerFieldState.push({ answer: '', label: '' });
+    renderQuizShortAnswerFields();
+});
+
+quizRemoveTextFieldBtn.addEventListener('click', () => {
+    if (quizShortAnswerFieldState.length <= 1) return;
+    quizShortAnswerFieldState.pop();
+    renderQuizShortAnswerFields();
+});
+
+quizQType.addEventListener('change', function () {
+    const t = this.value;
+    if (t === 'multiple_choice') {
+        quizMCOpts.style.display = 'block';
+        updateQuizCorrectAnswerSelect();
+        quizCASelect.style.display = 'block'; quizCASelect.required = true; quizCASelect.name = 'correct_answer';
+        quizCAText.style.display = 'none'; quizCAText.required = false; quizCAText.removeAttribute('name');
+        quizAnswerHelp.textContent = 'Wähle die richtige Antwort aus den befüllten Optionen.';
+    } else if (t === 'true_false') {
+        quizMCOpts.style.display = 'none';
+        quizCASelect.innerHTML = '<option value="True">True</option><option value="False">False</option>';
+        quizCASelect.style.display = 'block'; quizCASelect.required = true; quizCASelect.name = 'correct_answer';
+        quizCAText.style.display = 'none'; quizCAText.required = false; quizCAText.removeAttribute('name');
+        renderQuizShortAnswerFields();
+        quizAnswerHelp.textContent = '';
+    } else if (t === 'short_answer') {
+        quizMCOpts.style.display = 'none';
+        quizCASelect.style.display = 'none'; quizCASelect.required = false; quizCASelect.removeAttribute('name');
+        quizCAText.style.display = 'none'; quizCAText.required = false; quizCAText.removeAttribute('name');
+        renderQuizShortAnswerFields();
+        quizAnswerHelp.textContent = quizShortAnswerFieldState.length > 1
+            ? 'Short Answer mit mehreren Feldern wird positionsgebunden ausgewertet.'
+            : 'For short answer: enter the exact answer text (case-insensitive).';
+    } else {
+        quizMCOpts.style.display = 'none';
+        quizCASelect.style.display = 'none'; quizCASelect.required = false; quizCASelect.removeAttribute('name');
+        quizCAText.style.display = 'none'; quizCAText.required = false; quizCAText.removeAttribute('name');
+        renderQuizShortAnswerFields();
+        quizAnswerHelp.textContent = 'Select a question type first.';
+    }
+    renderQuizShortAnswerFields();
+});
+
+// Reset form
+document.getElementById('quizResetFormBtn').addEventListener('click', () => setQuizFormMode('add'));
+
+function setQuizFormMode(mode, question) {
+    const title = document.getElementById('quizQuestionFormTitle');
+    const btn = document.getElementById('quizSubmitQuestionBtn');
+    if (mode === 'edit' && question) {
+        title.innerHTML = '<i data-lucide="edit" style="width:18px;height:18px;" class="me-2"></i>Edit Question';
+        btn.innerHTML = '<i data-lucide="save" style="width:15px;height:15px;" class="me-1"></i>Save Changes';
+        btn.dataset.mode = 'edit';
+        document.getElementById('quizQuestionId').value = question.id;
+        document.getElementById('quizQuestionText').value = question.question_text;
+        quizQType.value = question.question_type;
+        document.getElementById('quizPoints').value = question.points;
+        document.getElementById('quizTimeLimit').value = question.time_limit;
+        document.getElementById('quizOptA').value = question.option_a || '';
+        document.getElementById('quizOptB').value = question.option_b || '';
+        document.getElementById('quizOptC').value = question.option_c || '';
+        document.getElementById('quizOptD').value = question.option_d || '';
+        setQuizShortAnswerFieldState(question.short_answer_fields || [{
+            answer: question.correct_answer || '',
+            label: question.answer_label_1 || '',
+        }]);
+        quizQType.dispatchEvent(new Event('change'));
+        if (question.question_type === 'multiple_choice') updateQuizCorrectAnswerSelect(question.correct_answer);
+        else if (question.question_type === 'true_false') quizCASelect.value = question.correct_answer;
+        document.getElementById('quizQuestionFormCard').scrollIntoView({ behavior: 'smooth' });
+    } else {
+        title.innerHTML = '<i data-lucide="help-circle" style="width:18px;height:18px;" class="me-2"></i>Add New Question';
+        btn.innerHTML = '<i data-lucide="plus" style="width:15px;height:15px;" class="me-1"></i>Add Question';
+        btn.dataset.mode = 'add';
+        document.getElementById('quizQuestionId').value = '';
+        document.getElementById('quizAddQuestionForm').reset();
+        setQuizShortAnswerFieldState([{ answer: '', label: '' }]);
+        quizQType.dispatchEvent(new Event('change'));
+    }
+    lucide.createIcons();
+}
+
+// ── Drag-and-drop helper ──────────────────────────────────────────────────────
+function initDragDrop(tbody, onReorder) {
+    let dragSrc = null;
+    tbody.querySelectorAll('[draggable="true"]').forEach(row => {
+        row.addEventListener('dragstart', function (e) {
+            dragSrc = this;
+            e.dataTransfer.effectAllowed = 'move';
+            this.classList.add('opacity-50');
+        });
+        row.addEventListener('dragend', function () {
+            this.classList.remove('opacity-50');
+            tbody.querySelectorAll('[draggable="true"]').forEach(r => r.classList.remove('drag-over'));
+        });
+        row.addEventListener('dragover', function (e) {
+            e.preventDefault();
+            e.dataTransfer.dropEffect = 'move';
+            tbody.querySelectorAll('[draggable="true"]').forEach(r => r.classList.remove('drag-over'));
+            if (this !== dragSrc) this.classList.add('drag-over');
+        });
+        row.addEventListener('drop', function (e) {
+            e.preventDefault();
+            if (dragSrc && this !== dragSrc) {
+                const rows = Array.from(tbody.querySelectorAll('[draggable="true"]'));
+                const srcIdx = rows.indexOf(dragSrc);
+                const dstIdx = rows.indexOf(this);
+                if (srcIdx < dstIdx) this.after(dragSrc);
+                else this.before(dragSrc);
+                onReorder();
+            }
+        });
+    });
+}
+
+// Render assigned questions list
+function renderAssignedQuestions() {
+    const tbody = document.getElementById('assignedQuestionsBody');
+    const badge = document.getElementById('assignedCountBadge');
+    badge.textContent = quizSelectedQuestions.size;
+
+    if (quizSelectedQuestions.size === 0) {
+        tbody.innerHTML = '<tr id="assignedEmptyRow"><td colspan="6" class="text-center py-3 text-muted">No questions assigned yet</td></tr>';
+        return;
+    }
+
+    tbody.innerHTML = Array.from(quizSelectedQuestions.values()).map(q => `
+        <tr draggable="true" data-id="${q.id}" class="assigned-row" style="cursor:grab;">
+            <td class="drag-handle text-muted" style="width:28px;cursor:grab;">
+                <i data-lucide="grip-vertical" style="width:14px;height:14px;"></i>
+            </td>
+            <td>${q.question_text}</td>
+            <td><span class="badge bg-light text-dark border">${q.question_type}</span></td>
+            <td>${q.points}</td>
+            <td>${q.time_limit}</td>
+            <td>
+                <button class="btn btn-sm btn-outline-danger assigned-remove-btn" data-id="${q.id}" title="Remove">
+                    <i data-lucide="x" style="width:13px;height:13px;"></i>
+                </button>
+            </td>
+        </tr>
+    `).join('');
+
+    tbody.querySelectorAll('.assigned-remove-btn').forEach(btn => {
+        btn.addEventListener('click', function () {
+            const id = parseInt(this.dataset.id);
+            quizSelectedIds.delete(id);
+            quizSelectedQuestions.delete(id);
+            renderAssignedQuestions();
+            updateQuizSelectedBadge();
+            const cb = document.querySelector(`.quiz-q-check[data-id="${id}"]`);
+            if (cb) cb.checked = false;
+        });
+    });
+
+    initDragDrop(tbody, () => {
+        const newOrder = Array.from(tbody.querySelectorAll('.assigned-row')).map(r => parseInt(r.dataset.id));
+        const newMap = new Map();
+        const newSet = new Set();
+        newOrder.forEach(id => { newMap.set(id, quizSelectedQuestions.get(id)); newSet.add(id); });
+        quizSelectedQuestions.clear(); quizSelectedIds.clear();
+        newMap.forEach((v, k) => { quizSelectedQuestions.set(k, v); quizSelectedIds.add(k); });
+    });
+
+    lucide.createIcons();
+}
+
+// Submit question form
+document.getElementById('quizAddQuestionForm').addEventListener('submit', function (e) {
+    e.preventDefault();
+    const btn = document.getElementById('quizSubmitQuestionBtn');
+    const isEdit = btn.dataset.mode === 'edit';
+    const url = isEdit ? '{% url "admin_dashboard:update_quiz_question" %}' : '{% url "admin_dashboard:add_question" %}';
+
+    // Capture form data before reset
+    const questionText = document.getElementById('quizQuestionText').value.trim();
+    const questionType = document.getElementById('quizQuestionType').value;
+    const points = parseInt(document.getElementById('quizPoints').value);
+    const timeLimit = parseInt(document.getElementById('quizTimeLimit').value);
+
+    btn.disabled = true;
+    fetch(url, {
+        method: 'POST',
+        headers: { 'X-CSRFToken': getCookie('csrftoken') },
+        body: new FormData(this),
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.success) {
+            showNotification(isEdit ? 'Question updated!' : 'Question added!', 'success');
+            if (!isEdit && data.question_id) {
+                // Auto-assign new question to this game
+                const id = data.question_id;
+                quizSelectedIds.add(id);
+                quizSelectedQuestions.set(id, { id, question_text: questionText, question_type: questionType, points, time_limit: timeLimit });
+                renderAssignedQuestions();
+                updateQuizSelectedBadge();
+            } else if (isEdit) {
+                // Update data in map if this question is already assigned
+                const id = parseInt(document.getElementById('quizQuestionId').value);
+                if (quizSelectedQuestions.has(id)) {
+                    quizSelectedQuestions.set(id, { id, question_text: questionText, question_type: questionType, points, time_limit: timeLimit });
+                    renderAssignedQuestions();
+                }
+            }
+            setQuizFormMode('add');
+            loadQuizBank(quizBankPage);
+        } else {
+            alert('Error: ' + (data.error || 'Unknown error'));
+        }
+    })
+    .catch(() => alert('Error saving question.'))
+    .finally(() => { btn.disabled = false; });
+});
+
+// Load quiz question bank
+function loadQuizBank(page) {
+    quizBankPage = page;
+    const search = document.getElementById('quizBankSearch').value.trim();
+    fetch(`/admin-dashboard/quiz/questions/?page=${page}&search=${encodeURIComponent(search)}`, {
+        headers: { 'X-CSRFToken': getCookie('csrftoken') },
+    })
+    .then(r => r.json())
+    .then(data => {
+        const tbody = document.getElementById('quizBankTableBody');
+        const badge = document.getElementById('quizBankCountBadge');
+        badge.textContent = data.count;
+        document.getElementById('quizBankInfo').textContent = `${data.count} questions`;
+
+        if (!data.questions.length) {
+            tbody.innerHTML = '<tr><td colspan="6" class="text-center py-4 text-muted">No questions found</td></tr>';
+            document.getElementById('quizBankPagination').innerHTML = '';
+            return;
+        }
+
+        // Build lookup for checkbox handler
+        const qDataMap = {};
+        data.questions.forEach(q => { qDataMap[q.id] = q; });
+
+        tbody.innerHTML = data.questions.map(q => `
+            <tr>
+                <td><input type="checkbox" class="quiz-q-check" data-id="${q.id}" ${quizSelectedIds.has(q.id) ? 'checked' : ''}></td>
+                <td>${q.question_text}</td>
+                <td><span class="badge bg-light text-dark border">${q.question_type}</span></td>
+                <td>${q.points}</td>
+                <td>${q.time_limit}</td>
+                <td>
+                    <button class="btn btn-sm btn-outline-primary quiz-edit-btn" data-id="${q.id}">
+                        <i data-lucide="pencil" style="width:13px;height:13px;"></i>
+                    </button>
+                    <button class="btn btn-sm btn-outline-danger quiz-delete-btn ms-1" data-id="${q.id}">
+                        <i data-lucide="trash-2" style="width:13px;height:13px;"></i>
+                    </button>
+                </td>
+            </tr>
+        `).join('');
+
+        // Checkboxes
+        tbody.querySelectorAll('.quiz-q-check').forEach(cb => {
+            cb.addEventListener('change', function () {
+                const id = parseInt(this.dataset.id);
+                if (this.checked) {
+                    quizSelectedIds.add(id);
+                    const q = qDataMap[id];
+                    if (q) quizSelectedQuestions.set(id, { id, question_text: q.question_text, question_type: q.question_type, points: q.points, time_limit: q.time_limit });
+                } else {
+                    quizSelectedIds.delete(id);
+                    quizSelectedQuestions.delete(id);
+                }
+                updateQuizSelectedBadge();
+                renderAssignedQuestions();
+            });
+        });
+
+        // Edit buttons
+        tbody.querySelectorAll('.quiz-edit-btn').forEach(btn => {
+            btn.addEventListener('click', function () {
+                fetch(`{% url 'admin_dashboard:get_quiz_question_detail' 0 %}`.replace('/0/', `/${this.dataset.id}/`), {
+                    headers: { 'X-CSRFToken': getCookie('csrftoken') },
+                })
+                .then(r => r.json())
+                .then(({ success, question, error }) => {
+                    if (!success) throw new Error(error || 'Loading failed.');
+                    setQuizFormMode('edit', question);
+                })
+                .catch(err => showNotification(err.message, 'danger'));
+            });
+        });
+
+        // Delete buttons
+        tbody.querySelectorAll('.quiz-delete-btn').forEach(btn => {
+            btn.addEventListener('click', function () {
+                const modal = document.getElementById('deleteQuizQuestionModal');
+                modal.dataset.questionId = this.dataset.id;
+                new bootstrap.Modal(modal).show();
+            });
+        });
+
+        // Select all
+        document.getElementById('quizSelectAll').addEventListener('change', function () {
+            tbody.querySelectorAll('.quiz-q-check').forEach(cb => {
+                cb.checked = this.checked;
+                const id = parseInt(cb.dataset.id);
+                if (this.checked) {
+                    quizSelectedIds.add(id);
+                    const q = qDataMap[id];
+                    if (q) quizSelectedQuestions.set(id, { id, question_text: q.question_text, question_type: q.question_type, points: q.points, time_limit: q.time_limit });
+                } else {
+                    quizSelectedIds.delete(id);
+                    quizSelectedQuestions.delete(id);
+                }
+            });
+            updateQuizSelectedBadge();
+            renderAssignedQuestions();
+        });
+
+        // Pagination
+        const pag = document.getElementById('quizBankPagination');
+        pag.innerHTML = '';
+        for (let i = 1; i <= data.pages; i++) {
+            const li = document.createElement('li');
+            li.className = 'page-item' + (i === data.current_page ? ' active' : '');
+            li.innerHTML = `<button class="page-link" data-page="${i}">${i}</button>`;
+            pag.appendChild(li);
+        }
+        pag.querySelectorAll('[data-page]').forEach(b => b.addEventListener('click', () => loadQuizBank(parseInt(b.dataset.page))));
+
+        lucide.createIcons();
+    })
+    .catch(() => { document.getElementById('quizBankTableBody').innerHTML = '<tr><td colspan="6" class="text-center py-4 text-danger">Failed to load</td></tr>'; });
+}
+
+function updateQuizSelectedBadge() {
+    document.getElementById('quizSelectedBadge').textContent = `${quizSelectedIds.size} selected`;
+}
+
+// Search
+let quizSearchTimer = null;
+document.getElementById('quizBankSearch').addEventListener('input', () => {
+    clearTimeout(quizSearchTimer);
+    quizSearchTimer = setTimeout(() => loadQuizBank(1), 350);
+});
+
+// Delete confirm
+document.getElementById('confirmDeleteQuizQuestionBtn').addEventListener('click', function () {
+    const modal = document.getElementById('deleteQuizQuestionModal');
+    fetch('{% url "admin_dashboard:delete_quiz_question" %}', {
+        method: 'POST',
+        headers: { 'X-CSRFToken': CSRF, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ question_id: modal.dataset.questionId }),
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.success) {
+            bootstrap.Modal.getInstance(modal).hide();
+            showNotification('Question deleted!', 'success');
+            quizSelectedIds.delete(parseInt(modal.dataset.questionId));
+            updateQuizSelectedBadge();
+            loadQuizBank(quizBankPage);
+        } else {
+            alert('Error: ' + (data.error || 'Unknown error'));
+        }
+    })
+    .catch(() => alert('Error deleting.'));
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// GENERIC section (all other types)
+// ════════════════════════════════════════════════════════════════════════════
+let genericPage = 1;
+let genericSearchTimer = null;
+
+function loadGenericBank(page) {
+    genericPage = page;
+    if (!currentType || currentType === 'quiz') return;
+    const cfg = GAME_CONFIG[currentType];
+    const search = document.getElementById('genericBankSearch').value.trim();
+    const dataKey = cfg.dataKey || 'questions';
+
+    // Render table header
+    const head = document.getElementById('genericTableHead');
+    head.innerHTML = '<th style="width:36px;"><input type="checkbox" id="genericSelectAll"></th>'
+        + cfg.columns.map(c => `<th>${c.label}</th>`).join('') + '<th></th>';
+    document.getElementById('genericSelectAll').addEventListener('change', function () {
+        document.querySelectorAll('.generic-q-check').forEach(cb => {
+            cb.checked = this.checked;
+            const id = parseInt(cb.dataset.id);
+            if (this.checked) { genericSelectedIds.add(id); const it = itemsRef.find(i => i.id === id); if (it) genericSelectedItems.set(id, it); }
+            else { genericSelectedIds.delete(id); genericSelectedItems.delete(id); }
+        });
+        updateGenericSelectedBadge();
+        renderGenericAssigned();
+    });
+
+    fetch(`${cfg.questionsUrl}?page=${page}&search=${encodeURIComponent(search)}`)
+    .then(r => r.json())
+    .then(data => {
+        const items = data[dataKey] || [];
+        if (currentType === 'estimation') {
+            items.forEach(item => {
+                item.points_display = item.use_manual_points ? item.max_points : (item.zone_count ?? item.max_points);
+            });
+        }
+        itemsRef = items; // keep reference for select-all handler
+        const total = data.count || 0;
+        const pages = data.pages || 1;
+
+        document.getElementById('genericBankCountBadge').textContent = total;
+        document.getElementById('genericBankInfo').textContent = `${total} items`;
+
+        const tbody = document.getElementById('genericBankTableBody');
+        if (!items.length) {
+            tbody.innerHTML = '<tr><td colspan="10" class="text-center py-4 text-muted">No items found</td></tr>';
+            document.getElementById('genericBankPagination').innerHTML = '';
+            return;
+        }
+
+        tbody.innerHTML = items.map(item => {
+            const cells = cfg.columns.map(c => `<td>${item[c.key] !== undefined && item[c.key] !== null ? item[c.key] : '—'}</td>`).join('');
+            return `<tr>
+                <td><input type="checkbox" class="generic-q-check" data-id="${item.id}" ${genericSelectedIds.has(item.id) ? 'checked' : ''}></td>
+                ${cells}
+                <td>
+                    <button class="btn btn-sm btn-outline-primary generic-edit-btn" data-id="${item.id}" title="Edit">
+                        <i data-lucide="pencil" style="width:13px;height:13px;"></i>
+                    </button>
+                </td>
+            </tr>`;
+        }).join('');
+
+        tbody.querySelectorAll('.generic-q-check').forEach(cb => {
+            cb.addEventListener('change', function () {
+                const id = parseInt(this.dataset.id);
+                if (this.checked) { genericSelectedIds.add(id); const it = items.find(i => i.id === id); if (it) genericSelectedItems.set(id, it); }
+                else { genericSelectedIds.delete(id); genericSelectedItems.delete(id); }
+                updateGenericSelectedBadge();
+                renderGenericAssigned();
+            });
+        });
+
+        // Edit buttons
+        tbody.querySelectorAll('.generic-edit-btn').forEach(btn => {
+            btn.addEventListener('click', function () {
+                loadGenericItemForEdit(parseInt(this.dataset.id));
+            });
+        });
+
+        lucide.createIcons({ scope: tbody });
+
+        const pag = document.getElementById('genericBankPagination');
+        pag.innerHTML = '';
+        for (let i = 1; i <= pages; i++) {
+            const li = document.createElement('li');
+            li.className = 'page-item' + (i === (data.current_page || page) ? ' active' : '');
+            li.innerHTML = `<button class="page-link" data-page="${i}">${i}</button>`;
+            pag.appendChild(li);
+        }
+        pag.querySelectorAll('[data-page]').forEach(b => b.addEventListener('click', () => loadGenericBank(parseInt(b.dataset.page))));
+    })
+    .catch(() => { document.getElementById('genericBankTableBody').innerHTML = '<tr><td colspan="10" class="text-center py-4 text-danger">Failed to load</td></tr>'; });
+}
+
+function updateGenericSelectedBadge() {
+    document.getElementById('genericSelectedBadge').textContent = `${genericSelectedIds.size} selected`;
+}
+
+document.getElementById('genericBankSearch').addEventListener('input', () => {
+    clearTimeout(genericSearchTimer);
+    genericSearchTimer = setTimeout(() => loadGenericBank(1), 350);
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// GENERIC: Assigned panel + per-type forms
+// ════════════════════════════════════════════════════════════════════════════
+
+function renderGenericAssigned() {
+    const cfg = currentType && GAME_CONFIG[currentType];
+    const cols = cfg ? cfg.columns : [];
+    const badge = document.getElementById('genericAssignedCountBadge');
+    const head = document.getElementById('genericAssignedHead');
+    const tbody = document.getElementById('genericAssignedBody');
+    badge.textContent = genericSelectedIds.size;
+    head.innerHTML = '<tr><th style="width:28px;"></th>' + cols.map(c => `<th>${c.label}</th>`).join('') + '<th style="width:40px;"></th></tr>';
+    if (genericSelectedIds.size === 0) {
+        tbody.innerHTML = `<tr><td colspan="${cols.length + 2}" class="text-center py-3 text-muted">No questions assigned yet</td></tr>`;
+        return;
+    }
+    tbody.innerHTML = Array.from(genericSelectedItems.values())
+        .filter(item => genericSelectedIds.has(item.id))
+        .map(item => {
+            const cells = cols.map(c => `<td>${item[c.key] !== undefined && item[c.key] !== null ? item[c.key] : '—'}</td>`).join('');
+            return `<tr draggable="true" data-id="${item.id}" class="generic-assigned-row" style="cursor:grab;">
+                <td class="text-muted" style="width:28px;cursor:grab;"><i data-lucide="grip-vertical" style="width:14px;height:14px;"></i></td>
+                ${cells}<td>
+                <button class="btn btn-sm btn-outline-danger generic-assigned-remove" data-id="${item.id}">
+                    <i data-lucide="x" style="width:13px;height:13px;"></i>
+                </button></td></tr>`;
+        }).join('');
+    tbody.querySelectorAll('.generic-assigned-remove').forEach(btn => {
+        btn.addEventListener('click', function () {
+            const id = parseInt(this.dataset.id);
+            genericSelectedIds.delete(id);
+            genericSelectedItems.delete(id);
+            renderGenericAssigned();
+            updateGenericSelectedBadge();
+            const cb = document.querySelector(`.generic-q-check[data-id="${id}"]`);
+            if (cb) cb.checked = false;
+        });
+    });
+    initDragDrop(tbody, () => {
+        const newOrder = Array.from(tbody.querySelectorAll('.generic-assigned-row')).map(r => parseInt(r.dataset.id));
+        const newMap = new Map();
+        const newSet = new Set();
+        newOrder.forEach(id => { newMap.set(id, genericSelectedItems.get(id)); newSet.add(id); });
+        genericSelectedItems.clear(); genericSelectedIds.clear();
+        newMap.forEach((v, k) => { genericSelectedItems.set(k, v); genericSelectedIds.add(k); });
+    });
+    lucide.createIcons();
+}
+
+document.getElementById('addManageBlackjackSetBtn').addEventListener('click', function () {
+    blackJackSetCount += 1;
+    syncManageBlackJackSetSummary();
+    renderGenericAssigned();
+});
+
+document.getElementById('manageBlackjackSetSummary').addEventListener('click', function (e) {
+    const button = e.target.closest('.remove-manage-blackjack-set-btn');
+    if (!button) return;
+    removeManageBlackJackSet(parseInt(button.dataset.setNumber, 10));
+    renderGenericAssigned();
+});
+
+function loadGenericBank(page) {
+    genericPage = page;
+    if (!currentType || currentType === 'quiz') return;
+    const cfg = GAME_CONFIG[currentType];
+    const search = document.getElementById('genericBankSearch').value.trim();
+    const dataKey = cfg.dataKey || 'questions';
+    const isBlackJack = currentType === 'blackjack';
+
+    const head = document.getElementById('genericTableHead');
+    head.innerHTML = '<th style="width:36px;"><input type="checkbox" id="genericSelectAll"></th>'
+        + cfg.columns.map(c => `<th>${c.label}</th>`).join('')
+        + (isBlackJack ? '<th style="width:150px;">Set</th>' : '')
+        + '<th></th>';
+    document.getElementById('genericSelectAll').addEventListener('change', function () {
+        document.querySelectorAll('.generic-q-check').forEach(cb => {
+            cb.checked = this.checked;
+            const id = parseInt(cb.dataset.id, 10);
+            if (this.checked) {
+                genericSelectedIds.add(id);
+                const it = itemsRef.find(i => i.id === id);
+                if (it) genericSelectedItems.set(id, it);
+                if (isBlackJack) setManageBlackJackQuestionSelection(id, true, it || null);
+            } else {
+                genericSelectedIds.delete(id);
+                genericSelectedItems.delete(id);
+                if (isBlackJack) setManageBlackJackQuestionSelection(id, false);
+            }
+        });
+        updateGenericSelectedBadge();
+        renderGenericAssigned();
+    });
+
+    fetch(`${cfg.questionsUrl}?page=${page}&search=${encodeURIComponent(search)}`)
+    .then(r => r.json())
+    .then(data => {
+        const items = data[dataKey] || [];
+        if (currentType === 'estimation') {
+            items.forEach(item => {
+                item.points_display = item.use_manual_points ? item.max_points : (item.zone_count ?? item.max_points);
+            });
+        }
+        itemsRef = items;
+        const total = data.count || 0;
+        const pages = data.pages || 1;
+
+        document.getElementById('genericBankCountBadge').textContent = total;
+        document.getElementById('genericBankInfo').textContent = `${total} items`;
+
+        const tbody = document.getElementById('genericBankTableBody');
+        if (!items.length) {
+            tbody.innerHTML = '<tr><td colspan="10" class="text-center py-4 text-muted">No items found</td></tr>';
+            document.getElementById('genericBankPagination').innerHTML = '';
+            return;
+        }
+
+        tbody.innerHTML = items.map(item => {
+            const cells = cfg.columns.map(c => `<td>${item[c.key] !== undefined && item[c.key] !== null ? item[c.key] : '—'}</td>`).join('');
+            const setCell = isBlackJack
+                ? `<td><select class="form-select form-select-sm manage-blackjack-set-select" data-id="${item.id}" ${genericSelectedIds.has(item.id) ? '' : 'disabled'}>${getManageBlackJackSetOptions(blackJackQuestionSetAssignments.get(item.id) || 1)}</select></td>`
+                : '';
+            return `<tr>
+                <td><input type="checkbox" class="generic-q-check" data-id="${item.id}" ${genericSelectedIds.has(item.id) ? 'checked' : ''}></td>
+                ${cells}
+                ${setCell}
+                <td>
+                    <button class="btn btn-sm btn-outline-primary generic-edit-btn" data-id="${item.id}" title="Edit">
+                        <i data-lucide="pencil" style="width:13px;height:13px;"></i>
+                    </button>
+                </td>
+            </tr>`;
+        }).join('');
+
+        tbody.querySelectorAll('.generic-q-check').forEach(cb => {
+            cb.addEventListener('change', function () {
+                const id = parseInt(this.dataset.id, 10);
+                if (this.checked) {
+                    genericSelectedIds.add(id);
+                    const it = items.find(i => i.id === id);
+                    if (it) genericSelectedItems.set(id, it);
+                    if (isBlackJack) setManageBlackJackQuestionSelection(id, true, it || null);
+                } else {
+                    genericSelectedIds.delete(id);
+                    genericSelectedItems.delete(id);
+                    if (isBlackJack) setManageBlackJackQuestionSelection(id, false);
+                }
+                updateGenericSelectedBadge();
+                renderGenericAssigned();
+            });
+        });
+
+        if (isBlackJack) {
+            tbody.querySelectorAll('.manage-blackjack-set-select').forEach(select => {
+                select.addEventListener('change', function () {
+                    const id = parseInt(this.dataset.id, 10);
+                    assignManageBlackJackQuestionToSet(id, this.value);
+                    renderGenericAssigned();
+                });
+            });
+        }
+
+        tbody.querySelectorAll('.generic-edit-btn').forEach(btn => {
+            btn.addEventListener('click', function () {
+                loadGenericItemForEdit(parseInt(this.dataset.id, 10));
+            });
+        });
+
+        lucide.createIcons({ scope: tbody });
+        syncManageBlackJackSetSummary();
+
+        const pag = document.getElementById('genericBankPagination');
+        pag.innerHTML = '';
+        for (let i = 1; i <= pages; i++) {
+            const li = document.createElement('li');
+            li.className = 'page-item' + (i === (data.current_page || page) ? ' active' : '');
+            li.innerHTML = `<button class="page-link" data-page="${i}">${i}</button>`;
+            pag.appendChild(li);
+        }
+        pag.querySelectorAll('[data-page]').forEach(b => b.addEventListener('click', () => loadGenericBank(parseInt(b.dataset.page, 10))));
+    })
+    .catch(() => { document.getElementById('genericBankTableBody').innerHTML = '<tr><td colspan="10" class="text-center py-4 text-danger">Failed to load</td></tr>'; });
+}
+
+function renderGenericAssigned() {
+    const cfg = currentType && GAME_CONFIG[currentType];
+    const cols = cfg ? cfg.columns : [];
+    const badge = document.getElementById('genericAssignedCountBadge');
+    const head = document.getElementById('genericAssignedHead');
+    const tbody = document.getElementById('genericAssignedBody');
+    const isBlackJack = currentType === 'blackjack';
+    badge.textContent = genericSelectedIds.size;
+    head.innerHTML = '<tr><th style="width:28px;"></th>' + cols.map(c => `<th>${c.label}</th>`).join('') + (isBlackJack ? '<th style="width:150px;">Set</th>' : '') + '<th style="width:40px;"></th></tr>';
+    if (genericSelectedIds.size === 0) {
+        tbody.innerHTML = `<tr><td colspan="${cols.length + (isBlackJack ? 3 : 2)}" class="text-center py-3 text-muted">No questions assigned yet</td></tr>`;
+        syncManageBlackJackSetSummary();
+        return;
+    }
+    tbody.innerHTML = Array.from(genericSelectedItems.values())
+        .filter(item => genericSelectedIds.has(item.id))
+        .map(item => {
+            const cells = cols.map(c => `<td>${item[c.key] !== undefined && item[c.key] !== null ? item[c.key] : '—'}</td>`).join('');
+            const setCell = isBlackJack
+                ? `<td><select class="form-select form-select-sm manage-blackjack-set-select" data-id="${item.id}">${getManageBlackJackSetOptions(blackJackQuestionSetAssignments.get(item.id) || 1)}</select></td>`
+                : '';
+            return `<tr draggable="true" data-id="${item.id}" class="generic-assigned-row" style="cursor:grab;">
+                <td class="text-muted" style="width:28px;cursor:grab;"><i data-lucide="grip-vertical" style="width:14px;height:14px;"></i></td>
+                ${cells}${setCell}<td>
+                <button class="btn btn-sm btn-outline-danger generic-assigned-remove" data-id="${item.id}">
+                    <i data-lucide="x" style="width:13px;height:13px;"></i>
+                </button></td></tr>`;
+        }).join('');
+    tbody.querySelectorAll('.generic-assigned-remove').forEach(btn => {
+        btn.addEventListener('click', function () {
+            const id = parseInt(this.dataset.id, 10);
+            genericSelectedIds.delete(id);
+            genericSelectedItems.delete(id);
+            if (isBlackJack) setManageBlackJackQuestionSelection(id, false);
+            renderGenericAssigned();
+            updateGenericSelectedBadge();
+            const cb = document.querySelector(`.generic-q-check[data-id="${id}"]`);
+            if (cb) cb.checked = false;
+        });
+    });
+    if (isBlackJack) {
+        tbody.querySelectorAll('.manage-blackjack-set-select').forEach(select => {
+            select.addEventListener('change', function () {
+                const id = parseInt(this.dataset.id, 10);
+                assignManageBlackJackQuestionToSet(id, this.value);
+                syncManageBlackJackSetSummary();
+            });
+        });
+    }
+    initDragDrop(tbody, () => {
+        const newOrder = Array.from(tbody.querySelectorAll('.generic-assigned-row')).map(r => parseInt(r.dataset.id, 10));
+        const newMap = new Map();
+        newOrder.forEach(id => { newMap.set(id, genericSelectedItems.get(id)); });
+        genericSelectedItems.clear();
+        genericSelectedIds.clear();
+        newMap.forEach((v, k) => { genericSelectedItems.set(k, v); genericSelectedIds.add(k); });
+        syncManageBlackJackSetSummary();
+    });
+    lucide.createIcons();
+    syncManageBlackJackSetSummary();
+}
+
+// ── Dynamic list helpers ─────────────────────────────────────────────────────
+
+function addAsgnLeft() {
+    const c = document.getElementById('asgn-left-container');
+    const row = document.createElement('div');
+    row.className = 'd-flex gap-2 mb-1';
+    row.innerHTML = `<input type="text" class="form-control form-control-sm asgn-left" placeholder="Links…">
+        <button type="button" class="btn btn-sm btn-outline-danger" onclick="this.closest('div').remove()">×</button>`;
+    c.appendChild(row);
+    row.querySelector('.asgn-left').addEventListener('keydown', function(e) {
+        if (e.key === 'Tab' && !e.shiftKey && this.value.trim() !== '') {
+            e.preventDefault();
+            addAsgnLeft();
+            c.lastElementChild.querySelector('.asgn-left').focus();
+        }
+    });
+}
+function addAsgnRight() {
+    const c = document.getElementById('asgn-right-container');
+    const row = document.createElement('div');
+    row.className = 'd-flex gap-2 mb-1';
+    row.innerHTML = `<input type="text" class="form-control form-control-sm asgn-right" placeholder="Rechts…">
+        <button type="button" class="btn btn-sm btn-outline-danger" onclick="this.closest('div').remove()">×</button>`;
+    c.appendChild(row);
+    row.querySelector('.asgn-right').addEventListener('keydown', function(e) {
+        if (e.key === 'Tab' && !e.shiftKey && this.value.trim() !== '') {
+            e.preventDefault();
+            addAsgnRight();
+            c.lastElementChild.querySelector('.asgn-right').focus();
+        }
+    });
+}
+document.getElementById('asgn-add-left').addEventListener('click', addAsgnLeft);
+document.getElementById('asgn-add-right').addEventListener('click', addAsgnRight);
+
+function addWhoPerson() {
+    const c = document.getElementById('who-people-container');
+    const row = document.createElement('div');
+    row.className = 'd-flex gap-2 mb-1 who-person-row align-items-center';
+    row.innerHTML = `<input type="text" class="form-control form-control-sm who-person-name" placeholder="Name…">
+        <div class="form-check mb-0 ms-1">
+            <input class="form-check-input who-person-liar" type="checkbox">
+            <label class="form-check-label small">Lügner</label>
+        </div>
+        <button type="button" class="btn btn-sm btn-outline-danger ms-auto" onclick="this.closest('.who-person-row').remove()">×</button>`;
+    c.appendChild(row);
+    row.querySelector('.who-person-name').addEventListener('keydown', function(e) {
+        if (e.key === 'Tab' && !e.shiftKey && this.value.trim() !== '') {
+            e.preventDefault();
+            addWhoPerson();
+            c.lastElementChild.querySelector('.who-person-name').focus();
+        }
+    });
+}
+document.getElementById('who-add-person').addEventListener('click', addWhoPerson);
+
+function addCrClue() {
+    const c = document.getElementById('cr-clues-container');
+    const row = document.createElement('div');
+    row.className = 'd-flex gap-2 mb-1 cr-clue-row';
+    row.innerHTML = `<input type="text" class="form-control form-control-sm cr-clue-text" placeholder="Clue…">
+        <input type="number" class="form-control form-control-sm cr-clue-dur" placeholder="s" value="10" min="3" style="width:80px;">
+        <button type="button" class="btn btn-sm btn-outline-danger" onclick="this.closest('.cr-clue-row').remove()">×</button>`;
+    c.appendChild(row);
+    const textInput = row.querySelector('.cr-clue-text');
+    textInput.addEventListener('keydown', function(e) {
+        if (e.key === 'Tab' && !e.shiftKey && this.value.trim() !== '') {
+            e.preventDefault();
+            addCrClue();
+            c.lastElementChild.querySelector('.cr-clue-text').focus();
+        }
+    });
+    return row;
+}
+document.getElementById('cr-add-clue').addEventListener('click', addCrClue);
+
+function refreshSlStartingDropdown() {
+    const select = document.getElementById('sl-starting-item');
+    if (!select) return;
+    const prev = select.value;
+    select.innerHTML = '<option value="">— Zufällig —</option>';
+    document.querySelectorAll('#sl-items-container .sl-item-row').forEach((row, i) => {
+        const text = row.querySelector('.sl-item-text')?.value.trim();
+        if (text) {
+            const opt = document.createElement('option');
+            opt.value = i;
+            opt.textContent = text;
+            if (String(prev) === String(i)) opt.selected = true;
+            select.appendChild(opt);
+        }
+    });
+}
+function addSlItem() {
+    const c = document.getElementById('sl-items-container');
+    const row = document.createElement('div');
+    row.className = 'd-flex gap-2 mb-1 sl-item-row align-items-center';
+    const idx = c.children.length + 1;
+    row.innerHTML = `<span class="badge bg-secondary sl-item-idx" style="min-width:24px;">${idx}</span>
+        <input type="text" class="form-control form-control-sm sl-item-text" placeholder="Item…">
+        <button type="button" class="btn btn-sm btn-outline-danger" onclick="this.closest('.sl-item-row').remove(); reindexSlItems();">×</button>`;
+    const textInput = row.querySelector('.sl-item-text');
+    textInput.addEventListener('input', refreshSlStartingDropdown);
+    textInput.addEventListener('keydown', function(e) {
+        if (e.key === 'Tab' && !e.shiftKey && this.value.trim() !== '') {
+            e.preventDefault();
+            addSlItem();
+            c.lastElementChild.querySelector('.sl-item-text').focus();
+        }
+    });
+    c.appendChild(row);
+    refreshSlStartingDropdown();
+}
+function reindexSlItems() {
+    document.querySelectorAll('#sl-items-container .sl-item-idx').forEach((el, i) => { el.textContent = i + 1; });
+    refreshSlStartingDropdown();
+}
+document.getElementById('sl-add-item').addEventListener('click', addSlItem);
+
+// ── Reset generic form ───────────────────────────────────────────────────────
+
+function resetGenericForm() {
+    document.getElementById('est-id').value = '';
+    document.getElementById('est-question').value = '';
+    document.getElementById('est-answer').value = '';
+    document.getElementById('est-unit').value = 'number';
+    document.getElementById('est-tolerance').value = 10;
+    document.getElementById('est-zone-count').value = 5;
+    document.getElementById('est-points').value = 10;
+    document.getElementById('est-manual-points-enabled').checked = false;
+    document.getElementById('est-time').value = 30;
+    updateEstimationScoringUi();
+
+    document.getElementById('asgn-id').value = '';
+    document.getElementById('asgn-question').value = '';
+    document.getElementById('asgn-time').value = 30;
+    document.getElementById('asgn-left-container').innerHTML = '';
+    document.getElementById('asgn-right-container').innerHTML = '';
+    addAsgnLeft(); addAsgnRight();
+
+    document.getElementById('where-id').value = '';
+    document.getElementById('where-question').value = '';
+    document.getElementById('where-lat').value = '';
+    document.getElementById('where-lng').value = '';
+    document.getElementById('where-points').value = 10;
+    document.getElementById('where-time').value = 30;
+    document.getElementById('where-image').value = '';
+    document.getElementById('where-image-preview-container').style.display = 'none';
+
+    document.getElementById('who-id').value = '';
+    document.getElementById('who-statement').value = '';
+    document.getElementById('who-points').value = 10;
+    document.getElementById('who-time').value = 30;
+    document.getElementById('who-people-container').innerHTML = '';
+    addWhoPerson(); addWhoPerson();
+
+    document.getElementById('whot-id').value = '';
+    document.getElementById('whot-answer').value = '';
+    document.getElementById('whot-alt').value = '';
+    document.getElementById('whot-time').value = 30;
+    document.getElementById('whot-image').value = '';
+    document.getElementById('whot-image-preview-container').style.display = 'none';
+
+    document.getElementById('bj-id').value = '';
+    document.getElementById('bj-question').value = '';
+    document.getElementById('bj-answer').value = '';
+    document.getElementById('bj-time').value = 30;
+
+    document.getElementById('cr-id').value = '';
+    document.getElementById('cr-question-text').value = '';
+    document.getElementById('cr-answer').value = '';
+    document.getElementById('cr-points').value = 12;
+    document.getElementById('cr-clues-container').innerHTML = '';
+    addCrClue();
+
+    document.getElementById('sl-id').value = '';
+    document.getElementById('sl-title').value = '';
+    document.getElementById('sl-desc').value = '';
+    document.getElementById('sl-points').value = 10;
+    document.getElementById('sl-time').value = 60;
+    document.getElementById('sl-upper').value = 'Aufsteigend';
+    document.getElementById('sl-lower').value = 'Absteigend';
+    document.getElementById('sl-items-container').innerHTML = '';
+    document.getElementById('sl-starting-item').innerHTML = '<option value="">— Zufällig —</option>';
+    addSlItem(); addSlItem();
+
+    document.getElementById('genericFormTitle').innerHTML =
+        '<i data-lucide="help-circle" style="width:18px;height:18px;" class="me-2"></i>Add New Question';
+    document.querySelectorAll('.generic-submit-btn').forEach(b => {
+        b.innerHTML = '<i data-lucide="plus" style="width:15px;height:15px;" class="me-1"></i>Add Question';
+        b.dataset.mode = 'add';
+    });
+    lucide.createIcons();
+}
+document.getElementById('genericResetFormBtn').addEventListener('click', resetGenericForm);
+
+// ── Per-type submit handlers ─────────────────────────────────────────────────
+
+function genericAddSuccess(newId, displayItem, submitBtn) {
+    genericSelectedIds.add(newId);
+    genericSelectedItems.set(newId, { id: newId, ...displayItem });
+    if (currentType === 'blackjack') {
+        setManageBlackJackQuestionSelection(newId, true, { id: newId, ...displayItem });
+    }
+    renderGenericAssigned();
+    updateGenericSelectedBadge();
+    resetGenericForm();
+    loadGenericBank(genericPage);
+    showNotification('Question added!', 'success');
+    submitBtn.disabled = false;
+}
+
+function genericEditSuccess(submitBtn) {
+    resetGenericForm();
+    loadGenericBank(genericPage);
+    showNotification('Question updated!', 'success');
+    submitBtn.disabled = false;
+}
+
+function genericPost(url, payload, isJson, submitBtn, displayItemFn, idKey) {
+    const isEdit = submitBtn.dataset.mode === 'edit';
+    if (isEdit) {
+        const updateUrl = GENERIC_UPDATE_URL[currentType];
+        if (!updateUrl) { alert('Update-URL nicht gefunden.'); return; }
+        submitBtn.disabled = true;
+        const opts = { method: 'POST', headers: { 'X-CSRFToken': getCookie('csrftoken') } };
+        if (isJson) {
+            opts.headers['Content-Type'] = 'application/json';
+            opts.body = JSON.stringify(payload);
+        } else {
+            const fd = new FormData();
+            Object.entries(payload).forEach(([k, v]) => { if (v !== undefined && v !== null) fd.append(k, v); });
+            opts.body = fd;
+        }
+        fetch(updateUrl, opts)
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) { genericEditSuccess(submitBtn); }
+            else { alert('Fehler: ' + (data.error || 'Unbekannter Fehler')); submitBtn.disabled = false; }
+        })
+        .catch(() => { alert('Anfrage fehlgeschlagen.'); submitBtn.disabled = false; });
+        return;
+    }
+    submitBtn.disabled = true;
+    const opts = { method: 'POST', headers: { 'X-CSRFToken': getCookie('csrftoken') } };
+    if (isJson) {
+        opts.headers['Content-Type'] = 'application/json';
+        opts.body = JSON.stringify(payload);
+    } else {
+        const fd = new FormData();
+        Object.entries(payload).forEach(([k, v]) => fd.append(k, v));
+        opts.body = fd;
+    }
+    fetch(url, opts)
+    .then(r => r.json())
+    .then(data => {
+        if (data.success) { genericAddSuccess(data[idKey], displayItemFn(payload), submitBtn); }
+        else { alert('Fehler: ' + (data.error || 'Unbekannter Fehler')); submitBtn.disabled = false; }
+    })
+    .catch(() => { alert('Anfrage fehlgeschlagen.'); submitBtn.disabled = false; });
+}
+
+// Estimation
+document.getElementById('est-submit').addEventListener('click', function () {
+    const question_text = document.getElementById('est-question').value.trim();
+    const correct_answer = document.getElementById('est-answer').value;
+    if (!question_text || correct_answer === '') { alert('Frage und Antwort sind Pflichtfelder.'); return; }
+    const estId = parseInt(document.getElementById('est-id').value);
+    const payload = {
+        question_text, correct_answer: parseFloat(correct_answer),
+        unit: document.getElementById('est-unit').value,
+        max_points: parseInt(document.getElementById('est-points').value) ||
+            parseInt(document.getElementById('est-zone-count').value) || 1,
+        use_manual_points: document.getElementById('est-manual-points-enabled').checked &&
+            normalizeEstimationScoringMode(document.getElementById('estimationScoringMode').value) !== 'rank',
+        time_limit: parseInt(document.getElementById('est-time').value),
+        tolerance_percentage: parseFloat(document.getElementById('est-tolerance').value) || 10,
+        zone_count: parseInt(document.getElementById('est-zone-count').value) || 5,
+        ...(estId ? { question_id: estId } : {}),
+    };
+    genericPost('/admin-dashboard/estimation/add-question/', payload, true, this,
+        p => ({ question_text: p.question_text, correct_answer: p.correct_answer, unit: p.unit, points_display: p.use_manual_points ? p.max_points : p.zone_count }),
+        'question_id');
+});
+
+// Assign
+document.getElementById('asgn-submit').addEventListener('click', function () {
+    const question_text = document.getElementById('asgn-question').value.trim();
+    if (!question_text) { alert('Thema ist ein Pflichtfeld.'); return; }
+    const left_items = Array.from(document.querySelectorAll('#asgn-left-container .asgn-left')).map(i => i.value.trim()).filter(Boolean);
+    const right_items = Array.from(document.querySelectorAll('#asgn-right-container .asgn-right')).map(i => i.value.trim()).filter(Boolean);
+    if (!left_items.length) { alert('Mindestens ein linkes Item erforderlich.'); return; }
+    const correct_matches = {};
+    left_items.forEach((_, i) => { if (i < right_items.length) correct_matches[i] = i; });
+    const asgnId = parseInt(document.getElementById('asgn-id').value);
+    const payload = {
+        question_text,
+        time_limit: parseInt(document.getElementById('asgn-time').value),
+        left_items, right_items, correct_matches,
+        ...(asgnId ? { question_id: asgnId } : {}),
+    };
+    genericPost('/admin-dashboard/assign/add-question/', payload, true, this,
+        p => ({ question_text: p.question_text, time_limit: p.time_limit }),
+        'question_id');
+});
+
+// Where
+document.getElementById('where-image').addEventListener('change', function () {
+    const file = this.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = e => {
+        document.getElementById('where-image-preview').src = e.target.result;
+        document.getElementById('where-image-preview-container').style.display = 'block';
+        lucide.createIcons();
+    };
+    reader.readAsDataURL(file);
+});
+
+document.getElementById('where-submit').addEventListener('click', function () {
+    const question_text = document.getElementById('where-question').value.trim();
+    const latitude = document.getElementById('where-lat').value;
+    const longitude = document.getElementById('where-lng').value;
+    if (!question_text || latitude === '' || longitude === '') { alert('Ort, Breitengrad und Längengrad sind Pflichtfelder.'); return; }
+    const isEdit = this.dataset.mode === 'edit';
+    const whereId = parseInt(document.getElementById('where-id').value);
+    const imageFile = document.getElementById('where-image').files[0];
+    const fd = new FormData();
+    fd.append('question_text', question_text);
+    fd.append('latitude', latitude);
+    fd.append('longitude', longitude);
+    fd.append('points', document.getElementById('where-points').value);
+    fd.append('time_limit', document.getElementById('where-time').value);
+    fd.append('perfect_distance', 50);
+    fd.append('good_distance', 200);
+    fd.append('fair_distance', 500);
+    fd.append('poor_distance', 1000);
+    if (imageFile) fd.append('image', imageFile);
+    if (whereId) fd.append('question_id', whereId);
+    this.disabled = true;
+    const url = isEdit ? '/admin-dashboard/where/question/update/' : '/admin-dashboard/where/question/add/';
+    fetch(url, {
+        method: 'POST',
+        headers: { 'X-CSRFToken': getCookie('csrftoken') },
+        body: fd,
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.success) {
+            if (isEdit) {
+                genericEditSuccess(this);
+            } else {
+                genericAddSuccess(data.question_id, { question_text, points: document.getElementById('where-points').value }, this);
+            }
+            document.getElementById('where-image').value = '';
+            document.getElementById('where-image-preview-container').style.display = 'none';
+        } else {
+            alert('Fehler: ' + (data.error || 'Unbekannter Fehler'));
+            this.disabled = false;
+        }
+    })
+    .catch(() => { alert('Anfrage fehlgeschlagen.'); this.disabled = false; });
+});
+
+// Who Is Lying
+document.getElementById('who-submit').addEventListener('click', function () {
+    const statement = document.getElementById('who-statement').value.trim();
+    if (!statement) { alert('Aussage ist ein Pflichtfeld.'); return; }
+    const people = Array.from(document.querySelectorAll('.who-person-row')).map(r => ({
+        name: r.querySelector('.who-person-name').value.trim(),
+        is_lying: r.querySelector('.who-person-liar').checked,
+    })).filter(p => p.name);
+    if (people.length < 2) { alert('Mindestens 2 Personen erforderlich.'); return; }
+    const whoId = parseInt(document.getElementById('who-id').value);
+    const payload = {
+        statement,
+        points: parseInt(document.getElementById('who-points').value),
+        time_limit: parseInt(document.getElementById('who-time').value),
+        people,
+        ...(whoId ? { question_id: whoId } : {}),
+    };
+    genericPost('/admin-dashboard/who/add-question/', payload, true, this,
+        p => ({ statement: p.statement, people_count: p.people.length, points: p.points }),
+        'question_id');
+});
+
+// Who Is That
+document.getElementById('whot-image').addEventListener('change', function () {
+    const file = this.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = e => {
+        document.getElementById('whot-image-preview').src = e.target.result;
+        document.getElementById('whot-image-preview-container').style.display = 'block';
+        lucide.createIcons();
+    };
+    reader.readAsDataURL(file);
+});
+
+document.getElementById('whot-submit').addEventListener('click', function () {
+    const correct_answer = document.getElementById('whot-answer').value.trim();
+    if (!correct_answer) { alert('Name der Person ist ein Pflichtfeld.'); return; }
+    const imageFile = document.getElementById('whot-image').files[0];
+    const isEdit = this.dataset.mode === 'edit';
+    if (!imageFile && !isEdit) { alert('Bild ist ein Pflichtfeld.'); return; }
+    const whotId = parseInt(document.getElementById('whot-id').value);
+    const fd = new FormData();
+    fd.append('correct_answer', correct_answer);
+    fd.append('question_text', 'Who is this person?');
+    fd.append('alternative_answers', document.getElementById('whot-alt').value.trim());
+    fd.append('time_limit', document.getElementById('whot-time').value);
+    if (imageFile) fd.append('image', imageFile);
+    if (whotId) fd.append('question_id', whotId);
+    this.disabled = true;
+    const url = isEdit ? '/admin-dashboard/who-that/update-question/' : '/admin-dashboard/who-that/add-question/';
+    fetch(url, {
+        method: 'POST',
+        headers: { 'X-CSRFToken': getCookie('csrftoken') },
+        body: fd,
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.success) {
+            if (isEdit) {
+                genericEditSuccess(this);
+            } else {
+                genericAddSuccess(data.question_id, { question_text: 'Who is this person?', correct_answer }, this);
+            }
+            document.getElementById('whot-image').value = '';
+            document.getElementById('whot-image-preview-container').style.display = 'none';
+        } else {
+            alert('Fehler: ' + (data.error || 'Unbekannter Fehler'));
+            this.disabled = false;
+        }
+    })
+    .catch(() => { alert('Anfrage fehlgeschlagen.'); this.disabled = false; });
+});
+
+// Blackjack
+document.getElementById('bj-submit').addEventListener('click', function () {
+    const question_text = document.getElementById('bj-question').value.trim();
+    const correct_answer = document.getElementById('bj-answer').value;
+    if (!question_text || correct_answer === '') { alert('Frage und Antwort sind Pflichtfelder.'); return; }
+    const bjId = parseInt(document.getElementById('bj-id').value);
+    const payload = {
+        question_text, correct_answer: parseInt(correct_answer),
+        time_limit: parseInt(document.getElementById('bj-time').value),
+        ...(bjId ? { question_id: bjId } : {}),
+    };
+    genericPost('/admin-dashboard/blackjack/add-question/', payload, true, this,
+        p => ({ question_text: p.question_text, correct_answer: p.correct_answer, time_limit: p.time_limit }),
+        'question_id');
+});
+
+// Clue Rush
+document.getElementById('cr-submit').addEventListener('click', function () {
+    const questionText = document.getElementById('cr-question-text').value.trim();
+    const answer = document.getElementById('cr-answer').value.trim();
+    if (!questionText) { alert('Frage ist ein Pflichtfeld.'); return; }
+    if (!answer) { alert('Antwort ist ein Pflichtfeld.'); return; }
+    const clues = Array.from(document.querySelectorAll('.cr-clue-row')).map((r, i) => ({
+        clue_text: r.querySelector('.cr-clue-text').value.trim(),
+        order: i + 1,
+        duration: parseInt(r.querySelector('.cr-clue-dur').value) || 10,
+    })).filter(c => c.clue_text);
+    if (!clues.length) { alert('Mindestens 1 Clue erforderlich.'); return; }
+    const crId = parseInt(document.getElementById('cr-id').value);
+    const payload = {
+        question_text: questionText,
+        answer,
+        points: parseInt(document.getElementById('cr-points').value),
+        time_limit: clues.reduce((s, c) => s + c.duration, 0),
+        clues,
+        ...(crId ? { question_id: crId } : {}),
+    };
+    genericPost('/admin-dashboard/clue-rush/add-question/', payload, true, this,
+        p => ({ question_text: p.question_text, answer: p.answer, points: p.points, time_limit: p.time_limit }),
+        'question_id');
+});
+
+// Sorting Ladder
+document.getElementById('sl-submit').addEventListener('click', function () {
+    const title = document.getElementById('sl-title').value.trim();
+    if (!title) { alert('Thema ist ein Pflichtfeld.'); return; }
+    const items = Array.from(document.querySelectorAll('.sl-item-row')).map((r, i) => ({
+        text: r.querySelector('.sl-item-text').value.trim(),
+        order: i,
+    })).filter(it => it.text);
+    if (items.length < 2) { alert('Mindestens 2 Items erforderlich.'); return; }
+    const startingItemOrder = document.getElementById('sl-starting-item').value;
+    const slId = parseInt(document.getElementById('sl-id').value);
+    const payload = {
+        title,
+        description: document.getElementById('sl-desc').value.trim(),
+        points: document.getElementById('sl-points').value,
+        round_time_limit: document.getElementById('sl-time').value,
+        upper_label: document.getElementById('sl-upper').value || 'Aufsteigend',
+        lower_label: document.getElementById('sl-lower').value || 'Absteigend',
+        items_json: JSON.stringify(items),
+        starting_item_order: startingItemOrder,
+        ...(slId ? { topic_id: slId } : {}),
+    };
+    genericPost('/admin-dashboard/sorting-ladder/topics/add/', payload, false, this,
+        p => ({ title: p.title, description: p.description, item_count: items.length }),
+        'topic_id');
+});
+</script>
+{% endblock %}

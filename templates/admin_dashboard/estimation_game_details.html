@@ -1,0 +1,880 @@
+{% extends "admin_dashboard/base.html" %}
+
+{% block title %}Estimation Game Details - QuizMaster Admin{% endblock %}
+
+{% block page_title %}Estimation Game Details{% endblock %}
+{% block page_subtitle %}Detailed analysis of estimation quiz session: {{ session.player_name }}{% endblock %}
+
+{% block content %}
+<div class="estimation-details-content">
+    <!-- Session Overview -->
+    <div class="session-overview mb-5">
+        <div class="row g-4">
+            <!-- Player Info Card -->
+            <div class="col-lg-4">
+                <div class="player-card">
+                    <div class="player-header">
+                        <div class="player-avatar">
+                            {{ session.player_name|first|upper }}
+                        </div>
+                        <div class="player-info">
+                            <h3>{{ session.player_name }}</h3>
+                            <p class="player-subtitle">Player Performance Analysis</p>
+                        </div>
+                    </div>
+                    <div class="player-stats">
+                        <div class="stat-row">
+                            <span class="stat-label">Total Score:</span>
+                            <span class="stat-value score">{{ session.total_score }}</span>
+                        </div>
+                        <div class="stat-row">
+                            <span class="stat-label">Questions:</span>
+                            <span class="stat-value">{{ answers.count }}</span>
+                        </div>
+                        <div class="stat-row">
+                            <span class="stat-label">Accuracy:</span>
+                            <span class="stat-value accuracy">{{ session.get_accuracy_percentage }}%</span>
+                        </div>
+                        <div class="stat-row">
+                            <span class="stat-label">Duration:</span>
+                            <span class="stat-value">{{ session.get_duration_formatted }}</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Performance Metrics -->
+            <div class="col-lg-8">
+                <div class="metrics-grid">
+                    <div class="metric-card">
+                        <div class="metric-icon bg-primary">
+                            <i data-lucide="target"></i>
+                        </div>
+                        <div class="metric-content">
+                            <h4>{{ session.get_accuracy_percentage }}%</h4>
+                            <p>Average Accuracy</p>
+                        </div>
+                    </div>
+                    
+                    <div class="metric-card">
+                        <div class="metric-icon bg-success">
+                            <i data-lucide="zap"></i>
+                        </div>
+                        <div class="metric-content">
+                            <h4>{{ session.get_average_response_time|floatformat:1 }}s</h4>
+                            <p>Avg. Response Time</p>
+                        </div>
+                    </div>
+                    
+                    <div class="metric-card">
+                        <div class="metric-icon bg-warning">
+                            <i data-lucide="award"></i>
+                        </div>
+                        <div class="metric-content">
+                            <h4>{{ session.total_score }}</h4>
+                            <p>Total Points</p>
+                        </div>
+                    </div>
+                    
+                    <div class="metric-card">
+                        <div class="metric-icon bg-secondary">
+                            <i data-lucide="trending-up"></i>
+                        </div>
+                        <div class="metric-content">
+                            <h4>{{ session.get_best_accuracy }}%</h4>
+                            <p>Best Accuracy</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Session Timeline -->
+    <div class="session-timeline mb-5">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="card-title mb-0">
+                    <i data-lucide="clock"></i>
+                    Session Timeline
+                </h5>
+            </div>
+            <div class="card-body">
+                <div class="timeline">
+                    <div class="timeline-item">
+                        <div class="timeline-marker start">
+                            <i data-lucide="play"></i>
+                        </div>
+                        <div class="timeline-content">
+                            <h6>Session Started</h6>
+                            <p>{{ session.started_at|date:"M d, Y H:i:s" }}</p>
+                        </div>
+                    </div>
+                    
+                    {% for answer in answers %}
+                    <div class="timeline-item">
+                        <div class="timeline-marker question">
+                            <span>Q{{ forloop.counter }}</span>
+                        </div>
+                        <div class="timeline-content">
+                            <h6>{{ answer.question.question_text|truncatechars:60 }}</h6>
+                            <div class="timeline-stats">
+                                <span class="timeline-stat">
+                                    <i data-lucide="target"></i>
+                                    {{ answer.get_accuracy_percentage }}% accuracy
+                                </span>
+                                <span class="timeline-stat">
+                                    <i data-lucide="clock"></i>
+                                    {{ answer.response_time|floatformat:1 }}s
+                                </span>
+                                <span class="timeline-stat">
+                                    <i data-lucide="award"></i>
+                                    +{{ answer.points_earned }} pts
+                                </span>
+                            </div>
+                        </div>
+                    </div>
+                    {% endfor %}
+                    
+                    {% if session.completed_at %}
+                    <div class="timeline-item">
+                        <div class="timeline-marker end">
+                            <i data-lucide="flag"></i>
+                        </div>
+                        <div class="timeline-content">
+                            <h6>Session Completed</h6>
+                            <p>{{ session.completed_at|date:"M d, Y H:i:s" }}</p>
+                        </div>
+                    </div>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Detailed Answers -->
+    <div class="detailed-answers">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="card-title mb-0">
+                    <i data-lucide="list"></i>
+                    Detailed Answer Analysis
+                </h5>
+            </div>
+            <div class="card-body">
+                {% if answers %}
+                    <div class="answers-list">
+                        {% for answer in answers %}
+                        <div class="answer-detail-item">
+                            <div class="answer-detail-header">
+                                <div class="question-info">
+                                    <div class="question-number">Q{{ forloop.counter }}</div>
+                                    <div class="question-meta">
+                                        <span class="unit-badge">{{ answer.question.get_unit_display }}</span>
+                                        <span class="points-badge">{{ answer.question.max_points }} pts max</span>
+                                    </div>
+                                </div>
+                                <div class="performance-summary">
+                                    <div class="performance-score">
+                                        <span class="score-value">+{{ answer.points_earned }}</span>
+                                        <span class="score-label">points</span>
+                                    </div>
+                                    <div class="performance-accuracy">
+                                        <div class="accuracy-circle accuracy-{{ answer.get_accuracy_percentage|floatformat:0 }}">
+                                            {{ answer.get_accuracy_percentage|floatformat:1 }}%
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="question-content">
+                                <h6 class="question-text">{{ answer.question.question_text }}</h6>
+                                
+                                <div class="estimation-analysis">
+                                    <div class="estimation-comparison">
+                                        <div class="estimation-item user-answer">
+                                            <div class="estimation-label">Player's Estimate</div>
+                                            <div class="estimation-value">{{ answer.get_formatted_answer }}</div>
+                                            <div class="estimation-indicator">
+                                                {% if answer.get_difference_indicator == 'high' %}
+                                                    <i data-lucide="trend-up" class="text-warning"></i>
+                                                    <span class="text-warning">Too High</span>
+                                                {% elif answer.get_difference_indicator == 'low' %}
+                                                    <i data-lucide="trend-down" class="text-info"></i>
+                                                    <span class="text-info">Too Low</span>
+                                                {% else %}
+                                                    <i data-lucide="check-circle" class="text-success"></i>
+                                                    <span class="text-success">Perfect!</span>
+                                                {% endif %}
+                                            </div>
+                                        </div>
+                                        
+                                        <div class="vs-separator">
+                                            <span>VS</span>
+                                        </div>
+                                        
+                                        <div class="estimation-item correct-answer">
+                                            <div class="estimation-label">Correct Answer</div>
+                                            <div class="estimation-value">{{ answer.question.get_formatted_correct_answer }}</div>
+                                            <div class="estimation-difference">
+                                                {% if answer.get_percentage_error > 0 %}
+                                                    {{ answer.get_percentage_error|floatformat:1 }}% difference
+                                                {% else %}
+                                                    Exact match!
+                                                {% endif %}
+                                            </div>
+                                        </div>
+                                    </div>
+                                    
+                                    <div class="scoring-breakdown">
+                                        <div class="scoring-info">
+                                            <div class="scoring-item">
+                                                <span class="scoring-label">Tolerance Range:</span>
+                                                <span class="scoring-value">±{{ answer.question.tolerance_percentage }}%</span>
+                                            </div>
+                                            <div class="scoring-item">
+                                                <span class="scoring-label">Response Time:</span>
+                                                <span class="scoring-value">{{ answer.response_time|floatformat:1 }}s</span>
+                                            </div>
+                                            <div class="scoring-item">
+                                                <span class="scoring-label">Points Earned:</span>
+                                                <span class="scoring-value points">{{ answer.points_earned }}/{{ answer.question.max_points }}</span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                {% if answer.question.explanation %}
+                                <div class="explanation-section">
+                                    <div class="explanation-header">
+                                        <i data-lucide="info"></i>
+                                        <strong>Explanation:</strong>
+                                    </div>
+                                    <p class="explanation-text">{{ answer.question.explanation }}</p>
+                                </div>
+                                {% endif %}
+                            </div>
+                        </div>
+                        {% endfor %}
+                    </div>
+                {% else %}
+                    <div class="empty-state">
+                        <i data-lucide="inbox"></i>
+                        <h4>No Answers Found</h4>
+                        <p>No answers were recorded for this session.</p>
+                    </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+
+    <!-- Back to Management -->
+    <div class="actions-section mt-4">
+        <a href="{% url 'admin_dashboard:estimation_management' %}" class="btn btn-outline">
+            <i data-lucide="arrow-left"></i>
+            Back to Estimation Management
+        </a>
+    </div>
+</div>
+
+<style>
+.estimation-details-content {
+    max-width: 1200px;
+}
+
+/* Player Card */
+.player-card {
+    background: linear-gradient(135deg, var(--primary-500) 0%, var(--secondary-500) 100%);
+    color: var(--text-white);
+    border-radius: var(--border-radius-xl);
+    padding: 2rem;
+    box-shadow: var(--shadow-lg);
+}
+
+.player-header {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    margin-bottom: 2rem;
+}
+
+.player-avatar {
+    width: 64px;
+    height: 64px;
+    border-radius: 50%;
+    background-color: rgba(255, 255, 255, 0.2);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1.5rem;
+    font-weight: 700;
+    color: var(--text-white);
+}
+
+.player-info h3 {
+    font-size: 1.5rem;
+    font-weight: 700;
+    margin: 0;
+}
+
+.player-subtitle {
+    opacity: 0.8;
+    margin: 0;
+    font-size: 0.875rem;
+}
+
+.player-stats {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+}
+
+.stat-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding-bottom: 1rem;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.stat-row:last-child {
+    border-bottom: none;
+    padding-bottom: 0;
+}
+
+.stat-label {
+    font-weight: 500;
+    opacity: 0.8;
+}
+
+.stat-value {
+    font-weight: 700;
+}
+
+.stat-value.score {
+    color: var(--warning-200);
+    font-size: 1.125rem;
+}
+
+.stat-value.accuracy {
+    color: var(--success-200);
+}
+
+/* Metrics Grid */
+.metrics-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: 1.5rem;
+}
+
+.metric-card {
+    background: var(--bg-primary);
+    border-radius: var(--border-radius-lg);
+    padding: 1.5rem;
+    text-align: center;
+    box-shadow: var(--shadow-sm);
+    border: 1px solid var(--border-color);
+    transition: all var(--transition-fast);
+}
+
+.metric-card:hover {
+    box-shadow: var(--shadow-md);
+}
+
+.metric-icon {
+    width: 48px;
+    height: 48px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin: 0 auto 1rem;
+    color: var(--text-white);
+}
+
+.metric-icon.bg-primary {
+    background: linear-gradient(135deg, var(--primary-400) 0%, var(--primary-600) 100%);
+}
+
+.metric-icon.bg-success {
+    background: linear-gradient(135deg, var(--success-400) 0%, var(--success-600) 100%);
+}
+
+.metric-icon.bg-warning {
+    background: linear-gradient(135deg, var(--warning-400) 0%, var(--warning-600) 100%);
+}
+
+.metric-icon.bg-secondary {
+    background: linear-gradient(135deg, var(--secondary-400) 0%, var(--secondary-600) 100%);
+}
+
+.metric-content h4 {
+    font-size: 1.75rem;
+    font-weight: 700;
+    color: var(--text-primary);
+    margin-bottom: 0.25rem;
+}
+
+.metric-content p {
+    color: var(--text-muted);
+    font-weight: 500;
+    margin: 0;
+    font-size: 0.875rem;
+}
+
+/* Timeline */
+.timeline {
+    position: relative;
+    padding-left: 2rem;
+}
+
+.timeline::before {
+    content: '';
+    position: absolute;
+    left: 1rem;
+    top: 0;
+    bottom: 0;
+    width: 2px;
+    background: linear-gradient(to bottom, var(--primary-200) 0%, var(--secondary-200) 100%);
+}
+
+.timeline-item {
+    position: relative;
+    margin-bottom: 2rem;
+}
+
+.timeline-item:last-child {
+    margin-bottom: 0;
+}
+
+.timeline-marker {
+    position: absolute;
+    left: -2rem;
+    top: 0;
+    width: 2rem;
+    height: 2rem;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 600;
+    font-size: 0.75rem;
+    color: var(--text-white);
+    z-index: 2;
+}
+
+.timeline-marker.start {
+    background: linear-gradient(135deg, var(--success-400) 0%, var(--success-600) 100%);
+}
+
+.timeline-marker.question {
+    background: linear-gradient(135deg, var(--primary-400) 0%, var(--primary-600) 100%);
+}
+
+.timeline-marker.end {
+    background: linear-gradient(135deg, var(--secondary-400) 0%, var(--secondary-600) 100%);
+}
+
+.timeline-content {
+    background: var(--bg-secondary);
+    border-radius: var(--border-radius-lg);
+    padding: 1rem;
+    border: 1px solid var(--border-color);
+}
+
+.timeline-content h6 {
+    font-weight: 600;
+    color: var(--text-primary);
+    margin-bottom: 0.5rem;
+}
+
+.timeline-content p {
+    color: var(--text-muted);
+    font-size: 0.875rem;
+    margin: 0;
+}
+
+.timeline-stats {
+    display: flex;
+    gap: 1rem;
+    flex-wrap: wrap;
+    margin-top: 0.5rem;
+}
+
+.timeline-stat {
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+    color: var(--text-secondary);
+    font-size: 0.8125rem;
+    font-weight: 500;
+}
+
+.timeline-stat i {
+    width: 12px;
+    height: 12px;
+}
+
+/* Answer Details */
+.answers-list {
+    display: flex;
+    flex-direction: column;
+    gap: 2rem;
+}
+
+.answer-detail-item {
+    border: 1px solid var(--border-color);
+    border-radius: var(--border-radius-lg);
+    padding: 1.5rem;
+    background: var(--bg-secondary);
+}
+
+.answer-detail-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 1.5rem;
+    padding-bottom: 1rem;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.question-info {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+}
+
+.question-number {
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    background: linear-gradient(135deg, var(--primary-500) 0%, var(--primary-600) 100%);
+    color: var(--text-white);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 700;
+    font-size: 0.875rem;
+}
+
+.question-meta {
+    display: flex;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+}
+
+.badge {
+    padding: 0.25rem 0.5rem;
+    border-radius: var(--border-radius-sm);
+    font-size: 0.75rem;
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.unit-badge, .points-badge {
+    background: var(--secondary-100);
+    color: var(--secondary-700);
+    padding: 0.25rem 0.5rem;
+    border-radius: var(--border-radius-sm);
+    font-size: 0.75rem;
+    font-weight: 500;
+}
+
+.performance-summary {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+}
+
+.performance-score {
+    text-align: center;
+}
+
+.score-value {
+    display: block;
+    font-size: 1.25rem;
+    font-weight: 700;
+    color: var(--color-success);
+}
+
+.score-label {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.accuracy-circle {
+    width: 60px;
+    height: 60px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 700;
+    font-size: 0.875rem;
+    color: var(--text-white);
+}
+
+.accuracy-100, .accuracy-90, .accuracy-95 { background: var(--color-success); }
+.accuracy-80, .accuracy-85, .accuracy-75 { background: var(--color-primary); }
+.accuracy-60, .accuracy-65, .accuracy-70 { background: var(--color-warning); }
+.accuracy-0, .accuracy-10, .accuracy-20, .accuracy-30, .accuracy-40, .accuracy-50 { background: var(--color-error); }
+
+.question-text {
+    font-size: 1.125rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    margin-bottom: 1.5rem;
+    line-height: 1.6;
+}
+
+/* Estimation Analysis */
+.estimation-analysis {
+    background: var(--bg-primary);
+    border-radius: var(--border-radius);
+    padding: 1.5rem;
+    margin-bottom: 1rem;
+}
+
+.estimation-comparison {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    margin-bottom: 1.5rem;
+}
+
+.estimation-item {
+    flex: 1;
+    text-align: center;
+    padding: 1rem;
+    border-radius: var(--border-radius);
+    border: 1px solid var(--border-color);
+}
+
+.estimation-item.user-answer {
+    background: var(--primary-50);
+    border-color: var(--primary-200);
+}
+
+.estimation-item.correct-answer {
+    background: var(--success-50);
+    border-color: var(--success-200);
+}
+
+.estimation-label {
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 0.5rem;
+    color: var(--text-muted);
+}
+
+.estimation-value {
+    font-size: 1.375rem;
+    font-weight: 700;
+    margin-bottom: 0.5rem;
+}
+
+.user-answer .estimation-value {
+    color: var(--primary-700);
+}
+
+.correct-answer .estimation-value {
+    color: var(--success-700);
+}
+
+.estimation-indicator, .estimation-difference {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.25rem;
+    font-size: 0.75rem;
+    font-weight: 500;
+}
+
+.estimation-indicator i {
+    width: 14px;
+    height: 14px;
+}
+
+.vs-separator {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 60px;
+    font-weight: 700;
+    color: var(--text-muted);
+}
+
+.scoring-breakdown {
+    border-top: 1px solid var(--border-color);
+    padding-top: 1rem;
+}
+
+.scoring-info {
+    display: flex;
+    justify-content: space-around;
+    gap: 1rem;
+}
+
+.scoring-item {
+    text-align: center;
+}
+
+.scoring-label {
+    display: block;
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    margin-bottom: 0.25rem;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.scoring-value {
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.scoring-value.points {
+    color: var(--color-success);
+}
+
+/* Explanation Section */
+.explanation-section {
+    background: var(--bg-primary);
+    border-radius: var(--border-radius);
+    padding: 1rem;
+    border-left: 4px solid var(--color-primary);
+    margin-bottom: 1rem;
+}
+
+.explanation-header {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-bottom: 0.5rem;
+    color: var(--text-primary);
+}
+
+.explanation-header i {
+    width: 16px;
+    height: 16px;
+}
+
+.explanation-text {
+    color: var(--text-secondary);
+    margin: 0;
+    line-height: 1.6;
+}
+
+/* Empty State */
+.empty-state {
+    text-align: center;
+    padding: 3rem;
+    color: var(--text-muted);
+}
+
+.empty-state i {
+    width: 64px;
+    height: 64px;
+    margin-bottom: 1rem;
+    opacity: 0.5;
+}
+
+/* Responsive Design */
+@media (max-width: 768px) {
+    .session-overview .row {
+        flex-direction: column;
+    }
+    
+    .metrics-grid {
+        grid-template-columns: repeat(2, 1fr);
+        gap: 1rem;
+    }
+    
+    .answer-detail-header {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 1rem;
+    }
+    
+    .question-info {
+        flex-direction: column;
+        text-align: center;
+        gap: 0.5rem;
+    }
+    
+    .estimation-comparison {
+        flex-direction: column;
+        gap: 1rem;
+    }
+    
+    .vs-separator {
+        transform: rotate(90deg);
+        min-width: auto;
+        height: 40px;
+    }
+    
+    .scoring-info {
+        flex-direction: column;
+        gap: 0.5rem;
+    }
+    
+    .timeline-stats {
+        flex-direction: column;
+        gap: 0.5rem;
+    }
+}
+
+@media (max-width: 576px) {
+    .metrics-grid {
+        grid-template-columns: 1fr;
+    }
+    
+    .player-card {
+        padding: 1.5rem;
+    }
+    
+    .timeline {
+        padding-left: 1.5rem;
+    }
+    
+    .timeline-marker {
+        left: -1.5rem;
+        width: 1.5rem;
+        height: 1.5rem;
+        font-size: 0.625rem;
+    }
+}
+</style>
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    // Initialize Lucide icons
+    lucide.createIcons();
+
+    // Animate timeline items on scroll
+    const timelineItems = document.querySelectorAll('.timeline-item');
+    const observer = new IntersectionObserver((entries) => {
+        entries.forEach((entry, index) => {
+            if (entry.isIntersecting) {
+                setTimeout(() => {
+                    entry.target.style.opacity = '1';
+                    entry.target.style.transform = 'translateX(0)';
+                }, index * 100);
+            }
+        });
+    }, { threshold: 0.1 });
+
+    timelineItems.forEach((item, index) => {
+        item.style.opacity = '0';
+        item.style.transform = 'translateX(-20px)';
+        item.style.transition = 'opacity 0.5s ease-out, transform 0.5s ease-out';
+        observer.observe(item);
+    });
+});
+</script>
+{% endblock %}

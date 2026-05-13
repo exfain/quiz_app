@@ -1,0 +1,993 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Leaderboard - Estimation Game</title>
+    
+    <!-- Bootstrap 5 CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
+    
+    <!-- Custom Theme CSS -->
+    <link rel="stylesheet" href="{% static 'theme.css' %}">
+    
+    <!-- Inter Font -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body class="estimation-leaderboard-page">
+    <div class="leaderboard-container">
+        <!-- Header -->
+        <header class="leaderboard-header">
+            <div class="container">
+                <div class="header-content">
+                    <div class="brand-section">
+                        <div class="brand">
+                            <i data-lucide="calculator"></i>
+                            <span>Estimation</span>
+                        </div>
+                        <h1>Leaderboard</h1>
+                        <p>Top estimation masters from around the world</p>
+                    </div>
+                    <div class="header-actions">
+                        <a href="{% url 'estimation:entry' %}" class="btn btn-primary">
+                            <i data-lucide="play"></i>
+                            Play Game
+                        </a>
+                    </div>
+                </div>
+            </div>
+        </header>
+
+        <!-- Filters -->
+        <section class="filters-section">
+            <div class="container">
+                <div class="filters-card">
+                    <div class="filters-content">
+                        <div class="stats-summary">
+                            <div class="stat-item">
+                                <i data-lucide="users"></i>
+                                <span>{{ page_obj.paginator.count }} Players</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Main Leaderboard -->
+        <main class="leaderboard-main">
+            <div class="container">
+                <div class="leaderboard-card">
+                    <div class="card-header">
+                        <h2 class="card-title">
+                            <i data-lucide="trophy"></i>
+                            Global Rankings
+                        </h2>
+                        <div class="card-subtitle">
+                            Showing {{ page_obj.start_index }}-{{ page_obj.end_index }} of {{ page_obj.paginator.count }} players
+                        </div>
+                    </div>
+
+                    <div class="card-body">
+                        {% if page_obj %}
+                            <!-- Top 3 Podium -->
+                            {% if page_obj.number == 1 %}
+                            <div class="podium-section">
+                                {% for session in page_obj.object_list|slice:":3" %}
+                                    <div class="podium-item rank-{{ forloop.counter }}">
+                                        <div class="podium-rank">
+                                            <div class="rank-circle rank-{{ forloop.counter }}">
+                                                {% if forloop.counter == 1 %}
+                                                    <i data-lucide="crown"></i>
+                                                {% elif forloop.counter == 2 %}
+                                                    <i data-lucide="medal"></i>
+                                                {% else %}
+                                                    <i data-lucide="award"></i>
+                                                {% endif %}
+                                            </div>
+                                            <div class="rank-number">#{{ forloop.counter }}</div>
+                                        </div>
+                                        <div class="podium-player">
+                                            <div class="player-avatar">
+                                                {{ session.player_name|first|upper }}
+                                            </div>
+                                            <div class="player-info">
+                                                <div class="player-name">{{ session.player_name }}</div>
+                                                <div class="player-meta">
+                                                    <span class="completion-date">{{ session.completed_at|date:"M d" }}</span>
+                                                </div>
+                                            </div>
+                                        </div>
+                                        <div class="podium-stats">
+                                            <div class="main-score">{{ session.total_score }}</div>
+                                            <div class="accuracy">{{ session.get_accuracy_percentage }}% accuracy</div>
+                                            <div class="duration">{{ session.get_duration_formatted }}</div>
+                                        </div>
+                                    </div>
+                                {% endfor %}
+                            </div>
+                            {% endif %}
+
+                            <!-- Full Rankings Table -->
+                            <div class="rankings-table">
+                                <div class="table-responsive">
+                                    <table class="table">
+                                        <thead>
+                                            <tr>
+                                                <th width="10%">Rank</th>
+                                                <th width="25%">Player</th>
+                                                <th width="15%">Score</th>
+                                                <th width="15%">Accuracy</th>
+                                                <th width="15%">Duration</th>
+                                                <th width="20%">Completed</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {% for session in page_obj %}
+                                            <tr class="ranking-row">
+                                                <td>
+                                                    <div class="rank-display">
+                                                        {% with rank_number=forloop.counter|add:page_obj.start_index|add:"-1" %}
+                                                            {% if rank_number <= 3 and page_obj.number == 1 %}
+                                                                <div class="medal-icon rank-{{ rank_number }}">
+                                                                    {% if rank_number == 1 %}
+                                                                        <i data-lucide="crown"></i>
+                                                                    {% elif rank_number == 2 %}
+                                                                        <i data-lucide="medal"></i>
+                                                                    {% else %}
+                                                                        <i data-lucide="award"></i>
+                                                                    {% endif %}
+                                                                </div>
+                                                            {% else %}
+                                                                <span class="rank-number">#{{ rank_number }}</span>
+                                                            {% endif %}
+                                                        {% endwith %}
+                                                    </div>
+                                                </td>
+                                                <td>
+                                                    <div class="player-cell">
+                                                        <div class="player-avatar-sm">
+                                                            {{ session.player_name|first|upper }}
+                                                        </div>
+                                                        <div class="player-details">
+                                                            <div class="player-name">{{ session.player_name }}</div>
+                                                        </div>
+                                                    </div>
+                                                </td>
+                                                <td>
+                                                    <div class="score-cell">
+                                                        <div class="score-value">{{ session.total_score }}</div>
+                                                        <div class="score-label">points</div>
+                                                    </div>
+                                                </td>
+                                                <td>
+                                                    <div class="accuracy-cell">
+                                                        <div class="accuracy-value">{{ session.get_accuracy_percentage }}%</div>
+                                                        <div class="accuracy-bar">
+                                                            <div class="accuracy-fill" style="width: {{ session.get_accuracy_percentage }}%"></div>
+                                                        </div>
+                                                    </div>
+                                                </td>
+                                                <td>
+                                                    <div class="duration-cell">
+                                                        <i data-lucide="clock"></i>
+                                                        <span>{{ session.get_duration_formatted }}</span>
+                                                    </div>
+                                                </td>
+                                                <td>
+                                                    <div class="completion-cell">
+                                                        <div class="completion-date">{{ session.completed_at|date:"M d, Y" }}</div>
+                                                        <div class="completion-time">{{ session.completed_at|time:"H:i" }}</div>
+                                                    </div>
+                                                </td>
+                                            </tr>
+                                            {% endfor %}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+
+                            <!-- Pagination -->
+                            {% if page_obj.has_other_pages %}
+                            <div class="pagination-section">
+                                <nav aria-label="Leaderboard pagination">
+                                    <ul class="pagination justify-content-center">
+                                        {% if page_obj.has_previous %}
+                                            <li class="page-item">
+                                                <a class="page-link" href="?page=1">
+                                                    <i data-lucide="chevrons-left"></i>
+                                                </a>
+                                            </li>
+                                            <li class="page-item">
+                                                <a class="page-link" href="?page={{ page_obj.previous_page_number }}">
+                                                    <i data-lucide="chevron-left"></i>
+                                                </a>
+                                            </li>
+                                        {% endif %}
+
+                                        {% for page_num in page_obj.paginator.page_range %}
+                                            {% if page_num == page_obj.number %}
+                                                <li class="page-item active">
+                                                    <span class="page-link">{{ page_num }}</span>
+                                                </li>
+                                            {% elif page_num > page_obj.number|add:'-3' and page_num < page_obj.number|add:'3' %}
+                                                <li class="page-item">
+                                                    <a class="page-link" href="?page={{ page_num }}">{{ page_num }}</a>
+                                                </li>
+                                            {% endif %}
+                                        {% endfor %}
+
+                                        {% if page_obj.has_next %}
+                                            <li class="page-item">
+                                                <a class="page-link" href="?page={{ page_obj.next_page_number }}">
+                                                    <i data-lucide="chevron-right"></i>
+                                                </a>
+                                            </li>
+                                            <li class="page-item">
+                                                <a class="page-link" href="?page={{ page_obj.paginator.num_pages }}">
+                                                    <i data-lucide="chevrons-right"></i>
+                                                </a>
+                                            </li>
+                                        {% endif %}
+                                    </ul>
+                                </nav>
+                            </div>
+                            {% endif %}
+
+                        {% else %}
+                            <!-- Empty State -->
+                            <div class="empty-state">
+                                <div class="empty-icon">
+                                    <i data-lucide="trophy"></i>
+                                </div>
+                                <h3>No Rankings Yet</h3>
+                                <p>Be the first to complete an estimation game and claim the top spot!</p>
+                                <a href="{% url 'estimation:entry' %}" class="btn btn-primary btn-lg">
+                                    <i data-lucide="play"></i>
+                                    Start Playing
+                                </a>
+                            </div>
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+        </main>
+
+        <!-- Footer -->
+        <footer class="leaderboard-footer">
+            <div class="container">
+                <div class="footer-content">
+                    <div class="footer-section">
+                        <h5>Challenge Yourself</h5>
+                        <p>Think you can estimate better? Join the competition and see how you stack up against other players!</p>
+                        <a href="{% url 'estimation:entry' %}" class="btn btn-primary">
+                            <i data-lucide="play"></i>
+                            Play Now
+                        </a>
+                    </div>
+                    <div class="footer-section">
+                        <h5>How Rankings Work</h5>
+                        <ul>
+                            <li>Higher scores rank better</li>
+                            <li>Ties are broken by completion time</li>
+                            <li>Rankings are updated in real-time</li>
+                            <li>Play multiple games to improve</li>
+                        </ul>
+                    </div>
+                </div>
+                <div class="footer-bottom">
+                    <p>&copy; 2025 QuizMaster. Master the art of estimation!</p>
+                </div>
+            </div>
+        </footer>
+    </div>
+
+    <!-- Bootstrap JS -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+
+    <style>
+        /* Estimation Leaderboard Page Styles */
+        .estimation-leaderboard-page {
+            min-height: 100vh;
+            background: linear-gradient(135deg, var(--bg-secondary) 0%, var(--secondary-50) 100%);
+        }
+
+        .leaderboard-container {
+            min-height: 100vh;
+        }
+
+        /* Header */
+        .leaderboard-header {
+            background: linear-gradient(135deg, var(--secondary-600) 0%, var(--primary-600) 100%);
+            color: var(--text-white);
+            padding: 3rem 0;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .leaderboard-header::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: url("data:image/svg+xml,%3Csvg width='60' height='60' viewBox='0 0 60 60' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='none' fill-rule='evenodd'%3E%3Cg fill='%23ffffff' fill-opacity='0.05'%3E%3Ccircle cx='30' cy='30' r='2'/%3E%3C/g%3E%3C/g%3E%3C/svg%3E");
+        }
+
+        .header-content {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 2rem;
+            position: relative;
+            z-index: 2;
+        }
+
+        .brand-section {
+            text-align: left;
+        }
+
+        .brand {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            font-weight: 700;
+            font-size: 1.25rem;
+            margin-bottom: 1rem;
+        }
+
+        .brand i {
+            width: 32px;
+            height: 32px;
+        }
+
+        .brand-section h1 {
+            font-size: 3rem;
+            font-weight: 700;
+            margin-bottom: 0.5rem;
+            text-shadow: 0 2px 10px rgba(0, 0, 0, 0.2);
+        }
+
+        .brand-section p {
+            font-size: 1.125rem;
+            opacity: 0.9;
+            margin: 0;
+        }
+
+        .header-actions .btn {
+            backdrop-filter: blur(10px);
+            box-shadow: var(--shadow-lg);
+        }
+
+        /* Filters Section */
+        .filters-section {
+            padding: 2rem 0;
+        }
+
+        .filters-card {
+            background: var(--bg-primary);
+            border-radius: var(--border-radius-xl);
+            box-shadow: var(--shadow-md);
+            padding: 2rem;
+        }
+
+        .filters-content {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 2rem;
+        }
+
+        .filter-label {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            font-weight: 600;
+            color: var(--text-primary);
+            margin-bottom: 1rem;
+        }
+
+        .filter-label i {
+            width: 20px;
+            height: 20px;
+            color: var(--color-secondary);
+        }
+
+        .stats-summary {
+            display: flex;
+            gap: 1.5rem;
+        }
+
+        .stats-summary .stat-item {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            color: var(--text-muted);
+            font-weight: 500;
+        }
+
+        .stats-summary .stat-item i {
+            width: 18px;
+            height: 18px;
+            color: var(--color-secondary);
+        }
+
+        .stat-content h3 {
+            font-weight: 700;
+            color: var(--text-primary);
+            margin-bottom: 0.5rem;
+            text-transform: capitalize;
+        }
+
+        .stat-details {
+            display: flex;
+            flex-direction: column;
+            gap: 0.25rem;
+        }
+
+        .stat-row {
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.875rem;
+            color: var(--text-secondary);
+        }
+
+        /* Main Leaderboard */
+        .leaderboard-main {
+            padding: 2rem 0;
+        }
+
+        .leaderboard-card {
+            background: var(--bg-primary);
+            border-radius: var(--border-radius-xl);
+            box-shadow: var(--shadow-lg);
+            overflow: hidden;
+        }
+
+        .card-header {
+            background: linear-gradient(135deg, var(--secondary-50) 0%, var(--primary-50) 100%);
+            padding: 2rem;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .card-title {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            font-size: 1.5rem;
+            font-weight: 700;
+            color: var(--text-primary);
+            margin-bottom: 0.5rem;
+        }
+
+        .card-title i {
+            width: 28px;
+            height: 28px;
+            color: var(--color-secondary);
+        }
+
+        .card-subtitle {
+            color: var(--text-muted);
+            font-size: 0.875rem;
+        }
+
+        .card-body {
+            padding: 0;
+        }
+
+        /* Podium */
+        .podium-section {
+            padding: 2rem;
+            background: var(--bg-secondary);
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .podium-item {
+            display: flex;
+            align-items: center;
+            gap: 1.5rem;
+            padding: 1.5rem;
+            margin-bottom: 1rem;
+            background: var(--bg-primary);
+            border-radius: var(--border-radius-lg);
+            box-shadow: var(--shadow-sm);
+            transition: all var(--transition-fast);
+        }
+
+        .podium-item:hover {
+            box-shadow: var(--shadow-md);
+        }
+
+        .podium-item.rank-1 {
+            border: 2px solid #FFD700;
+            background: linear-gradient(135deg, #fff9e6 0%, #fff3cd 100%);
+        }
+
+        .podium-item.rank-2 {
+            border: 2px solid #C0C0C0;
+            background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%);
+        }
+
+        .podium-item.rank-3 {
+            border: 2px solid #CD7F32;
+            background: linear-gradient(135deg, #fef7f0 0%, #fed7aa 100%);
+        }
+
+        .podium-rank {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .rank-circle {
+            width: 60px;
+            height: 60px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: var(--text-white);
+        }
+
+        .rank-circle.rank-1 {
+            background: linear-gradient(135deg, #FFD700 0%, #FFA500 100%);
+        }
+
+        .rank-circle.rank-2 {
+            background: linear-gradient(135deg, #C0C0C0 0%, #A0A0A0 100%);
+        }
+
+        .rank-circle.rank-3 {
+            background: linear-gradient(135deg, #CD7F32 0%, #B8860B 100%);
+        }
+
+        .rank-circle i {
+            width: 24px;
+            height: 24px;
+        }
+
+        .rank-number {
+            font-weight: 700;
+            font-size: 0.875rem;
+            color: var(--text-muted);
+        }
+
+        .podium-player {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            flex: 1;
+        }
+
+        .player-avatar {
+            width: 50px;
+            height: 50px;
+            border-radius: 50%;
+            background: var(--color-secondary);
+            color: var(--text-white);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 700;
+            font-size: 1.25rem;
+        }
+
+        .player-name {
+            font-weight: 700;
+            color: var(--text-primary);
+            font-size: 1.125rem;
+            margin-bottom: 0.25rem;
+        }
+
+        .player-meta {
+            display: flex;
+            gap: 0.75rem;
+            align-items: center;
+        }
+
+        .completion-date {
+            color: var(--text-muted);
+            font-size: 0.875rem;
+        }
+
+        .podium-stats {
+            text-align: right;
+        }
+
+        .main-score {
+            font-size: 2rem;
+            font-weight: 700;
+            color: var(--color-success);
+            line-height: 1;
+            margin-bottom: 0.25rem;
+        }
+
+        .accuracy {
+            color: var(--text-secondary);
+            font-size: 0.875rem;
+            margin-bottom: 0.25rem;
+        }
+
+        .duration {
+            color: var(--text-muted);
+            font-size: 0.875rem;
+        }
+
+        /* Rankings Table */
+        .rankings-table {
+            padding: 0;
+        }
+
+        .table {
+            margin: 0;
+        }
+
+        .table thead th {
+            background: var(--bg-secondary);
+            border-top: none;
+            border-bottom: 2px solid var(--border-color);
+            padding: 1rem 1.5rem;
+            font-weight: 600;
+            color: var(--text-primary);
+            text-transform: uppercase;
+            font-size: 0.875rem;
+            letter-spacing: 0.5px;
+        }
+
+        .ranking-row {
+            border-bottom: 1px solid var(--border-color);
+            transition: all var(--transition-fast);
+        }
+
+        .ranking-row:hover {
+            background: var(--bg-secondary);
+        }
+
+        .ranking-row td {
+            padding: 1rem 1.5rem;
+            vertical-align: middle;
+        }
+
+        .rank-display {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .medal-icon {
+            width: 32px;
+            height: 32px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: var(--text-white);
+        }
+
+        .medal-icon.rank-1 {
+            background: #FFD700;
+        }
+
+        .medal-icon.rank-2 {
+            background: #C0C0C0;
+        }
+
+        .medal-icon.rank-3 {
+            background: #CD7F32;
+        }
+
+        .medal-icon i {
+            width: 16px;
+            height: 16px;
+        }
+
+        .rank-number {
+            font-weight: 700;
+            font-size: 1.125rem;
+            color: var(--text-primary);
+        }
+
+        .player-cell {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+        }
+
+        .player-avatar-sm {
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            background: var(--color-secondary);
+            color: var(--text-white);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 600;
+            flex-shrink: 0;
+        }
+
+        .player-details .player-name {
+            font-weight: 600;
+            color: var(--text-primary);
+            margin-bottom: 0.25rem;
+        }
+
+        .score-cell {
+            text-align: center;
+        }
+
+        .score-value {
+            font-size: 1.25rem;
+            font-weight: 700;
+            color: var(--color-success);
+            line-height: 1;
+        }
+
+        .score-label {
+            font-size: 0.75rem;
+            color: var(--text-muted);
+        }
+
+        .accuracy-cell {
+            text-align: center;
+        }
+
+        .accuracy-value {
+            font-weight: 600;
+            color: var(--text-primary);
+            margin-bottom: 0.25rem;
+        }
+
+        .accuracy-bar {
+            width: 60px;
+            height: 4px;
+            background: var(--border-color);
+            border-radius: 2px;
+            overflow: hidden;
+            margin: 0 auto;
+        }
+
+        .accuracy-fill {
+            height: 100%;
+            background: var(--color-success);
+            border-radius: 2px;
+        }
+
+        .duration-cell {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.5rem;
+            color: var(--text-secondary);
+            font-weight: 500;
+        }
+
+        .duration-cell i {
+            width: 16px;
+            height: 16px;
+        }
+
+        .completion-cell {
+            text-align: center;
+        }
+
+        .completion-date {
+            font-weight: 500;
+            color: var(--text-primary);
+            margin-bottom: 0.25rem;
+        }
+
+        .completion-time {
+            font-size: 0.875rem;
+            color: var(--text-muted);
+        }
+
+        /* Pagination */
+        .pagination-section {
+            padding: 2rem;
+            background: var(--bg-secondary);
+        }
+
+        .pagination .page-link {
+            color: var(--color-secondary);
+            border-color: var(--border-color);
+            background: var(--bg-primary);
+            margin: 0 0.125rem;
+            border-radius: var(--border-radius);
+        }
+
+        .pagination .page-link:hover {
+            color: var(--secondary-700);
+            background: var(--secondary-50);
+            border-color: var(--secondary-200);
+        }
+
+        .pagination .page-item.active .page-link {
+            color: var(--text-white);
+            background: var(--color-secondary);
+            border-color: var(--color-secondary);
+        }
+
+        /* Empty State */
+        .empty-state {
+            text-align: center;
+            padding: 4rem 2rem;
+            color: var(--text-muted);
+        }
+
+        .empty-icon {
+            width: 80px;
+            height: 80px;
+            margin: 0 auto 2rem;
+            background: var(--secondary-100);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .empty-icon i {
+            width: 40px;
+            height: 40px;
+            color: var(--color-secondary);
+        }
+
+        .empty-state h3 {
+            color: var(--text-primary);
+            margin-bottom: 1rem;
+        }
+
+        .empty-state p {
+            margin-bottom: 2rem;
+        }
+
+        /* Footer */
+        .leaderboard-footer {
+            background: var(--bg-primary);
+            border-top: 1px solid var(--border-color);
+            padding: 3rem 0;
+            margin-top: 3rem;
+        }
+
+        .footer-content {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 3rem;
+            margin-bottom: 2rem;
+        }
+
+        .footer-section h5 {
+            color: var(--text-primary);
+            margin-bottom: 1rem;
+        }
+
+        .footer-section p {
+            color: var(--text-secondary);
+            margin-bottom: 1.5rem;
+        }
+
+        .footer-section ul {
+            list-style: none;
+            padding: 0;
+        }
+
+        .footer-section li {
+            padding: 0.25rem 0;
+            color: var(--text-secondary);
+        }
+
+        .footer-bottom {
+            text-align: center;
+            padding-top: 2rem;
+            border-top: 1px solid var(--border-color);
+            color: var(--text-muted);
+        }
+
+        /* Responsive Design */
+        @media (max-width: 768px) {
+            .header-content {
+                flex-direction: column;
+                text-align: center;
+                gap: 1.5rem;
+            }
+
+            .brand-section h1 {
+                font-size: 2rem;
+            }
+
+            .filters-content {
+                flex-direction: column;
+                align-items: stretch;
+                gap: 1.5rem;
+            }
+
+            .podium-item {
+                flex-direction: column;
+                text-align: center;
+                gap: 1rem;
+            }
+
+            .podium-player {
+                flex-direction: column;
+                text-align: center;
+            }
+
+            .table-responsive {
+                font-size: 0.875rem;
+            }
+
+            .footer-content {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        @media (max-width: 576px) {
+            .table thead {
+                display: none;
+            }
+
+            .ranking-row {
+                display: block;
+                margin-bottom: 1rem;
+                border: 1px solid var(--border-color);
+                border-radius: var(--border-radius-lg);
+            }
+
+            .ranking-row td {
+                display: block;
+                padding: 0.75rem 1rem;
+                border-bottom: 1px solid var(--border-color);
+                text-align: left !important;
+            }
+
+            .ranking-row td:last-child {
+                border-bottom: none;
+            }
+
+            .ranking-row td::before {
+                content: attr(data-label) ": ";
+                font-weight: 600;
+                color: var(--text-primary);
+            }
+        }
+    </style>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            lucide.createIcons();
+
+            // Add smooth animations for accuracy bars
+            setTimeout(() => {
+                const accuracyFills = document.querySelectorAll('.accuracy-fill');
+                accuracyFills.forEach(fill => {
+                    fill.style.transition = 'width 1s ease-out';
+                });
+            }, 500);
+
+            // Add data labels for mobile responsive table
+            const table = document.querySelector('.table tbody');
+            if (table) {
+                const headerLabels = ['Rank', 'Player', 'Score', 'Accuracy', 'Duration', 'Completed'];
+                const rows = table.querySelectorAll('tr');
+                
+                rows.forEach(row => {
+                    const cells = row.querySelectorAll('td');
+                    cells.forEach((cell, index) => {
+                        if (headerLabels[index]) {
+                            cell.setAttribute('data-label', headerLabels[index]);
+                        }
+                    });
+                });
+            }
+        });
+    </script>
+</body>
+</html>

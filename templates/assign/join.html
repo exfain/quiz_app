@@ -1,0 +1,695 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Join Drag & Drop Quiz - QuizMaster</title>
+    
+    <!-- Bootstrap 5 CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
+    
+    <!-- Custom Theme CSS -->
+    <link rel="stylesheet" href="{% static 'theme.css' %}">
+    
+    <!-- Inter Font -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body class="assign-join-page">
+    <div class="join-container">
+        <!-- Background Elements -->
+        <div class="background-shapes">
+            <div class="shape shape-1"></div>
+            <div class="shape shape-2"></div>
+            <div class="shape shape-3"></div>
+        </div>
+
+        <!-- Main Content -->
+        <div class="join-content">
+            <div class="container">
+                <div class="row justify-content-center">
+                    <div class="col-lg-5 col-md-7">
+                        <div class="join-card">
+                            <!-- Header -->
+                            <div class="join-header">
+                                <div class="brand-logo">
+                                    <i data-lucide="move"></i>
+                                    <h1>Drag & Drop Quiz</h1>
+                                </div>
+                                <h2>Join a Quiz</h2>
+                                <p>Enter your details to join the live drag & drop quiz session</p>
+                            </div>
+
+                            <!-- Join Form -->
+                            <form id="joinQuizForm" class="join-form">
+                                {% csrf_token %}
+                                <div class="form-floating mb-4">
+                                    <input type="text" class="form-control" id="participantName" 
+                                           name="participant_name" placeholder="Your Name" required 
+                                           maxlength="50" autocomplete="name">
+                                    <label for="participantName">
+                                        <i data-lucide="user"></i>
+                                        Your Name
+                                    </label>
+                                </div>
+
+                                <div class="form-floating mb-4">
+                                    <input type="text" class="form-control room-code-input" id="roomCode" 
+                                           name="room_code" placeholder="Room Code" required 
+                                           pattern="[0-9]{4}" maxlength="4" autocomplete="off">
+                                    <label for="roomCode">
+                                        <i data-lucide="hash"></i>
+                                        Room Code (4 digits)
+                                    </label>
+                                </div>
+
+                                <button type="submit" class="btn btn-primary btn-lg w-100" id="joinBtn">
+                                    <i data-lucide="mouse-pointer"></i>
+                                    <span>Join Drag & Drop Quiz</span>
+                                </button>
+                            </form>
+
+                            <!-- Status Messages -->
+                            <div id="statusMessage" class="status-message" style="display: none;"></div>
+
+                            <!-- Quiz Info (if room code is valid) -->
+                            <div id="quizInfo" class="quiz-info" style="display: none;">
+                                <div class="info-divider">
+                                    <span>Quiz Information</span>
+                                </div>
+                                <div class="quiz-details">
+                                    <div class="detail-item">
+                                        <i data-lucide="move-3d"></i>
+                                        <div>
+                                            <strong id="quizTitle">Quiz Title</strong>
+                                            <small id="quizStatus">Status: Waiting</small>
+                                        </div>
+                                    </div>
+                                    <div class="detail-item">
+                                        <i data-lucide="users"></i>
+                                        <div>
+                                            <strong id="participantCount">0 Participants</strong>
+                                            <small>Currently joined</small>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Help Section -->
+                        <div class="help-section">
+                            <details class="help-details">
+                                <summary>
+                                    <i data-lucide="help-circle"></i>
+                                    How to play Drag & Drop Quiz?
+                                </summary>
+                                <div class="help-content">
+                                    <ul>
+                                        <li>Ask your quiz host for the 4-digit room code</li>
+                                        <li>You'll drag items from the left to match with items on the right</li>
+                                        <li>Each correct match earns you points</li>
+                                        <li>Answer quickly for bonus points</li>
+                                        <li>Keep this tab open during the entire quiz</li>
+                                    </ul>
+                                </div>
+                            </details>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Footer -->
+        <div class="join-footer">
+            <p>&copy; 2025 QuizMaster. Ready to drag, drop, and win?</p>
+        </div>
+    </div>
+
+    <!-- Bootstrap JS -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+
+    <style>
+        /* Assign Join Page Styles */
+        .assign-join-page {
+            min-height: 100vh;
+            background: linear-gradient(135deg, var(--secondary-600) 0%, var(--primary-600) 50%, var(--accent-500) 100%);
+            position: relative;
+            overflow-x: hidden;
+        }
+
+        .join-container {
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            position: relative;
+            z-index: 2;
+        }
+
+        /* Background Shapes */
+        .background-shapes {
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            pointer-events: none;
+            z-index: 1;
+        }
+
+        .shape {
+            position: absolute;
+            border-radius: 50%;
+            opacity: 0.1;
+            animation: float 6s ease-in-out infinite;
+        }
+
+        .shape-1 {
+            width: 300px;
+            height: 300px;
+            background-color: var(--text-white);
+            top: 10%;
+            left: -150px;
+            animation-delay: 0s;
+        }
+
+        .shape-2 {
+            width: 200px;
+            height: 200px;
+            background-color: var(--text-white);
+            top: 60%;
+            right: -100px;
+            animation-delay: 2s;
+        }
+
+        .shape-3 {
+            width: 150px;
+            height: 150px;
+            background-color: var(--text-white);
+            bottom: 20%;
+            left: 10%;
+            animation-delay: 4s;
+        }
+
+        @keyframes float {
+            0%, 100% { transform: translateY(0px) rotate(0deg); }
+            50% { transform: translateY(-20px) rotate(5deg); }
+        }
+
+        /* Main Content */
+        .join-content {
+            flex: 1;
+            display: flex;
+            align-items: center;
+            padding: 2rem 0;
+        }
+
+        .join-card {
+            background: var(--bg-primary);
+            border-radius: var(--border-radius-xl);
+            box-shadow: var(--shadow-xl);
+            padding: 3rem;
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            position: relative;
+            z-index: 3;
+        }
+
+        .join-header {
+            text-align: center;
+            margin-bottom: 2.5rem;
+        }
+
+        .brand-logo {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.75rem;
+            margin-bottom: 1.5rem;
+        }
+
+        .brand-logo i {
+            width: 40px;
+            height: 40px;
+            color: var(--color-secondary);
+        }
+
+        .brand-logo h1 {
+            font-size: 1.75rem;
+            font-weight: 700;
+            color: var(--text-primary);
+            margin: 0;
+        }
+
+        .join-header h2 {
+            font-size: 1.5rem;
+            font-weight: 600;
+            color: var(--text-primary);
+            margin-bottom: 0.5rem;
+        }
+
+        .join-header p {
+            color: var(--text-secondary);
+            margin: 0;
+        }
+
+        /* Form Styles */
+        .form-floating {
+            position: relative;
+        }
+
+        .form-floating label {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            color: var(--text-muted);
+            font-weight: 500;
+            padding-left: 1rem;
+        }
+
+        .form-floating label i {
+            width: 16px;
+            height: 16px;
+        }
+
+        .form-control {
+            height: 60px;
+            font-size: 1.125rem;
+            border: 2px solid var(--border-color);
+            border-radius: var(--border-radius-lg);
+            padding: 1rem;
+            transition: all var(--transition-fast);
+        }
+
+        .form-control:focus {
+            border-color: var(--color-secondary);
+            box-shadow: 0 0 0 4px rgba(6, 182, 212, 0.1);
+        }
+
+        .room-code-input {
+            font-family: var(--font-family-mono);
+            letter-spacing: 0.5rem;
+            text-align: center;
+            font-weight: 700;
+            font-size: 1.5rem !important;
+        }
+
+        .btn-primary {
+            height: 60px;
+            font-size: 1.125rem;
+            font-weight: 600;
+            border-radius: var(--border-radius-lg);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.75rem;
+            transition: all var(--transition-fast);
+            position: relative;
+            background: linear-gradient(135deg, var(--secondary-500) 0%, var(--secondary-600) 100%);
+        }
+
+        .btn-primary:hover {
+            box-shadow: var(--shadow-lg);
+            background: linear-gradient(135deg, var(--secondary-600) 0%, var(--secondary-700) 100%);
+        }
+
+        .btn-primary.loading span {
+            opacity: 0;
+        }
+
+        .btn-primary.loading::after {
+            content: '';
+            position: absolute;
+            width: 20px;
+            height: 20px;
+            border: 2px solid transparent;
+            border-top-color: currentColor;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        /* Status Message */
+        .status-message {
+            margin-top: 1.5rem;
+            padding: 1rem;
+            border-radius: var(--border-radius);
+            font-weight: 500;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .status-message.success {
+            background-color: var(--success-50);
+            color: var(--success-700);
+            border: 1px solid var(--success-200);
+        }
+
+        .status-message.error {
+            background-color: var(--error-50);
+            color: var(--error-700);
+            border: 1px solid var(--error-200);
+        }
+
+        .status-message.info {
+            background-color: var(--secondary-50);
+            color: var(--secondary-700);
+            border: 1px solid var(--secondary-200);
+        }
+
+        /* Quiz Info */
+        .quiz-info {
+            margin-top: 2rem;
+        }
+
+        .info-divider {
+            position: relative;
+            text-align: center;
+            margin: 2rem 0 1.5rem;
+        }
+
+        .info-divider::before {
+            content: '';
+            position: absolute;
+            top: 50%;
+            left: 0;
+            right: 0;
+            height: 1px;
+            background-color: var(--border-color);
+        }
+
+        .info-divider span {
+            background-color: var(--bg-primary);
+            padding: 0 1rem;
+            color: var(--text-muted);
+            font-size: 0.875rem;
+            font-weight: 500;
+        }
+
+        .quiz-details {
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+        }
+
+        .detail-item {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            padding: 1rem;
+            background-color: var(--bg-secondary);
+            border-radius: var(--border-radius);
+            border: 1px solid var(--border-color);
+        }
+
+        .detail-item i {
+            width: 24px;
+            height: 24px;
+            color: var(--color-secondary);
+            flex-shrink: 0;
+        }
+
+        .detail-item div {
+            flex: 1;
+        }
+
+        .detail-item strong {
+            display: block;
+            color: var(--text-primary);
+            font-weight: 600;
+        }
+
+        .detail-item small {
+            color: var(--text-muted);
+            font-size: 0.875rem;
+        }
+
+        /* Help Section */
+        .help-section {
+            margin-top: 2rem;
+        }
+
+        .help-details {
+            background-color: rgba(255, 255, 255, 0.1);
+            border-radius: var(--border-radius-lg);
+            padding: 1rem;
+            backdrop-filter: blur(5px);
+        }
+
+        .help-details summary {
+            color: var(--text-white);
+            font-weight: 500;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            user-select: none;
+        }
+
+        .help-details summary i {
+            width: 20px;
+            height: 20px;
+        }
+
+        .help-content {
+            margin-top: 1rem;
+            padding-top: 1rem;
+            border-top: 1px solid rgba(255, 255, 255, 0.2);
+        }
+
+        .help-content ul {
+            margin: 0;
+            padding-left: 1.5rem;
+            color: rgba(255, 255, 255, 0.9);
+        }
+
+        .help-content li {
+            margin-bottom: 0.5rem;
+        }
+
+        /* Footer */
+        .join-footer {
+            text-align: center;
+            padding: 1.5rem;
+            color: rgba(255, 255, 255, 0.8);
+            font-size: 0.875rem;
+        }
+
+        /* Responsive Design */
+        @media (max-width: 768px) {
+            .join-card {
+                padding: 2rem 1.5rem;
+                margin: 1rem;
+            }
+
+            .brand-logo h1 {
+                font-size: 1.5rem;
+            }
+
+            .join-header h2 {
+                font-size: 1.25rem;
+            }
+
+            .form-control {
+                height: 55px;
+                font-size: 1rem;
+            }
+
+            .room-code-input {
+                font-size: 1.25rem !important;
+            }
+
+            .btn-primary {
+                height: 55px;
+                font-size: 1rem;
+            }
+
+            .shape {
+                display: none;
+            }
+        }
+    </style>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            lucide.createIcons();
+
+            const form = document.getElementById('joinQuizForm');
+            const roomCodeInput = document.getElementById('roomCode');
+            const joinBtn = document.getElementById('joinBtn');
+            const statusMessage = document.getElementById('statusMessage');
+            const quizInfo = document.getElementById('quizInfo');
+            let roomCodeTimeout;
+
+            // Format room code input
+            roomCodeInput.addEventListener('input', function() {
+                this.value = this.value.replace(/[^0-9]/g, '').substring(0, 4);
+                
+                // Clear previous timeout
+                clearTimeout(roomCodeTimeout);
+                
+                // Check room code validity after user stops typing
+                if (this.value.length === 4) {
+                    roomCodeTimeout = setTimeout(() => {
+                        checkRoomCode(this.value);
+                    }, 500);
+                } else {
+                    hideQuizInfo();
+                }
+            });
+
+            // Prefill from query params and optional auto-submit
+            const params = new URLSearchParams(window.location.search);
+            const qpRoom = params.get('room_code');
+            const qpNick = params.get('nickname');
+            const hubSession = params.get('hub_session');
+            if (hubSession) {
+                try { localStorage.setItem('hub_session_code', hubSession); } catch (_) {}
+            }
+            if (qpRoom) {
+                roomCodeInput.value = qpRoom;
+                checkRoomCode(qpRoom);
+            }
+            if (qpNick) {
+                const nameEl = document.getElementById('participantName');
+                nameEl.value = qpNick;
+            }
+
+            // Form submission
+            form.addEventListener('submit', function(e) {
+                e.preventDefault();
+                
+                const formData = new FormData(this);
+                const participantName = formData.get('participant_name').trim();
+                const roomCode = formData.get('room_code').trim();
+
+                if (!participantName || !roomCode) {
+                    showStatusMessage('Please fill in all fields.', 'error');
+                    return;
+                }
+
+                if (roomCode.length !== 4) {
+                    showStatusMessage('Room code must be exactly 4 digits.', 'error');
+                    return;
+                }
+
+                joinQuiz(participantName, roomCode);
+            });
+
+            function checkRoomCode(roomCode) {
+                fetch(`/assign/check-room/${roomCode}/`, {
+                    method: 'GET',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        showQuizInfo(data.quiz);
+                        hideStatusMessage();
+                    } else {
+                        hideQuizInfo();
+                        showStatusMessage(data.error, 'error');
+                    }
+                })
+                .catch(error => {
+                    console.error('Error checking room code:', error);
+                    hideQuizInfo();
+                });
+            }
+
+            function joinQuiz(participantName, roomCode) {
+                joinBtn.classList.add('loading');
+                hideStatusMessage();
+
+                fetch('/assign/join/', {
+                    method: 'POST',
+                    headers: {
+                        'X-CSRFToken': getCookie('csrftoken'),
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        participant_name: participantName,
+                        room_code: roomCode
+                    })
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        showStatusMessage('Successfully joined! Redirecting...', 'success');
+                        setTimeout(() => {
+                            const redirectUrl = `/assign/play/${roomCode}/${encodeURIComponent(participantName)}/`;
+                            window.location.href = redirectUrl;
+                        }, 1500);
+                    } else {
+                        showStatusMessage(data.error, 'error');
+                    }
+                })
+                .catch(error => {
+                    console.error('Error joining quiz:', error);
+                    showStatusMessage('Failed to join quiz. Please try again.', 'error');
+                })
+                .finally(() => {
+                    joinBtn.classList.remove('loading');
+                });
+            }
+
+            function showQuizInfo(quiz) {
+                document.getElementById('quizTitle').textContent = quiz.title;
+                document.getElementById('quizStatus').textContent = `Status: ${quiz.status}`;
+                document.getElementById('participantCount').textContent = `${quiz.participant_count} Participants`;
+                quizInfo.style.display = 'block';
+            }
+
+            function hideQuizInfo() {
+                quizInfo.style.display = 'none';
+            }
+
+            function showStatusMessage(message, type) {
+                statusMessage.textContent = message;
+                statusMessage.className = `status-message ${type}`;
+                statusMessage.style.display = 'flex';
+            }
+
+            function hideStatusMessage() {
+                statusMessage.style.display = 'none';
+            }
+
+            function getCookie(name) {
+                let cookieValue = null;
+                if (document.cookie && document.cookie !== '') {
+                    const cookies = document.cookie.split(';');
+                    for (let i = 0; i < cookies.length; i++) {
+                        const cookie = cookies[i].trim();
+                        if (cookie.substring(0, name.length + 1) === (name + '=')) {
+                            cookieValue = decodeURIComponent(cookie.substring(name.length + 1));
+                            break;
+                        }
+                    }
+                }
+                return cookieValue;
+            }
+
+            // Auto-submit if both provided via query
+            if (qpRoom && qpNick) {
+                joinQuiz(qpNick, qpRoom);
+            }
+
+            // Auto-focus on first input if not prefilled
+            if (!qpNick) {
+                document.getElementById('participantName').focus();
+            }
+        });
+    </script>
+</body>
+</html>

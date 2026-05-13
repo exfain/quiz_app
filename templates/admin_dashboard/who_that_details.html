@@ -1,0 +1,950 @@
+{% extends "admin_dashboard/base.html" %}
+
+{% block title %}Who is That Game Details - QuizMaster Admin{% endblock %}
+
+{% block page_title %}Who is That Game Details{% endblock %}
+{% block page_subtitle %}Detailed analysis of photo identification quiz session{% endblock %}
+
+{% block content %}
+<div class="who-that-details-content">
+    <!-- Session Overview -->
+    <div class="session-overview mb-5">
+        <div class="row g-4">
+            <!-- Quiz Info Card -->
+            <div class="col-lg-4">
+                <div class="quiz-card">
+                    <div class="quiz-header">
+                        <div class="quiz-avatar">
+                            <i data-lucide="camera"></i>
+                        </div>
+                        <div class="quiz-info">
+                            <h3>{{ quiz.title }}</h3>
+                        </div>
+                    </div>
+                    <div class="quiz-stats">
+                        <div class="stat-row">
+                            <span class="stat-label">Total Participants:</span>
+                            <span class="stat-value">{{ quiz_stats.total_participants }}</span>
+                        </div>
+                        <div class="stat-row">
+                            <span class="stat-label">Questions Sent:</span>
+                            <span class="stat-value">{{ quiz_stats.total_questions }}</span>
+                        </div>
+                        <div class="stat-row">
+                            <span class="stat-label">Total Answers:</span>
+                            <span class="stat-value">{{ quiz_stats.total_answers }}</span>
+                        </div>
+                        <div class="stat-row">
+                            <span class="stat-label">Correct Answers:</span>
+                            <span class="stat-value correct">{{ quiz_stats.correct_answers }}</span>
+                        </div>
+                        <div class="stat-row">
+                            <span class="stat-label">Average Score:</span>
+                            <span class="stat-value score">{{ quiz_stats.average_score|floatformat:1 }}</span>
+                        </div>
+                        <div class="stat-row">
+                            <span class="stat-label">Average Accuracy:</span>
+                            <span class="stat-value accuracy">{{ quiz_stats.average_accuracy|floatformat:1 }}%</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Performance Metrics -->
+            <div class="col-lg-8">
+                <div class="metrics-grid">
+                    <div class="metric-card">
+                        <div class="metric-icon bg-primary">
+                            <i data-lucide="users"></i>
+                        </div>
+                        <div class="metric-content">
+                            <h4>{{ quiz_stats.total_participants }}</h4>
+                            <p>Total Players</p>
+                        </div>
+                    </div>
+                    
+                    <div class="metric-card">
+                        <div class="metric-icon bg-success">
+                            <i data-lucide="check-circle"></i>
+                        </div>
+                        <div class="metric-content">
+                            <h4>{{ quiz_stats.correct_answers }}</h4>
+                            <p>Correct Answers</p>
+                        </div>
+                    </div>
+                    
+                    <div class="metric-card">
+                        <div class="metric-icon bg-warning">
+                            <i data-lucide="target"></i>
+                        </div>
+                        <div class="metric-content">
+                            <h4>{{ quiz_stats.average_accuracy|floatformat:1 }}%</h4>
+                            <p>Average Accuracy</p>
+                        </div>
+                    </div>
+                    
+                    <div class="metric-card">
+                        <div class="metric-icon bg-secondary">
+                            <i data-lucide="image"></i>
+                        </div>
+                        <div class="metric-content">
+                            <h4>{{ quiz_stats.total_questions }}</h4>
+                            <p>Photos Shown</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Leaderboard -->
+    <div class="leaderboard-section mb-5">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="card-title mb-0">
+                    <i data-lucide="trophy"></i>
+                    Final Leaderboard
+                </h5>
+            </div>
+            <div class="card-body">
+                {% if participants %}
+                    <div class="leaderboard">
+                        {% for participant in participants %}
+                        <div class="leaderboard-item rank-{{ forloop.counter }}">
+                            <div class="rank-display">
+                                {% if forloop.counter <= 3 %}
+                                    <i data-lucide="medal" class="medal rank-{{ forloop.counter }}"></i>
+                                {% else %}
+                                    <span class="rank-number">#{{ forloop.counter }}</span>
+                                {% endif %}
+                            </div>
+                            <div class="participant-avatar">
+                                {{ participant.name|first|upper }}
+                            </div>
+                            <div class="participant-details">
+                                <div class="participant-name">{{ participant.name }}</div>
+                                <div class="participant-meta">
+                                    <span class="score">{{ participant.total_score }} pts</span>
+                                    <span class="accuracy">{{ participant.get_accuracy_percentage }}% accuracy</span>
+                                    <span class="answers">{{ participant.correct_answers }}/{{ participant.questions_answered }} correct</span>
+                                </div>
+                            </div>
+                            <div class="participant-rank-badge">
+                                <span class="rank-text">#{{ forloop.counter }}</span>
+                            </div>
+                        </div>
+                        {% endfor %}
+                    </div>
+                {% else %}
+                    <div class="empty-state">
+                        <i data-lucide="users"></i>
+                        <h4>No Participants</h4>
+                        <p>No participants joined this quiz session.</p>
+                    </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+
+    <!-- Detailed Answers -->
+    <div class="detailed-answers">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="card-title mb-0">
+                    <i data-lucide="list"></i>
+                    Answer Analysis
+                </h5>
+            </div>
+            <div class="card-body">
+                {% if answers %}
+                    <div class="answers-list">
+                        {% for answer in answers %}
+                        <div class="answer-detail-item">
+                            <div class="answer-detail-header">
+                                <div class="question-info">
+                                    <div class="question-image">
+                                        {% if answer.question.image %}
+                                            <img src="{{ answer.question.image.url }}" alt="Question Image" class="question-thumbnail">
+                                        {% else %}
+                                            <div class="no-image-placeholder">
+                                                <i data-lucide="image"></i>
+                                            </div>
+                                        {% endif %}
+                                    </div>
+                                    <div class="question-meta">
+                                        <div class="question-text">{{ answer.question.question_text }}</div>
+                                        <div class="question-details">
+                                            {% if answer.question.category %}
+                                            <span class="category-badge">{{ answer.question.category }}</span>
+                                            {% endif %}
+                                            <span class="points-badge">{{ answer.question.points }} pts max</span>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="participant-summary">
+                                    <div class="participant-info">
+                                        <div class="participant-avatar-small">{{ answer.participant.name|first|upper }}</div>
+                                        <div class="participant-name">{{ answer.participant.name }}</div>
+                                    </div>
+                                    <div class="performance-score">
+                                        <span class="score-value">+{{ answer.points_earned }}</span>
+                                        <span class="score-label">points</span>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="answer-content">
+                                <div class="correct-answer-display">
+                                    <h6>Correct Answer: <span class="correct-answer">{{ answer.question.correct_answer }}</span></h6>
+                                    {% if answer.question.alternative_answers %}
+                                    <div class="alternative-answers">
+                                        <strong>Also accepts:</strong> {{ answer.question.alternative_answers|join:", " }}
+                                    </div>
+                                    {% endif %}
+                                </div>
+                                
+                                <div class="identification-analysis">
+                                    <div class="participant-answer">
+                                        <div class="answer-label">Participant's Answer:</div>
+                                        <div class="answer-value user-answer">{{ answer.user_answer }}</div>
+                                        <div class="answer-result">
+                                            {% if answer.is_correct %}
+                                                <i data-lucide="check-circle" class="text-success"></i>
+                                                <span class="text-success">{{ answer.get_match_quality }}</span>
+                                            {% else %}
+                                                <i data-lucide="x-circle" class="text-danger"></i>
+                                                <span class="text-danger">Incorrect</span>
+                                            {% endif %}
+                                        </div>
+                                    </div>
+                                    
+                                    <div class="scoring-breakdown">
+                                        <div class="scoring-info">
+                                            <div class="scoring-item">
+                                                <span class="scoring-label">Response Time:</span>
+                                                <span class="scoring-value">{{ answer.time_taken|floatformat:1 }}s</span>
+                                            </div>
+                                            <div class="scoring-item">
+                                                <span class="scoring-label">Points Earned:</span>
+                                                <span class="scoring-value points">{{ answer.points_earned }}/{{ answer.question.points }}</span>
+                                            </div>
+                                            <div class="scoring-item">
+                                                <span class="scoring-label">Accuracy:</span>
+                                                <span class="scoring-value accuracy">{{ answer.get_accuracy_percentage }}%</span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                {% if answer.question.explanation %}
+                                <div class="explanation-section">
+                                    <div class="explanation-header">
+                                        <i data-lucide="info"></i>
+                                        <strong>About this person:</strong>
+                                    </div>
+                                    <p class="explanation-text">{{ answer.question.explanation }}</p>
+                                </div>
+                                {% endif %}
+                            </div>
+                        </div>
+                        {% endfor %}
+                    </div>
+                {% else %}
+                    <div class="empty-state">
+                        <i data-lucide="inbox"></i>
+                        <h4>No Answers Found</h4>
+                        <p>No answers were recorded for this quiz session.</p>
+                    </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+
+    <!-- Back to Management -->
+    <div class="actions-section mt-4">
+        <a href="{% url 'admin_dashboard:who_that_management' %}" class="btn btn-outline">
+            <i data-lucide="arrow-left"></i>
+            Back to Who is That Management
+        </a>
+    </div>
+</div>
+
+<style>
+.who-that-details-content {
+    max-width: 1200px;
+}
+
+/* Quiz Card */
+.quiz-card {
+    background: linear-gradient(135deg, var(--primary-500) 0%, var(--secondary-500) 100%);
+    color: var(--text-white);
+    border-radius: var(--border-radius-xl);
+    padding: 2rem;
+    box-shadow: var(--shadow-lg);
+}
+
+.quiz-header {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    margin-bottom: 2rem;
+}
+
+.quiz-avatar {
+    width: 64px;
+    height: 64px;
+    border-radius: 50%;
+    background-color: rgba(255, 255, 255, 0.2);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1.5rem;
+    color: var(--text-white);
+}
+
+.quiz-avatar i {
+    width: 32px;
+    height: 32px;
+}
+
+.quiz-info h3 {
+    font-size: 1.5rem;
+    font-weight: 700;
+    margin: 0;
+}
+
+.quiz-subtitle {
+    opacity: 0.8;
+    margin: 0;
+    font-size: 0.875rem;
+}
+
+.quiz-stats {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+}
+
+.stat-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding-bottom: 1rem;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.stat-row:last-child {
+    border-bottom: none;
+    padding-bottom: 0;
+}
+
+.stat-label {
+    font-weight: 500;
+    opacity: 0.8;
+}
+
+.stat-value {
+    font-weight: 700;
+}
+
+.stat-value.correct {
+    color: var(--success-200);
+}
+
+.stat-value.score {
+    color: var(--warning-200);
+    font-size: 1.125rem;
+}
+
+.stat-value.accuracy {
+    color: var(--success-200);
+}
+
+/* Metrics Grid */
+.metrics-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: 1.5rem;
+}
+
+.metric-card {
+    background: var(--bg-primary);
+    border-radius: var(--border-radius-lg);
+    padding: 1.5rem;
+    text-align: center;
+    box-shadow: var(--shadow-sm);
+    border: 1px solid var(--border-color);
+    transition: all var(--transition-fast);
+}
+
+.metric-card:hover {
+    box-shadow: var(--shadow-md);
+}
+
+.metric-icon {
+    width: 48px;
+    height: 48px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin: 0 auto 1rem;
+    color: var(--text-white);
+}
+
+.metric-icon.bg-primary {
+    background: linear-gradient(135deg, var(--primary-400) 0%, var(--primary-600) 100%);
+}
+
+.metric-icon.bg-success {
+    background: linear-gradient(135deg, var(--success-400) 0%, var(--success-600) 100%);
+}
+
+.metric-icon.bg-warning {
+    background: linear-gradient(135deg, var(--warning-400) 0%, var(--warning-600) 100%);
+}
+
+.metric-icon.bg-secondary {
+    background: linear-gradient(135deg, var(--secondary-400) 0%, var(--secondary-600) 100%);
+}
+
+.metric-icon i {
+    width: 24px;
+    height: 24px;
+}
+
+.metric-content h4 {
+    font-size: 1.75rem;
+    font-weight: 700;
+    color: var(--text-primary);
+    margin-bottom: 0.25rem;
+}
+
+.metric-content p {
+    color: var(--text-muted);
+    font-weight: 500;
+    margin: 0;
+    font-size: 0.875rem;
+}
+
+/* Leaderboard */
+.leaderboard {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+}
+
+.leaderboard-item {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    padding: 1rem;
+    background-color: var(--bg-secondary);
+    border-radius: var(--border-radius-lg);
+    border: 1px solid var(--border-color);
+    transition: all var(--transition-fast);
+}
+
+.leaderboard-item.rank-1 {
+    border-color: #FFD700;
+    background: linear-gradient(135deg, rgba(255, 215, 0, 0.1) 0%, var(--bg-secondary) 100%);
+}
+
+.leaderboard-item.rank-2 {
+    border-color: #C0C0C0;
+    background: linear-gradient(135deg, rgba(192, 192, 192, 0.1) 0%, var(--bg-secondary) 100%);
+}
+
+.leaderboard-item.rank-3 {
+    border-color: #CD7F32;
+    background: linear-gradient(135deg, rgba(205, 127, 50, 0.1) 0%, var(--bg-secondary) 100%);
+}
+
+.rank-display {
+    width: 40px;
+    height: 40px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+}
+
+.medal {
+    width: 28px;
+    height: 28px;
+}
+
+.medal.rank-1 {
+    color: #FFD700; /* Gold */
+}
+
+.medal.rank-2 {
+    color: #C0C0C0; /* Silver */
+}
+
+.medal.rank-3 {
+    color: #CD7F32; /* Bronze */
+}
+
+.rank-number {
+    font-weight: 700;
+    color: var(--text-muted);
+    font-size: 1.125rem;
+}
+
+.participant-avatar {
+    width: 48px;
+    height: 48px;
+    border-radius: 50%;
+    background-color: var(--color-secondary);
+    color: var(--text-white);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    font-weight: 700;
+    font-size: 1.125rem;
+}
+
+.participant-details {
+    flex: 1;
+}
+
+.participant-name {
+    font-weight: 600;
+    color: var(--text-primary);
+    margin-bottom: 0.25rem;
+    font-size: 1.125rem;
+}
+
+.participant-meta {
+    display: flex;
+    gap: 1rem;
+    flex-wrap: wrap;
+}
+
+.score {
+    color: var(--color-success);
+    font-weight: 600;
+}
+
+.accuracy {
+    color: var(--color-primary);
+    font-weight: 500;
+}
+
+.answers {
+    color: var(--text-muted);
+    font-weight: 500;
+}
+
+.participant-rank-badge {
+    background-color: var(--color-primary);
+    color: var(--text-white);
+    padding: 0.5rem 1rem;
+    border-radius: var(--border-radius-xl);
+    font-weight: 700;
+}
+
+/* Answer Details */
+.answers-list {
+    display: flex;
+    flex-direction: column;
+    gap: 2rem;
+}
+
+.answer-detail-item {
+    border: 1px solid var(--border-color);
+    border-radius: var(--border-radius-lg);
+    padding: 1.5rem;
+    background: var(--bg-secondary);
+}
+
+.answer-detail-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 1.5rem;
+    padding-bottom: 1rem;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.question-info {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    flex: 1;
+}
+
+.question-image {
+    width: 80px;
+    height: 80px;
+    flex-shrink: 0;
+}
+
+.question-thumbnail {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    border-radius: var(--border-radius);
+    border: 2px solid var(--border-color);
+}
+
+.no-image-placeholder {
+    width: 100%;
+    height: 100%;
+    background-color: var(--bg-tertiary);
+    border: 2px solid var(--border-color);
+    border-radius: var(--border-radius);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-muted);
+}
+
+.no-image-placeholder i {
+    width: 32px;
+    height: 32px;
+}
+
+.question-meta {
+    flex: 1;
+}
+
+.question-text {
+    font-weight: 600;
+    color: var(--text-primary);
+    margin-bottom: 0.75rem;
+    font-size: 1.125rem;
+}
+
+.question-details {
+    display: flex;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+}
+
+.badge {
+    padding: 0.25rem 0.5rem;
+    border-radius: var(--border-radius-sm);
+    font-size: 0.75rem;
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.category-badge, .points-badge {
+    background: var(--secondary-100);
+    color: var(--secondary-700);
+    padding: 0.25rem 0.5rem;
+    border-radius: var(--border-radius-sm);
+    font-size: 0.75rem;
+    font-weight: 500;
+}
+
+.participant-summary {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+}
+
+.participant-info {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.participant-avatar-small {
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    background-color: var(--color-secondary);
+    color: var(--text-white);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 600;
+    font-size: 0.875rem;
+}
+
+.participant-name {
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.performance-score {
+    text-align: center;
+}
+
+.score-value {
+    display: block;
+    font-size: 1.25rem;
+    font-weight: 700;
+    color: var(--color-success);
+}
+
+.score-label {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+/* Answer Content */
+.correct-answer-display {
+    background: var(--success-50);
+    border: 1px solid var(--success-200);
+    border-radius: var(--border-radius);
+    padding: 1rem;
+    margin-bottom: 1.5rem;
+}
+
+.correct-answer-display h6 {
+    color: var(--success-700);
+    margin-bottom: 0.5rem;
+}
+
+.correct-answer {
+    font-weight: 700;
+    color: var(--success-800);
+}
+
+.alternative-answers {
+    color: var(--success-600);
+    font-size: 0.875rem;
+    margin-top: 0.5rem;
+}
+
+.alternative-answers strong {
+    color: var(--success-700);
+}
+
+/* Identification Analysis */
+.identification-analysis {
+    background: var(--bg-primary);
+    border-radius: var(--border-radius);
+    padding: 1.5rem;
+    margin-bottom: 1rem;
+}
+
+.participant-answer {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    margin-bottom: 1.5rem;
+    padding: 1rem;
+    background: var(--bg-secondary);
+    border-radius: var(--border-radius);
+}
+
+.answer-label {
+    font-weight: 600;
+    color: var(--text-primary);
+    min-width: 140px;
+}
+
+.answer-value {
+    flex: 1;
+    font-size: 1.125rem;
+    font-weight: 600;
+}
+
+.answer-value.user-answer {
+    color: var(--color-primary);
+}
+
+.answer-result {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-weight: 600;
+}
+
+.answer-result i {
+    width: 20px;
+    height: 20px;
+}
+
+.scoring-breakdown {
+    border-top: 1px solid var(--border-color);
+    padding-top: 1rem;
+}
+
+.scoring-info {
+    display: flex;
+    justify-content: space-around;
+    gap: 1rem;
+}
+
+.scoring-item {
+    text-align: center;
+}
+
+.scoring-label {
+    display: block;
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    margin-bottom: 0.25rem;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.scoring-value {
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.scoring-value.points {
+    color: var(--color-success);
+}
+
+.scoring-value.accuracy {
+    color: var(--color-primary);
+}
+
+/* Explanation Section */
+.explanation-section {
+    background: var(--bg-primary);
+    border-radius: var(--border-radius);
+    padding: 1rem;
+    border-left: 4px solid var(--color-primary);
+    margin-bottom: 1rem;
+}
+
+.explanation-header {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-bottom: 0.5rem;
+    color: var(--text-primary);
+}
+
+.explanation-header i {
+    width: 16px;
+    height: 16px;
+}
+
+.explanation-text {
+    color: var(--text-secondary);
+    margin: 0;
+    line-height: 1.6;
+}
+
+/* Empty State */
+.empty-state {
+    text-align: center;
+    padding: 3rem;
+    color: var(--text-muted);
+}
+
+.empty-state i {
+    width: 64px;
+    height: 64px;
+    margin-bottom: 1rem;
+    opacity: 0.5;
+}
+
+/* Responsive Design */
+@media (max-width: 768px) {
+    .session-overview .row {
+        flex-direction: column;
+    }
+    
+    .metrics-grid {
+        grid-template-columns: repeat(2, 1fr);
+        gap: 1rem;
+    }
+    
+    .answer-detail-header {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 1rem;
+    }
+    
+    .question-info {
+        flex-direction: column;
+        text-align: center;
+        gap: 0.5rem;
+    }
+    
+    .question-image {
+        width: 120px;
+        height: 120px;
+        align-self: center;
+    }
+    
+    .participant-answer {
+        flex-direction: column;
+        text-align: center;
+        gap: 0.5rem;
+    }
+    
+    .scoring-info {
+        flex-direction: column;
+        gap: 0.5rem;
+    }
+    
+    .participant-meta {
+        flex-direction: column;
+        gap: 0.25rem;
+        text-align: center;
+    }
+    
+    .leaderboard-item {
+        flex-direction: column;
+        text-align: center;
+        gap: 0.75rem;
+    }
+}
+
+@media (max-width: 576px) {
+    .metrics-grid {
+        grid-template-columns: 1fr;
+    }
+    
+    .quiz-card {
+        padding: 1.5rem;
+    }
+}
+</style>
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    // Initialize Lucide icons
+    lucide.createIcons();
+
+    // Animate leaderboard items on scroll
+    const leaderboardItems = document.querySelectorAll('.leaderboard-item');
+    const observer = new IntersectionObserver((entries) => {
+        entries.forEach((entry, index) => {
+            if (entry.isIntersecting) {
+                setTimeout(() => {
+                    entry.target.style.opacity = '1';
+                    entry.target.style.transform = 'translateX(0)';
+                }, index * 100);
+            }
+        });
+    }, { threshold: 0.1 });
+
+    leaderboardItems.forEach((item, index) => {
+        item.style.opacity = '0';
+        item.style.transform = 'translateX(-20px)';
+        item.style.transition = 'opacity 0.5s ease-out, transform 0.5s ease-out';
+        observer.observe(item);
+    });
+
+    // Animate answer items
+    const answerItems = document.querySelectorAll('.answer-detail-item');
+    answerItems.forEach((item, index) => {
+        item.style.opacity = '0';
+        item.style.transform = 'translateY(20px)';
+        item.style.transition = 'opacity 0.5s ease-out, transform 0.5s ease-out';
+        
+        setTimeout(() => {
+            item.style.opacity = '1';
+            item.style.transform = 'translateY(0)';
+        }, (index * 150) + 500);
+    });
+});
+</script>
+{% endblock %}

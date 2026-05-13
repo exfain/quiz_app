@@ -1,0 +1,667 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Join Sorting Ladder - QuizMaster</title>
+
+    <!-- Bootstrap 5 CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
+
+    <!-- Custom Theme CSS -->
+    <link rel="stylesheet" href="{% static 'theme.css' %}">
+
+    <!-- Inter Font -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body class="sorting-join-page">
+    <div class="join-container">
+        <!-- Background Elements -->
+        <div class="background-shapes">
+            <div class="shape shape-1"></div>
+            <div class="shape shape-2"></div>
+            <div class="shape shape-3"></div>
+        </div>
+
+        <!-- Main Content -->
+        <div class="join-content">
+            <div class="container">
+                <div class="row justify-content-center">
+                    <div class="col-lg-5 col-md-7">
+                        <div class="join-card">
+                            <!-- Header -->
+                            <div class="join-header">
+                                <div class="brand-logo">
+                                    <i data-lucide="list-ordered"></i>
+                                    <h1>Sorting Ladder</h1>
+                                </div>
+                                <h2>Join a Game</h2>
+                                <p>Enter your details to join the live sorting session</p>
+                            </div>
+
+                            <!-- Join Form -->
+                            <form id="joinQuizForm" class="join-form">
+                                {% csrf_token %}
+                                <div class="form-floating mb-4">
+                                    <input type="text" class="form-control" id="participantName"
+                                           name="participant_name" placeholder="Your Name" required
+                                           maxlength="50" autocomplete="name">
+                                    <label for="participantName">
+                                        <i data-lucide="user"></i>
+                                        Your Name
+                                    </label>
+                                </div>
+
+                                <div class="form-floating mb-4">
+                                    <input type="text" class="form-control room-code-input" id="roomCode"
+                                           name="room_code" placeholder="Room Code" required
+                                           pattern="[0-9]{4}" maxlength="4" autocomplete="off">
+                                    <label for="roomCode">
+                                        <i data-lucide="hash"></i>
+                                        Room Code (4 digits)
+                                    </label>
+                                </div>
+
+                                <button type="submit" class="btn btn-primary btn-lg w-100" id="joinBtn">
+                                    <i data-lucide="arrow-right-circle"></i>
+                                    <span>Join Game</span>
+                                </button>
+                            </form>
+
+                            <!-- Status Messages -->
+                            <div id="statusMessage" class="status-message" style="display: none;"></div>
+
+                            <!-- Quiz Info (if room code is valid) -->
+                            <div id="quizInfo" class="quiz-info" style="display: none;">
+                                <div class="info-divider">
+                                    <span>Game Information</span>
+                                </div>
+                                <div class="quiz-details">
+                                    <div class="detail-item">
+                                        <i data-lucide="layers"></i>
+                                        <div>
+                                            <strong id="quizTitle">Game Title</strong>
+                                            <small id="quizStatus">Status: Waiting</small>
+                                        </div>
+                                    </div>
+                                    <div class="detail-item">
+                                        <i data-lucide="users"></i>
+                                        <div>
+                                            <strong id="participantCount">0 Participants</strong>
+                                            <small>Currently joined</small>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Help Section -->
+                        <div class="help-section">
+                            <details class="help-details">
+                                <summary>
+                                    <i data-lucide="help-circle"></i>
+                                    How to play Sorting Ladder
+                                </summary>
+                                <div class="help-content">
+                                    <ul>
+                                        <li>Ask your host for the 4-digit room code</li>
+                                        <li>You'll receive a list of items to sort in the correct order</li>
+                                        <li>Drag and drop the items into the right position on the ladder</li>
+                                        <li>The more correct rounds you complete, the higher your score</li>
+                                        <li>Keep this tab open during the entire game</li>
+                                    </ul>
+                                </div>
+                            </details>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Footer -->
+        <div class="join-footer">
+            <p>&copy; 2025 QuizMaster. Ready to sort?</p>
+        </div>
+    </div>
+
+    <!-- Bootstrap JS -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+
+    <style>
+        .sorting-join-page {
+            min-height: 100vh;
+            background: linear-gradient(135deg, #7c3aed 0%, #4f46e5 50%, #2563eb 100%);
+            position: relative;
+            overflow-x: hidden;
+        }
+
+        .join-container {
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            position: relative;
+            z-index: 2;
+        }
+
+        .background-shapes {
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            pointer-events: none;
+            z-index: 1;
+        }
+
+        .shape {
+            position: absolute;
+            border-radius: 50%;
+            opacity: 0.1;
+            animation: float 6s ease-in-out infinite;
+        }
+
+        .shape-1 {
+            width: 300px;
+            height: 300px;
+            background-color: white;
+            top: 10%;
+            left: -150px;
+            animation-delay: 0s;
+        }
+
+        .shape-2 {
+            width: 200px;
+            height: 200px;
+            background-color: white;
+            top: 60%;
+            right: -100px;
+            animation-delay: 2s;
+        }
+
+        .shape-3 {
+            width: 150px;
+            height: 150px;
+            background-color: white;
+            bottom: 20%;
+            left: 10%;
+            animation-delay: 4s;
+        }
+
+        @keyframes float {
+            0%, 100% { transform: translateY(0px) rotate(0deg); }
+            50% { transform: translateY(-20px) rotate(5deg); }
+        }
+
+        .join-content {
+            flex: 1;
+            display: flex;
+            align-items: center;
+            padding: 2rem 0;
+            position: relative;
+            z-index: 2;
+        }
+
+        .join-card {
+            background: var(--bg-primary, #ffffff);
+            border-radius: var(--border-radius-xl, 1rem);
+            box-shadow: var(--shadow-xl, 0 20px 60px rgba(0,0,0,0.3));
+            padding: 3rem;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .join-header {
+            text-align: center;
+            margin-bottom: 2.5rem;
+        }
+
+        .brand-logo {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.75rem;
+            margin-bottom: 1.5rem;
+        }
+
+        .brand-logo i {
+            width: 40px;
+            height: 40px;
+            color: #7c3aed;
+        }
+
+        .brand-logo h1 {
+            font-size: 1.75rem;
+            font-weight: 700;
+            color: var(--text-primary, #111827);
+            margin: 0;
+        }
+
+        .join-header h2 {
+            font-size: 1.5rem;
+            font-weight: 600;
+            color: var(--text-primary, #111827);
+            margin-bottom: 0.5rem;
+        }
+
+        .join-header p {
+            color: var(--text-secondary, #6b7280);
+            margin: 0;
+        }
+
+        .form-floating label {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            color: var(--text-muted, #9ca3af);
+            font-weight: 500;
+            padding-left: 1rem;
+        }
+
+        .form-floating label i {
+            width: 16px;
+            height: 16px;
+        }
+
+        .form-control {
+            height: 60px;
+            font-size: 1.125rem;
+            border: 2px solid var(--border-color, #e5e7eb);
+            border-radius: var(--border-radius-lg, 0.75rem);
+            padding: 1rem;
+            transition: all 0.15s ease;
+        }
+
+        .form-control:focus {
+            border-color: #7c3aed;
+            box-shadow: 0 0 0 4px rgba(124, 58, 237, 0.1);
+        }
+
+        .room-code-input {
+            font-family: monospace;
+            letter-spacing: 0.5rem;
+            text-align: center;
+            font-weight: 700;
+            font-size: 1.5rem !important;
+        }
+
+        .btn-primary {
+            height: 60px;
+            font-size: 1.125rem;
+            font-weight: 600;
+            border-radius: var(--border-radius-lg, 0.75rem);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.75rem;
+            transition: all 0.15s ease;
+            position: relative;
+            background: linear-gradient(135deg, #7c3aed 0%, #4f46e5 100%);
+            border: none;
+        }
+
+        .btn-primary:hover {
+            box-shadow: 0 8px 25px rgba(124, 58, 237, 0.4);
+            background: linear-gradient(135deg, #6d28d9 0%, #4338ca 100%);
+        }
+
+        .btn-primary.loading span {
+            opacity: 0;
+        }
+
+        .btn-primary.loading::after {
+            content: '';
+            position: absolute;
+            width: 20px;
+            height: 20px;
+            border: 2px solid transparent;
+            border-top-color: currentColor;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .status-message {
+            margin-top: 1.5rem;
+            padding: 1rem;
+            border-radius: var(--border-radius, 0.5rem);
+            font-weight: 500;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .status-message.success {
+            background-color: #f0fdf4;
+            color: #15803d;
+            border: 1px solid #bbf7d0;
+        }
+
+        .status-message.error {
+            background-color: #fef2f2;
+            color: #b91c1c;
+            border: 1px solid #fecaca;
+        }
+
+        .status-message.info {
+            background-color: #eff6ff;
+            color: #1d4ed8;
+            border: 1px solid #bfdbfe;
+        }
+
+        .quiz-info {
+            margin-top: 2rem;
+        }
+
+        .info-divider {
+            position: relative;
+            text-align: center;
+            margin: 2rem 0 1.5rem;
+        }
+
+        .info-divider::before {
+            content: '';
+            position: absolute;
+            top: 50%;
+            left: 0;
+            right: 0;
+            height: 1px;
+            background-color: var(--border-color, #e5e7eb);
+        }
+
+        .info-divider span {
+            background-color: var(--bg-primary, #ffffff);
+            padding: 0 1rem;
+            color: var(--text-muted, #9ca3af);
+            font-size: 0.875rem;
+            font-weight: 500;
+        }
+
+        .quiz-details {
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+        }
+
+        .detail-item {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            padding: 1rem;
+            background-color: var(--bg-secondary, #f9fafb);
+            border-radius: var(--border-radius, 0.5rem);
+            border: 1px solid var(--border-color, #e5e7eb);
+        }
+
+        .detail-item i {
+            width: 24px;
+            height: 24px;
+            color: #7c3aed;
+            flex-shrink: 0;
+        }
+
+        .detail-item strong {
+            display: block;
+            color: var(--text-primary, #111827);
+            font-weight: 600;
+        }
+
+        .detail-item small {
+            color: var(--text-muted, #9ca3af);
+            font-size: 0.875rem;
+        }
+
+        .help-section {
+            margin-top: 2rem;
+        }
+
+        .help-details {
+            background-color: rgba(255, 255, 255, 0.1);
+            border-radius: var(--border-radius-lg, 0.75rem);
+            padding: 1rem;
+            backdrop-filter: blur(5px);
+        }
+
+        .help-details summary {
+            color: white;
+            font-weight: 500;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            user-select: none;
+        }
+
+        .help-details summary i {
+            width: 20px;
+            height: 20px;
+        }
+
+        .help-content {
+            margin-top: 1rem;
+            padding-top: 1rem;
+            border-top: 1px solid rgba(255, 255, 255, 0.2);
+        }
+
+        .help-content ul {
+            margin: 0;
+            padding-left: 1.5rem;
+            color: rgba(255, 255, 255, 0.9);
+        }
+
+        .help-content li {
+            margin-bottom: 0.5rem;
+        }
+
+        .join-footer {
+            text-align: center;
+            padding: 1.5rem;
+            color: rgba(255, 255, 255, 0.8);
+            font-size: 0.875rem;
+        }
+
+        @media (max-width: 768px) {
+            .join-card {
+                padding: 2rem 1.5rem;
+                margin: 1rem;
+            }
+
+            .brand-logo h1 {
+                font-size: 1.5rem;
+            }
+
+            .join-header h2 {
+                font-size: 1.25rem;
+            }
+
+            .form-control {
+                height: 55px;
+                font-size: 1rem;
+            }
+
+            .room-code-input {
+                font-size: 1.25rem !important;
+            }
+
+            .btn-primary {
+                height: 55px;
+                font-size: 1rem;
+            }
+
+            .shape {
+                display: none;
+            }
+        }
+    </style>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            lucide.createIcons();
+
+            const form = document.getElementById('joinQuizForm');
+            const roomCodeInput = document.getElementById('roomCode');
+            const joinBtn = document.getElementById('joinBtn');
+            const statusMessage = document.getElementById('statusMessage');
+            const quizInfo = document.getElementById('quizInfo');
+            let roomCodeTimeout;
+
+            // Only allow digits in room code field
+            roomCodeInput.addEventListener('input', function() {
+                this.value = this.value.replace(/[^0-9]/g, '').substring(0, 4);
+
+                clearTimeout(roomCodeTimeout);
+                if (this.value.length === 4) {
+                    roomCodeTimeout = setTimeout(() => checkRoomCode(this.value), 500);
+                } else {
+                    hideQuizInfo();
+                }
+            });
+
+            // Prefill from query params and optional auto-submit
+            const params = new URLSearchParams(window.location.search);
+            const qpRoom = params.get('room_code');
+            const qpNick = params.get('nickname');
+            const hubSession = params.get('hub_session');
+            if (hubSession) {
+                try { localStorage.setItem('hub_session_code', hubSession); } catch (_) {}
+            }
+            if (qpRoom) {
+                roomCodeInput.value = qpRoom;
+                checkRoomCode(qpRoom);
+            }
+            if (qpNick) {
+                document.getElementById('participantName').value = qpNick;
+            }
+
+            // Form submission
+            form.addEventListener('submit', function(e) {
+                e.preventDefault();
+
+                const participantName = document.getElementById('participantName').value.trim();
+                const roomCode = roomCodeInput.value.trim();
+
+                if (!participantName || !roomCode) {
+                    showStatusMessage('Please fill in all fields.', 'error');
+                    return;
+                }
+
+                if (roomCode.length !== 4) {
+                    showStatusMessage('Room code must be exactly 4 digits.', 'error');
+                    return;
+                }
+
+                joinGame(participantName, roomCode);
+            });
+
+            function checkRoomCode(roomCode) {
+                fetch(`/sorting-ladder/check-room/${roomCode}/`, {
+                    method: 'GET',
+                    headers: { 'Content-Type': 'application/json' },
+                })
+                .then(r => r.json())
+                .then(data => {
+                    if (data.success) {
+                        showQuizInfo(data.quiz);
+                        hideStatusMessage();
+                    } else {
+                        hideQuizInfo();
+                        showStatusMessage(data.error, 'error');
+                    }
+                })
+                .catch(() => hideQuizInfo());
+            }
+
+            function joinGame(participantName, roomCode) {
+                joinBtn.classList.add('loading');
+                hideStatusMessage();
+
+                const hubSession = (() => {
+                    try { return localStorage.getItem('hub_session_code') || ''; } catch (_) { return ''; }
+                })();
+
+                fetch('/sorting-ladder/join/', {
+                    method: 'POST',
+                    headers: {
+                        'X-CSRFToken': getCookie('csrftoken'),
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        participant_name: participantName,
+                        room_code: roomCode,
+                        hub_session: hubSession || null,
+                    }),
+                })
+                .then(r => r.json())
+                .then(data => {
+                    if (data.success) {
+                        showStatusMessage('Successfully joined! Redirecting...', 'success');
+                        setTimeout(() => {
+                            let url = `/sorting-ladder/play/${roomCode}/${encodeURIComponent(participantName)}/`;
+                            if (hubSession) url += `?hub_session=${encodeURIComponent(hubSession)}`;
+                            window.location.href = url;
+                        }, 1000);
+                    } else {
+                        showStatusMessage(data.error, 'error');
+                    }
+                })
+                .catch(() => showStatusMessage('Failed to join game. Please try again.', 'error'))
+                .finally(() => joinBtn.classList.remove('loading'));
+            }
+
+            function showQuizInfo(quiz) {
+                document.getElementById('quizTitle').textContent = quiz.title;
+                document.getElementById('quizStatus').textContent = `Status: ${quiz.status}`;
+                document.getElementById('participantCount').textContent = `${quiz.participant_count} Participants`;
+                quizInfo.style.display = 'block';
+            }
+
+            function hideQuizInfo() {
+                quizInfo.style.display = 'none';
+            }
+
+            function showStatusMessage(message, type) {
+                statusMessage.textContent = message;
+                statusMessage.className = `status-message ${type}`;
+                statusMessage.style.display = 'flex';
+            }
+
+            function hideStatusMessage() {
+                statusMessage.style.display = 'none';
+            }
+
+            function getCookie(name) {
+                let cookieValue = null;
+                if (document.cookie && document.cookie !== '') {
+                    const cookies = document.cookie.split(';');
+                    for (let i = 0; i < cookies.length; i++) {
+                        const cookie = cookies[i].trim();
+                        if (cookie.substring(0, name.length + 1) === (name + '=')) {
+                            cookieValue = decodeURIComponent(cookie.substring(name.length + 1));
+                            break;
+                        }
+                    }
+                }
+                return cookieValue;
+            }
+
+            // Auto-submit if both name and room code provided via query params
+            if (qpRoom && qpNick) {
+                joinGame(qpNick, qpRoom);
+            }
+
+            // Auto-focus on first empty field
+            if (!qpNick) {
+                document.getElementById('participantName').focus();
+            }
+        });
+    </script>
+</body>
+</html>

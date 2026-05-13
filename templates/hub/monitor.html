@@ -1,0 +1,1316 @@
+{% extends 'admin_dashboard/base.html' %}
+{% load static %}
+
+{% block title %}Session Monitor – {{ session.name|default:session.code }}{% endblock %}
+
+{% block page_title %}Session Monitor{% endblock %}
+{% block page_subtitle %}{{ session.name|default:'' }} · Code: {{ session.code }}{% endblock %}
+
+{% block content %}
+<div class="monitor-wrap">
+
+    <!-- Top bar: lobby link + end session -->
+    <div class="card mb-4">
+        <div class="card-body py-3">
+            <div class="d-flex flex-column gap-3">
+                <div>
+                    <label class="form-label fw-semibold mb-1">
+                        <i data-lucide="link" class="me-1"></i> Participant Lobby Link
+                    </label>
+                    <div class="input-group" style="max-width:600px;">
+                        <input type="text" class="form-control font-monospace" id="lobbyLink"
+                               value="{{ request.scheme }}://{{ ip }}:8000{% url 'games_hub:lobby' session_code=session.code %}"
+                               readonly>
+                        <button class="btn btn-outline-secondary" type="button" id="copyLinkBtn">
+                            <i data-lucide="copy" class="me-1"></i> Copy
+                        </button>
+                    </div>
+                    <small class="text-muted">Share this link — participants enter their name and join the session</small>
+                </div>
+                <div class="d-flex align-items-center gap-2 flex-wrap">
+                    <div id="wsStatus" class="d-flex align-items-center gap-2 text-muted me-2">
+                        <span class="status-dot connecting"></span>
+                        <span class="status-text">Connecting…</span>
+                    </div>
+                    <a href="{% url 'admin_dashboard:sessions_overview' %}" class="btn btn-outline-secondary">
+                        <i data-lucide="layout-dashboard" class="me-1"></i> Dashboard
+                    </a>
+                    {% if not session.started_at %}
+                    <button id="startSessionBtn" class="btn btn-success">
+                        <i data-lucide="play" class="me-1"></i> Start Session
+                    </button>
+                    {% elif not session.ended_at and not session.is_active %}
+                    <button id="startSessionBtn" class="btn btn-success">
+                        <i data-lucide="play" class="me-1"></i> Activate Session
+                    </button>
+                    {% endif %}
+                    <button id="spectateBtn" class="btn btn-outline-info" onclick="window.open('/hub/spectate/{{ session.code }}/', '_blank')">
+                        <i data-lucide="monitor" class="me-1"></i> Spectator-View öffnen
+                    </button>
+                    <button id="recallLobbyBtn" class="btn btn-outline-warning">
+                        <i data-lucide="users" class="me-1"></i> Teilnehmer in die Lobby zurückschicken 
+                    </button>
+                    {% if session.ended_at %}
+                    <span id="sessionEndedLabel" class="text-muted fw-semibold d-inline-flex align-items-center gap-1">
+                        <i data-lucide="check-circle-2" class="me-1"></i> Session beendet
+                    </span>
+                    {% else %}
+                    <button id="endSessionBtn" class="btn btn-outline-danger">
+                        <i data-lucide="square" class="me-1"></i> End Session
+                    </button>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="row g-4">
+        <!-- Left: Game Steps -->
+        <div class="col-12 col-lg-7">
+            <div class="card h-100">
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    <h5 class="mb-0"><i data-lucide="list-ordered" class="me-2"></i>Game Plan</h5>
+                    <div class="d-flex align-items-center gap-2">
+                        <span class="badge bg-secondary" id="stepCount">{{ steps|length }} game{{ steps|length|pluralize }}</span>
+                        <button class="btn btn-sm btn-primary" data-bs-toggle="modal" data-bs-target="#addGameModal">
+                            <i data-lucide="plus" style="width:14px;height:14px;"></i> Add Game
+                        </button>
+                    </div>
+                </div>
+                <div class="card-body p-0">
+                    <div class="steps-list" id="stepsList">
+                        <div class="step-header">
+                            <div class="step-header-drag"></div>
+                            <div class="step-header-num">#</div>
+                            <div class="step-header-info">Game Type</div>
+                            <div class="step-header-votes">Votes</div>
+                            <div class="step-header-action">Action</div>
+                        </div>
+                        {% for s in steps %}
+                        <div class="step-row {% if forloop.first %}step-first{% endif %}{% if s.game_status == 'completed' %} completed{% elif s.game_status == 'inactive' %} inactive{% endif %}" id="step-{{ forloop.counter0 }}"
+                             data-game-key="{{ s.game_key }}" data-room-code="{{ s.room_code }}" data-order="{{ s.order }}" data-step-id="{{ s.id }}"
+                             draggable="true">
+                            <div class="drag-handle" title="Drag to reorder"><i data-lucide="grip-vertical"></i></div>
+                            <div class="step-num">{{ forloop.counter }}</div>
+                            <div class="step-info">
+                                <div class="step-name">{{ s.get_game_key_display }}{% if s.title %} · <span class="step-title-label">{{ s.title }}</span>{% endif %}</div>
+                                {% if s.game_status == 'completed' %}
+                                    <div class="step-status-hint">
+                                        <i data-lucide="check-circle" style="width:11px;height:11px;"></i>
+                                        Beendet
+                                    </div>
+                                {% elif s.game_status == 'active' %}
+                                    <div class="step-status-hint step-status-active">
+                                        <i data-lucide="radio" style="width:11px;height:11px;"></i>
+                                        Läuft
+                                    </div>
+                                {% elif s.game_status == 'inactive' %}
+                                    <div class="step-status-hint step-status-inactive">
+                                        <i data-lucide="pause-circle" style="width:11px;height:11px;"></i>
+                                        inactive
+                                    </div>
+                                {% else %}
+                                    <div class="step-status-hint">
+                                        <i data-lucide="clock" style="width:11px;height:11px;"></i>
+                                        Not started yet
+                                    </div>
+                                {% endif %}
+                            </div>
+                            <div class="step-votes">
+                                <span class="vote-badge" data-order="{{ s.order }}" title="Votes for this game"></span>
+                            </div>
+                            <div class="step-action gap-1">
+                                {% if s.room_code %}
+                                <a href="{{ request.scheme }}://{{ ip }}:8000{% url 'admin_dashboard:home' %}"
+                                   class="btn btn-sm btn-primary launch-btn{% if not session.started_at or not session.is_active %} disabled{% endif %}"
+                                   data-game-key="{{ s.game_key }}" data-room-code="{{ s.room_code }}"
+                                   data-session="{{ session.code }}"
+                                   {% if not session.started_at or not session.is_active %}aria-disabled="true" tabindex="-1"{% endif %}>
+                                    <i data-lucide="play" class="me-1"></i> Spiel öffnen
+                                </a>
+                                {% if s.game_status == 'inactive' %}
+                                <button type="button"
+                                        class="btn btn-sm btn-outline-warning reactivate-btn"
+                                        data-game-key="{{ s.game_key }}"
+                                        data-room-code="{{ s.room_code }}"
+                                        {% if not session.started_at or not session.is_active %}disabled{% endif %}>
+                                    <i data-lucide="rotate-ccw" class="me-1"></i> Reaktivieren
+                                </button>
+                                {% endif %}
+                                {% endif %}
+                                <button class="btn btn-sm btn-outline-danger delete-step-btn"
+                                        data-step-id="{{ s.id }}"
+                                        title="Spiel entfernen">
+                                    <i data-lucide="trash-2"></i>
+                                </button>
+                            </div>
+                        </div>
+                        {% empty %}
+                        <div class="text-center py-5 text-muted">
+                            <i data-lucide="alert-circle" class="me-2"></i>
+                            No games configured for this session
+                        </div>
+                        {% endfor %}
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-12 col-lg-5">
+            <!-- Players list kept in DOM for WebSocket updates but hidden -->
+            <ul class="d-none" id="playerList">
+                {% for p in session_players %}
+                <li class="player-row" data-nickname="{{ p.nickname }}"></li>
+                {% endfor %}
+            </ul>
+        </div>
+    </div>
+
+    <!-- Session Scoreboard -->
+    <div class="row g-4 mt-0">
+        <div class="col-12">
+            <div class="card">
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    <h5 class="mb-0"><i data-lucide="trophy" class="me-2"></i>Session Scoreboard</h5>
+                    <button id="toggleScoreboardBtn" class="btn btn-sm btn-outline-secondary" title="Scoreboard für Teilnehmer ein-/ausblenden">
+                        <i data-lucide="eye-off" style="width:14px;height:14px;"></i>
+                        <span id="toggleScoreboardLabel">Für Teilnehmer einblenden</span>
+                    </button>
+                </div>
+                <div class="card-body p-0">
+                    <div id="sessionScoreboardWrap">
+                        <p class="text-muted text-center py-4 mb-0">No game data yet.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Add Game Modal -->
+<div class="modal fade" id="addGameModal" tabindex="-1" aria-labelledby="addGameModalLabel" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h6 class="modal-title" id="addGameModalLabel"><i data-lucide="plus-circle" style="width:16px;height:16px;" class="me-1"></i>Add Game to Session</h6>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <div class="mb-3">
+          <label class="form-label fw-semibold">Spieltyp</label>
+          <select class="form-select" id="addGameType">
+            <option value="" disabled selected>— Typ wählen —</option>
+            <option value="quiz">Quick Quiz</option>
+            <option value="estimation">Estimation</option>
+            <option value="assign">Assign</option>
+            <option value="where">Where is This?</option>
+            <option value="who">Who is Lying?</option>
+            <option value="who_that">Who is That?</option>
+            <option value="blackjack">Black Jack</option>
+            <option value="sorting_ladder">Sorting Ladder</option>
+            <option value="clue_rush">Clue Rush</option>
+          </select>
+        </div>
+        <div class="mb-3">
+          <label class="form-label fw-semibold">Spiel auswählen</label>
+          <div id="gameInstanceLoading" class="text-muted small d-none">Lade…</div>
+          <div id="gameInstanceList" class="d-none" style="max-height:280px;overflow-y:auto;"></div>
+        </div>
+        <div id="addGameError" class="text-danger small d-none mt-2"></div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
+        <button type="button" class="btn btn-primary btn-sm" id="addGameSave">
+          <i data-lucide="plus" style="width:14px;height:14px;"></i> Add
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="modal fade" id="outOfOrderStartModal" tabindex="-1" aria-labelledby="outOfOrderStartModalLabel" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h6 class="modal-title" id="outOfOrderStartModalLabel">
+          <i data-lucide="alert-triangle" style="width:16px;height:16px;" class="me-1"></i>Reihenfolge verlassen?
+        </h6>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <p class="mb-2" id="outOfOrderStartMessage">Dieses Spiel ist nicht das nächste geplante Spiel.</p>
+        <p class="text-muted small mb-0" id="outOfOrderStartHint">Du kannst trotzdem fortfahren.</p>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Abbrechen</button>
+        <button type="button" class="btn btn-primary btn-sm" id="outOfOrderStartConfirmBtn">
+          <i data-lucide="play" style="width:14px;height:14px;" class="me-1"></i>Trotzdem fortfahren
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<style>
+.monitor-wrap {
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 1rem;
+}
+
+/* WS status dot */
+.status-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+.status-dot.connecting { background: #f59e0b; animation: pulse 1.5s infinite; }
+.status-dot.connected  { background: #22c55e; }
+.status-dot.error      { background: #ef4444; }
+@keyframes pulse { 0%,100%{opacity:.5} 50%{opacity:1} }
+
+/* Steps list */
+.steps-list { padding: 0; }
+
+.step-header {
+    display: grid;
+    grid-template-columns: 28px 36px 1fr 80px 240px;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.5rem 1.25rem;
+    background: var(--bg-secondary);
+    border-bottom: 2px solid var(--border-color);
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--text-muted);
+}
+.step-header-votes { text-align: center; }
+.step-header-action { text-align: right; }
+
+.step-row {
+    display: grid;
+    grid-template-columns: 28px 36px 1fr 80px 240px;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.75rem 1.25rem;
+    border-bottom: 1px solid var(--border-color);
+    transition: background 0.15s;
+}
+.step-row:last-child { border-bottom: none; }
+.step-row:hover { background: var(--bg-secondary); }
+.step-row.active { background: var(--primary-50); border-left: 3px solid var(--color-primary); }
+.step-row.completed { background: rgba(25, 135, 84, 0.44); }
+.step-row.inactive { background: rgba(245, 158, 11, 0.08); }
+
+.step-num {
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    background: var(--bg-secondary);
+    border: 2px solid var(--border-color);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 700;
+    font-size: 0.8rem;
+    flex-shrink: 0;
+    color: var(--text-muted);
+}
+.step-row.active .step-num {
+    background: var(--color-primary);
+    border-color: var(--color-primary);
+    color: white;
+}
+
+.step-info { min-width: 0; }
+.step-name { font-weight: 600; font-size: 0.9rem; }
+.step-title-label { font-weight: 400; color: #6c757d; }
+.step-sub { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+.step-votes { display: flex; align-items: center; justify-content: center; }
+.step-action { display: flex; align-items: center; justify-content: flex-end; }
+
+.launch-btn { flex-shrink: 0; }
+.launch-btn.disabled { pointer-events: none; opacity: 0.45; }
+
+.drag-handle {
+    cursor: grab;
+    color: var(--text-muted);
+    opacity: 0.4;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    padding: 0 0.15rem;
+    transition: opacity 0.15s;
+}
+.drag-handle:active { cursor: grabbing; }
+.step-row:hover .drag-handle { opacity: 0.8; }
+.step-row.drag-over { border-top: 2px solid var(--color-primary); }
+.step-row.dragging { opacity: 0.4; }
+
+.vote-badge {
+    flex-shrink: 0;
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: #2563eb;
+    background: #dbeafe;
+    border-radius: 999px;
+    padding: 0.15rem 0.55rem;
+    min-width: 1.5rem;
+    text-align: center;
+    display: none;
+}
+.vote-badge.has-votes { display: inline-block; }
+.vote-badge.top-vote { background: #dcfce7; color: #166534; }
+
+.quiz-pick-list {
+    max-height: 220px;
+    overflow-y: auto;
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+}
+.quiz-pick-item {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    padding: 0.55rem 0.85rem;
+    cursor: pointer;
+    border-bottom: 1px solid var(--border-color);
+    transition: background 0.12s;
+    font-size: 0.9rem;
+}
+.quiz-pick-item:last-child { border-bottom: none; }
+.quiz-pick-item:hover { background: var(--bg-secondary); }
+.quiz-pick-item.selected { background: var(--primary-50); font-weight: 600; }
+.quiz-pick-item input[type="checkbox"] { flex-shrink: 0; }
+.quiz-pick-item .quiz-code { font-size: 0.75rem; color: var(--text-muted); font-family: monospace; margin-left: auto; }
+
+/* Players */
+.player-list { list-style: none; margin: 0; padding: 0.25rem 0; }
+.player-row {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.65rem 1.25rem;
+    border-bottom: 1px solid var(--border-color);
+}
+.player-row:last-child { border-bottom: none; }
+.player-avatar {
+    width: 30px; height: 30px; border-radius: 50%;
+    background: var(--primary-100);
+    color: var(--color-primary);
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 700; font-size: 0.85rem; flex-shrink: 0;
+}
+.player-name { flex: 1; font-weight: 500; }
+
+/* Session Scoreboard */
+.sb-table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+.sb-table th { font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase;
+    letter-spacing: 0.5px; padding: 0.5rem 1rem; text-align: left;
+    border-bottom: 2px solid var(--border-color); background: var(--bg-secondary); }
+.sb-table th.center { text-align: center; }
+.sb-table td { padding: 0.6rem 1rem; border-bottom: 1px solid var(--border-color); vertical-align: middle; }
+.sb-table tr:last-child td { border-bottom: none; }
+.sb-table tr:hover td { background: var(--bg-secondary); }
+.sb-rank { width: 2.5rem; font-weight: 700; color: var(--text-muted); }
+.sb-rank.gold { color: #f59e0b; }
+.sb-rank.silver { color: #94a3b8; }
+.sb-rank.bronze { color: #c07b3a; }
+.sb-total { font-weight: 700; font-size: 1rem; text-align: center; color: var(--color-primary); }
+.sb-game { text-align: center; color: var(--text-muted); font-size: 0.8rem; }
+.sb-game.winner { color: #22c55e; font-weight: 700; }
+.sb-adj { text-align: center; font-size: 0.8rem; color: var(--text-muted); }
+.sb-edit { text-align: center; }
+.step-status-hint {
+    display: flex; align-items: center; gap: 3px;
+    font-size: 0.7rem; color: #6c757d; margin-top: 2px;
+}
+.step-status-active { color: #0d6efd; }
+.step-status-inactive { color: #b45309; }
+</style>
+
+<script type="text/plain" id="legacyBrokenSessionMonitorScript">
+const SESSION_CODE = '{{ session.code }}';
+let sessionStarted = {{ session.started_at|yesno:"true,false" }} && {{ session.is_active|yesno:"true,false" }};
+const NEXT_PLANNED_STEP_ID = {% if next_planned_step_id %}{{ next_planned_step_id }}{% else %}null{% endif %};
+
+    let manualEnd = false;
+    document.getElementById('endSessionBtn').addEventListener('click', () => {
+        if (!confirm('End this session? All game instances will be marked as inactive.')) return;
+        manualEnd = true;
+        ws.send(JSON.stringify({ type: 'end_session' }));
+        document.getElementById('endSessionBtn').disabled = true;
+    });
+    ws.onclose = () => {
+        setStatus('error', 'Disconnected');
+        if (!manualEnd) setTimeout(() => location.reload(), 3000);
+    };
+
+    // ── Session Scoreboard ──
+    const rankLabels = ['gold', 'silver', 'bronze'];
+
+    function renderSessionScoreboard(data) {
+        const wrap = document.getElementById('sessionScoreboardWrap');
+        const players = data.participants || [];
+        const instances = data.instances || {};
+
+        if (players.length === 0) {
+            wrap.innerHTML = '<p class="text-muted text-center py-4 mb-0">No game data yet.</p>';
+            return;
+        }
+
+        // Ordered list of instance keys
+        const instanceKeys = Object.keys(instances);
+
+        let headerCols = instanceKeys.map(k => {
+            const label = instances[k].type || k;
+            return `<th class="center sb-game">${label}</th>`;
+        }).join('');
+
+        let rows = players.map((p, i) => {
+            const rankClass = rankLabels[i] || '';
+            const gameCols = instanceKeys.map(k => {
+                const score = p.game_scores?.[k];
+                const isWinner = score !== undefined && score === Math.max(...players.map(x => x.game_scores?.[k] ?? -1));
+                if (score === undefined) return '<td class="sb-game">—</td>';
+                return `<td class="sb-game ${isWinner && score > 0 ? 'winner' : ''}">${score}</td>`;
+            }).join('');
+
+            const adj = p.score_adjustment || 0;
+            const total = p.weighted_score + adj;
+            const pid = p.hub_participant_id;
+
+            return `<tr data-pid="${pid}">
+                <td class="sb-rank ${rankClass}">${i + 1}</td>
+                <td>${p.name}</td>
+                ${gameCols}
+                <td class="sb-total">${p.weighted_score}</td>
+                <td class="sb-adj">
+                    <div class="d-flex align-items-center justify-content-center gap-1">
+                        <button class="btn btn-sm btn-outline-secondary sb-adj-btn" data-pid="${pid}" data-delta="-1" style="padding:0.1rem 0.4rem;font-size:0.8rem;">−</button>
+                        <span class="sb-adj-val" data-pid="${pid}">${adj}</span>
+                        <button class="btn btn-sm btn-outline-secondary sb-adj-btn" data-pid="${pid}" data-delta="1" style="padding:0.1rem 0.4rem;font-size:0.8rem;">+</button>
+                    </div>
+                </td>
+                <td class="sb-total sb-sum" data-pid="${pid}">${total}</td>
+            </tr>`;
+        }).join('');
+
+        wrap.innerHTML = `
+            <table class="sb-table">
+                <thead>
+                    <tr>
+                        <th class="sb-rank">#</th>
+                        <th>Player</th>
+                        ${headerCols}
+                        <th class="center sb-total">Session Pts</th>
+                        <th class="center sb-adj">Adj.</th>
+                        <th class="center sb-total">Total</th>
+                    </tr>
+                </thead>
+                <tbody>${rows}</tbody>
+            </table>`;
+
+        // +/- button handlers
+        wrap.querySelectorAll('.sb-adj-btn').forEach(btn => {
+            btn.addEventListener('click', function() {
+                const pid = this.dataset.pid;
+                const delta = parseInt(this.dataset.delta);
+                const valEl = wrap.querySelector(`.sb-adj-val[data-pid="${pid}"]`);
+                const sumEl = wrap.querySelector(`.sb-sum[data-pid="${pid}"]`);
+                const currentAdj = parseInt(valEl.textContent) || 0;
+                const newAdj = currentAdj + delta;
+                // Optimistic update
+                valEl.textContent = newAdj;
+                const sessionPts = parseInt(wrap.querySelector(`tr[data-pid="${pid}"] .sb-total`).textContent) || 0;
+                sumEl.textContent = sessionPts + newAdj;
+                // Persist
+                fetch('{% url "games_hub:set_hub_participant_score" %}', {
+                    method: 'POST',
+                    headers: {'X-CSRFToken': '{{ csrf_token }}', 'Content-Type': 'application/json'},
+                    body: JSON.stringify({participant_id: pid, score: newAdj})
+                }).catch(() => {
+                    // Revert on error
+                    valEl.textContent = currentAdj;
+                    sumEl.textContent = sessionPts + currentAdj;
+                });
+            });
+        });
+    }
+
+    function fetchSessionScoreboard() {
+        fetch(`/hub/api/session/${SESSION_CODE}/leaderboard/`)
+            .then(r => r.json())
+            .then(data => renderSessionScoreboard(data))
+            .catch(() => {});
+    }
+
+    fetchSessionScoreboard();
+    setInterval(fetchSessionScoreboard, 10000);
+});
+</script>
+
+<script>
+const SESSION_CODE = '{{ session.code }}';
+let sessionStarted = {{ session.started_at|yesno:"true,false" }} && {{ session.is_active|yesno:"true,false" }};
+let scoreboardVisible = {{ session.scoreboard_visible|yesno:"true,false" }};
+const NEXT_PLANNED_STEP_ID = {% if next_planned_step_id %}{{ next_planned_step_id }}{% else %}null{% endif %};
+const GAME_MONITOR_ROUTES = {
+    quiz: '/admin-dashboard/quiz/{room_code}/monitor/',
+    assign: '/admin-dashboard/assign/{room_code}/monitor/',
+    estimation: '/admin-dashboard/estimation/{room_code}/monitor/',
+    where: '/admin-dashboard/where/monitor/{room_code}/',
+    who: '/admin-dashboard/who/{room_code}/monitor/',
+    who_that: '/admin-dashboard/who-that/{room_code}/monitor/',
+    blackjack: '/admin-dashboard/blackjack/{room_code}/monitor/',
+    clue_rush: '/admin-dashboard/clue-rush/{room_code}/monitor/',
+    sorting_ladder: '/admin-dashboard/sorting-ladder/{room_code}/monitor/',
+};
+
+let ws = null;
+let manualEnd = false;
+let draggedStepRow = null;
+let outOfOrderAction = null;
+let selectedGameInstanceIds = new Set();
+let reactivationConflictState = null;
+
+document.addEventListener('DOMContentLoaded', function() {
+    const startSessionBtn = document.getElementById('startSessionBtn');
+    const endSessionBtn = document.getElementById('endSessionBtn');
+    const copyLinkBtn = document.getElementById('copyLinkBtn');
+    const lobbyLinkInput = document.getElementById('lobbyLink');
+    const toggleScoreboardBtn = document.getElementById('toggleScoreboardBtn');
+    const toggleScoreboardLabel = document.getElementById('toggleScoreboardLabel');
+    const gameTypeSelect = document.getElementById('addGameType');
+    const gameInstanceLoading = document.getElementById('gameInstanceLoading');
+    const gameInstanceList = document.getElementById('gameInstanceList');
+    const addGameError = document.getElementById('addGameError');
+    const addGameSave = document.getElementById('addGameSave');
+    const addGameModalEl = document.getElementById('addGameModal');
+    const addGameModal = addGameModalEl ? bootstrap.Modal.getOrCreateInstance(addGameModalEl) : null;
+    const outOfOrderModalEl = document.getElementById('outOfOrderStartModal');
+    const outOfOrderMessage = document.getElementById('outOfOrderStartMessage');
+    const outOfOrderHint = document.getElementById('outOfOrderStartHint');
+    const outOfOrderConfirmBtn = document.getElementById('outOfOrderStartConfirmBtn');
+    const outOfOrderModal = outOfOrderModalEl ? bootstrap.Modal.getOrCreateInstance(outOfOrderModalEl) : null;
+    const conflictModalEl = document.getElementById('activeGameConflictModal');
+    const conflictMessage = document.getElementById('activeGameConflictMessage');
+    const conflictEndBtn = document.getElementById('activeGameConflictEndBtn');
+    const conflictDeactivateBtn = document.getElementById('activeGameConflictDeactivateBtn');
+    const conflictModal = conflictModalEl ? bootstrap.Modal.getOrCreateInstance(conflictModalEl) : null;
+    const stepCount = document.getElementById('stepCount');
+    const rankLabels = ['gold', 'silver', 'bronze'];
+
+    function setStatus(kind, text) {
+        const wrap = document.getElementById('wsStatus');
+        if (!wrap) return;
+        const dot = wrap.querySelector('.status-dot');
+        const label = wrap.querySelector('.status-text');
+        if (dot) {
+            dot.className = `status-dot ${kind}`;
+        }
+        if (label) {
+            label.textContent = text;
+        }
+    }
+
+    function sendWhenSocketOpen(payload, attempt = 0) {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify(payload));
+            return true;
+        }
+        if (attempt >= 10 || !ws || ws.readyState === WebSocket.CLOSED) {
+            return false;
+        }
+        setTimeout(() => sendWhenSocketOpen(payload, attempt + 1), 200);
+        return true;
+    }
+
+    function buildMonitorUrl(gameKey, roomCode) {
+        const template = GAME_MONITOR_ROUTES[gameKey];
+        if (!template || !roomCode) return null;
+        const url = new URL(template.replace('{room_code}', roomCode), window.location.origin);
+        url.searchParams.set('hub_session', SESSION_CODE);
+        return url.toString();
+    }
+
+    function navigateToMonitor(gameKey, roomCode) {
+        const targetUrl = buildMonitorUrl(gameKey, roomCode);
+        if (!targetUrl) {
+            alert('Für diesen Spieltyp konnte keine Monitor-Seite ermittelt werden.');
+            return;
+        }
+        window.location.href = targetUrl;
+    }
+
+    function getStepRows() {
+        return Array.from(document.querySelectorAll('.step-row[data-step-id]'));
+    }
+
+    function getStepRow(stepId) {
+        return document.querySelector(`.step-row[data-step-id="${stepId}"]`);
+    }
+
+    function getNextPlannedStepId() {
+        const nextRow = getStepRows().find((row) => !row.classList.contains('completed'));
+        return nextRow ? Number(nextRow.dataset.stepId) : NEXT_PLANNED_STEP_ID;
+    }
+
+    function maybeConfirmOutOfOrder(targetButton, callback) {
+        const row = targetButton.closest('.step-row');
+        if (!row || row.classList.contains('completed')) {
+            callback();
+            return;
+        }
+
+        const stepId = Number(row.dataset.stepId);
+        const nextStepId = getNextPlannedStepId();
+        if (!nextStepId || nextStepId === stepId) {
+            callback();
+            return;
+        }
+
+        if (!outOfOrderModal) {
+            if (confirm('Dieses Spiel ist nicht das nächste geplante Spiel. Trotzdem fortfahren?')) {
+                callback();
+            }
+            return;
+        }
+
+        const nextRow = getStepRow(nextStepId);
+        const targetName = row.querySelector('.step-name')?.textContent?.trim() || 'dieses Spiel';
+        const nextName = nextRow?.querySelector('.step-name')?.textContent?.trim() || 'das nächste geplante Spiel';
+
+        if (outOfOrderMessage) {
+            outOfOrderMessage.textContent = `${targetName} ist nicht das nächste geplante Spiel.`;
+        }
+        if (outOfOrderHint) {
+            outOfOrderHint.textContent = `Als Nächstes wäre ${nextName} vorgesehen.`;
+        }
+
+        outOfOrderAction = callback;
+        outOfOrderModal.show();
+    }
+
+    function updateStepCount() {
+        if (!stepCount) return;
+        const count = getStepRows().length;
+        stepCount.textContent = `${count} game${count === 1 ? '' : 's'}`;
+    }
+
+    function updateStepNumbers() {
+        getStepRows().forEach((row, index) => {
+            const stepNumber = row.querySelector('.step-num');
+            if (stepNumber) {
+                stepNumber.textContent = index + 1;
+            }
+        });
+        updateStepCount();
+    }
+
+    function renderVoteBadges(votes) {
+        document.querySelectorAll('.vote-badge').forEach((badge) => {
+            badge.textContent = '';
+            badge.classList.remove('has-votes', 'top-vote');
+        });
+
+        if (!Array.isArray(votes) || votes.length === 0) {
+            return;
+        }
+
+        const topCount = Math.max(...votes.map((vote) => vote.count || 0), 0);
+        votes.forEach((vote) => {
+            const badge = document.querySelector(`.vote-badge[data-order="${vote.step_order}"]`);
+            if (!badge || !vote.count) return;
+            badge.textContent = vote.count;
+            badge.classList.add('has-votes');
+            if (vote.count === topCount && topCount > 0) {
+                badge.classList.add('top-vote');
+            }
+        });
+    }
+
+    function fetchVotes() {
+        fetch(`/hub/api/session/${SESSION_CODE}/votes/`)
+            .then((response) => response.json())
+            .then((payload) => renderVoteBadges(payload.votes || []))
+            .catch(() => {});
+    }
+
+    function renderSessionScoreboard(data) {
+        const wrap = document.getElementById('sessionScoreboardWrap');
+        const players = data.participants || [];
+        const instances = data.instances || {};
+
+        if (players.length === 0) {
+            wrap.innerHTML = '<p class="text-muted text-center py-4 mb-0">No game data yet.</p>';
+            return;
+        }
+
+        const instanceKeys = Object.keys(instances);
+        const headerCols = instanceKeys.map((key) => {
+            const label = instances[key].type || key;
+            return `<th class="center sb-game">${label}</th>`;
+        }).join('');
+
+        const rows = players.map((player, index) => {
+            const rankClass = rankLabels[index] || '';
+            const gameCols = instanceKeys.map((key) => {
+                const score = player.game_scores ? player.game_scores[key] : undefined;
+                const bestScore = Math.max(...players.map((entry) => (
+                    entry.game_scores && entry.game_scores[key] !== undefined ? entry.game_scores[key] : -1
+                )));
+                const isWinner = score !== undefined && score === bestScore;
+                if (score === undefined) return '<td class="sb-game">—</td>';
+                return `<td class="sb-game ${isWinner && score > 0 ? 'winner' : ''}">${score}</td>`;
+            }).join('');
+
+            const adjustment = player.score_adjustment || 0;
+            const total = player.weighted_score + adjustment;
+            const participantId = player.hub_participant_id;
+
+            return `<tr data-pid="${participantId}">
+                <td class="sb-rank ${rankClass}">${index + 1}</td>
+                <td>${player.name}</td>
+                ${gameCols}
+                <td class="sb-total">${player.weighted_score}</td>
+                <td class="sb-adj">
+                    <div class="d-flex align-items-center justify-content-center gap-1">
+                        <button class="btn btn-sm btn-outline-secondary sb-adj-btn" data-pid="${participantId}" data-delta="-1" style="padding:0.1rem 0.4rem;font-size:0.8rem;">−</button>
+                        <span class="sb-adj-val" data-pid="${participantId}">${adjustment}</span>
+                        <button class="btn btn-sm btn-outline-secondary sb-adj-btn" data-pid="${participantId}" data-delta="1" style="padding:0.1rem 0.4rem;font-size:0.8rem;">+</button>
+                    </div>
+                </td>
+                <td class="sb-total sb-sum" data-pid="${participantId}">${total}</td>
+            </tr>`;
+        }).join('');
+
+        wrap.innerHTML = `
+            <table class="sb-table">
+                <thead>
+                    <tr>
+                        <th class="sb-rank">#</th>
+                        <th>Player</th>
+                        ${headerCols}
+                        <th class="center sb-total">Session Pts</th>
+                        <th class="center sb-adj">Adj.</th>
+                        <th class="center sb-total">Total</th>
+                    </tr>
+                </thead>
+                <tbody>${rows}</tbody>
+            </table>`;
+
+        wrap.querySelectorAll('.sb-adj-btn').forEach((btn) => {
+            btn.addEventListener('click', function() {
+                const participantId = this.dataset.pid;
+                const delta = parseInt(this.dataset.delta, 10);
+                const valueEl = wrap.querySelector(`.sb-adj-val[data-pid="${participantId}"]`);
+                const sumEl = wrap.querySelector(`.sb-sum[data-pid="${participantId}"]`);
+                const currentAdjustment = parseInt(valueEl.textContent, 10) || 0;
+                const newAdjustment = currentAdjustment + delta;
+                const sessionPoints = parseInt(wrap.querySelector(`tr[data-pid="${participantId}"] .sb-total`).textContent, 10) || 0;
+
+                valueEl.textContent = newAdjustment;
+                sumEl.textContent = sessionPoints + newAdjustment;
+
+                fetch('{% url "games_hub:set_hub_participant_score" %}', {
+                    method: 'POST',
+                    headers: {
+                        'X-CSRFToken': '{{ csrf_token }}',
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ participant_id: participantId, score: newAdjustment }),
+                }).catch(() => {
+                    valueEl.textContent = currentAdjustment;
+                    sumEl.textContent = sessionPoints + currentAdjustment;
+                });
+            });
+        });
+    }
+
+    function fetchSessionScoreboard() {
+        fetch(`/hub/api/session/${SESSION_CODE}/leaderboard/`)
+            .then((response) => response.json())
+            .then((data) => renderSessionScoreboard(data))
+            .catch(() => {});
+    }
+
+    function updateScoreboardToggle() {
+        if (!toggleScoreboardBtn || !toggleScoreboardLabel) return;
+        const iconPlaceholder = toggleScoreboardBtn.querySelector('i[data-lucide], svg');
+        toggleScoreboardLabel.textContent = scoreboardVisible ? 'Für Teilnehmer ausblenden' : 'Für Teilnehmer einblenden';
+        if (iconPlaceholder) {
+            iconPlaceholder.setAttribute('data-lucide', scoreboardVisible ? 'eye' : 'eye-off');
+        }
+        lucide.createIcons();
+    }
+
+    async function requestActivation(context, action = null, checkOnly = false) {
+        const response = await fetch(`/hub/api/session/${SESSION_CODE}/activate-game/`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRFToken': '{{ csrf_token }}',
+            },
+            body: JSON.stringify({
+                game_key: context.gameKey,
+                room_code: context.roomCode,
+                action: action,
+                check_only: checkOnly,
+            }),
+        });
+
+        const payload = await response.json().catch(() => ({
+            success: false,
+            error: 'Unbekannter Serverfehler.',
+        }));
+        payload.http_status = response.status;
+        return payload;
+    }
+
+    function openConflictModal(context, onSuccess) {
+        if (!conflictModal || !conflictMessage) {
+            if (!confirm('Ein anderes Spiel ist noch aktiv. Möchtest du es auf inaktiv setzen?')) return;
+            requestActivation(context, 'inactive').then((result) => {
+                if (result.success) {
+                    onSuccess();
+                } else {
+                    alert(result.error || result.message || 'Das Spiel konnte nicht aktiviert werden.');
+                }
+            });
+            return;
+        }
+
+        reactivationConflictState = { context: context, onSuccess: onSuccess };
+        conflictMessage.textContent = `Ein anderes Spiel ist noch aktiv: ${context.activeGameName || 'Unbekanntes Spiel'}`;
+        conflictModal.show();
+    }
+
+    async function resolveConflict(action) {
+        if (!reactivationConflictState) return;
+        if (conflictEndBtn) conflictEndBtn.disabled = true;
+        if (conflictDeactivateBtn) conflictDeactivateBtn.disabled = true;
+
+        const result = await requestActivation(reactivationConflictState.context, action);
+
+        if (conflictEndBtn) conflictEndBtn.disabled = false;
+        if (conflictDeactivateBtn) conflictDeactivateBtn.disabled = false;
+
+        if (!result.success) {
+            if (result.conflict && conflictMessage) {
+                const activeName = result.active_game?.display_name || result.active_game?.title || 'Unbekanntes Spiel';
+                reactivationConflictState.context.activeGameName = activeName;
+                conflictMessage.textContent = `Ein anderes Spiel ist noch aktiv: ${activeName}`;
+                return;
+            }
+            alert(result.error || result.message || 'Das Spiel konnte nicht aktiviert werden.');
+            return;
+        }
+
+        const callback = reactivationConflictState.onSuccess;
+        reactivationConflictState = null;
+        conflictModal?.hide();
+        if (typeof callback === 'function') {
+            callback();
+        }
+    }
+
+    function renderGameInstances(instances) {
+        selectedGameInstanceIds = new Set();
+        if (!gameInstanceList) return;
+
+        if (!instances.length) {
+            gameInstanceList.classList.remove('d-none');
+            gameInstanceList.innerHTML = '<div class="text-muted small px-2 py-2">Keine Spiele dieses Typs gefunden.</div>';
+            return;
+        }
+
+        gameInstanceList.classList.remove('d-none');
+        gameInstanceList.innerHTML = instances.map((instance) => `
+            <label class="quiz-pick-item" data-game-id="${instance.id}">
+                <input type="checkbox" class="form-check-input m-0" value="${instance.id}">
+                <div>
+                    <div class="fw-semibold">${instance.title || 'Ohne Titel'}</div>
+                    ${instance.internal_description ? `<div class="text-muted small">${instance.internal_description}</div>` : ''}
+                    <div class="text-muted small">${instance.q_count} Fragen</div>
+                </div>
+                <span class="quiz-code">${instance.room_code || ''}</span>
+            </label>
+        `).join('');
+
+        gameInstanceList.querySelectorAll('.quiz-pick-item').forEach((item) => {
+            const checkbox = item.querySelector('input[type="checkbox"]');
+            const syncSelection = () => {
+                const gameId = checkbox.value;
+                if (checkbox.checked) {
+                    selectedGameInstanceIds.add(gameId);
+                    item.classList.add('selected');
+                } else {
+                    selectedGameInstanceIds.delete(gameId);
+                    item.classList.remove('selected');
+                }
+            };
+
+            checkbox.addEventListener('change', syncSelection);
+            item.addEventListener('click', (event) => {
+                if (event.target === checkbox) return;
+                checkbox.checked = !checkbox.checked;
+                syncSelection();
+            });
+        });
+    }
+
+    async function loadGameInstances(gameKey) {
+        if (!gameInstanceLoading || !gameInstanceList || !addGameError) return;
+
+        gameInstanceLoading.classList.remove('d-none');
+        gameInstanceList.classList.add('d-none');
+        gameInstanceList.innerHTML = '';
+        addGameError.classList.add('d-none');
+        addGameError.textContent = '';
+
+        try {
+            const response = await fetch(`/hub/api/games/${gameKey}/instances/`);
+            const payload = await response.json();
+            if (!response.ok) {
+                throw new Error(payload.error || 'Die Spiele konnten nicht geladen werden.');
+            }
+            renderGameInstances(payload.instances || []);
+        } catch (error) {
+            gameInstanceList.classList.remove('d-none');
+            addGameError.classList.remove('d-none');
+            addGameError.textContent = error.message || 'Die Spiele konnten nicht geladen werden.';
+        } finally {
+            gameInstanceLoading.classList.add('d-none');
+        }
+    }
+
+    async function persistStepOrder(stepIds) {
+        const response = await fetch(`/hub/api/session/${SESSION_CODE}/reorder-steps/`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRFToken': '{{ csrf_token }}',
+            },
+            body: JSON.stringify({ order: stepIds }),
+        });
+        return response.ok;
+    }
+
+    function bindStepInteractions() {
+        getStepRows().forEach((row) => {
+            row.addEventListener('dragstart', (event) => {
+                draggedStepRow = row;
+                row.classList.add('dragging');
+                event.dataTransfer.effectAllowed = 'move';
+            });
+
+            row.addEventListener('dragend', () => {
+                row.classList.remove('dragging');
+                draggedStepRow = null;
+                getStepRows().forEach((item) => item.classList.remove('drag-over'));
+            });
+
+            row.addEventListener('dragover', (event) => {
+                event.preventDefault();
+                row.classList.add('drag-over');
+            });
+
+            row.addEventListener('dragleave', () => {
+                row.classList.remove('drag-over');
+            });
+
+            row.addEventListener('drop', async (event) => {
+                event.preventDefault();
+                row.classList.remove('drag-over');
+                if (!draggedStepRow || draggedStepRow === row) return;
+
+                const bounds = row.getBoundingClientRect();
+                const dropAfter = event.clientY > bounds.top + (bounds.height / 2);
+                if (dropAfter) {
+                    row.after(draggedStepRow);
+                } else {
+                    row.before(draggedStepRow);
+                }
+
+                updateStepNumbers();
+                const stepIds = getStepRows().map((item) => Number(item.dataset.stepId));
+                const persisted = await persistStepOrder(stepIds);
+                if (!persisted) {
+                    alert('Die neue Reihenfolge konnte nicht gespeichert werden.');
+                }
+                window.location.reload();
+            });
+        });
+    }
+
+    copyLinkBtn?.addEventListener('click', async () => {
+        if (!lobbyLinkInput) return;
+        try {
+            await navigator.clipboard.writeText(lobbyLinkInput.value);
+            copyLinkBtn.textContent = 'Kopiert';
+            setTimeout(() => {
+                copyLinkBtn.innerHTML = '<i data-lucide="copy" class="me-1"></i> Copy';
+                lucide.createIcons();
+            }, 1500);
+        } catch (_) {
+            lobbyLinkInput.select();
+            document.execCommand('copy');
+        }
+    });
+
+    startSessionBtn?.addEventListener('click', () => {
+        startSessionBtn.disabled = true;
+        const sent = sendWhenSocketOpen({ type: 'start_session' });
+        if (!sent) {
+            startSessionBtn.disabled = false;
+            alert('Die Session konnte nicht gestartet werden, weil keine Hub-Verbindung besteht.');
+        }
+    });
+
+    endSessionBtn?.addEventListener('click', () => {
+        if (!confirm('End this session? All game instances will be marked as inactive.')) return;
+        manualEnd = true;
+        endSessionBtn.disabled = true;
+        const sent = sendWhenSocketOpen({ type: 'end_session' });
+        if (!sent) {
+            manualEnd = false;
+            endSessionBtn.disabled = false;
+            alert('Die Session konnte nicht beendet werden, weil keine Hub-Verbindung besteht.');
+        }
+    });
+
+    toggleScoreboardBtn?.addEventListener('click', () => {
+        sendWhenSocketOpen({ type: 'toggle_scoreboard' });
+    });
+
+    gameTypeSelect?.addEventListener('change', () => {
+        if (gameTypeSelect.value) {
+            loadGameInstances(gameTypeSelect.value);
+        }
+    });
+
+    addGameSave?.addEventListener('click', async () => {
+        if (!gameTypeSelect || !addGameError) return;
+
+        const gameKey = gameTypeSelect.value;
+        if (!gameKey) {
+            addGameError.classList.remove('d-none');
+            addGameError.textContent = 'Bitte zuerst einen Spieltyp wählen.';
+            return;
+        }
+
+        if (!selectedGameInstanceIds.size) {
+            addGameError.classList.remove('d-none');
+            addGameError.textContent = 'Bitte mindestens ein Spiel auswählen.';
+            return;
+        }
+
+        addGameError.classList.add('d-none');
+        addGameSave.disabled = true;
+
+        try {
+            const response = await fetch(`/hub/api/session/${SESSION_CODE}/add-step/`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRFToken': '{{ csrf_token }}',
+                },
+                body: JSON.stringify({
+                    game_key: gameKey,
+                    game_ids: Array.from(selectedGameInstanceIds),
+                }),
+            });
+            const payload = await response.json();
+            if (!response.ok || !payload.success) {
+                throw new Error(payload.error || 'Das Spiel konnte nicht zur Session hinzugefügt werden.');
+            }
+            addGameModal?.hide();
+            window.location.reload();
+        } catch (error) {
+            addGameError.classList.remove('d-none');
+            addGameError.textContent = error.message || 'Das Spiel konnte nicht zur Session hinzugefügt werden.';
+        } finally {
+            addGameSave.disabled = false;
+        }
+    });
+
+    addGameModalEl?.addEventListener('hidden.bs.modal', () => {
+        if (gameTypeSelect) gameTypeSelect.value = '';
+        if (gameInstanceList) {
+            gameInstanceList.innerHTML = '';
+            gameInstanceList.classList.add('d-none');
+        }
+        if (gameInstanceLoading) gameInstanceLoading.classList.add('d-none');
+        if (addGameError) {
+            addGameError.classList.add('d-none');
+            addGameError.textContent = '';
+        }
+        selectedGameInstanceIds = new Set();
+    });
+
+    outOfOrderConfirmBtn?.addEventListener('click', () => {
+        const callback = outOfOrderAction;
+        outOfOrderAction = null;
+        outOfOrderModal?.hide();
+        if (typeof callback === 'function') {
+            callback();
+        }
+    });
+
+    conflictEndBtn?.addEventListener('click', () => resolveConflict('end'));
+    conflictDeactivateBtn?.addEventListener('click', () => resolveConflict('inactive'));
+    conflictModalEl?.addEventListener('hidden.bs.modal', () => {
+        reactivationConflictState = null;
+        if (conflictEndBtn) conflictEndBtn.disabled = false;
+        if (conflictDeactivateBtn) conflictDeactivateBtn.disabled = false;
+    });
+
+    document.querySelectorAll('.launch-btn').forEach((button) => {
+        button.addEventListener('click', (event) => {
+            if (button.classList.contains('disabled') || button.getAttribute('aria-disabled') === 'true') {
+                event.preventDefault();
+                return;
+            }
+
+            event.preventDefault();
+            maybeConfirmOutOfOrder(button, () => {
+                navigateToMonitor(button.dataset.gameKey, button.dataset.roomCode);
+            });
+        });
+    });
+
+    document.querySelectorAll('.reactivate-btn').forEach((button) => {
+        button.addEventListener('click', (event) => {
+            event.preventDefault();
+
+            maybeConfirmOutOfOrder(button, async () => {
+                button.disabled = true;
+                const context = {
+                    gameKey: button.dataset.gameKey,
+                    roomCode: button.dataset.roomCode,
+                };
+                const result = await requestActivation(context);
+
+                if (result.success) {
+                    window.location.reload();
+                    return;
+                }
+
+                if (result.conflict) {
+                    context.activeGameName = result.active_game?.display_name || result.active_game?.title || 'Unbekanntes Spiel';
+                    openConflictModal(context, () => window.location.reload());
+                } else {
+                    alert(result.error || result.message || 'Das Spiel konnte nicht reaktiviert werden.');
+                }
+
+                button.disabled = false;
+            });
+        });
+    });
+
+    document.querySelectorAll('.delete-step-btn').forEach((button) => {
+        button.addEventListener('click', async () => {
+            if (!confirm('Dieses Spiel wirklich aus der Session entfernen?')) return;
+
+            button.disabled = true;
+            try {
+                const response = await fetch(`/hub/api/session/${SESSION_CODE}/delete-step/${button.dataset.stepId}/`, {
+                    method: 'POST',
+                    headers: {
+                        'X-CSRFToken': '{{ csrf_token }}',
+                    },
+                });
+                const payload = await response.json();
+                if (!response.ok || !payload.success) {
+                    throw new Error(payload.error || 'Das Spiel konnte nicht entfernt werden.');
+                }
+                window.location.reload();
+            } catch (error) {
+                button.disabled = false;
+                alert(error.message || 'Das Spiel konnte nicht entfernt werden.');
+            }
+        });
+    });
+
+    function handleHubMessage(message) {
+        if (!message || !message.type) return;
+
+        switch (message.type) {
+        case 'connection_established':
+            setStatus('connected', 'Connected');
+            fetchVotes();
+            sendWhenSocketOpen({ type: 'get_state' });
+            break;
+        case 'state':
+            scoreboardVisible = !!message.scoreboard_visible;
+            updateScoreboardToggle();
+            break;
+        case 'vote_update':
+            renderVoteBadges(message.votes || []);
+            break;
+        case 'scoreboard_visibility':
+            scoreboardVisible = !!message.visible;
+            updateScoreboardToggle();
+            break;
+        case 'session_started':
+            window.location.reload();
+            break;
+        case 'session_ended':
+            window.location.href = `/hub/session/${SESSION_CODE}/leaderboard/`;
+            break;
+        case 'navigate':
+            if (message.step && message.step.game_key && message.step.room_code) {
+                navigateToMonitor(message.step.game_key, message.step.room_code);
+            }
+            break;
+        default:
+            break;
+        }
+    }
+
+    function connectHubSocket() {
+        const wsScheme = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        ws = new WebSocket(`${wsScheme}//${window.location.host}/ws/hub/${SESSION_CODE}/`);
+        setStatus('connecting', 'Connecting…');
+
+        ws.onopen = () => {
+            setStatus('connected', 'Connected');
+            fetchVotes();
+            sendWhenSocketOpen({ type: 'get_state' });
+        };
+
+        ws.onmessage = (event) => {
+            try {
+                const data = JSON.parse(event.data);
+                handleHubMessage(data);
+            } catch (_) {}
+        };
+
+        ws.onerror = () => {
+            setStatus('error', 'Connection error');
+        };
+
+        ws.onclose = () => {
+            setStatus('error', 'Disconnected');
+            if (!manualEnd) {
+                setTimeout(() => window.location.reload(), 3000);
+            }
+        };
+    }
+
+    bindStepInteractions();
+    updateStepNumbers();
+    updateScoreboardToggle();
+    fetchVotes();
+    fetchSessionScoreboard();
+    setInterval(fetchSessionScoreboard, 10000);
+    connectHubSocket();
+});
+</script>
+
+{% endblock %}

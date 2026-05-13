@@ -1,0 +1,1142 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Quiz Results - QuizMaster</title>
+    
+    <!-- Bootstrap 5 CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
+    
+    <!-- Custom Theme CSS -->
+    <link rel="stylesheet" href="{% static 'theme.css' %}">
+    
+    <!-- Inter Font -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body class="estimation-result-page">
+    <div class="result-container">
+        <!-- Header -->
+        <header class="result-header">
+            <div class="container">
+                <div class="header-content">
+                    <div class="quiz-info">
+                        <h1 class="quiz-title">{{ quiz.title }}</h1>
+                        <div class="quiz-meta">
+                            <span class="meta-item">
+                                <i data-lucide="calendar"></i>
+                                {{ quiz.started_at|date:"M d, Y" }}
+                            </span>
+                            <span class="meta-item">
+                                <i data-lucide="clock"></i>
+                                {{ quiz.started_at|time:"H:i" }}
+                            </span>
+                            {% if quiz_duration_formatted %}
+                            <span class="meta-item">
+                                <i data-lucide="timer"></i>
+                                Duration: {{ quiz_duration_formatted }}
+                            </span>
+                            {% endif %}
+                        </div>
+                    </div>
+                    <div class="brand-logo">
+                        <i data-lucide="calculator"></i>
+                        <span>Estimation Quiz</span>
+                    </div>
+                </div>
+            </div>
+        </header>
+
+        <!-- Main Content -->
+        <main class="result-main">
+            <div class="container">
+                <div class="row g-4">
+                    <!-- Performance Overview -->
+                    <div class="col-12">
+                        <div class="performance-card">
+                            <div class="row align-items-center">
+                                <div class="col-lg-4 text-center">
+                                    <div class="score-circle-large">
+                                        <div class="score-inner">
+                                            <span class="score-value">{{ participant.total_score }}</span>
+                                            <span class="score-label">points</span>
+                                        </div>
+                                        <svg class="score-progress" viewBox="0 0 100 100">
+                                            <circle cx="50" cy="50" r="40" class="score-progress-bg"></circle>
+                                            <circle cx="50" cy="50" r="40" class="score-progress-bar" 
+                                                    style="--progress: {{ average_accuracy }}"></circle>
+                                        </svg>
+                                    </div>
+                                </div>
+                                <div class="col-lg-8">
+                                    <div class="performance-stats">
+                                        <h2>{{ participant.name }}, here are your estimation results!</h2>
+                                        <div class="stats-grid">
+                                            <div class="stat-item">
+                                                <div class="stat-icon bg-primary">
+                                                    <i data-lucide="target"></i>
+                                                </div>
+                                                <div class="stat-content">
+                                                    <div class="stat-value">{{ average_accuracy|floatformat:1 }}%</div>
+                                                    <div class="stat-label">Avg. Accuracy</div>
+                                                </div>
+                                            </div>
+                                            <div class="stat-item">
+                                                <div class="stat-icon bg-success">
+                                                    <i data-lucide="zap"></i>
+                                                </div>
+                                                <div class="stat-content">
+                                                    <div class="stat-value">{{ best_accuracy|floatformat:1 }}%</div>
+                                                    <div class="stat-label">Best Accuracy</div>
+                                                </div>
+                                            </div>
+                                            <div class="stat-item">
+                                                <div class="stat-icon bg-warning">
+                                                    <i data-lucide="help-circle"></i>
+                                                </div>
+                                                <div class="stat-content">
+                                                    <div class="stat-value">{{ total_answers }}</div>
+                                                    <div class="stat-label">Questions Answered</div>
+                                                </div>
+                                            </div>
+                                            <div class="stat-item">
+                                                <div class="stat-icon bg-secondary">
+                                                    <i data-lucide="trophy"></i>
+                                                </div>
+                                                <div class="stat-content">
+                                                    <div class="stat-value">#{{ participant_rank }}</div>
+                                                    <div class="stat-label">Rank</div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Detailed Results -->
+                    <div class="col-lg-8">
+                        <div class="card">
+                            <div class="card-header">
+                                <h5 class="card-title mb-0">
+                                    <i data-lucide="list"></i>
+                                    Detailed Results
+                                </h5>
+                            </div>
+                            <div class="card-body">
+                                {% if participant_answers %}
+                                    <div class="answer-list">
+                                        {% for answer in participant_answers %}
+                                        <div class="answer-item">
+                                            <div class="answer-header">
+                                                <div class="question-number">Q{{ forloop.counter }}</div>
+                                                <div class="answer-score">
+                                                    <div class="points">+{{ answer.points_earned }} pts</div>
+                                                    <div class="accuracy">{{ answer.get_accuracy_percentage }}% accurate</div>
+                                                </div>
+                                            </div>
+                                            
+                                            <div class="question-content">
+                                                <div class="question-text">{{ answer.question.question_text }}</div>
+                                                
+                                                <div class="estimation-comparison">
+                                                    <div class="comparison-header">
+                                                        <h6>Your Estimation:</h6>
+                                                        <div class="accuracy-badge accuracy-{{ answer.get_accuracy_percentage|floatformat:0 }}">
+                                                            {{ answer.get_accuracy_percentage|floatformat:1 }}% accurate
+                                                        </div>
+                                                    </div>
+                                                    
+                                                    <div class="comparison-display">
+                                                        <div class="estimate-comparison">
+                                                            <div class="estimate-item user-estimate">
+                                                                <div class="estimate-label">Your Estimate</div>
+                                                                <div class="estimate-value">{{ answer.get_formatted_user_answer }}</div>
+                                                                <div class="estimate-indicator">
+                                                                    {% if answer.get_difference_indicator == 'high' %}
+                                                                        <i data-lucide="arrow-up"></i> Too High
+                                                                    {% elif answer.get_difference_indicator == 'low' %}
+                                                                        <i data-lucide="arrow-down"></i> Too Low
+                                                                    {% else %}
+                                                                        <i data-lucide="check"></i> Perfect!
+                                                                    {% endif %}
+                                                                </div>
+                                                            </div>
+                                                            
+                                                            <div class="vs-divider">
+                                                                <span>VS</span>
+                                                            </div>
+                                                            
+                                                            <div class="estimate-item correct-answer">
+                                                                <div class="estimate-label">Correct Answer</div>
+                                                                <div class="estimate-value">{{ answer.question.get_formatted_correct_answer }}</div>
+                                                                <div class="percentage-diff">
+                                                                    {% if answer.get_percentage_difference != 0 %}
+                                                                        {{ answer.get_percentage_difference|floatformat:1 }}% off
+                                                                    {% else %}
+                                                                        Exact match!
+                                                                    {% endif %}
+                                                                </div>
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                                
+                                                {% if answer.question.explanation %}
+                                                    <div class="explanation">
+                                                        <div class="explanation-header">
+                                                            <i data-lucide="info"></i>
+                                                            <strong>Explanation:</strong>
+                                                        </div>
+                                                        <p>{{ answer.question.explanation }}</p>
+                                                    </div>
+                                                {% endif %}
+                                                
+                                                <div class="answer-meta">
+                                                    <span class="time-taken">
+                                                        <i data-lucide="clock"></i>
+                                                        {% if answer.time_taken %}{{ answer.time_taken|floatformat:1 }}s{% else %}-{% endif %}
+                                                    </span>
+                                                    <span class="tolerance-info">
+                                                        <i data-lucide="target"></i>
+                                                        ±{{ answer.question.tolerance_percentage }}% tolerance
+                                                    </span>
+                                                </div>
+                                            </div>
+                                        </div>
+                                        {% endfor %}
+                                    </div>
+                                {% else %}
+                                    <div class="no-answers">
+                                        <i data-lucide="inbox"></i>
+                                        <h4>No Answers Recorded</h4>
+                                        <p>It looks like you didn't answer any questions in this quiz.</p>
+                                    </div>
+                                {% endif %}
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Leaderboard & Actions -->
+                    <div class="col-lg-4">
+                        <!-- Leaderboard -->
+                        <div class="card mb-4">
+                            <div class="card-header">
+                                <h6 class="card-title mb-0">
+                                    <i data-lucide="trophy"></i>
+                                    Leaderboard
+                                </h6>
+                            </div>
+                            <div class="card-body">
+                                <div class="leaderboard">
+                                    {% for participant in leaderboard %}
+                                    <div class="leaderboard-item {% if participant.name == participant.name %}current-user{% endif %}">
+                                        <div class="rank">
+                                            {% if forloop.counter <= 3 %}
+                                                <i data-lucide="medal" class="medal rank-{{ forloop.counter }}"></i>
+                                            {% else %}
+                                                <span class="rank-number">#{{ forloop.counter }}</span>
+                                            {% endif %}
+                                        </div>
+                                        <div class="participant-info">
+                                            <div class="participant-name">
+                                                {{ participant.name }}
+                                                {% if participant.name == participant.name %}
+                                                    <span class="you-badge">YOU</span>
+                                                {% endif %}
+                                            </div>
+                                            <div class="participant-stats">
+                                                <span class="participant-score">{{ participant.total_score }} pts</span>
+                                                <span class="participant-accuracy">{{ participant.get_average_accuracy }}% avg</span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    {% endfor %}
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Performance Insights -->
+                        <div class="card mb-4">
+                            <div class="card-header">
+                                <h6 class="card-title mb-0">
+                                    <i data-lucide="trending-up"></i>
+                                    Performance Insights
+                                </h6>
+                            </div>
+                            <div class="card-body">
+                                <div class="insights">
+                                    {% if average_time %}
+                                    <div class="insight-item">
+                                        <div class="insight-icon">
+                                            <i data-lucide="zap"></i>
+                                        </div>
+                                        <div class="insight-content">
+                                            <div class="insight-value">{{ average_time|floatformat:1 }}s</div>
+                                            <div class="insight-label">Avg. Response Time</div>
+                                        </div>
+                                    </div>
+                                    {% endif %}
+                                    
+                                    {% if fastest_answer %}
+                                    <div class="insight-item">
+                                        <div class="insight-icon">
+                                            <i data-lucide="rocket"></i>
+                                        </div>
+                                        <div class="insight-content">
+                                            <div class="insight-value">{{ fastest_answer|floatformat:1 }}s</div>
+                                            <div class="insight-label">Fastest Answer</div>
+                                        </div>
+                                    </div>
+                                    {% endif %}
+                                    
+                                    <div class="insight-item">
+                                        <div class="insight-icon">
+                                            <i data-lucide="users"></i>
+                                        </div>
+                                        <div class="insight-content">
+                                            <div class="insight-value">{{ total_participants }}</div>
+                                            <div class="insight-label">Total Participants</div>
+                                        </div>
+                                    </div>
+
+                                    <div class="insight-item">
+                                        <div class="insight-icon">
+                                            <i data-lucide="help-circle"></i>
+                                        </div>
+                                        <div class="insight-content">
+                                            <div class="insight-value">{{ total_answers }}</div>
+                                            <div class="insight-label">Questions Answered</div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Actions -->
+                        <div class="result-actions">
+                            <a href="/estimation/join/" class="btn btn-primary w-100 mb-3">
+                                <i data-lucide="calculator"></i>
+                                Join Another Quiz
+                            </a>
+                            <button class="btn btn-outline w-100 mb-3" id="shareResultsBtn">
+                                <i data-lucide="share-2"></i>
+                                Share Results
+                            </button>
+                            <a href="/" class="btn btn-outline w-100">
+                                <i data-lucide="home"></i>
+                                Back to Home
+                            </a>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </main>
+
+        <!-- Footer -->
+        <footer class="result-footer">
+            <div class="container">
+                <div class="row align-items-center">
+                    <div class="col-md-6">
+                        <p>&copy; 2025 QuizMaster. Thanks for estimating with us!</p>
+                    </div>
+                    <div class="col-md-6 text-md-end">
+                    </div>
+                </div>
+            </div>
+        </footer>
+    </div>
+
+    <!-- Bootstrap JS -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+
+    <style>
+        /* Estimation Result Page Styles */
+        .estimation-result-page {
+            min-height: 100vh;
+            background: linear-gradient(135deg, var(--bg-secondary) 0%, var(--primary-50) 100%);
+        }
+
+        .result-container {
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        /* Header */
+        .result-header {
+            background: var(--bg-primary);
+            border-bottom: 1px solid var(--border-color);
+            box-shadow: var(--shadow-sm);
+            padding: 2rem 0;
+        }
+
+        .header-content {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 2rem;
+        }
+
+        .quiz-info {
+            flex: 1;
+        }
+
+        .room-code {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            background-color: var(--primary-100);
+            color: var(--primary-700);
+            padding: 0.5rem 1rem;
+            border-radius: var(--border-radius-xl);
+            font-family: var(--font-family-mono);
+            font-weight: 700;
+            font-size: 0.875rem;
+            margin-bottom: 1rem;
+        }
+
+        .room-code i {
+            width: 16px;
+            height: 16px;
+        }
+
+        .quiz-title {
+            font-size: 2rem;
+            font-weight: 700;
+            color: var(--text-primary);
+            margin-bottom: 0.5rem;
+        }
+
+        .quiz-meta {
+            display: flex;
+            gap: 1.5rem;
+            flex-wrap: wrap;
+        }
+
+        .meta-item {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            color: var(--text-secondary);
+            font-weight: 500;
+            font-size: 0.875rem;
+        }
+
+        .meta-item i {
+            width: 16px;
+            height: 16px;
+            color: var(--color-primary);
+        }
+
+        .brand-logo {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            color: var(--color-primary);
+            font-weight: 700;
+            font-size: 1.25rem;
+        }
+
+        .brand-logo i {
+            width: 32px;
+            height: 32px;
+        }
+
+        /* Main Content */
+        .result-main {
+            flex: 1;
+            padding: 2rem 0;
+        }
+
+        /* Performance Card */
+        .performance-card {
+            background: linear-gradient(135deg, var(--primary-500) 0%, var(--secondary-500) 100%);
+            color: var(--text-white);
+            border-radius: var(--border-radius-xl);
+            padding: 3rem 2rem;
+            box-shadow: var(--shadow-lg);
+            margin-bottom: 2rem;
+        }
+
+        .score-circle-large {
+            position: relative;
+            width: 200px;
+            height: 200px;
+            margin: 0 auto 1rem;
+        }
+
+        .score-inner {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            text-align: center;
+            z-index: 2;
+        }
+
+        .score-value {
+            display: block;
+            font-size: 3rem;
+            font-weight: 700;
+            line-height: 1;
+        }
+
+        .score-label {
+            font-size: 1rem;
+            font-weight: 500;
+            opacity: 0.8;
+        }
+
+        .score-progress {
+            width: 100%;
+            height: 100%;
+            transform: rotate(-90deg);
+        }
+
+        .score-progress-bg {
+            fill: none;
+            stroke: rgba(255, 255, 255, 0.2);
+            stroke-width: 4;
+        }
+
+        .score-progress-bar {
+            fill: none;
+            stroke: var(--text-white);
+            stroke-width: 4;
+            stroke-linecap: round;
+            stroke-dasharray: 251.2;
+            stroke-dashoffset: calc(251.2 * (1 - var(--progress) / 100));
+            transition: stroke-dashoffset 2s ease-out;
+        }
+
+        .performance-stats h2 {
+            font-size: 1.75rem;
+            font-weight: 700;
+            margin-bottom: 2rem;
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+            gap: 1.5rem;
+        }
+
+        .stat-item {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+        }
+
+        .stat-icon {
+            width: 48px;
+            height: 48px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+        }
+
+        .stat-icon.bg-primary {
+            background-color: rgba(255, 255, 255, 0.2);
+        }
+
+        .stat-icon.bg-success {
+            background-color: rgba(16, 185, 129, 0.3);
+        }
+
+        .stat-icon.bg-warning {
+            background-color: rgba(245, 158, 11, 0.3);
+        }
+
+        .stat-icon.bg-secondary {
+            background-color: rgba(6, 182, 212, 0.3);
+        }
+
+        .stat-icon i {
+            width: 24px;
+            height: 24px;
+            color: var(--text-white);
+        }
+
+        .stat-value {
+            font-size: 1.5rem;
+            font-weight: 700;
+            line-height: 1;
+            margin-bottom: 0.25rem;
+        }
+
+        .stat-label {
+            font-size: 0.875rem;
+            opacity: 0.8;
+        }
+
+        /* Answer List */
+        .answer-list {
+            display: flex;
+            flex-direction: column;
+            gap: 1.5rem;
+        }
+
+        .answer-item {
+            border: 1px solid var(--border-color);
+            border-radius: var(--border-radius-lg);
+            padding: 1.5rem;
+            background-color: var(--bg-secondary);
+        }
+
+        .answer-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 1rem;
+        }
+
+        .question-number {
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            background-color: var(--color-primary);
+            color: var(--text-white);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 700;
+            font-size: 0.875rem;
+        }
+
+        .answer-score {
+            text-align: right;
+        }
+
+        .points {
+            font-size: 1.25rem;
+            font-weight: 700;
+            color: var(--color-success);
+            margin-bottom: 0.25rem;
+        }
+
+        .accuracy {
+            color: var(--color-primary);
+            font-size: 0.875rem;
+            font-weight: 500;
+        }
+
+        .question-text {
+            font-size: 1.125rem;
+            font-weight: 600;
+            color: var(--text-primary);
+            margin-bottom: 1.5rem;
+            line-height: 1.6;
+        }
+
+        /* Estimation Comparison */
+        .estimation-comparison {
+            background: var(--bg-primary);
+            border-radius: var(--border-radius);
+            padding: 1.5rem;
+            margin-bottom: 1rem;
+        }
+
+        .comparison-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 1rem;
+        }
+
+        .comparison-header h6 {
+            color: var(--text-primary);
+            font-weight: 600;
+            margin: 0;
+        }
+
+        .accuracy-badge {
+            padding: 0.25rem 0.75rem;
+            border-radius: var(--border-radius);
+            font-size: 0.875rem;
+            font-weight: 500;
+        }
+
+        .accuracy-100, .accuracy-95, .accuracy-90 { 
+            background: var(--success-100); 
+            color: var(--success-700); 
+        }
+        
+        .accuracy-80, .accuracy-85, .accuracy-75 { 
+            background: var(--primary-100); 
+            color: var(--primary-700); 
+        }
+        
+        .accuracy-60, .accuracy-65, .accuracy-70 { 
+            background: var(--warning-100); 
+            color: var(--warning-700); 
+        }
+        
+        .accuracy-0, .accuracy-10, .accuracy-20, .accuracy-30, .accuracy-40, .accuracy-50 { 
+            background: var(--error-100); 
+            color: var(--error-700); 
+        }
+
+        .comparison-display {
+            background: var(--bg-secondary);
+            border-radius: var(--border-radius);
+            padding: 1rem;
+        }
+
+        .estimate-comparison {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+        }
+
+        .estimate-item {
+            flex: 1;
+            text-align: center;
+            padding: 1rem;
+            border-radius: var(--border-radius);
+        }
+
+        .estimate-item.user-estimate {
+            background: var(--primary-50);
+            border: 1px solid var(--primary-200);
+        }
+
+        .estimate-item.correct-answer {
+            background: var(--success-50);
+            border: 1px solid var(--success-200);
+        }
+
+        .estimate-label {
+            font-size: 0.75rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 0.5rem;
+            color: var(--text-muted);
+        }
+
+        .estimate-value {
+            font-size: 1.5rem;
+            font-weight: 700;
+            margin-bottom: 0.5rem;
+        }
+
+        .user-estimate .estimate-value {
+            color: var(--primary-700);
+        }
+
+        .correct-answer .estimate-value {
+            color: var(--success-700);
+        }
+
+        .estimate-indicator {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.25rem;
+            font-size: 0.75rem;
+            font-weight: 500;
+            color: var(--text-muted);
+        }
+
+        .estimate-indicator i {
+            width: 12px;
+            height: 12px;
+        }
+
+        .vs-divider {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-width: 40px;
+            font-weight: 700;
+            color: var(--text-muted);
+            font-size: 0.875rem;
+        }
+
+        .percentage-diff {
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            font-weight: 500;
+        }
+
+        /* Explanation */
+        .explanation {
+            background-color: var(--bg-primary);
+            padding: 1rem;
+            border-radius: var(--border-radius);
+            margin-bottom: 1rem;
+            border-left: 4px solid var(--color-primary);
+        }
+
+        .explanation-header {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            margin-bottom: 0.5rem;
+            color: var(--text-primary);
+        }
+
+        .explanation-header i {
+            width: 16px;
+            height: 16px;
+        }
+
+        .explanation p {
+            margin: 0;
+            color: var(--text-secondary);
+            line-height: 1.6;
+        }
+
+        .answer-meta {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            color: var(--text-muted);
+            font-size: 0.875rem;
+        }
+
+        .time-taken, .tolerance-info {
+            display: flex;
+            align-items: center;
+            gap: 0.25rem;
+        }
+
+        .time-taken i, .tolerance-info i {
+            width: 14px;
+            height: 14px;
+        }
+
+        /* Leaderboard */
+        .leaderboard {
+            display: flex;
+            flex-direction: column;
+            gap: 0.75rem;
+        }
+
+        .leaderboard-item {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            padding: 0.875rem;
+            background-color: var(--bg-secondary);
+            border-radius: var(--border-radius);
+            border: 1px solid var(--border-color);
+        }
+
+        .leaderboard-item.current-user {
+            border-color: var(--color-primary);
+            background-color: var(--primary-50);
+        }
+
+        .rank {
+            width: 32px;
+            height: 32px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+        }
+
+        .medal {
+            width: 24px;
+            height: 24px;
+        }
+
+        .medal.rank-1 {
+            color: #FFD700; /* Gold */
+        }
+
+        .medal.rank-2 {
+            color: #C0C0C0; /* Silver */
+        }
+
+        .medal.rank-3 {
+            color: #CD7F32; /* Bronze */
+        }
+
+        .rank-number {
+            font-weight: 700;
+            color: var(--text-muted);
+            font-size: 0.875rem;
+        }
+
+        .participant-info {
+            flex: 1;
+        }
+
+        .participant-name {
+            font-weight: 600;
+            color: var(--text-primary);
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            margin-bottom: 0.125rem;
+        }
+
+        .you-badge {
+            background-color: var(--color-primary);
+            color: var(--text-white);
+            font-size: 0.625rem;
+            font-weight: 700;
+            padding: 0.125rem 0.375rem;
+            border-radius: var(--border-radius-sm);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .participant-stats {
+            display: flex;
+            gap: 1rem;
+        }
+
+        .participant-score {
+            color: var(--color-success);
+            font-size: 0.875rem;
+            font-weight: 600;
+        }
+
+        .participant-accuracy {
+            color: var(--color-primary);
+            font-size: 0.875rem;
+            font-weight: 500;
+        }
+
+        /* Performance Insights */
+        .insights {
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+        }
+
+        .insight-item {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+        }
+
+        .insight-icon {
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            background-color: var(--color-primary);
+            color: var(--text-white);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+        }
+
+        .insight-icon i {
+            width: 20px;
+            height: 20px;
+        }
+
+        .insight-value {
+            font-size: 1.25rem;
+            font-weight: 700;
+            color: var(--text-primary);
+            margin-bottom: 0.125rem;
+        }
+
+        .insight-label {
+            color: var(--text-muted);
+            font-size: 0.875rem;
+        }
+
+        /* Actions */
+        .result-actions .btn {
+            height: 50px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.5rem;
+            font-weight: 600;
+        }
+
+        /* Footer */
+        .result-footer {
+            background-color: var(--bg-primary);
+            border-top: 1px solid var(--border-color);
+            padding: 2rem 0;
+            margin-top: 2rem;
+        }
+
+        .quiz-id {
+            font-family: var(--font-family-mono);
+            color: var(--text-muted);
+            font-size: 0.875rem;
+        }
+
+        /* No Answers State */
+        .no-answers {
+            text-align: center;
+            padding: 3rem 2rem;
+            color: var(--text-muted);
+        }
+
+        .no-answers i {
+            width: 64px;
+            height: 64px;
+            margin-bottom: 1rem;
+            opacity: 0.5;
+        }
+
+        /* Responsive Design */
+        @media (max-width: 768px) {
+            .result-header {
+                padding: 1.5rem 0;
+            }
+            
+            .header-content {
+                flex-direction: column;
+                text-align: center;
+                gap: 1.5rem;
+            }
+
+            .quiz-title {
+                font-size: 1.5rem;
+            }
+
+            .performance-card {
+                padding: 2rem 1.5rem;
+            }
+
+            .score-circle-large {
+                width: 150px;
+                height: 150px;
+            }
+
+            .score-value {
+                font-size: 2rem;
+            }
+
+            .stats-grid {
+                grid-template-columns: repeat(2, 1fr);
+                gap: 1rem;
+            }
+
+            .stat-item {
+                flex-direction: column;
+                text-align: center;
+                gap: 0.5rem;
+            }
+
+            .answer-item {
+                padding: 1rem;
+            }
+
+            .answer-header {
+                flex-direction: column;
+                align-items: flex-start;
+                gap: 1rem;
+            }
+
+            .comparison-header {
+                flex-direction: column;
+                align-items: flex-start;
+                gap: 0.5rem;
+            }
+
+            .estimate-comparison {
+                flex-direction: column;
+                gap: 1rem;
+            }
+
+            .vs-divider {
+                transform: rotate(90deg);
+            }
+        }
+
+        @media (max-width: 576px) {
+            .result-main {
+                padding: 1rem 0;
+            }
+
+            .performance-card {
+                margin-bottom: 1rem;
+            }
+
+            .stats-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .quiz-meta {
+                flex-direction: column;
+                gap: 0.5rem;
+                align-items: flex-start;
+            }
+        }
+    </style>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            lucide.createIcons();
+
+            // Animate progress circle
+            const progressBar = document.querySelector('.score-progress-bar');
+            if (progressBar) {
+                // Trigger animation after a short delay
+                setTimeout(() => {
+                    progressBar.style.transition = 'stroke-dashoffset 2s ease-out';
+                }, 500);
+            }
+
+            // Share results functionality
+            document.getElementById('shareResultsBtn')?.addEventListener('click', function() {
+                const shareText = `I just completed an Estimation Quiz on QuizMaster! 🎯\n\nMy Results:\n• Score: {{ participant.total_score }} points\n• Avg. Accuracy: {{ average_accuracy|floatformat:1 }}%\n• Best Accuracy: {{ best_accuracy|floatformat:1 }}%\n• Rank: #{{ participant_rank }}\n• Questions: {{ total_answers }}\n\nQuiz: {{ quiz.title }}`;
+                
+                if (navigator.share) {
+                    navigator.share({
+                        title: 'My Estimation Quiz Results - QuizMaster',
+                        text: shareText,
+                        url: window.location.href
+                    });
+                } else {
+                    // Fallback: copy to clipboard
+                    navigator.clipboard.writeText(shareText + '\n\n' + window.location.href).then(() => {
+                        // Show success message
+                        const btn = this;
+                        const originalText = btn.innerHTML;
+                        btn.innerHTML = '<i data-lucide="check"></i> Copied to clipboard!';
+                        
+                        setTimeout(() => {
+                            btn.innerHTML = originalText;
+                            lucide.createIcons();
+                        }, 2000);
+                    });
+                }
+            });
+
+            // Add smooth scrolling to answer items
+            const answerItems = document.querySelectorAll('.answer-item');
+            const observer = new IntersectionObserver((entries) => {
+                entries.forEach((entry, index) => {
+                    if (entry.isIntersecting) {
+                        setTimeout(() => {
+                            entry.target.style.opacity = '1';
+                            entry.target.style.transform = 'translateY(0)';
+                        }, index * 100);
+                    }
+                });
+            }, { threshold: 0.1 });
+
+            answerItems.forEach((item, index) => {
+                item.style.opacity = '0';
+                item.style.transform = 'translateY(20px)';
+                item.style.transition = 'opacity 0.5s ease-out, transform 0.5s ease-out';
+                observer.observe(item);
+            });
+        });
+    </script>
+</body>
+</html>

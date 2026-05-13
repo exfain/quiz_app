@@ -1,0 +1,144 @@
+{% comment %}
+Reusable Question Bank Modal for all game monitor pages.
+Required context variables:
+  - qb_game_key:  game key string (e.g. 'sorting_ladder', 'quiz', ...)
+  - qb_room_code: room code of the current quiz instance
+  - qb_quiz:      the quiz/game object (must have .selected_questions M2M)
+{% endcomment %}
+
+<!-- Question Bank Modal -->
+<div class="modal fade" id="questionBankModal" tabindex="-1" aria-labelledby="questionBankModalLabel" aria-hidden="true">
+  <div class="modal-dialog modal-lg modal-dialog-scrollable">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="questionBankModalLabel">
+          <i data-lucide="database" style="width:18px;height:18px;vertical-align:-3px;margin-right:6px;"></i>
+          Question Bank
+        </h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-header border-top-0 pt-0">
+        <input type="text" class="form-control form-control-sm" id="qbSearchInput" placeholder="Search questions…">
+      </div>
+      <div class="modal-body p-0">
+        <div id="qbLoadingState" class="text-center py-5">
+          <div class="spinner-border text-primary" role="status"></div>
+          <p class="mt-2 text-muted">Loading questions…</p>
+        </div>
+        <div id="qbEmptyState" class="text-center py-5 d-none">
+          <i data-lucide="inbox" style="width:40px;height:40px;color:#adb5bd;"></i>
+          <p class="mt-2 text-muted">No questions found.</p>
+        </div>
+        <ul class="list-group list-group-flush" id="qbQuestionList"></ul>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  const GAME_KEY   = '{{ qb_game_key }}';
+  const ROOM_CODE  = '{{ qb_room_code }}';
+  const CSRF       = '{{ csrf_token }}';
+  const ADD_URL    = '{% url "admin_dashboard:add_question_from_bank" %}';
+  const FETCH_URL  = `/hub/api/games/${GAME_KEY}/questions/`;
+
+  // IDs already assigned to this quiz
+  const assignedIds = new Set([{% for q in qb_quiz.selected_questions.all %}{{ q.id }}{% if not forloop.last %},{% endif %}{% endfor %}]);
+
+  let allQuestions = [];
+
+  function renderList(questions) {
+    const list = document.getElementById('qbQuestionList');
+    const empty = document.getElementById('qbEmptyState');
+    list.innerHTML = '';
+    if (!questions.length) {
+      empty.classList.remove('d-none');
+      return;
+    }
+    empty.classList.add('d-none');
+    questions.forEach(q => {
+      const assigned = assignedIds.has(q.id);
+      const li = document.createElement('li');
+      li.className = 'list-group-item d-flex justify-content-between align-items-start gap-2 py-2 px-3';
+      li.innerHTML = `
+        <span class="flex-grow-1" style="font-size:0.9rem;">${escapeHtml(q.text)}</span>
+        ${assigned
+          ? `<span class="badge bg-success align-self-center" style="white-space:nowrap;">Added</span>`
+          : `<button class="btn btn-sm btn-outline-primary qb-add-btn align-self-center" data-qid="${q.id}" style="white-space:nowrap;">
+               <i data-lucide="plus" style="width:13px;height:13px;"></i> Add
+             </button>`
+        }
+      `;
+      list.appendChild(li);
+    });
+    lucide.createIcons({ scope: list });
+  }
+
+  function filterAndRender() {
+    const q = document.getElementById('qbSearchInput').value.trim().toLowerCase();
+    renderList(q ? allQuestions.filter(item => item.text.toLowerCase().includes(q)) : allQuestions);
+  }
+
+  function escapeHtml(str) {
+    return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+
+  // Load questions when modal opens
+  document.getElementById('questionBankModal').addEventListener('show.bs.modal', function () {
+    if (allQuestions.length) return; // already loaded
+    fetch(FETCH_URL)
+      .then(r => r.json())
+      .then(data => {
+        allQuestions = data.questions || [];
+        document.getElementById('qbLoadingState').classList.add('d-none');
+        filterAndRender();
+      })
+      .catch(() => {
+        document.getElementById('qbLoadingState').innerHTML =
+          '<p class="text-danger py-4 text-center">Failed to load questions.</p>';
+      });
+  });
+
+  // Search
+  document.getElementById('qbSearchInput').addEventListener('input', filterAndRender);
+
+  // Add button click (event delegation)
+  document.getElementById('qbQuestionList').addEventListener('click', function (e) {
+    const btn = e.target.closest('.qb-add-btn');
+    if (!btn) return;
+    const qid = parseInt(btn.dataset.qid);
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
+    fetch(ADD_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-CSRFToken': CSRF },
+      body: JSON.stringify({ game_key: GAME_KEY, room_code: ROOM_CODE, question_id: qid }),
+    })
+    .then(r => r.json())
+    .then(data => {
+      if (data.success) {
+        assignedIds.add(qid);
+        // Replace button with "Added" badge
+        btn.replaceWith(Object.assign(document.createElement('span'), {
+          className: 'badge bg-success align-self-center',
+          textContent: 'Added',
+        }));
+        // Reload page so question appears in the control panel
+        setTimeout(() => window.location.reload(), 600);
+      } else {
+        alert('Error: ' + (data.error || 'Unknown error'));
+        btn.disabled = false;
+        btn.innerHTML = '<i data-lucide="plus" style="width:13px;height:13px;"></i> Add';
+        lucide.createIcons({ scope: btn.parentElement });
+      }
+    })
+    .catch(() => {
+      alert('Network error');
+      btn.disabled = false;
+      btn.innerHTML = '<i data-lucide="plus" style="width:13px;height:13px;"></i> Add';
+      lucide.createIcons({ scope: btn.parentElement });
+    });
+  });
+})();
+</script>

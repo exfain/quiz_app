@@ -1,0 +1,154 @@
+{% comment %}Leaderboard Overlay — eingeblendet via admin_show_leaderboard WS-Message.
+Verwendung in play.html: {% include 'includes/_leaderboard_overlay.html' %}
+Im WS-switch muss folgendes stehen:
+    case 'show_leaderboard':
+        window.showLeaderboard(this.hubSession);
+        break;
+{% endcomment %}
+<style>
+.lb-overlay {
+    position: fixed;
+    top: 80px;
+    right: 1rem;
+    width: 280px;
+    z-index: 1050;
+    border-radius: 1rem;
+    box-shadow: 0 4px 24px rgba(0,0,0,.18);
+    overflow: hidden;
+    max-height: calc(100vh - 100px);
+    display: flex;
+    flex-direction: column;
+}
+.lb-overlay .leaderboard-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: .9rem 1.1rem;
+    border-bottom: 1px solid #e2e8f0;
+    background: linear-gradient(135deg, #eef2ff 0%, #f0fdf4 100%);
+}
+.lb-overlay .leaderboard-title {
+    margin: 0;
+    font-size: .95rem;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    gap: .4rem;
+    color: #1e293b;
+}
+.lb-overlay .leaderboard-title i { width: 16px; height: 16px; color: #f59e0b; }
+.lb-overlay .leaderboard-body {
+    padding: .5rem 0;
+    max-height: 420px;
+    overflow-y: auto;
+    background: #fff;
+}
+.lb-overlay .lb-row {
+    display: flex;
+    align-items: center;
+    gap: .6rem;
+    padding: .55rem 1rem;
+    transition: background .15s;
+}
+.lb-overlay .lb-row:hover { background: #f8fafc; }
+.lb-overlay .lb-row.lb-me {
+    background: #eef2ff;
+    border-left: 3px solid #6366f1;
+}
+.lb-overlay .lb-rank {
+    width: 22px;
+    text-align: center;
+    font-weight: 700;
+    font-size: .82rem;
+    color: #64748b;
+    flex-shrink: 0;
+}
+.lb-overlay .lb-rank.top1 { color: #f59e0b; }
+.lb-overlay .lb-rank.top2 { color: #94a3b8; }
+.lb-overlay .lb-rank.top3 { color: #b45309; }
+.lb-overlay .lb-avatar {
+    width: 30px; height: 30px;
+    border-radius: 50%;
+    background: #e0e7ff;
+    color: #4338ca;
+    font-weight: 700;
+    font-size: .8rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+}
+.lb-overlay .lb-me .lb-avatar { background: #6366f1; color: #fff; }
+.lb-overlay .lb-name { flex: 1; font-size: .88rem; font-weight: 500; color: #1e293b; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lb-overlay .lb-me .lb-name { font-weight: 700; }
+.lb-overlay .lb-score { font-size: .88rem; font-weight: 700; color: #4f46e5; flex-shrink: 0; }
+.lb-overlay .lb-loading,
+.lb-overlay .lb-empty {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: .5rem;
+    padding: 1.5rem;
+    color: #94a3b8;
+    font-size: .88rem;
+}
+</style>
+
+<!-- Leaderboard Overlay (wird nur auf Admin-Befehl eingeblendet) -->
+<div id="leaderboardSidebar" class="lb-overlay d-none">
+    <div class="leaderboard-header">
+        <h6 class="leaderboard-title">
+            <i data-lucide="trophy"></i>
+            Leaderboard
+        </h6>
+    </div>
+    <div class="leaderboard-body" id="leaderboardList">
+        <div class="lb-loading">
+            <i data-lucide="loader"></i>
+            <span>Loading...</span>
+        </div>
+    </div>
+</div>
+
+<script>
+(function () {
+    const MY_NAME = '{{ participant.name }}';
+
+    function renderLeaderboard(participants) {
+        const list = document.getElementById('leaderboardList');
+        if (!list) return;
+        if (!participants || participants.length === 0) {
+            list.innerHTML = '<div class="lb-empty"><span>Noch keine Daten</span></div>';
+            return;
+        }
+        const sorted = [...participants].sort((a, b) => (b.total_score ?? 0) - (a.total_score ?? 0));
+        list.innerHTML = sorted.map((p, i) => {
+            const rank = i + 1;
+            const isMe = p.name === MY_NAME;
+            const rankClass = rank === 1 ? 'top1' : rank === 2 ? 'top2' : rank === 3 ? 'top3' : '';
+            const rankDisplay = rank <= 3 ? ['🥇', '🥈', '🥉'][rank - 1] : rank;
+            return `<div class="lb-row${isMe ? ' lb-me' : ''}">
+                <div class="lb-rank ${rankClass}">${rankDisplay}</div>
+                <div class="lb-avatar">${p.name.charAt(0).toUpperCase()}</div>
+                <div class="lb-name">${p.name}${isMe ? ' (Du)' : ''}</div>
+                <div class="lb-score">${p.total_score ?? 0} pts</div>
+            </div>`;
+        }).join('');
+        try { lucide.createIcons(); } catch (_) {}
+    }
+
+    window.fetchLeaderboard = function (hubSession) {
+        if (!hubSession) return;
+        fetch('/hub/api/session/' + hubSession + '/leaderboard/')
+            .then(r => r.json())
+            .then(data => { if (data.participants) renderLeaderboard(data.participants); })
+            .catch(() => {});
+    };
+
+    window.showLeaderboard = function (hubSession) {
+        const sb = document.getElementById('leaderboardSidebar');
+        if (sb) sb.classList.remove('d-none');
+        window.fetchLeaderboard(hubSession);
+    };
+})();
+</script>

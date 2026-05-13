@@ -1,0 +1,977 @@
+{% extends "admin_dashboard/base.html" %}
+
+{% block title %}Drag & Drop Quiz Management - QuizMaster Admin{% endblock %}
+
+{% block page_title %}Drag & Drop Quiz Management{% endblock %}
+{% block page_subtitle %}Add, edit and delete questions{% endblock %}
+
+{% block content %}
+<div class="assign-management-content">
+    <!-- New Question Button -->
+    <div class="d-flex justify-content-end mb-3">
+        <button type="button" class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#editQuestionModal" id="newQuestionBtn">
+            <i data-lucide="plus" style="width:16px;height:16px;" class="me-1"></i> New Question
+        </button>
+    </div>
+
+    <!-- Questions Bank Card -->
+    <div class="card mb-4">
+        <div class="card-header">
+            <h5 class="card-title mb-0">
+                <i data-lucide="database"></i>
+                Question Bank
+                <span class="badge bg-secondary ms-2" id="questionCountBadge">{{ total_questions }}</span>
+            </h5>
+        </div>
+        <div class="card-body p-0">
+            <div class="table-responsive">
+                <table class="table table-hover mb-0">
+                    <thead class="table-light">
+                        <tr>
+                            <th>Question</th>
+                            <th>Time (s)</th>
+                            <th>Created</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="questionsTableBody">
+                        <tr><td colspan="4" class="text-center py-4">
+                            <div class="spinner-border spinner-border-sm text-secondary me-2" role="status"></div>
+                            Loading questions...
+                        </td></tr>
+                    </tbody>
+                </table>
+            </div>
+            <div class="d-flex justify-content-between align-items-center px-3 py-2 border-top">
+                <div class="text-muted small" id="questionCount"></div>
+                <nav><ul class="pagination pagination-sm mb-0" id="pagination"></ul></nav>
+            </div>
+        </div>
+    </div>
+
+    <!-- Bundles Card -->
+    <div class="card mb-4">
+        <div class="card-header d-flex justify-content-between align-items-center">
+            <h5 class="card-title mb-0">
+                <i data-lucide="layers"></i> Bundles
+                <span class="badge bg-secondary ms-2" id="bundleCountBadge">{{ bundles|length }}</span>
+            </h5>
+            <button type="button" class="btn btn-primary btn-sm" data-bs-toggle="modal" data-bs-target="#createBundleModal">
+                <i data-lucide="plus"></i> Neues Bundle
+            </button>
+        </div>
+        <div class="card-body p-0">
+            <table class="table table-hover mb-0">
+                <thead class="table-light">
+                    <tr><th>Name</th><th>Fragen</th><th>Erstellt</th><th>Aktionen</th></tr>
+                </thead>
+                <tbody id="bundleTableBody">
+                    {% for bundle in bundles %}
+                    <tr id="bundle-row-{{ bundle.id }}">
+                        <td class="fw-semibold">{{ bundle.name }}</td>
+                        <td>{{ bundle.questions.count }} Fragen</td>
+                        <td class="text-muted small">{{ bundle.created_at|date:"d.m.Y" }}</td>
+                        <td><button class="btn btn-sm btn-outline-danger delete-bundle-btn" data-bundle-id="{{ bundle.id }}" data-bundle-name="{{ bundle.name }}"><i data-lucide="trash-2"></i></button></td>
+                    </tr>
+                    {% empty %}
+                    <tr id="bundleEmptyRow"><td colspan="4" class="text-center py-4 text-muted">Noch keine Bundles erstellt.</td></tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+</div>
+
+<!-- Create Bundle Modal -->
+<div class="modal fade" id="createBundleModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-xl">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title"><i data-lucide="layers"></i> Neues Bundle</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="mb-3">
+                    <label class="form-label fw-semibold">Bundle-Name *</label>
+                    <input type="text" class="form-control" id="bundleName" placeholder="z.B. Tier-Zuordnungen">
+                </div>
+                <p class="text-muted small mb-2">Fragen auswählen:</p>
+                <div class="table-responsive">
+                    <table class="table table-hover">
+                        <thead class="table-light">
+                            <tr>
+                                <th style="width:40px;"><input type="checkbox" id="selectAllBundleQuestions"></th>
+                                <th>Frage</th><th>Zeit (s)</th>
+                            </tr>
+                        </thead>
+                        <tbody id="bundleQuestionsTableBody"></tbody>
+                    </table>
+                </div>
+                <div class="d-flex justify-content-between align-items-center mt-2">
+                    <div class="text-muted small" id="bundleQuestionCount">Lade Fragen...</div>
+                    <ul class="pagination pagination-sm mb-0" id="bundleQuestionPagination"></ul>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Abbrechen</button>
+                <button type="button" class="btn btn-primary" id="saveBundleBtn"><i data-lucide="save"></i> Bundle speichern</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Create Custom Quiz Modal -->
+<div class="modal fade" id="createCustomQuizModal" tabindex="-1" aria-labelledby="createCustomQuizModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-xl">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="createCustomQuizModalLabel">
+                    <i data-lucide="layers"></i>
+                    Create Custom Quiz
+                </h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div class="row g-3 mb-3">
+                    <div class="col-md-6">
+                        <input type="text" class="form-control" id="customQuizTitle" placeholder="Enter quiz name" value="Custom Quiz">
+                    </div>
+                </div>
+                <div class="table-responsive">
+                    <table class="table table-hover">
+                        <thead class="table-light">
+                            <tr>
+                                <th style="width:40px;"><input type="checkbox" id="selectAllQuestions"></th>
+                                <th>Question</th>
+                                <th>Time (s)</th>
+                                <th>Created</th>
+                            </tr>
+                        </thead>
+                        <tbody id="customQuestionsTableBody"></tbody>
+                    </table>
+                </div>
+                <div class="d-flex justify-content-between align-items-center mt-2">
+                    <div class="text-muted" id="customQuestionCount">Loading questions...</div>
+                    <ul class="pagination mb-0" id="customPagination"></ul>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-outline" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-primary" id="createCustomQuizBtn">
+                    <i data-lucide="check"></i>
+                    Create Quiz
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Delete Confirmation Modal -->
+<div class="modal fade" id="deleteQuestionModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Delete Question</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <p>Are you sure you want to delete this question? This action cannot be undone.</p>
+                <p class="text-danger"><strong>Note:</strong> If this question has been used in any games, it will be deactivated instead of deleted.</p>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-danger" id="confirmDeleteBtn">Delete Question</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+.assign-management-content {
+    /*max-width: 1400px;*/
+}
+
+.action-buttons {
+    display: flex;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+}
+
+.empty-state {
+    text-align: center;
+    padding: 3rem 2rem;
+    color: var(--text-muted);
+}
+
+.empty-state i {
+    width: 64px;
+    height: 64px;
+    color: var(--text-muted);
+    margin-bottom: 1rem;
+}
+
+.empty-state h4 {
+    color: var(--text-primary);
+    margin-bottom: 0.5rem;
+}
+
+/* Items Builder */
+.items-builder {
+    border: 1px solid var(--border-color);
+    border-radius: var(--border-radius);
+    padding: 1.5rem;
+    background: var(--bg-secondary);
+}
+
+.items-column-label {
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--text-muted);
+}
+
+.items-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+
+.item-input-group {
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+}
+
+.item-input-group .form-control {
+    flex: 1;
+}
+
+.remove-item {
+    padding: 0.375rem 0.5rem;
+    font-size: 0.875rem;
+    color: var(--color-error);
+    border-color: var(--error-200);
+    flex-shrink: 0;
+}
+
+.remove-item:hover {
+    background: var(--error-50);
+    border-color: var(--color-error);
+    color: var(--color-error);
+}
+
+.modal-content {
+    border: none;
+    box-shadow: var(--shadow-xl);
+    border-radius: var(--border-radius-lg);
+}
+
+.modal-header {
+    background-color: var(--bg-secondary);
+    border-bottom: 1px solid var(--border-color);
+    border-radius: var(--border-radius-lg) var(--border-radius-lg) 0 0;
+}
+
+.modal-title {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-weight: 600;
+}
+
+.modal-title i {
+    width: 20px;
+    height: 20px;
+    color: var(--color-secondary);
+}
+
+.form-label {
+    font-weight: 500;
+    color: var(--text-primary);
+}
+
+.btn.loading {
+    position: relative;
+    color: transparent !important;
+}
+
+.btn.loading::after {
+    content: '';
+    position: absolute;
+    width: 16px;
+    height: 16px;
+    top: 50%;
+    left: 50%;
+    margin-left: -8px;
+    margin-top: -8px;
+    border: 2px solid transparent;
+    border-top-color: currentColor;
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+}
+
+.table th {
+    border-bottom: 2px solid var(--border-color);
+    color: var(--text-primary);
+    font-weight: 600;
+    font-size: 0.875rem;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.table td {
+    vertical-align: middle;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.table-hover tbody tr:hover {
+    background-color: var(--bg-secondary);
+}
+
+@media (max-width: 768px) {
+    .match-pair-row {
+        grid-template-columns: 1fr auto 1fr auto;
+    }
+    .action-buttons {
+        justify-content: center;
+    }
+    .table-responsive {
+        font-size: 0.875rem;
+    }
+}
+</style>
+
+<script>
+    function getCookie(name) {
+        let cookieValue = null;
+        if (document.cookie && document.cookie !== '') {
+            const cookies = document.cookie.split(';');
+            for (let i = 0; i < cookies.length; i++) {
+                const cookie = cookies[i].trim();
+                if (cookie.substring(0, name.length + 1) === (name + '=')) {
+                    cookieValue = decodeURIComponent(cookie.substring(name.length + 1));
+                    break;
+                }
+            }
+        }
+        return cookieValue;
+    }
+
+    function showNotification(message, type = 'info') {
+        const notification = document.createElement('div');
+        notification.className = `alert alert-${type} notification-toast`;
+        notification.textContent = message;
+        notification.style.cssText = `
+            position: fixed; top: 20px; right: 20px; z-index: 9999;
+            min-width: 250px; opacity: 0; transform: translateX(100%);
+            transition: all 0.3s ease;
+        `;
+        document.body.appendChild(notification);
+        setTimeout(() => { notification.style.opacity = '1'; notification.style.transform = 'translateX(0)'; }, 100);
+        setTimeout(() => {
+            notification.style.opacity = '0'; notification.style.transform = 'translateX(100%)';
+            setTimeout(() => notification.remove(), 300);
+        }, 3000);
+    }
+
+    document.addEventListener('DOMContentLoaded', function() {
+        lucide.createIcons();
+
+        const deleteQuestionModal = document.getElementById('deleteQuestionModal');
+        const questionsTableBody = document.getElementById('questionsTableBody');
+        const questionCount = document.getElementById('questionCount');
+        const pagination = document.getElementById('pagination');
+        const submitQuestionBtn = document.getElementById('submitQuestionBtn');
+        const confirmDeleteBtn = document.getElementById('confirmDeleteBtn');
+
+        // Custom Quiz Modal state
+        let assignEditMode = false;
+        let assignSelectedIds = new Set();
+        let assignCurrentQuizId = null;
+        const createCustomQuizModal = document.getElementById('createCustomQuizModal');
+        const createCustomQuizBtn = document.getElementById('createCustomQuizBtn');
+        const selectAllQuestions = document.getElementById('selectAllQuestions');
+
+        // Items builder state
+        let leftCounter = 2;
+        let rightCounter = 2;
+
+        // Load questions on page load
+        loadBankQuestions(1);
+
+        // Auto-open edit modal if ?edit=ID in URL
+        const autoEditId = new URLSearchParams(window.location.search).get('edit');
+        if (autoEditId) openEditById(autoEditId);
+
+        // Reset form when modal closes
+        document.getElementById('editQuestionModal').addEventListener('hidden.bs.modal', () => resetForm());
+
+        // Add Left Item button
+        document.getElementById('addLeftItem').addEventListener('click', function() {
+            leftCounter++;
+            addItemToList('leftItemsList', 'left-item', `Item ${leftCounter}`);
+        });
+
+        // Add Right Item button
+        document.getElementById('addRightItem').addEventListener('click', function() {
+            rightCounter++;
+            addItemToList('rightItemsList', 'right-item', `Match ${rightCounter}`);
+        });
+
+        function addItemToList(listId, itemClass, placeholder) {
+            const list = document.getElementById(listId);
+            const group = document.createElement('div');
+            group.className = 'item-input-group';
+            group.innerHTML = `
+                <input type="text" class="form-control ${itemClass}" placeholder="${placeholder}">
+                <button type="button" class="btn btn-outline btn-sm remove-item"><i data-lucide="x"></i></button>
+            `;
+            list.appendChild(group);
+            lucide.createIcons();
+            bindRemoveHandlers();
+        }
+
+        function bindRemoveHandlers() {
+            document.querySelectorAll('#leftItemsList .remove-item').forEach(btn => {
+                btn.onclick = function() {
+                    const items = document.querySelectorAll('#leftItemsList .item-input-group');
+                    if (items.length > 1) this.closest('.item-input-group').remove();
+                    else alert('At least one left item is required.');
+                };
+            });
+            document.querySelectorAll('#rightItemsList .remove-item').forEach(btn => {
+                btn.onclick = function() {
+                    const items = document.querySelectorAll('#rightItemsList .item-input-group');
+                    if (items.length > 1) this.closest('.item-input-group').remove();
+                    else alert('At least one right item is required.');
+                };
+            });
+        }
+
+        function renderAssignItems(leftItemsArr, rightItemsArr) {
+            const leftList = document.getElementById('leftItemsList');
+            const rightList = document.getElementById('rightItemsList');
+            leftList.innerHTML = '';
+            rightList.innerHTML = '';
+            const maxLeft = Math.max(leftItemsArr.length, 2);
+            const maxRight = Math.max(rightItemsArr.length, 2);
+            for (let i = 0; i < maxLeft; i++) {
+                const val = (leftItemsArr[i] ?? '').toString().replace(/"/g, '&quot;');
+                const group = document.createElement('div');
+                group.className = 'item-input-group';
+                group.innerHTML = `<input type="text" class="form-control left-item" placeholder="Item ${i + 1}" value="${val}"><button type="button" class="btn btn-outline btn-sm remove-item"><i data-lucide="x"></i></button>`;
+                leftList.appendChild(group);
+            }
+            for (let i = 0; i < maxRight; i++) {
+                const val = (rightItemsArr[i] ?? '').toString().replace(/"/g, '&quot;');
+                const group = document.createElement('div');
+                group.className = 'item-input-group';
+                group.innerHTML = `<input type="text" class="form-control right-item" placeholder="Match ${i + 1}" value="${val}"><button type="button" class="btn btn-outline btn-sm remove-item"><i data-lucide="x"></i></button>`;
+                rightList.appendChild(group);
+            }
+            leftCounter = maxLeft;
+            rightCounter = maxRight;
+            lucide.createIcons();
+            bindRemoveHandlers();
+        }
+
+        // Initial setup
+        bindRemoveHandlers();
+
+        // Form submit (add or edit)
+        document.getElementById('addQuestionForm').addEventListener('submit', function(e) {
+            e.preventDefault();
+            submitQuestionBtn.classList.add('loading');
+            const isEdit = submitQuestionBtn.dataset.mode === 'edit';
+
+            const questionText = document.getElementById('questionText').value.trim();
+            const timeLimit = parseInt(document.getElementById('timeLimit').value);
+            const leftItems = Array.from(document.querySelectorAll('#leftItemsList .left-item')).map(i => i.value.trim()).filter(v => v);
+            const rightItems = Array.from(document.querySelectorAll('#rightItemsList .right-item')).map(i => i.value.trim()).filter(v => v);
+            const correctMatches = {};
+            const matchCount = Math.min(leftItems.length, rightItems.length);
+            for (let i = 0; i < matchCount; i++) { correctMatches[i] = i; }
+
+            if (!questionText || leftItems.length === 0) {
+                alert('Please fill in the question text and add at least one left item.');
+                submitQuestionBtn.classList.remove('loading');
+                return;
+            }
+
+            const requestData = { question_text: questionText, time_limit: timeLimit, left_items: leftItems, right_items: rightItems, correct_matches: correctMatches };
+            if (isEdit) requestData.question_id = document.getElementById('questionId').value;
+
+            const url = isEdit
+                ? '{% url "admin_dashboard:update_assign_question" %}'
+                : '{% url "admin_dashboard:add_assign_question" %}';
+
+            fetch(url, {
+                method: 'POST',
+                headers: { 'X-CSRFToken': getCookie('csrftoken'), 'Content-Type': 'application/json' },
+                body: JSON.stringify(requestData)
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) {
+                    showNotification(isEdit ? 'Question updated successfully!' : 'Question added successfully!', 'success');
+                    bootstrap.Modal.getInstance(document.getElementById('editQuestionModal'))?.hide();
+                    loadBankQuestions(1);
+                } else {
+                    alert('Error: ' + (data.error || 'Unknown error'));
+                }
+            })
+            .catch(() => alert('Error saving question.'))
+            .finally(() => submitQuestionBtn.classList.remove('loading'));
+        });
+
+        // Load questions inline
+        function loadBankQuestions(page) {
+            fetch('{% url "admin_dashboard:get_assign_questions" %}?page=' + page, {
+                method: 'GET',
+                headers: { 'X-CSRFToken': getCookie('csrftoken') },
+            })
+            .then(r => r.json())
+            .then(data => {
+                questionsTableBody.innerHTML = '';
+                questionCount.textContent = `${data.count} Questions`;
+                document.getElementById('questionCountBadge').textContent = data.count;
+                data.questions.forEach(q => {
+                    const row = document.createElement('tr');
+                    row.style.cursor = 'pointer';
+                    row.innerHTML = `
+                        <td>${q.question_text}</td>
+                        <td>${q.time_limit}</td>
+                        <td>${q.created_at}</td>
+                        <td onclick="event.stopPropagation()">
+                            <button class="btn btn-sm btn-outline-primary edit-question-btn" data-question-id="${q.id}"><i data-lucide="pencil"></i> Edit</button>
+                            <button class="btn btn-sm btn-danger delete-q-btn" data-question-id="${q.id}"><i data-lucide="trash-2"></i> Delete</button>
+                        </td>
+                    `;
+                    row.addEventListener('click', function(e) {
+                        if (e.target.closest('button') || e.target.closest('a')) return;
+                        row.querySelector('.edit-question-btn').click();
+                    });
+                    questionsTableBody.appendChild(row);
+                });
+                pagination.innerHTML = '';
+                for (let i = 1; i <= data.pages; i++) {
+                    const li = document.createElement('li');
+                    li.className = 'page-item' + (i === page ? ' active' : '');
+                    li.innerHTML = `<button class="page-link" data-page="${i}">${i}</button>`;
+                    pagination.appendChild(li);
+                }
+                lucide.createIcons();
+            })
+            .catch(() => alert('Error loading questions.'));
+        }
+
+        pagination.addEventListener('click', function(e) {
+            if (e.target.classList.contains('page-link')) loadBankQuestions(parseInt(e.target.dataset.page));
+        });
+
+        function openEditById(qid) {
+            fetch(`{% url 'admin_dashboard:get_assign_question_detail' 0 %}`.replace('/0/', `/${qid}/`), {
+                headers: { 'X-CSRFToken': getCookie('csrftoken') },
+            })
+            .then(r => r.json())
+            .then(({ success, question, error }) => {
+                if (!success) throw new Error(error || 'Failed to load question.');
+                document.getElementById('questionId').value = question.id;
+                document.getElementById('questionText').value = question.question_text;
+                document.getElementById('timeLimit').value = question.time_limit;
+                document.getElementById('explanation').value = question.explanation || '';
+                renderAssignItems(question.left_items || [], question.right_items || []);
+                setFormMode('edit');
+                new bootstrap.Modal(document.getElementById('editQuestionModal')).show();
+            })
+            .catch(err => showNotification(err.message, 'danger'));
+        }
+
+        // Edit / Delete question buttons
+        questionsTableBody.addEventListener('click', function(e) {
+            const editBtn = e.target.closest('.edit-question-btn');
+            if (editBtn) {
+                openEditById(editBtn.getAttribute('data-question-id'));
+                return;
+            }
+
+            const deleteBtn = e.target.closest('.delete-q-btn');
+            if (deleteBtn) {
+                deleteQuestionModal.dataset.questionId = deleteBtn.getAttribute('data-question-id');
+                new bootstrap.Modal(deleteQuestionModal).show();
+            }
+        });
+
+        // Confirm delete
+        confirmDeleteBtn.addEventListener('click', function() {
+            fetch('{% url "admin_dashboard:delete_assign_question" %}', {
+                method: 'POST',
+                headers: { 'X-CSRFToken': getCookie('csrftoken'), 'Content-Type': 'application/json' },
+                body: JSON.stringify({ question_id: deleteQuestionModal.dataset.questionId })
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) {
+                    bootstrap.Modal.getInstance(deleteQuestionModal).hide();
+                    showNotification('Question deleted successfully!', 'success');
+                    loadBankQuestions(1);
+                } else {
+                    alert('Error: ' + (data.error || 'Unknown error'));
+                }
+            })
+            .catch(() => alert('Error deleting question.'));
+        });
+
+        // Utility: switch form mode
+        function setFormMode(mode) {
+            const title = document.getElementById('questionFormTitle');
+            if (mode === 'edit') {
+                title.innerHTML = '<i data-lucide="edit"></i> Edit Drag & Drop Question';
+                submitQuestionBtn.innerHTML = '<i data-lucide="save"></i> Save Changes';
+                submitQuestionBtn.dataset.mode = 'edit';
+            } else {
+                title.innerHTML = '<i data-lucide="move-3d"></i> Add New Question';
+                submitQuestionBtn.innerHTML = '<i data-lucide="plus"></i> Add Question';
+                submitQuestionBtn.dataset.mode = 'add';
+                document.getElementById('questionId').value = '';
+                document.getElementById('addQuestionForm').reset();
+            }
+            lucide.createIcons();
+        }
+
+        function resetForm() {
+            setFormMode('add');
+            renderAssignItems([], []);
+        }
+
+        // Delete quiz handler
+        document.body.addEventListener('click', function(e) {
+            const btn = e.target.closest('.delete-quiz-btn');
+            if (!btn) return;
+            const quizId = btn.getAttribute('data-quiz-id');
+            if (!quizId) return;
+            if (!confirm('Delete this quiz? This will not delete its questions.')) return;
+            btn.classList.add('loading');
+            fetch("{% url 'admin_dashboard:delete_assign_quiz' %}", {
+                method: 'POST',
+                headers: { 'X-CSRFToken': getCookie('csrftoken'), 'Content-Type': 'application/json' },
+                body: JSON.stringify({ quiz_id: parseInt(quizId) })
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data && data.success) {
+                    const row = document.querySelector(`tr[data-quiz-row="${quizId}"]`);
+                    if (row) row.remove();
+                    showNotification('Quiz deleted', 'success');
+                } else {
+                    alert('Failed to delete quiz: ' + (data && data.error ? data.error : 'Unknown error'));
+                }
+            })
+            .catch(err => { console.error(err); alert('Error deleting quiz.'); })
+            .finally(() => btn.classList.remove('loading'));
+        });
+
+        // Show quiz questions -> open Custom Quiz modal in edit mode
+        document.body.addEventListener('click', function(e) {
+            const btn = e.target.closest('.show-quiz-questions-btn');
+            if (!btn) return;
+            const quizId = parseInt(btn.getAttribute('data-quiz-id'));
+            const quizTitle = btn.getAttribute('data-quiz-title') || 'Quiz';
+            if (!quizId) return;
+
+            fetch(`{% url 'admin_dashboard:get_assign_selected_questions' 0 %}`.replace('/0/', `/${quizId}/`), {
+                method: 'GET',
+                headers: { 'X-CSRFToken': getCookie('csrftoken') },
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (!data.success) { alert('Failed to load quiz details'); return; }
+                assignEditMode = true;
+                assignCurrentQuizId = quizId;
+                assignSelectedIds = new Set((data.questions || []).map(q => q.id));
+
+                document.getElementById('createCustomQuizModalLabel').innerHTML = '<i data-lucide="layers"></i> Edit Quiz';
+                const titleInput = document.getElementById('customQuizTitle');
+                if (titleInput) titleInput.value = quizTitle;
+                const btnPrimary = document.getElementById('createCustomQuizBtn');
+                if (btnPrimary) btnPrimary.innerHTML = '<i data-lucide="check"></i> Update Quiz';
+
+                new bootstrap.Modal(document.getElementById('createCustomQuizModal')).show();
+                loadCustomQuestions(1);
+                lucide.createIcons();
+            })
+            .catch(err => { console.error(err); alert('Error loading quiz details.'); });
+        });
+
+        // Custom Quiz Modal events
+        if (createCustomQuizModal) {
+            createCustomQuizModal.addEventListener('shown.bs.modal', function() {
+                if (!assignEditMode) loadCustomQuestions(1);
+            });
+            createCustomQuizModal.addEventListener('hidden.bs.modal', function() {
+                assignEditMode = false;
+                assignSelectedIds = new Set();
+                assignCurrentQuizId = null;
+                document.getElementById('createCustomQuizModalLabel').innerHTML = '<i data-lucide="layers"></i> Create Custom Quiz';
+                const btnPrimary = document.getElementById('createCustomQuizBtn');
+                if (btnPrimary) btnPrimary.innerHTML = '<i data-lucide="check"></i> Create Quiz';
+                const titleInput = document.getElementById('customQuizTitle');
+                if (titleInput) titleInput.value = 'Custom Quiz';
+            });
+        }
+
+        function loadCustomQuestions(page) {
+            fetch('{% url "admin_dashboard:get_assign_questions" %}?page=' + page, {
+                method: 'GET',
+                headers: { 'X-CSRFToken': getCookie('csrftoken') },
+            })
+            .then(r => r.json())
+            .then(data => {
+                const body = document.getElementById('customQuestionsTableBody');
+                const pager = document.getElementById('customPagination');
+                const count = document.getElementById('customQuestionCount');
+                body.innerHTML = '';
+                count.textContent = `Showing ${data.count} questions`;
+                data.questions.forEach(q => {
+                    const tr = document.createElement('tr');
+                    const checked = assignEditMode && assignSelectedIds.has(q.id) ? 'checked' : '';
+                    tr.innerHTML = `
+                        <td><input type="checkbox" value="${q.id}" ${checked}></td>
+                        <td>${q.question_text}</td>
+                        <td>${q.time_limit}</td>
+                        <td>${q.created_at}</td>
+                    `;
+                    body.appendChild(tr);
+                });
+                pager.innerHTML = '';
+                for (let i = 1; i <= data.pages; i++) {
+                    const li = document.createElement('li');
+                    li.className = 'page-item' + (i === data.current_page ? ' active' : '');
+                    li.innerHTML = `<button class="page-link" data-page="${i}">${i}</button>`;
+                    pager.appendChild(li);
+                }
+                pager.onclick = e => { if (e.target.classList.contains('page-link')) loadCustomQuestions(parseInt(e.target.dataset.page)); };
+            })
+            .catch(err => { console.error(err); alert('Error loading questions.'); });
+        }
+
+        document.getElementById('customQuestionsTableBody').addEventListener('change', function(e) {
+            if (e.target && e.target.type === 'checkbox') {
+                const id = parseInt(e.target.value);
+                e.target.checked ? assignSelectedIds.add(id) : assignSelectedIds.delete(id);
+            }
+        });
+
+        selectAllQuestions.addEventListener('change', function() {
+            document.querySelectorAll('#customQuestionsTableBody input[type="checkbox"]')
+                .forEach(cb => cb.checked = this.checked);
+        });
+
+        createCustomQuizBtn.addEventListener('click', function() {
+            const title = document.getElementById('customQuizTitle').value.trim() || 'Custom Quiz';
+            const btn = this;
+            btn.classList.add('loading');
+            const csrfToken = getCookie('csrftoken');
+            if (assignEditMode) {
+                fetch("{% url 'admin_dashboard:update_assign_custom_quiz' %}", {
+                    method: 'POST',
+                    headers: { 'X-CSRFToken': csrfToken, 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ quiz_id: assignCurrentQuizId, title, question_ids: Array.from(assignSelectedIds) })
+                })
+                .then(r => r.json())
+                .then(data => {
+                    if (data.success) { bootstrap.Modal.getInstance(createCustomQuizModal).hide(); window.location.reload(); }
+                    else alert('Error updating quiz: ' + (data.error || 'Unknown error'));
+                })
+                .catch(err => { console.error(err); alert('Error updating quiz.'); })
+                .finally(() => btn.classList.remove('loading'));
+            } else {
+                const selected = Array.from(document.querySelectorAll('#customQuestionsTableBody input[type="checkbox"]:checked')).map(cb => parseInt(cb.value));
+                fetch("{% url 'admin_dashboard:create_assign_custom_quiz' %}", {
+                    method: 'POST',
+                    headers: { 'X-CSRFToken': csrfToken, 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ title, question_ids: selected })
+                })
+                .then(r => r.json())
+                .then(data => {
+                    if (data.success) { bootstrap.Modal.getInstance(createCustomQuizModal).hide(); window.location.reload(); }
+                    else alert('Error creating quiz: ' + (data.error || 'Unknown error'));
+                })
+                .catch(err => { console.error(err); alert('Error creating quiz.'); })
+                .finally(() => btn.classList.remove('loading'));
+            }
+        });
+
+        // Auto-open create modal if ?create=1 in URL
+        if (new URLSearchParams(window.location.search).get('create') === '1') {
+            new bootstrap.Modal(createCustomQuizModal).show();
+        }
+
+        // ── Bundle logic ──────────────────────────────────────────────
+        let bundleQPage = 1;
+        const bundleModal = document.getElementById('createBundleModal');
+
+        function loadBundleQuestions(page) {
+            fetch('{% url "admin_dashboard:get_assign_questions" %}?page=' + page, { headers: { 'X-CSRFToken': getCookie('csrftoken') } })
+            .then(r => r.json()).then(data => {
+                const tbody = document.getElementById('bundleQuestionsTableBody');
+                tbody.innerHTML = '';
+                (data.questions || []).forEach(q => {
+                    const tr = document.createElement('tr');
+                    tr.innerHTML = `<td><input type="checkbox" class="bundle-q-check" value="${q.id}"></td><td>${q.question_text}</td><td>${q.time_limit}</td>`;
+                    tbody.appendChild(tr);
+                });
+                document.getElementById('bundleQuestionCount').textContent = `${data.count} Fragen`;
+                const pag = document.getElementById('bundleQuestionPagination');
+                pag.innerHTML = '';
+                for (let i = 1; i <= data.pages; i++) {
+                    const li = document.createElement('li');
+                    li.className = 'page-item' + (i === page ? ' active' : '');
+                    li.innerHTML = `<button class="page-link" data-page="${i}">${i}</button>`;
+                    pag.appendChild(li);
+                }
+            });
+        }
+
+        bundleModal?.addEventListener('shown.bs.modal', () => { bundleQPage = 1; loadBundleQuestions(1); });
+        document.getElementById('bundleQuestionPagination')?.addEventListener('click', e => {
+            if (e.target.classList.contains('page-link')) { bundleQPage = parseInt(e.target.dataset.page); loadBundleQuestions(bundleQPage); }
+        });
+        document.getElementById('selectAllBundleQuestions')?.addEventListener('change', function() {
+            document.querySelectorAll('.bundle-q-check').forEach(cb => cb.checked = this.checked);
+        });
+        document.getElementById('saveBundleBtn')?.addEventListener('click', function() {
+            const name = document.getElementById('bundleName').value.trim();
+            if (!name) { alert('Bitte einen Bundle-Namen angeben.'); return; }
+            const questionIds = Array.from(document.querySelectorAll('.bundle-q-check:checked')).map(cb => parseInt(cb.value));
+            if (!questionIds.length) { alert('Bitte mindestens eine Frage auswählen.'); return; }
+            fetch('{% url "admin_dashboard:create_assign_bundle" %}', {
+                method: 'POST',
+                headers: { 'X-CSRFToken': getCookie('csrftoken'), 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name, question_ids: questionIds })
+            }).then(r => r.json()).then(data => {
+                if (data.success) {
+                    bootstrap.Modal.getInstance(bundleModal).hide();
+                    document.getElementById('bundleName').value = '';
+                    const tbody = document.getElementById('bundleTableBody');
+                    const emptyRow = document.getElementById('bundleEmptyRow');
+                    if (emptyRow) emptyRow.remove();
+                    const tr = document.createElement('tr');
+                    tr.id = `bundle-row-${data.bundle.id}`;
+                    tr.innerHTML = `<td class="fw-semibold">${data.bundle.name}</td><td>${data.bundle.question_count} Fragen</td><td class="text-muted small">Heute</td><td><button class="btn btn-sm btn-outline-danger delete-bundle-btn" data-bundle-id="${data.bundle.id}" data-bundle-name="${data.bundle.name}"><i data-lucide="trash-2"></i></button></td>`;
+                    tbody.appendChild(tr);
+                    document.getElementById('bundleCountBadge').textContent = parseInt(document.getElementById('bundleCountBadge').textContent) + 1;
+                    lucide.createIcons();
+                }
+            });
+        });
+        document.getElementById('bundleTableBody')?.addEventListener('click', function(e) {
+            const btn = e.target.closest('.delete-bundle-btn');
+            if (!btn) return;
+            if (!confirm(`Bundle "${btn.dataset.bundleName}" löschen?`)) return;
+            fetch('{% url "admin_dashboard:delete_assign_bundle" %}', {
+                method: 'POST',
+                headers: { 'X-CSRFToken': getCookie('csrftoken'), 'Content-Type': 'application/json' },
+                body: JSON.stringify({ bundle_id: parseInt(btn.dataset.bundleId) })
+            }).then(r => r.json()).then(data => {
+                if (data.success) {
+                    document.getElementById(`bundle-row-${btn.dataset.bundleId}`)?.remove();
+                    document.getElementById('bundleCountBadge').textContent = Math.max(0, parseInt(document.getElementById('bundleCountBadge').textContent) - 1);
+                }
+            });
+        });
+    });
+</script>
+
+<!-- Edit / Add Question Modal -->
+<div class="modal fade" id="editQuestionModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="questionFormTitle">
+                    <i data-lucide="move-3d"></i> Add New Question
+                </h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <form id="addQuestionForm" novalidate>
+                    <input type="hidden" id="questionId" name="question_id" />
+                    <div class="row">
+                        <div class="col-lg-6">
+                            <div class="mb-3">
+                                <label for="questionText" class="form-label">Question Text *</label>
+                                <textarea class="form-control" id="questionText" name="question_text" rows="3"
+                                          placeholder="e.g., Match countries with their capitals" required></textarea>
+                            </div>
+                            <div class="row">
+                                <div class="col-6">
+                                    <div class="mb-3">
+                                        <label for="timeLimit" class="form-label">Time (sec)</label>
+                                        <input type="number" class="form-control" id="timeLimit" name="time_limit"
+                                               value="60" min="30" max="300" required>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-lg-6">
+                            <div class="mb-3">
+                                <label class="form-label">Items</label>
+                                <div class="items-builder">
+                                    <div class="row g-3">
+                                        <div class="col-6">
+                                            <div class="items-column-label mb-2">Left Items <span class="text-muted fw-normal">(drag from)</span></div>
+                                            <div id="leftItemsList" class="items-list">
+                                                <div class="item-input-group">
+                                                    <input type="text" class="form-control left-item" placeholder="Item 1">
+                                                    <button type="button" class="btn btn-outline btn-sm remove-item"><i data-lucide="x"></i></button>
+                                                </div>
+                                                <div class="item-input-group">
+                                                    <input type="text" class="form-control left-item" placeholder="Item 2">
+                                                    <button type="button" class="btn btn-outline btn-sm remove-item"><i data-lucide="x"></i></button>
+                                                </div>
+                                            </div>
+                                            <button type="button" class="btn btn-outline btn-sm w-100 mt-2" id="addLeftItem">
+                                                <i data-lucide="plus"></i> Add Left Item
+                                            </button>
+                                        </div>
+                                        <div class="col-6">
+                                            <div class="items-column-label mb-2">Right Items <span class="text-muted fw-normal">(drop to)</span></div>
+                                            <div id="rightItemsList" class="items-list">
+                                                <div class="item-input-group">
+                                                    <input type="text" class="form-control right-item" placeholder="Match 1">
+                                                    <button type="button" class="btn btn-outline btn-sm remove-item"><i data-lucide="x"></i></button>
+                                                </div>
+                                                <div class="item-input-group">
+                                                    <input type="text" class="form-control right-item" placeholder="Match 2">
+                                                    <button type="button" class="btn btn-outline btn-sm remove-item"><i data-lucide="x"></i></button>
+                                                </div>
+                                            </div>
+                                            <button type="button" class="btn btn-outline btn-sm w-100 mt-2" id="addRightItem">
+                                                <i data-lucide="plus"></i> Add Right Item
+                                            </button>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </form>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-outline-secondary" id="resetFormBtn" data-bs-dismiss="modal">Cancel</button>
+                <button type="submit" form="addQuestionForm" class="btn btn-primary" id="submitQuestionBtn" data-mode="add">
+                    <i data-lucide="plus"></i> Add Question
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+{% endblock %}

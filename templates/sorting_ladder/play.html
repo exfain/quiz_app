@@ -1,0 +1,2107 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sorting Ladder: {{ quiz.room_code }} - QuizMaster</title>
+    
+    <!-- Bootstrap 5 CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
+    
+    <!-- Custom Theme CSS -->
+    <link rel="stylesheet" href="{% load static %}{% static 'theme.css' %}">
+    
+    <!-- Inter Font -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body class="quiz-play-page">
+    <div class="play-container">
+        <!-- Header -->
+        <header class="quiz-header">
+            <div class="container">
+                <div class="header-content">
+                    <div class="quiz-info">
+                        <!-- <div class="room-code">
+                            <i data-lucide="hash"></i>
+                            {{ quiz.room_code }}
+                        </div> -->
+                        <h1 class="quiz-title">{{ quiz.title }}</h1>
+                    </div>
+                    <div class="participant-info">
+                        <div class="participant-avatar">
+                            {{ participant.name|first|upper }}
+                        </div>
+                        <div class="participant-details">
+                            <span class="participant-name">{{ participant.name }}</span>
+                            <!-- <span class="participant-score">{{ participant.total_score }} pts</span> -->
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </header>
+
+        <!-- Main Content -->
+        <main class="quiz-main">
+            <div class="container">
+                <div class="row justify-content-center">
+                    <div class="col-lg-8">
+                        <!-- Waiting for quiz start -->
+                        <div id="waitingQuizState" class="game-state {% if quiz.status != 'waiting' %}d-none{% endif %}">
+                            <div class="waiting-card">
+                                <div class="waiting-animation">
+                                    <div class="pulse-ring"></div>
+                                    <div class="pulse-ring delay-1"></div>
+                                    <div class="pulse-ring delay-2"></div>
+                                    <i data-lucide="clock"></i>
+                                </div>
+                                <h2>Waiting for Sorting Ladder Quiz to Start</h2>
+                                <p>The host will start the Sorting Ladder quiz shortly. Stay tuned!</p>
+                                <div class="participants-count">
+                                    <i data-lucide="users"></i>
+                                    <span id="waitingParticipantCount">{{ participant_count }}</span> participants joined
+                                </div>
+                            </div>
+                        </div>
+
+                        <div id="waitingQuestionState" class="game-state d-none">
+                            <div class="waiting-card">
+                                <div class="waiting-animation">
+                                    <div class="pulse-ring"></div>
+                                    <div class="pulse-ring delay-1"></div>
+                                    <div class="pulse-ring delay-2"></div>
+                                    <i data-lucide="clock"></i>
+                                </div>
+                                <h2>Waiting for Next Question</h2>
+                                <p>Get ready for the next challenge!</p>
+                            </div>
+                        </div>
+
+                        <!-- Topic & ladder state -->
+                        <div id="topicState" class="game-state d-none">
+                            <div class="question-card">
+                                <div class="question-header">
+                                    <div class="question-number">
+                                        Topic: <span id="topicTitle">-</span>
+                                    </div>
+                                    <div class="question-timer">
+                                        <div class="timer-circle" id="playerTimerCircle">
+                                            <span id="playerTimeLeft">0</span>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div class="question-content">
+                                    <div class="question-text" id="topicDescription"></div>
+
+                                    <!-- Round indicators (one circle per round) -->
+                                    <div id="roundIndicators" class="round-indicators mb-3">
+                                        <!-- Circles rendered by JS -->
+                                    </div>
+
+                                    <div class="topic-layout" id="topicLayout">
+                                        <!-- Ladder on the left -->
+                                        <div class="ladder-column">
+                                            <div id="ladderUpperLabel" class="ladder-label ladder-label-upper">
+                                                <!-- Upper label (e.g., Largest, Oldest) injected by JS -->
+                                            </div>
+                                            <div class="answer-options" id="ladderContainer">
+                                                <!-- Ladder rows and triangle targets rendered by JS -->
+                                            </div>
+                                            <div id="ladderLowerLabel" class="ladder-label ladder-label-lower">
+                                                <!-- Lower label (e.g., Smallest, Youngest) injected by JS -->
+                                            </div>
+                                        </div>
+
+                                        <!-- Pool of items on the right (vertical list) -->
+                                        <div class="pool-column">
+                                            <div class="answer-pool" id="itemPool">
+                                                <!-- Item cards for this round will be rendered here -->
+                                            </div>
+                                        </div>
+
+                                    </div>
+                                    <div class="row" id="topicButtons">
+                                    </div>
+                                    <div id="roundLockBanner" class="alert alert-secondary mt-3 d-none" role="status">
+                                        Waiting for other players...
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Round/result state -->
+                        <div id="roundResultState" class="game-state d-none">
+                            <div class="submitted-card">
+                                <div class="submitted-timer">
+                                    <div class="timer-circle" id="playerTimerCircleResult">
+                                        <span id="playerTimeLeftResult">0</span>
+                                    </div>
+                                </div>
+                                <div class="submitted-animation">
+                                    <div class="check-animation">
+                                        <i data-lucide="check-circle" class="check-icon" id="roundResultIconSuccess"></i>
+                                        <i data-lucide="x-circle" class="x-icon d-none" id="roundResultIconFail"></i>
+                                    </div>
+                                </div>
+                                <h2 id="roundResultTitle">Round Result</h2>
+                                <p id="roundResultText">Waiting for next round...</p>
+                            </div>
+                        </div>
+
+                        <!-- Waiting for other players in this round -->
+                        <div id="waitingRoundState" class="game-state d-none">
+                            <div class="submitted-card">
+                                <div class="submitted-timer">
+                                    <div class="timer-circle" id="playerTimerCircleWaiting">
+                                        <span id="playerTimeLeftWaiting">0</span>
+                                    </div>
+                                </div>
+                                <h2>Waiting for other players...</h2>
+                                <p>Please wait while everyone finishes this round.</p>
+                            </div>
+                        </div>
+
+                        <!-- Final Correct Order State -->
+                        <div id="finalOrderState" class="game-state d-none">
+                            <div class="submitted-card">
+                                <!-- <div class="submitted-timer">
+                                    <div class="timer-circle" id="finalPlayerTimerCircle">
+                                        <span id="finalPlayerTimeLeft">0</span>
+                                    </div>
+                                </div> -->
+                                <div class="submitted-animation">
+                                    <div class="check-animation">
+                                        <i data-lucide="list-ordered" class="check-icon"></i>
+                                    </div>
+                                </div>
+                                <h2>Correct Order</h2>
+                                <p class="mb-3" id="finalOrderQuestionText"></p>
+                                <div class="final-order-list" id="finalOrderItems"></div>
+                            </div>
+                        </div>
+
+                        <!-- Quiz Ended State -->
+                        <div id="quizEndedState" class="game-state d-none">
+                            <div class="ended-card">
+                                <div class="ended-animation">
+                                    <i data-lucide="trophy" class="trophy-icon"></i>
+                                </div>
+                                <h2>Quiz Completed!</h2>
+                                <p>Great job! The Sorting Ladder quiz has ended.</p>
+                                <div class="final-score">
+                                    <div class="score-circle">
+                                        <span class="score-value" id="finalRoundsSurvived">{{ participant.rounds_survived }}</span>
+                                        <span class="score-label">rounds survived</span>
+                                    </div>
+                                </div>
+                                <!-- <div class="quiz-actions">
+                                    <a href="/quiz/result/{{ quiz.room_code }}/{{ participant.name }}/" class="btn btn-primary btn-lg">
+                                        <i data-lucide="bar-chart-3"></i>
+                                        View Detailed Results
+                                    </a>
+                                    <a href="/quiz/join/" class="btn btn-outline btn-lg">
+                                        <i data-lucide="play"></i>
+                                        Join Another Quiz
+                                    </a>
+                                </div> -->
+                            </div>
+                        </div>
+
+                        <!-- Connection Status -->
+                        <div id="connectionStatus" class="connection-status d-none">
+                            <div class="status-indicator">
+                                <i data-lucide="wifi-off"></i>
+                                <span>Reconnecting...</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </main>
+
+        <aside class="sorting-history-box score-box" id="sortingHistoryBox">
+            <h6 class="mb-2 score-box__title">Punkte</h6>
+            <div id="sortingHistoryList" class="sorting-history-list score-box__list">
+                <div class="text-muted small">Noch keine abgeschlossenen Sets.</div>
+            </div>
+            <div class="sorting-history-total" id="sortingHistoryTotal">0/0</div>
+        </aside>
+    </div>
+
+    <!-- Bootstrap JS -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+
+    <style>
+        /* Quiz Play Page Styles */
+        .quiz-play-page {
+            min-height: 100vh;
+            background: linear-gradient(135deg, var(--bg-secondary) 0%, var(--primary-50) 100%);
+        }
+
+        .play-container {
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .sorting-history-box {
+            position: fixed;
+            right: 16px;
+            top: 110px;
+            width: 180px;
+            z-index: 90;
+            background: var(--bg-primary);
+            border: 1px solid var(--border-color);
+            border-radius: var(--border-radius-lg);
+            box-shadow: var(--shadow-md);
+            padding: 0.75rem;
+        }
+
+        .sorting-history-list {
+            display: flex;
+            flex-direction: column;
+            gap: 0.35rem;
+            font-size: 0.875rem;
+        }
+
+        .sorting-history-row {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+        }
+
+        .sorting-history-value {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.35rem;
+        }
+
+        .sorting-history-total {
+            margin-top: 0.75rem;
+            padding-top: 0.75rem;
+            border-top: 1px solid var(--border-color);
+            font-weight: 700;
+            text-align: right;
+        }
+
+        /* Header */
+        .quiz-header {
+            background: var(--bg-primary);
+            border-bottom: 1px solid var(--border-color);
+            box-shadow: var(--shadow-sm);
+            padding: 1rem 0;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }
+
+        .header-content {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 1rem;
+        }
+
+        .quiz-info {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+        }
+
+        .room-code {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            background-color: var(--primary-100);
+            color: var(--primary-700);
+            padding: 0.5rem 1rem;
+            border-radius: var(--border-radius-xl);
+            font-family: var(--font-family-mono);
+            font-weight: 700;
+            font-size: 0.875rem;
+        }
+
+        .room-code i {
+            width: 16px;
+            height: 16px;
+        }
+
+        .quiz-title {
+            font-size: 1.5rem;
+            font-weight: 700;
+            color: var(--text-primary);
+            margin: 0;
+        }
+
+        .participant-info {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+        }
+
+        .participant-avatar {
+            width: 48px;
+            height: 48px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, var(--color-primary) 0%, var(--color-secondary) 100%);
+            color: var(--text-white);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 700;
+            font-size: 1.25rem;
+        }
+
+        .participant-details {
+            display: flex;
+            flex-direction: column;
+        }
+
+        .participant-name {
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+
+        .participant-score {
+            color: var(--color-success);
+            font-size: 0.875rem;
+            font-weight: 500;
+        }
+
+        /* Main Content */
+        .quiz-main {
+            flex: 1;
+            display: flex;
+            align-items: center;
+            padding: 2rem 0;
+        }
+
+        .game-state {
+            animation: fadeIn 0.5s ease-out;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(20px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        /* Waiting State */
+        .waiting-card {
+            text-align: center;
+            padding: 3rem 2rem;
+            background: var(--bg-primary);
+            border-radius: var(--border-radius-xl);
+            box-shadow: var(--shadow-lg);
+        }
+
+        .waiting-animation {
+            position: relative;
+            width: 120px;
+            height: 120px;
+            margin: 0 auto 2rem;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .pulse-ring {
+            position: absolute;
+            width: 100%;
+            height: 100%;
+            border: 2px solid var(--color-primary);
+            border-radius: 50%;
+            animation: pulse 2s cubic-bezier(0.455, 0.03, 0.515, 0.955) infinite;
+            opacity: 0;
+        }
+
+        .delay-1 { animation-delay: 0.5s; }
+        .delay-2 { animation-delay: 1s; }
+
+        @keyframes pulse {
+            0% { transform: scale(0.8); opacity: 1; }
+            100% { transform: scale(1.4); opacity: 0; }
+        }
+
+        .waiting-animation i {
+            width: 48px;
+            height: 48px;
+            color: var(--color-primary);
+            z-index: 2;
+        }
+
+        .waiting-card h2 {
+            font-size: 1.75rem;
+            font-weight: 700;
+            color: var(--text-primary);
+            margin-bottom: 1rem;
+        }
+
+        .waiting-card p {
+            color: var(--text-secondary);
+            font-size: 1.125rem;
+            margin-bottom: 2rem;
+        }
+
+        .participants-count {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            background-color: var(--bg-secondary);
+            padding: 0.75rem 1.5rem;
+            border-radius: var(--border-radius-xl);
+            color: var(--text-primary);
+            font-weight: 600;
+        }
+
+        .participants-count i {
+            width: 20px;
+            height: 20px;
+            color: var(--color-secondary);
+        }
+
+        /* Question State */
+        .question-card {
+            background: var(--bg-primary);
+            border-radius: var(--border-radius-xl);
+            box-shadow: var(--shadow-lg);
+            overflow: hidden;
+        }
+
+        .question-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 1.5rem 2rem;
+            background: linear-gradient(135deg, var(--primary-50) 0%, var(--secondary-50) 100%);
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .question-number {
+            font-size: 1.125rem;
+            font-weight: 700;
+            color: var(--text-primary);
+        }
+
+        .timer-circle {
+            width: 60px;
+            height: 60px;
+            border: 4px solid var(--success-300);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 700;
+            color: var(--success-600);
+            background: var(--bg-primary);
+            position: relative;
+        }
+
+        .timer-circle.warning {
+            border-color: var(--warning-300);
+            color: var(--warning-600);
+        }
+
+        .timer-circle.danger {
+            border-color: var(--error-300);
+            color: var(--error-600);
+            animation: shake 0.5s infinite;
+        }
+
+        .question-content {
+            padding: 2rem;
+        }
+
+        /* Topic layout: ladder on the left, pool on the right */
+        .topic-layout {
+            display: flex;
+            gap: 2rem;
+            align-items: flex-start;
+            margin-top: 50px;
+        }
+
+        .ladder-column {
+            flex: 1;
+        }
+
+        .pool-column {
+            flex: 1;
+            margin-top: -40px;
+        }
+
+        .question-text {
+            font-size: 1.25rem;
+            font-weight: 600;
+            color: var(--text-primary);
+            line-height: 1.6;
+            margin-bottom: 2rem;
+            text-align: center;
+        }
+
+        .answer-options {
+            display: flex;
+            flex-direction: column;
+            gap: 0.75rem;
+            margin-bottom: 1.5rem;
+        }
+
+        .ladder-label {
+            text-align: center;
+            font-weight: 600;
+            color: var(--text-secondary);
+            font-size: 0.9rem;
+        }
+
+        .ladder-label-upper {
+            margin-bottom: 0.5rem;
+        }
+
+        .ladder-label-lower {
+            margin-top: 0.5rem;
+        }
+
+        /* Round indicators (circles per round) */
+        .round-indicators {
+            display: flex;
+            justify-content: center;
+            gap: 0.5rem;
+            margin-bottom: 1rem;
+        }
+
+        .round-indicator {
+            width: 30px;
+            height: 30px;
+            border-radius: 50%;
+            border: 3px solid var(--border-color);
+            background-color: var(--bg-secondary);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.75rem;
+        }
+
+        .round-indicator.round-success {
+            border-color: var(--success-500);
+            background-color: var(--success-100);
+            color: var(--success-700);
+        }
+
+        .round-indicator.round-fail {
+            border-color: var(--error-500);
+            background-color: var(--error-100);
+            color: var(--error-700);
+        }
+
+        .ladder-slot-row {
+            display: flex;
+            align-items: flex-start; /* align items at the top so triangles sit near top-right */
+            justify-content: space-between;
+            gap: 0.75rem;
+            margin-bottom: 0.5rem;
+        }
+
+        .ladder-row {
+            min-height: 48px;
+            border-radius: var(--border-radius-lg);
+            padding: 0.5rem 0.75rem;
+            flex: 1;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            background-color: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            position: relative;
+            transition: background-color var(--transition-fast), border-color var(--transition-fast), box-shadow var(--transition-fast), margin var(--transition-fast), transform var(--transition-fast);
+        }
+
+        .ladder-row.draggable-over {
+            border-color: var(--color-primary);
+            box-shadow: var(--shadow-sm);
+        }
+
+        .ladder-row.preview-before {
+            margin-top: 12px;
+            transform: translateY(2px);
+        }
+
+        .ladder-row.preview-after {
+            margin-bottom: 12px;
+            transform: translateY(-2px);
+        }
+
+        .ladder-row-text {
+            font-weight: 500;
+            color: var(--text-primary);
+        }
+
+        .answer-pool {
+            display: flex;
+            flex-direction: column;
+            gap: 0.75rem;
+            padding: 0.75rem 0;
+            border-top: 1px dashed var(--border-color);
+        }
+
+        /* Numbered triangle drop targets for ladder insertion points */
+        .triangle-container {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            /* The size of the overall shape */
+            width: 40px;
+            height: 40px;
+            background-color: #d1d1d1;
+            /* Left-pointing arrow shape */
+            clip-path: polygon(0% 50%, 100% 0%, 100% 100%);
+            color: #ffffff;
+            font-family: sans-serif;
+            font-weight: bold;
+            font-size: 24px;
+            cursor: pointer;
+            /* Vertical offset: increase this negative margin to move triangle higher above the row */
+            margin-top: -30px;
+        }
+
+        .triangle-container.over {
+            background-color: #269405;
+        }
+
+        .triangle-container .number {
+            /* Adjust text position slightly for visual weight of the tip */
+            padding-left: 20px;
+        }
+
+        .answer-card {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            padding: 0.75rem 1rem;
+            background-color: var(--bg-secondary);
+            border: 2px solid var(--border-color);
+            border-radius: var(--border-radius-lg);
+            cursor: pointer;
+            transition: all var(--transition-fast);
+            user-select: none;
+        }
+
+        .answer-card:hover {
+            background-color: var(--bg-tertiary);
+            border-color: var(--color-primary);
+            box-shadow: var(--shadow-md);
+        }
+
+        .answer-card.dragging {
+            opacity: 0.7;
+            box-shadow: var(--shadow-lg);
+        }
+
+        .answer-card.disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
+        .answer-card.disabled:hover {
+            transform: none;
+            box-shadow: none;
+        }
+
+        #topicLayout.round-locked {
+            opacity: 0.55;
+        }
+
+        #topicLayout.round-locked .answer-card,
+        #topicLayout.round-locked .triangle-container,
+        #topicLayout.round-locked .slot-clear-btn {
+            pointer-events: none;
+        }
+
+        .option-key {
+            width: 32px;
+            height: 32px;
+            border-radius: 50%;
+            background-color: var(--color-primary);
+            color: var(--text-white);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 700;
+            flex-shrink: 0;
+        }
+
+        .answer-option.selected .option-key {
+            background-color: var(--primary-700);
+        }
+
+        .option-text {
+            flex: 1;
+            font-weight: 500;
+        }
+
+        .slot-clear-btn {
+            position: absolute;
+            top: 6px;
+            right: 6px;
+            width: 24px;
+            height: 24px;
+            border-radius: 999px;
+            border: none;
+            background-color: var(--error-100);
+            color: var(--error-700);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.9rem;
+            line-height: 1;
+            padding: 0;
+            cursor: pointer;
+            box-shadow: var(--shadow-xs);
+        }
+
+        .slot-clear-btn:hover {
+            background-color: var(--error-200);
+        }
+
+        .submit-answer {
+            height: 60px;
+            font-size: 1.125rem;
+            font-weight: 600;
+            transition: all var(--transition-fast);
+        }
+
+        .submit-answer:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .submit-answer.loading {
+            position: relative;
+            color: transparent !important;
+        }
+
+        .submit-answer.loading::after {
+            content: '';
+            position: absolute;
+            width: 20px;
+            height: 20px;
+            top: 50%;
+            left: 50%;
+            margin-left: -10px;
+            margin-top: -10px;
+            border: 2px solid transparent;
+            border-top-color: currentColor;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+
+        /* Answer Submitted State */
+        .submitted-card {
+            text-align: center;
+            padding: 3rem 2rem;
+            background: var(--bg-primary);
+            border-radius: var(--border-radius-xl);
+            box-shadow: var(--shadow-lg);
+            position: relative;
+        }
+
+        .submitted-timer {
+            position: absolute;
+            top: 1.5rem;
+            right: 1.5rem;
+        }
+
+        .submitted-animation {
+            margin-bottom: 2rem;
+        }
+
+        .check-animation {
+            width: 120px;
+            height: 120px;
+            margin: 0 auto;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .check-icon {
+            width: 64px;
+            height: 64px;
+            color: var(--color-success);
+            animation: checkPop 0.6s ease-out;
+        }
+
+        .x-icon {
+            width: 64px;
+            height: 64px;
+            color: var(--color-danger);
+            animation: checkPop 0.6s ease-out;
+        }
+
+        @keyframes checkPop {
+            0% { transform: scale(0); }
+            50% { transform: scale(1.2); }
+            100% { transform: scale(1); }
+        }
+
+        .submitted-details {
+            background-color: var(--bg-secondary);
+            padding: 1.5rem;
+            border-radius: var(--border-radius-lg);
+            margin-top: 2rem;
+        }
+
+        .submitted-answer, .submitted-time {
+            margin-bottom: 0.5rem;
+            color: var(--text-secondary);
+        }
+
+        .submitted-answer:last-child, .submitted-time:last-child {
+            margin-bottom: 0;
+        }
+
+        .final-order-list {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            align-items: center;
+            gap: 0.5rem;
+            margin-top: 1rem;
+        }
+
+        .final-order-item {
+            padding: 0.5rem 0.75rem;
+            border-radius: var(--border-radius-lg);
+            background-color: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            font-weight: 500;
+        }
+
+        .final-order-arrow {
+            font-size: 1.25rem;
+            color: var(--text-secondary);
+        }
+
+        /* Correct Answer State */
+        .correct-answer-card {
+            text-align: center;
+            padding: 3rem 2rem;
+            background: var(--bg-primary);
+            border-radius: var(--border-radius-xl);
+            box-shadow: var(--shadow-lg);
+        }
+
+        .answer-reveal .reveal-icon i {
+            width: 64px;
+            height: 64px;
+            color: var(--color-primary);
+        }
+
+        .answer-display {
+            margin: 1rem 0 2rem;
+        }
+
+        .answer-value {
+            font-size: 2rem;
+            font-weight: 800;
+            color: var(--text-primary);
+        }
+
+        .comparison-display {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 1.5rem;
+        }
+
+        .comparison-item {
+            background: var(--bg-secondary);
+            padding: 1rem 1.25rem;
+            border-radius: var(--border-radius-lg);
+            min-width: 180px;
+        }
+
+        .comparison-label {
+            font-size: 0.875rem;
+            color: var(--text-secondary);
+            margin-bottom: 0.25rem;
+        }
+
+        .comparison-value {
+            font-size: 1.125rem;
+            font-weight: 700;
+            color: var(--text-primary);
+        }
+
+        .comparison-vs {
+            font-weight: 800;
+            color: var(--text-secondary);
+        }
+
+        /* Quiz Ended State */
+        .ended-card {
+            text-align: center;
+            padding: 3rem 2rem;
+            background: var(--bg-primary);
+            border-radius: var(--border-radius-xl);
+            box-shadow: var(--shadow-lg);
+        }
+
+        .ended-animation {
+            margin-bottom: 2rem;
+        }
+
+        .trophy-icon {
+            width: 80px;
+            height: 80px;
+            color: var(--warning-500);
+            animation: trophy 1s ease-out;
+        }
+
+        @keyframes trophy {
+            0% { transform: scale(0) rotate(-180deg); opacity: 0; }
+            50% { transform: scale(1.1) rotate(-10deg); opacity: 1; }
+            100% { transform: scale(1) rotate(0deg); opacity: 1; }
+        }
+
+        .final-score {
+            margin: 2rem 0;
+        }
+
+        .score-circle {
+            width: 120px;
+            height: 120px;
+            margin: 0 auto;
+            border: 4px solid var(--color-success);
+            border-radius: 50%;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            background: linear-gradient(135deg, var(--success-50) 0%, var(--success-100) 100%);
+        }
+
+        .score-value {
+            font-size: 2rem;
+            font-weight: 700;
+            color: var(--success-700);
+        }
+
+        .score-label {
+            font-size: 0.875rem;
+            color: var(--success-600);
+            font-weight: 500;
+        }
+
+        .quiz-actions {
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+            max-width: 300px;
+            margin: 0 auto;
+        }
+
+        /* Connection Status */
+        .connection-status {
+            position: fixed;
+            bottom: 2rem;
+            right: 2rem;
+            z-index: 1000;
+        }
+
+        .status-indicator {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            background-color: var(--error-500);
+            color: var(--text-white);
+            padding: 0.75rem 1rem;
+            border-radius: var(--border-radius-xl);
+            box-shadow: var(--shadow-lg);
+            font-weight: 500;
+            animation: slideIn 0.3s ease-out;
+        }
+
+        .status-indicator i {
+            width: 20px;
+            height: 20px;
+        }
+
+        /* Short Answer Input */
+        .short-answer-input {
+            width: 100%;
+            padding: 1rem;
+            font-size: 1.125rem;
+            border: 2px solid var(--border-color);
+            border-radius: var(--border-radius-lg);
+            background-color: var(--bg-secondary);
+            transition: all var(--transition-fast);
+            margin-bottom: 2rem;
+        }
+
+        .short-answer-input:focus {
+            outline: none;
+            border-color: var(--color-primary);
+            box-shadow: 0 0 0 4px rgba(99, 102, 241, 0.1);
+        }
+
+        /* Responsive Design */
+        @media (max-width: 768px) {
+            .header-content {
+                flex-direction: column;
+                text-align: center;
+                gap: 1rem;
+            }
+
+            .quiz-title {
+                font-size: 1.25rem;
+            }
+
+            .question-header {
+                padding: 1rem 1.5rem;
+            }
+
+            .question-content {
+                padding: 1.5rem;
+            }
+
+            .question-text {
+                font-size: 1.125rem;
+            }
+
+            .answer-option {
+                padding: 1rem;
+            }
+
+            .quiz-actions {
+                max-width: 100%;
+            }
+
+            .waiting-card,
+            .submitted-card,
+            .ended-card {
+                padding: 2rem 1.5rem;
+                margin: 1rem;
+            }
+        }
+
+        @media (max-width: 576px) {
+            .quiz-main {
+                padding: 1rem 0;
+            }
+
+            .answer-options {
+                gap: 0.75rem;
+            }
+
+            .answer-slot {
+                padding: 0.75rem;
+            }
+
+            .option-key {
+                width: 28px;
+                height: 28px;
+                font-size: 0.875rem;
+            }
+
+            .timer-circle {
+                width: 50px;
+                height: 50px;
+                font-size: 0.875rem;
+            }
+        }
+    </style>
+
+    {% include 'includes/_hub_return_to_lobby_player.html' %}
+    {% include 'includes/_game_tutorial_overlay.html' %}
+<script>
+        document.addEventListener('DOMContentLoaded', function() {
+            lucide.createIcons();
+
+            // Sorting Ladder Player Client
+            class SortingLadderPlayer {
+                constructor() {
+                    this.roomCode = '{{ quiz.room_code }}';
+                    this.participantName = '{{ participant.name }}';
+                    this.hubSession = '{{ hub_session }}';
+                    this.websocket = null;
+                    this.roundTimer = null;
+                    this.roundTimeLeft = 0;
+                    this.currentQuestion = null;
+                    this.currentRound = 0;
+                    this.shuffledItems = [];
+                    this.visibleCount = 0;
+                    this.currentSelection = [];
+                    this.isEliminated = false;
+                    this.hasSubmittedMove = false;
+                    this.totalRoundsForQuestion = 0;
+                    this.roundStatuses = [];
+                    this.ladderItems = [];
+                    this.containerItems = [];
+                    this.lockedIds = new Set();
+                    this.currentRoundItemId = null;
+                    this.moreRoundsInQuestion = false;
+                    this.pendingRoundResult = null;
+                    this.pendingRoundStart = null;
+                    this.latestResolvedRound = 0;
+                    this.lastSubmitWasTimeout = false;
+                    this.roundTimerEnded = false;
+                    this.isInputLocked = false;
+                    this.progressHistory = [];
+                    
+                    this.init();
+                }
+
+                renderRoundIndicators() {
+                    const container = document.getElementById('roundIndicators');
+                    if (!container) return;
+
+                    container.innerHTML = '';
+                    for (let i = 0; i < this.totalRoundsForQuestion; i++) {
+                        const circle = document.createElement('div');
+                        circle.className = 'round-indicator';
+                        const status = this.roundStatuses[i];
+                        if (status === 'success') {
+                            circle.classList.add('round-success');
+                            circle.textContent = '✓';
+                        } else if (status === 'fail') {
+                            circle.classList.add('round-fail');
+                            circle.textContent = '×';
+                        }
+                        container.appendChild(circle);
+                    }
+                }
+
+                init() {
+                    this.connectWebSocket();
+                    //this.bindEvents();
+                    
+                    // Start timer if there's an active question
+                }
+
+                connectWebSocket() {
+                    const wsScheme = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+                    const wsUrl = `${wsScheme}//${window.location.host}/ws/sorting-ladder/${this.roomCode}/`;
+                    
+                    this.websocket = new WebSocket(wsUrl);
+                    
+                    this.websocket.onopen = () => {
+                        console.log('WebSocket connected');
+                        this.hideConnectionStatus();
+                        
+                        // Send join message
+                        this.websocket.send(JSON.stringify({
+                            type: 'participant_join',
+                            name: this.participantName,
+                            hub_session_code: this.hubSession,
+                        }));
+                    };
+                    
+                    this.websocket.onmessage = (event) => {
+                        const data = JSON.parse(event.data);
+                        this.handleWebSocketMessage(data);
+                    };
+                    
+                    this.websocket.onclose = () => {
+                        console.log('WebSocket disconnected');
+                        this.showConnectionStatus();
+                        // Attempt to reconnect after 3 seconds
+                        setTimeout(() => this.connectWebSocket(), 3000);
+                    };
+                    
+                    this.websocket.onerror = (error) => {
+                        console.error('WebSocket error:', error);
+                        this.showConnectionStatus();
+                    };
+                }
+
+                
+
+                handleWebSocketMessage(data) {
+                    console.log('Sorting Ladder WS data:', data);
+                    switch(data.type) {
+                        case 'quiz_started':
+                            this.onQuizStarted();
+                            break;
+                        case 'tutorial_start':
+                            window.gameTutorial?.showFromPayload(data);
+                            break;
+                        case 'question_started':
+                            window.gameTutorial?.forceClose();
+                            this.onQuestionStarted(data);
+                            break;
+                        case 'round_result':
+                            this.onRoundResult(data);
+                            break;
+                        case 'question_ended':
+                            this.onQuestionEnded(data);
+                            break;
+                        case 'topic_selected':
+                            this.onTopicSelected(data.topic, data.session);
+                            break;
+                        case 'round_started':
+                            window.gameTutorial?.forceClose();
+                            this.onRoundStarted(data.round);
+                            break;
+                        case 'round_ended':
+                            this.onRoundEnded(data.survivors);
+                            break;
+                        case 'no_more_rounds':
+                            this.onNoMoreRounds();
+                            break;
+                        case 'move_submitted':
+                            this.onMoveSubmitted(data);
+                            break;
+                        case 'quiz_ended':
+                            window.gameTutorial?.forceClose();
+                            this.onQuizEnded(data);
+                            break;
+                        case 'round_submission_rejected':
+                            if (this.lastSubmitWasTimeout || this.isInputLocked || this.isEliminated || !this.moreRoundsInQuestion) {
+                                this.lastSubmitWasTimeout = false;
+                                break;
+                            }
+                            this.hasSubmittedMove = false;
+                            this.setInteractionLock(false);
+                            this.showState('topicState');
+                            alert(data.message || 'Submission was rejected by the server.');
+                            break;
+                            
+                        case 'participant_count_updated':
+                            this.updateParticipantCount(data.count);
+                            break;
+                            
+                        case 'show_leaderboard':
+                            window.showLeaderboard(this.hubSession);
+                            break;
+
+                        case 'hide_leaderboard':
+                            document.getElementById('leaderboardSidebar')?.classList.add('d-none');
+                            break;
+                        case 'progress_history':
+                            this.setProgressHistory(data.history);
+                            break;
+
+                        default:
+                            console.log('Unknown message type:', data.type);
+                    }
+                }
+
+                onQuizStarted() {
+                    this.showState('waitingQuizState');
+                }
+
+                onQuizEnded(data) {
+                    // Stop any running question timer
+                    if (this.roundTimer) {
+                        clearInterval(this.roundTimer);
+                    }
+
+                    // Determine final total rounds survived across the whole quiz
+                    let finalRounds = null;
+
+                    // Prefer server-sent final_scores so we reflect authoritative value
+                    if (data && Array.isArray(data.final_scores)) {
+                        const me = data.final_scores.find(p => p.name === this.participantName);
+                        if (me && typeof me.rounds_survived === 'number') {
+                            finalRounds = me.rounds_survived;
+                        }
+                    }
+
+                    // Fallback to the last value we tracked from round_result
+                    if (finalRounds === null && typeof this.currentTotalRoundsSurvived === 'number') {
+                        finalRounds = this.currentTotalRoundsSurvived;
+                    }
+
+                    const finalRoundsEl = document.getElementById('finalRoundsSurvived');
+                    if (finalRoundsEl && typeof finalRounds === 'number') {
+                        finalRoundsEl.textContent = finalRounds;
+                    }
+
+                    this.showState('quizEndedState');
+                }
+
+                onQuestionStarted(data) {
+                    // Reset per-question state
+                    this.currentQuestion = data.question;
+                    this.shuffledItems = data.items || [];
+                    this.currentRound = 1;
+                    this.currentSelection = [];
+                    this.isEliminated = false;
+                    this.moreRoundsInQuestion = true;
+
+                    // Total rounds = number_of_items_in_topic - 1
+                    this.totalRoundsForQuestion = Math.max((this.shuffledItems.length || 0) - 1, 1);
+                    this.roundStatuses = new Array(this.totalRoundsForQuestion).fill(null);
+
+                    // Initialize ladder with a single anchor item and put the
+                    // rest into the container
+                    if (this.shuffledItems.length > 0) {
+                        const anchor = this.shuffledItems[0];
+                        this.ladderItems = [anchor];
+                        this.lockedIds = new Set([anchor.id]);
+                        this.containerItems = this.shuffledItems.slice(1);
+                    } else {
+                        this.ladderItems = [];
+                        this.lockedIds = new Set();
+                        this.containerItems = [];
+                    }
+
+                    // Show the main topic state
+                    this.showState('topicState');
+                    this.setInteractionLock(false);
+                    const titleEl = document.getElementById('topicTitle');
+                    const descEl = document.getElementById('topicDescription');
+                    const upperLabelEl = document.getElementById('ladderUpperLabel');
+                    const lowerLabelEl = document.getElementById('ladderLowerLabel');
+                    if (titleEl) titleEl.textContent = this.currentQuestion?.text || '';
+                    if (descEl) descEl.textContent = this.currentQuestion?.description || '';
+
+                    // Set ladder extreme labels from the question, falling back
+                    // to empty string if not provided.
+                    if (upperLabelEl) upperLabelEl.textContent = this.currentQuestion?.upper_label || '';
+                    if (lowerLabelEl) lowerLabelEl.textContent = this.currentQuestion?.lower_label || '';
+
+                    // Render round indicator circles
+                    this.renderRoundIndicators();
+
+                    // Start timer from payload or question's per-round limit
+                    const timeLimit = data.time_limit_seconds || this.currentQuestion?.round_time_limit || 0;
+                    // If there is no timer, mark as "timer ended" so results are applied immediately
+                    this.roundTimerEnded = (timeLimit <= 0);
+                    console.log('Starting player timer with time limit:', timeLimit);
+                    console.log("Data Time Limit ", data.time_limit_seconds);
+                    console.log({"Current Question Time ": this.currentQuestion?.round_time_limit});
+                    this.startPlayerTimer(timeLimit);
+
+                    // Render first round
+                    this.renderCurrentRound();
+                }
+
+                startPlayerTimer(seconds) {
+                    if (!seconds || seconds <= 0) return;
+                    if (this.roundTimer) {
+                        clearInterval(this.roundTimer);
+                    }
+                    this.roundTimeLeft = seconds;
+                    // Reset per-round submission state
+                    this.hasSubmittedMove = false;
+                    this.lastSubmitWasTimeout = false;
+                    this.roundTimerEnded = false;
+                    this.pendingRoundResult = null;
+                    this.setInteractionLock(false);
+                    const timeEl = document.getElementById('playerTimeLeft');
+                    const circle = document.getElementById('playerTimerCircle');
+
+                    // Elements on the round result card
+                    const timeElResult = document.getElementById('playerTimeLeftResult');
+                    const circleResult = document.getElementById('playerTimerCircleResult');
+                    // Elements on the waiting state card
+                    const timeElWaiting = document.getElementById('playerTimeLeftWaiting');
+                    const circleWaiting = document.getElementById('playerTimerCircleWaiting');
+                    const timeElFinal = document.getElementById('finalPlayerTimeLeft');
+                    const circleFinal = document.getElementById('finalPlayerTimerCircle');
+
+                    if (timeEl) timeEl.textContent = this.roundTimeLeft;
+                    if (timeElResult) timeElResult.textContent = this.roundTimeLeft;
+                    if (timeElWaiting) timeElWaiting.textContent = this.roundTimeLeft;
+                    if (timeElFinal) timeElFinal.textContent = this.roundTimeLeft;
+
+                    const applyTimerClasses = (circleEl) => {
+                        if (!circleEl) return;
+                        circleEl.className = 'timer-circle';
+                        if (this.roundTimeLeft <= 5) {
+                            circleEl.classList.add('danger');
+                        } else if (this.roundTimeLeft <= 10) {
+                            circleEl.classList.add('warning');
+                        }
+                    };
+
+                    applyTimerClasses(circle);
+                    applyTimerClasses(circleResult);
+                    applyTimerClasses(circleWaiting);
+                    applyTimerClasses(circleFinal);
+
+                    this.roundTimer = setInterval(() => {
+                        this.roundTimeLeft -= 1;
+                        const safeValue = Math.max(this.roundTimeLeft, 0);
+                        if (timeEl) timeEl.textContent = safeValue;
+                        if (timeElResult) timeElResult.textContent = safeValue;
+                        if (timeElWaiting) timeElWaiting.textContent = safeValue;
+                        if (timeElFinal) timeElFinal.textContent = safeValue;
+
+                        applyTimerClasses(circle);
+                        applyTimerClasses(circleResult);
+                        applyTimerClasses(circleWaiting);
+                        applyTimerClasses(circleFinal);
+
+                        if (this.roundTimeLeft <= 0) {
+                            clearInterval(this.roundTimer);
+                            this.roundTimerEnded = true;
+
+                            // If we already have the round result from the
+                            // server, apply it now; otherwise it will be
+                            // applied when onRoundResult arrives.
+                            if (this.pendingRoundResult) {
+                                this.applyRoundResult(this.pendingRoundResult);
+                            }
+
+                            // Only auto-submit a timeout if this player has
+                            // NOT already submitted a move for this round.
+                            if (this.moreRoundsInQuestion && !this.hasSubmittedMove)  {
+                                // If a valid current selection exists, submit it
+                                // normally so non-explicit "check" inputs are
+                                // still accepted at round end.
+                                const hasSelection = !!this.currentRoundItemId &&
+                                    this.ladderItems.some(it => Number(it.id) === Number(this.currentRoundItemId));
+                                this.submitCurrentRound(!hasSelection);
+                                // Show waiting state while we await the
+                                // authoritative result.
+                                this.showState('waitingRoundState');
+                            }
+                        }
+                    }, 1000);
+                }
+
+                renderCurrentRound() {
+                    const topicLayoutContainer = document.getElementById('topicLayout');
+                    const topicButtons = document.getElementById('topicButtons');
+                    const ladderContainer = document.getElementById('ladderContainer');
+                    const pool = document.getElementById('itemPool');
+                    if (!ladderContainer || !pool) return;
+
+                    ladderContainer.innerHTML = '';
+                    pool.innerHTML = '';
+
+                    // Render ladder rows with numbered triangle drop targets.
+                    // There is one drop target per potential position in the
+                    // ladder: before the first item, between items, and after
+                    // the last item.
+                    const ladderLength = this.ladderItems.length;
+                    const totalPositions = ladderLength + 1;
+
+                    for (let position = 0; position < totalPositions; position++) {
+                        const slotRow = document.createElement('div');
+                        slotRow.className = 'ladder-slot-row';
+
+                        // Ladder row content for this index, if any, on the LEFT
+                        if (position < ladderLength) {
+                            const item = this.ladderItems[position];
+                            const row = document.createElement('div');
+                            row.className = 'ladder-row';
+                            row.dataset.itemId = item.id;
+
+                            const text = document.createElement('div');
+                            text.className = 'ladder-row-text';
+                            text.textContent = item.text;
+                            row.appendChild(text);
+
+                            const isLocked = this.lockedIds.has(item.id);
+                            if (!isLocked && this.currentRoundItemId === item.id) {
+                                const clearBtn = document.createElement('button');
+                                clearBtn.type = 'button';
+                                clearBtn.className = 'slot-clear-btn';
+                                clearBtn.innerHTML = '&times;';
+                                clearBtn.addEventListener('click', () => {
+                                    this.removeCurrentRoundItem(item.id);
+                                });
+                                row.appendChild(clearBtn);
+                            }
+
+                            slotRow.appendChild(row);
+                        } else {
+                            // For the final position (after the last item), add
+                            // a flexible spacer so the triangle visually aligns
+                            // with the gap below the last row.
+                            const spacer = document.createElement('div');
+                            spacer.style.flex = '1';
+                            slotRow.appendChild(spacer);
+                        }
+
+                        // Triangle drop target (numbered) on the RIGHT
+                        const target = document.createElement('div');
+                        target.className = 'triangle-container';
+                        target.dataset.position = String(position);
+                        const label = document.createElement('span');
+                        label.className = 'number';
+                        // Number from 1..N to match visual design
+                        label.textContent = String(position + 1);
+                        target.appendChild(label);
+
+                        target.addEventListener('dragover', (e) => this.onTriangleDragOver(e, target));
+                        target.addEventListener('dragleave', () => {
+                            target.classList.remove('over');
+                        });
+                        target.addEventListener('drop', (e) => this.onTriangleDrop(e, position));
+
+                        slotRow.appendChild(target);
+
+                        ladderContainer.appendChild(slotRow);
+                    }
+
+                    // Render container items (not yet on the ladder)
+                    this.containerItems.forEach((item, index) => {
+                        const card = document.createElement('div');
+                        card.className = 'answer-card';
+                        card.draggable = true;
+                        card.dataset.itemId = item.id;
+                        card.innerHTML = `
+                            <div class="option-key">${index + 1}</div>
+                            <div class="option-text">${item.text}</div>
+                        `;
+
+                        card.addEventListener('dragstart', (e) => this.onCardDragStart(e, card));
+                        card.addEventListener('dragend', () => this.onCardDragEnd(card));
+
+                        pool.appendChild(card);
+                    });
+
+                    // Submit button
+                    let submitBtn = document.getElementById('submitRoundBtn');
+                    if (!submitBtn) {
+                        submitBtn = document.createElement('button');
+                        submitBtn.type = 'button';
+                        submitBtn.className = 'col btn btn-primary w-100 m-3 submit-answer';
+                        submitBtn.id = 'submitRoundBtn';
+                        submitBtn.textContent = 'Einloggen';
+                        submitBtn.addEventListener('click', () => this.submitCurrentRound());
+                        topicButtons.appendChild(submitBtn);
+                    }
+                    submitBtn.disabled = this.isInputLocked || this.isEliminated;
+                }
+
+                syncCurrentSelection() {
+                    if (!this.websocket || this.websocket.readyState !== WebSocket.OPEN) return;
+                    if (!this.currentQuestion || !this.moreRoundsInQuestion) return;
+
+                    this.websocket.send(JSON.stringify({
+                        type: 'participant_update_selection',
+                        participant_name: this.participantName,
+                        hub_session_code: this.hubSession,
+                        ordered_item_ids: this.ladderItems.map(it => it.id),
+                    }));
+                }
+
+                onCardDragStart(event, card) {
+                    if (this.isEliminated || this.isInputLocked) return;
+                    const id = parseInt(card.dataset.itemId || '0', 10);
+                    if (isNaN(id)) return;
+                    // Only one current-round item at a time
+                    if (this.currentRoundItemId && this.currentRoundItemId !== id) {
+                        return;
+                    }
+                    this.currentRoundItemId = id;
+                    if (event.dataTransfer) {
+                        event.dataTransfer.effectAllowed = 'move';
+                        event.dataTransfer.setData('text/plain', String(id));
+                    }
+                    card.classList.add('dragging');
+                }
+
+                onCardDragEnd(card) {
+                    card.classList.remove('dragging');
+                }
+
+                clearLadderPreviews() {
+                    document.querySelectorAll('.ladder-row').forEach(r => {
+                        r.classList.remove('preview-before', 'preview-after', 'draggable-over');
+                    });
+                }
+
+                onTriangleDragOver(event, target) {
+                    if (this.isInputLocked) return;
+                    event.preventDefault();
+                    if (event.dataTransfer) {
+                        event.dataTransfer.dropEffect = 'move';
+                    }
+                    target.classList.add('over');
+                }
+
+                onTriangleDrop(event, position) {
+                    if (this.isInputLocked) return;
+                    event.preventDefault();
+
+                    // Always clear drop-highlight state, even on early exits,
+                    // so a marker cannot remain green without a real placement.
+                    document.querySelectorAll('.triangle-container').forEach(t => t.classList.remove('over'));
+
+                    const pool = document.getElementById('itemPool');
+                    if (!pool) return;
+
+                    let droppedId = NaN;
+                    if (event.dataTransfer) {
+                        droppedId = parseInt(event.dataTransfer.getData('text/plain') || '0', 10);
+                    }
+                    if (isNaN(droppedId)) {
+                        const dragging = document.querySelector('.answer-card.dragging');
+                        droppedId = parseInt(dragging?.dataset?.itemId || '0', 10);
+                    }
+                    if (isNaN(droppedId)) return;
+
+                    const itemObj = this.shuffledItems.find(it => Number(it.id) === droppedId);
+                    if (!itemObj) {
+                        // Keep state unchanged if the dropped card cannot be
+                        // resolved to a known item.
+                        return;
+                    }
+
+                    // Remove from containerItems only after successful item resolution.
+                    this.containerItems = this.containerItems.filter(it => Number(it.id) !== droppedId);
+
+                    // Remove any existing occurrence of this item on the ladder
+                    this.ladderItems = this.ladderItems.filter(it => Number(it.id) !== droppedId);
+
+                    // Clamp position to valid range and insert
+                    const clampedPos = Math.max(0, Math.min(position, this.ladderItems.length));
+                    this.ladderItems.splice(clampedPos, 0, itemObj);
+
+                    this.currentRoundItemId = droppedId;
+                    this.renderCurrentRound();
+                    this.syncCurrentSelection();
+                }
+
+                removeCurrentRoundItem(itemId) {
+                    if (this.isInputLocked) return;
+                    // Remove from ladder and return to container
+                    this.ladderItems = this.ladderItems.filter(it => it.id !== itemId);
+                    const original = this.shuffledItems.find(it => it.id === itemId);
+                    if (original) {
+                        this.containerItems.push(original);
+                    }
+                    this.currentRoundItemId = null;
+                    this.renderCurrentRound();
+                    this.syncCurrentSelection();
+                }
+
+                submitCurrentRound(roundTimeOut = false) {
+                    if (!this.websocket || this.websocket.readyState !== WebSocket.OPEN) return;
+                    if (this.isEliminated || this.isInputLocked) return;
+                    const hasPlacedRoundItem = !!this.currentRoundItemId &&
+                        this.ladderItems.some(it => Number(it.id) === Number(this.currentRoundItemId));
+
+                    // For normal submissions, require that exactly one item has been placed this round.
+                    // For timeouts, allow submission even if no item is placed so the round is recorded as failed.
+                    if (!hasPlacedRoundItem && !roundTimeOut) {
+                        alert('Please place one item from the container onto the ladder before logging in.');
+                        return;
+                    }
+
+                    const orderedIds = this.ladderItems.map(it => it.id);
+                    // For normal submissions we require some items; for timeouts
+                    // we allow an empty ladder and let the backend record failure.
+                    if (!orderedIds.length && !roundTimeOut) return;
+
+                    // Mark that this player has submitted for this round so we
+                    // don't auto-submit again on timer expiry.
+                    this.hasSubmittedMove = true;
+                    this.lastSubmitWasTimeout = !!roundTimeOut;
+
+                    const payload = {
+                        type: 'participant_submit_round',
+                        participant_name: this.participantName,
+                        hub_session_code: this.hubSession,
+                        ordered_item_ids: orderedIds,
+                        round_time_out: !!roundTimeOut,
+                    };
+                    this.websocket.send(JSON.stringify(payload));
+
+                    // After submitting, keep board visible but locked.
+                    this.showState('topicState');
+                    this.setInteractionLock(true, 'Waiting for other players...');
+                }
+
+                onRoundResult(data) {
+                    if (data.participant_name !== this.participantName) {
+                        return;
+                    }
+
+                    this.setProgressHistory(data.progress_history);
+
+                    const resultRound = Number(data.round_number || 0);
+                    if (resultRound > 0 && resultRound < this.currentRound) {
+                        this.applyRoundResult(data, true);
+                        this.pendingRoundResult = null;
+                        if (!this.isEliminated && this.moreRoundsInQuestion) {
+                            this.showState('topicState');
+                            this.setInteractionLock(false);
+                        }
+                        return;
+                    }
+
+                    this.pendingRoundResult = data;
+                    this.showState('topicState');
+                    this.setInteractionLock(true, 'Waiting for next round...');
+                }
+
+                onRoundStarted(roundData) {
+                    if (!this.moreRoundsInQuestion) return;
+
+                    const nextRoundNumber = (roundData && typeof roundData.round_number === 'number')
+                        ? roundData.round_number
+                        : (this.currentRound + 1);
+                    const justFinishedRound = Math.max(nextRoundNumber - 1, 0);
+
+                    if (this.pendingRoundResult && Number(this.pendingRoundResult.round_number || 0) === justFinishedRound) {
+                        this.applyRoundResult(this.pendingRoundResult, true);
+                        this.pendingRoundResult = null;
+                        if (this.isEliminated) {
+                            return;
+                        }
+                    }
+
+                    this.showState('topicState');
+                    this.hasSubmittedMove = false;
+                    this.pendingRoundStart = null;
+
+                    const timeLimit = roundData?.time_limit_seconds || this.currentQuestion?.round_time_limit || 0;
+                    this.roundTimerEnded = (timeLimit <= 0);
+
+                    this.currentRound = nextRoundNumber;
+
+                    if (this.isEliminated) {
+                        this.setInteractionLock(true, 'Eliminated for this set. Waiting for next question...');
+                        this.renderCurrentRound();
+                        return;
+                    }
+
+                    // Freeze already placed items and open the next round.
+                    this.lockedIds = new Set(this.ladderItems.map(it => it.id));
+                    this.currentRoundItemId = null;
+                    this.containerItems = this.shuffledItems.filter(it => !this.lockedIds.has(it.id));
+                    this.setInteractionLock(false);
+
+                    this.startPlayerTimer(timeLimit);
+                    this.renderCurrentRound();
+                }
+
+                onRoundEnded(_survivors) {}
+
+                onNoMoreRounds() {
+                    if (this.roundTimer) {
+                        clearInterval(this.roundTimer);
+                    }
+                }
+
+                showEliminatedTransition() {
+                    const resultTitle = document.getElementById('roundResultTitle');
+                    const resultText = document.getElementById('roundResultText');
+                    const iconSuccess = document.getElementById('roundResultIconSuccess');
+                    const iconFail = document.getElementById('roundResultIconFail');
+
+                    if (iconSuccess) iconSuccess.classList.add('d-none');
+                    if (iconFail) iconFail.classList.remove('d-none');
+                    if (resultTitle) resultTitle.textContent = 'Ausgeschieden';
+                    if (resultText) resultText.textContent = 'Du bist für dieses Set ausgeschieden.';
+                    this.showState('roundResultState');
+
+                    setTimeout(() => {
+                        this.showState('topicState');
+                        this.setInteractionLock(true, 'Eliminated for this set. Waiting for next question...');
+                    }, 900);
+                }
+
+                applyRoundResult(data, fromRoundStart = false) {
+                    if (data.participant_name !== this.participantName) {
+                        return;
+                    }
+                    const resolvedRound = Number(data.round_number || this.currentRound || 0);
+                    if (resolvedRound > this.latestResolvedRound) {
+                        this.latestResolvedRound = resolvedRound;
+                    }
+
+                    // Track latest total rounds survived across the entire quiz (for end screen)
+                    if (typeof data.rounds_survived === 'number') {
+                        this.currentTotalRoundsSurvived = data.rounds_survived;
+                    }
+
+                    // Track per-round status locally
+                    const roundIndex = Math.max(resolvedRound - 1, 0);
+                    if (roundIndex < this.roundStatuses.length) {
+                        this.roundStatuses[roundIndex] = data.is_correct ? 'success' : 'fail';
+                    }
+                    this.renderRoundIndicators();
+
+                    this.isEliminated = !!data.is_eliminated;
+                    this.lastSubmitWasTimeout = false;
+
+                    // Reorder ladderItems to the correct order returned by the
+                    // server (moves misplaced item to its correct ladder
+                    // position).
+                    if (Array.isArray(data.correct_order_ids) && data.correct_order_ids.length) {
+                        const byId = new Map(this.shuffledItems.map(it => [it.id, it]));
+                        const ordered = [];
+                        data.correct_order_ids.forEach(id => {
+                            const item = byId.get(id);
+                            if (item) {
+                                ordered.push(item);
+                            }
+                        });
+                        this.ladderItems = ordered;
+                    }
+
+                    // Lock all current ladder items for subsequent rounds and
+                    // rebuild the container with remaining items.
+                    this.lockedIds = new Set(this.ladderItems.map(it => it.id));
+                    this.currentRoundItemId = null;
+                    this.containerItems = this.shuffledItems.filter(it => !this.lockedIds.has(it.id));
+                    this.renderCurrentRound();
+
+                    if (data.has_more_rounds && !this.isEliminated) {
+                        this.showState('topicState');
+                        this.setInteractionLock(true, 'Waiting for host to start next round...');
+                    } else {
+                        if (data.has_more_rounds && this.isEliminated && fromRoundStart) {
+                            this.showEliminatedTransition();
+                        } else {
+                            this.showState('topicState');
+                            this.setInteractionLock(true, 'Waiting for host to end and reveal this question...');
+                        }
+                    }
+                }
+
+                setInteractionLock(locked, message = 'Waiting for other players...') {
+                    this.isInputLocked = !!locked;
+                    const layout = document.getElementById('topicLayout');
+                    if (layout) layout.classList.toggle('round-locked', this.isInputLocked);
+
+                    const banner = document.getElementById('roundLockBanner');
+                    if (banner) {
+                        banner.textContent = message;
+                        banner.classList.toggle('d-none', !this.isInputLocked);
+                    }
+
+                    const submitBtn = document.getElementById('submitRoundBtn');
+                    if (submitBtn) submitBtn.disabled = this.isInputLocked || this.isEliminated;
+                }
+
+                renderFinalOrder() {
+                    const container = document.getElementById('finalOrderItems');
+                    const questionEl = document.getElementById('finalOrderQuestionText');
+                    if (!container) return;
+
+                    container.innerHTML = '';
+                    if (questionEl && this.currentQuestion) {
+                        const base = this.currentQuestion.text || '';
+                        questionEl.textContent = this.isEliminated ? `${base} — You were eliminated in this question.` : base;
+                    }
+
+                    // Use the final ladderItems (already reordered from
+                    // correct_order_ids) as the authoritative correct order.
+                    this.ladderItems.forEach((item, index) => {
+                        const itemEl = document.createElement('div');
+                        itemEl.className = 'final-order-item';
+                        itemEl.textContent = item.text;
+                        container.appendChild(itemEl);
+
+                        if (index < this.ladderItems.length - 1) {
+                            const arrow = document.createElement('div');
+                            arrow.className = 'final-order-arrow';
+                            arrow.textContent = '→';
+                            container.appendChild(arrow);
+                        }
+                    });
+                }
+
+                onQuestionEnded(data) {
+                    if (this.pendingRoundResult) {
+                        this.applyRoundResult(this.pendingRoundResult, true);
+                        this.pendingRoundResult = null;
+                    }
+                    if (Array.isArray(data?.correct_order_ids) && data.correct_order_ids.length) {
+                        const byId = new Map(this.shuffledItems.map(it => [it.id, it]));
+                        const ordered = [];
+                        data.correct_order_ids.forEach((id) => {
+                            const item = byId.get(id);
+                            if (item) ordered.push(item);
+                        });
+                        if (ordered.length) {
+                            this.ladderItems = ordered;
+                        }
+                    }
+                    this.renderFinalOrder();
+                    this.showState('finalOrderState');
+                    if (this.roundTimer) clearInterval(this.roundTimer);
+                    this.moreRoundsInQuestion = false;
+                    this.setInteractionLock(false);
+                }
+
+                showCorrectAnswer(correctAnswerData) {
+                    const toText = (val) => {
+                        if (val == null) return '-';
+                        if (typeof val === 'object') {
+                            return val.formatted_answer || val.text || val.value || '-';
+                        }
+                        return String(val);
+                    };
+
+                    const correctText = toText(correctAnswerData);
+                    const userTextEl = document.getElementById('submittedAnswerText');
+                    const userAnswer = userTextEl ? userTextEl.textContent : (this.selectedAnswer || '-');
+
+                    const display = document.getElementById('correctAnswerDisplay');
+                    const compUser = document.getElementById('userAnswerDisplay');
+                    const compCorrect = document.getElementById('correctAnswerComparison');
+                    if (display) display.textContent = correctText;
+                    if (compUser) compUser.textContent = userAnswer;
+                    if (compCorrect) compCorrect.textContent = correctText;
+
+                    this.showState('correctAnswerState');
+                }
+                    
+
+                showWaitingForNextQuestion() {
+                    // Switch to a safe waiting state without destroying existing DOM nodes
+                    this.showState('waitingQuestionState');
+                    const waiting = document.getElementById('waitingQuestionState');
+                    if (waiting) {
+                        try { lucide.createIcons(); } catch (e) { /* ignore */ }
+                    }
+                }
+
+                showState(stateId) {
+                    // Hide all states
+                    document.querySelectorAll('.game-state').forEach(state => {
+                        state.classList.add('d-none');
+                    });
+                    
+                    // Show target state
+                    const targetState = document.getElementById(stateId);
+                    if (targetState) {
+                        targetState.classList.remove('d-none');
+                    }
+                }
+
+                updateParticipantCount(count) {
+                    const countElement = document.getElementById('waitingParticipantCount');
+                    if (countElement) {
+                        countElement.textContent = count;
+                    }
+                }
+
+                showConnectionStatus() {
+                    document.getElementById('connectionStatus').classList.remove('d-none');
+                }
+
+                hideConnectionStatus() {
+                    document.getElementById('connectionStatus').classList.add('d-none');
+                }
+
+                setProgressHistory(history) {
+                    this.progressHistory = Array.isArray(history) ? history : [];
+                    this.renderProgressHistory();
+                }
+
+                renderProgressHistory() {
+                    const list = document.getElementById('sortingHistoryList');
+                    const totalElement = document.getElementById('sortingHistoryTotal');
+                    if (!list) return;
+                    list.innerHTML = '';
+                    if (!this.progressHistory.length) {
+                        list.innerHTML = '<div class="text-muted small">Noch keine abgeschlossenen Sets.</div>';
+                        if (totalElement) {
+                            totalElement.textContent = '0/0';
+                        }
+                        return;
+                    }
+                    let totalEarnedPoints = 0;
+                    let totalMaxPoints = 0;
+                    this.progressHistory.forEach((entry) => {
+                        totalEarnedPoints += Number(entry.survived_rounds) || 0;
+                        totalMaxPoints += Number(entry.max_rounds) || 0;
+                        const row = document.createElement('div');
+                        row.className = 'sorting-history-row score-box__row';
+                        row.innerHTML = `
+                            <div class="sorting-history-badge score-box__badge">${entry.question_number}</div>
+                            <div class="sorting-history-value score-box__value">
+                                <span>${entry.survived_rounds}</span>
+                                <span class="score-box__separator">/</span>
+                                <span>${entry.max_rounds}</span>
+                            </div>
+                        `;
+                        list.appendChild(row);
+                    });
+                    if (totalElement) {
+                        totalElement.textContent = `${totalEarnedPoints}/${totalMaxPoints}`;
+                    }
+                }
+            }
+
+            // Initialize Quiz Player
+            const player = new SortingLadderPlayer();
+
+            const lobbyReturnController = createHubLobbyReturnController({
+                sessionCode: '{{ hub_session|default_if_none:"" }}',
+                gameKey: 'sorting_ladder',
+                roomCode: '{{ quiz.room_code }}',
+                participantName: '{{ participant.name|escapejs }}',
+                csrfToken: '{{ csrf_token }}',
+            });
+            window.sortingPlayer = player;
+
+            // Minimal Hub listener: optional, for centralized navigation
+            (function() {
+                let hubCode = null;
+                try {
+                    hubCode = localStorage.getItem('hub_session_code');
+                    console.log("[HubScript2] Retrieved hub_session_code from localStorage:", hubCode);
+                } catch (err) {
+                    console.error("[HubScript2] Error accessing localStorage:", err);
+                }
+
+                if (!hubCode) {
+                    console.warn("[HubScript2] No hub_session_code found, exiting...");
+                    return;
+                }
+
+                const wsScheme = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+                const wsUrl = `${wsScheme}//${window.location.host}/ws/hub/${hubCode}/`;
+                console.log("[HubScript2] Connecting to WebSocket:", wsUrl);
+
+                const hubWS = new WebSocket(wsUrl);
+
+                hubWS.onopen = () => {
+                    console.log("[HubScript2] WebSocket connected successfully.");
+                };
+
+                hubWS.onmessage = (event) => {
+                    console.log("[HubScript2] Message received:", event.data);
+                    try {
+                        const data = JSON.parse(event.data);
+                        console.log("[HubScript2] Parsed data:", data);
+
+                        if (data.type === 'players_recalled_to_lobby') {
+                            lobbyReturnController.returnToLobby({ markInactive: false });
+                        } else if (data.type === 'session_ended') {
+                            console.log("[HubScript2] Session ended message received.");
+                            const u = new URL(`/hub/lobby/${hubCode}/`, window.location.origin);
+                            u.searchParams.set('ended', '1');
+
+                            console.log("[HubScript2] Redirecting to lobby:", u.toString());
+                            window.location.href = u.toString();
+                        } else {
+                            console.log("[HubScript2] Unhandled message type:", data.type);
+                        }
+
+                    } catch (err) {
+                        console.error("[HubScript2] Failed to parse message:", event.data, err);
+                    }
+                };
+
+                hubWS.onerror = (err) => {
+                    console.error("[HubScript2] WebSocket error:", err);
+                };
+
+                hubWS.onclose = (e) => {
+                    console.warn("[HubScript2] WebSocket closed:", e.code, e.reason);
+                };
+            })();
+
+        });
+    </script>
+  {% include 'includes/_leaderboard_overlay.html' %}
+  {% include 'includes/accessibility_widget.html' %}
+</body>
+</html>

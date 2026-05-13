@@ -1,0 +1,2285 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BlackJack Quiz: {{ quiz.room_code }} - QuizMaster</title>
+    
+    <!-- Bootstrap 5 CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
+    
+    <!-- Custom Theme CSS -->
+    <link rel="stylesheet" href="{% static 'theme.css' %}">
+    
+    <!-- Inter Font -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body class="blackjack-play-page">
+    <div class="play-container">
+        <!-- Header -->
+        <header class="quiz-header">
+            <div class="container">
+                <div class="header-content">
+                    <div class="quiz-info">
+                        <!-- <div class="room-code">
+                            <i data-lucide="hash"></i>
+                            {{ quiz.room_code }}
+                        </div> -->
+                        <h1 class="quiz-title">{{ quiz.title }}</h1>
+                    </div>
+                    <div class="participant-info">
+                        <div class="participant-avatar {% if participant.is_busted %}busted{% elif participant.total_points == 21 %}blackjack{% endif %}">
+                            {{ participant.name|first|upper }}
+                        </div>
+                        <div class="participant-details">
+                            <span class="participant-name">
+                                {{ participant.name }}
+                                {% if participant.is_busted %}
+                                    <span class="status-badge bust">BUSTED</span>
+                                {% elif participant.total_points == 21 %}
+                                    <span class="status-badge blackjack">BLACKJACK!</span>
+                                {% endif %}
+                            </span>
+                            <span class="participant-score">
+                                <span id="participantStarsText">{{ participant.total_points }} stars this set</span>
+                                ·
+                                <span id="participantOverallPointsText">{{ participant.overall_points }} points total</span>
+                            </span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </header>
+
+        <!-- Points Display -->
+        <div class="points-header">
+            <div class="container">
+                <div class="points-display">
+                    <div class="points-info">
+                        <div class="current-points">
+                            <span class="points-value" id="currentPoints">{{ participant.total_points }}</span>
+                            <span class="points-label">Current Set Stars</span>
+                        </div>
+                        <div class="overall-points">
+                            <span class="points-value" id="overallPoints">{{ participant.overall_points }}</span>
+                            <span class="points-label">Awarded Points</span>
+                        </div>
+                        <div class="target-distance">
+                            <span class="distance-value" id="distanceFrom21">{{ participant.get_distance_from_21 }}</span>
+                            <span class="distance-label">{% if participant.is_busted %}Over 21{% else %}From 21{% endif %}</span>
+                        </div>
+                    </div>
+                    <div class="target-circle">
+                        <span class="target-number">21</span>
+                        <span class="target-text">TARGET</span>
+                    </div>
+                        <div class="progress-info">
+                            <div class="question-progress">
+                                <span class="progress-value" id="questionProgress">{{ current_question_in_set }}/{{ current_set_question_count }}</span>
+                                <span class="progress-label">Questions</span>
+                            </div>
+                        <div class="bust-warning {% if participant.total_points >= 18 and not participant.is_busted %}show{% endif %}" id="bustWarning">
+                            <i data-lucide="alert-triangle"></i>
+                            <span>Danger Zone!</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Main Content -->
+        <main class="quiz-main">
+            <div class="container">
+                <div class="row g-4 align-items-start">
+                    <div class="col-lg-8">
+                        <!-- Waiting State -->
+                        <div id="waitingQuizState" class="game-state {% if quiz.status != 'waiting' %}d-none{% endif %}">
+                            <div class="waiting-card">
+                                <div class="waiting-animation">
+                                    <div class="pulse-ring"></div>
+                                    <div class="pulse-ring delay-1"></div>
+                                    <div class="pulse-ring delay-2"></div>
+                                    <i data-lucide="spade"></i>
+                                </div>
+                                <h2>Waiting for BlackJack Quiz to Start</h2>
+                                <p>Get ready to hit close to 21 stars! The quiz host will start the session shortly.</p>
+                                <div class="participants-count">
+                                    <i data-lucide="users"></i>
+                                    <span id="waitingParticipantCount">{{ participant_count }}</span> participants joined
+                                </div>
+                                <div class="game-rules-preview">
+                                    <div class="rule-preview">🎯 Goal: Get as close to 21 stars as possible</div>
+                                    <div class="rule-preview">💥 22+ stars = BUST (you're out!)</div>
+                                    <div class="rule-preview">📊 Stars = |Your Answer - Correct Answer|</div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div id="waitingQuestionState" class="game-state d-none">
+                            <div class="waiting-card">
+                                <div class="waiting-animation">
+                                    <div class="pulse-ring"></div>
+                                    <div class="pulse-ring delay-1"></div>
+                                    <div class="pulse-ring delay-2"></div>
+                                    <i data-lucide="clock"></i>
+                                </div>
+                                <h2>Waiting for Next Question</h2>
+                                <p>Get ready for the next challenge!</p>
+                            </div>
+                        </div>
+
+                        <!-- Question State -->
+                        <div id="questionState" class="game-state {% if not quiz.current_question %}d-none{% endif %}">
+                            <div class="question-card">
+                                <!-- Question Header -->
+                                <div class="question-header">
+                                    <div class="question-number">
+                                        Question <span id="currentQuestionNumber">{{ current_question_in_set }}</span>/<span id="currentSetQuestionCount">{{ current_set_question_count }}</span>
+                                    </div>
+                                    <div class="question-timer">
+                                        <div class="timer-circle" id="playerTimerCircle">
+                                            <span id="playerTimeLeft">30</span>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <!-- Question Content -->
+                                <div class="question-content">
+                                    <div class="question-text" id="questionText">
+                                        {% if quiz.current_question %}
+                                            {{ quiz.current_question.question_text }}
+                                        {% endif %}
+                                    </div>
+
+                                    <!-- Answer Input Interface -->
+                                    <div class="answer-interface {% if participant.is_busted %}d-none{% endif %}" id="answerInterface">
+                                        <div class="answer-input-container">
+                                            <label for="answerInput" class="answer-label">Your Answer:</label>
+                                            <div class="input-container">
+                                                <input type="number" 
+                                                       class="form-control answer-input" 
+                                                       id="answerInput" 
+                                                       placeholder="Enter whole number..." 
+                                                       min="0"
+                                                       max="10000"
+                                                       autocomplete="off">
+                                            </div>
+                                            <div class="input-help">
+                                                <i data-lucide="info"></i>
+                                                <span>Enter whole numbers only (e.g., 8, 42, 365)</span>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <div class="alert alert-warning {% if not participant.is_busted %}d-none{% endif %}" id="bustedQuestionNotice" role="status">
+                                        <i data-lucide="eye"></i>
+                                        <span>You are already busted for this set. You can still follow the remaining questions, but you no longer need to answer.</span>
+                                    </div>
+
+                                    <!-- Submit Button -->
+                                    <button class="btn btn-primary btn-lg w-100 submit-answer {% if participant.is_busted %}d-none{% endif %}" id="submitAnswerBtn" disabled>
+                                        <i data-lucide="send"></i>
+                                        Submit Answer
+                                    </button>
+
+                                    <div class="zone-submit-feedback d-none" id="questionSubmitFeedback">
+                                        <div class="zone-submit-answer">
+                                            Your answer:
+                                            <strong id="questionSubmittedAnswer">-</strong>
+                                        </div>
+                                        <div class="zone-submit-waiting">
+                                            Waiting for the other participants...
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Answer Submitted State -->
+                        <div id="answerSubmittedState" class="game-state d-none">
+                            <div class="submitted-card">
+                                <div class="submitted-animation">
+                                    <div class="check-animation">
+                                        <i data-lucide="check-circle" class="check-icon"></i>
+                                    </div>
+                                </div>
+                                <h2>Answer Submitted!</h2>
+                                <p>Waiting for other participants...</p>
+                                <div class="submitted-details">
+                                    <div class="answer-summary">
+                                        <div class="summary-item">
+                                            <span class="summary-label">Your Answer:</span>
+                                            <span class="summary-value" id="submittedAnswer">-</span>
+                                        </div>
+                                        <div class="summary-item">
+                                            <span class="summary-label">Stars This Question:</span>
+                                            <span class="summary-value points" id="pointsEarned">0</span>
+                                        </div>
+                                        <div class="summary-item">
+                                            <span class="summary-label">Stars This Set:</span>
+                                            <span class="summary-value total" id="totalPoints">0</span>
+                                        </div>
+                                        <div class="summary-item">
+                                            <span class="summary-label">Awarded Points:</span>
+                                            <span class="summary-value total" id="overallPointsSummary">0</span>
+                                        </div>
+                                        <div class="summary-item status-item" id="statusItem" style="display: none;">
+                                            <span class="summary-label">Status:</span>
+                                            <span class="summary-value status" id="statusValue">Playing</span>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Show Correct Answer State -->
+                        <div id="correctAnswerState" class="game-state d-none">
+                            <div class="correct-answer-card">
+                                <div class="answer-reveal">
+                                    <div class="reveal-icon">
+                                        <i data-lucide="target"></i>
+                                    </div>
+                                    <h2>Correct Answer Revealed!</h2>
+                                    <div class="answer-display">
+                                        <span class="answer-value" id="correctAnswerDisplay">-</span>
+                                    </div>
+                                </div>
+                                
+                                <div class="comparison-display">
+                                    <div class="comparison-item">
+                                        <div class="comparison-label">Your Answer</div>
+                                        <div class="comparison-value user-answer" id="userAnswerDisplay">-</div>
+                                    </div>
+                                    <div class="comparison-vs">VS</div>
+                                    <div class="comparison-item">
+                                        <div class="comparison-label">Correct Answer</div>
+                                        <div class="comparison-value correct-answer" id="correctAnswerComparison">-</div>
+                                    </div>
+                                </div>
+                                
+                                <div class="points-breakdown">
+                                    <div class="points-calculation">
+                                        <span class="calc-label">Stars Calculation:</span>
+                                        <span class="calc-formula" id="calculationDisplay">|Your Answer - Correct Answer|</span>
+                                    </div>
+                                    <div class="explanation-text" id="explanationText" style="display: none;"></div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Busted State -->
+                        <div id="bustedState" class="game-state d-none">
+                            <div class="busted-card">
+                                <div class="busted-animation">
+                                    <i data-lucide="x-circle" class="bust-icon"></i>
+                                </div>
+                                <h2>BUSTED!</h2>
+                                <p>You've exceeded 21 stars and are eliminated from this round.</p>
+                                <div class="bust-details">
+                                    <div class="bust-info">
+                                        <div class="bust-points">
+                                            <span class="bust-value" id="bustPoints">{{ participant.total_points }}</span>
+                                            <span class="bust-label">Set Stars</span>
+                                        </div>
+                                        <div class="bust-message">
+                                            <p>Better luck next time! You can still watch the remaining questions.</p>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div id="setEndedState" class="game-state {% if show_initial_set_end_state %}{% else %}d-none{% endif %}">
+                            <div class="ended-card">
+                                <div class="ended-animation">
+                                    <i data-lucide="layers-3" class="result-icon normal"></i>
+                                </div>
+                                <h2>Set Complete!</h2>
+                                <p>Your results for the finished set are shown below.</p>
+                                <div class="summary-grid" id="setSummaryGrid">
+                                    <div class="summary-stat">
+                                        <span class="summary-stat-label">Set</span>
+                                        <span class="summary-stat-value" id="setEndedNumber">{% if last_completed_set_summary %}{{ last_completed_set_summary.set_number }}{% else %}-{% endif %}</span>
+                                    </div>
+                                    <div class="summary-stat">
+                                        <span class="summary-stat-label">Set Stars</span>
+                                        <span class="summary-stat-value" id="setEndedStars">{% if last_completed_set_summary %}{{ last_completed_set_summary.set_stars }}{% else %}0{% endif %}</span>
+                                    </div>
+                                    <div class="summary-stat">
+                                        <span class="summary-stat-label">Awarded Points</span>
+                                        <span class="summary-stat-value" id="setEndedAwardedPoints">{% if last_completed_set_summary %}{{ last_completed_set_summary.awarded_points }}{% else %}0{% endif %}</span>
+                                    </div>
+                                    <div class="summary-stat">
+                                        <span class="summary-stat-label">Points Total</span>
+                                        <span class="summary-stat-value" id="setEndedOverallPoints">{% if last_completed_set_summary %}{{ last_completed_set_summary.overall_points }}{% else %}0{% endif %}</span>
+                                    </div>
+                                </div>
+                                <p class="small text-white-50 mb-0">Wait for the host to start the next set or question.</p>
+                            </div>
+                        </div>
+
+                        <!-- Quiz Ended State -->
+                        <div id="quizEndedState" class="game-state {% if show_initial_quiz_end_state %}{% else %}d-none{% endif %}">
+                            <div class="ended-card">
+                                <div class="ended-animation">
+                                    {% if participant.is_busted %}
+                                        <i data-lucide="x-circle" class="result-icon busted"></i>
+                                    {% elif participant.total_points == 21 %}
+                                        <i data-lucide="trophy" class="result-icon winner"></i>
+                                    {% else %}
+                                        <i data-lucide="spade" class="result-icon normal"></i>
+                                    {% endif %}
+                                </div>
+                                <h2>BlackJack Quiz Complete!</h2>
+                                <p>Your last set and full quiz summary are shown below.</p>
+                                <div class="summary-grid mb-4" id="finalLastSetGrid">
+                                    <div class="summary-stat">
+                                        <span class="summary-stat-label">Last Set</span>
+                                        <span class="summary-stat-value" id="finalLastSetNumber">{% if last_completed_set_summary %}{{ last_completed_set_summary.set_number }}{% else %}-{% endif %}</span>
+                                    </div>
+                                    <div class="summary-stat">
+                                        <span class="summary-stat-label">Set Stars</span>
+                                        <span class="summary-stat-value" id="finalSetStars">{% if last_completed_set_summary %}{{ last_completed_set_summary.set_stars }}{% else %}0{% endif %}</span>
+                                    </div>
+                                    <div class="summary-stat">
+                                        <span class="summary-stat-label">Awarded Points</span>
+                                        <span class="summary-stat-value" id="finalSetAwardedPoints">{% if last_completed_set_summary %}{{ last_completed_set_summary.awarded_points }}{% else %}0{% endif %}</span>
+                                    </div>
+                                    <div class="summary-stat">
+                                        <span class="summary-stat-label">Points Total</span>
+                                        <span class="summary-stat-value" id="finalOverallPoints">{% if last_completed_set_summary %}{{ last_completed_set_summary.overall_points }}{% else %}{{ participant.overall_points }}{% endif %}</span>
+                                    </div>
+                                </div>
+                                <div class="final-score">
+                                    <div class="score-circle">
+                                        <span class="score-value">{{ participant.overall_points }}</span>
+                                        <span class="score-label">points</span>
+                                    </div>
+                                </div>
+                                <div class="final-summary-card">
+                                    <h3>All Sets Summary</h3>
+                                    <div class="final-set-summary-list" id="finalSetSummaryList">
+                                        {% for set_entry in set_scoreboard %}
+                                            <div class="final-set-summary-row" data-set-number="{{ set_entry.set_number }}">
+                                                <span>Set {{ set_entry.set_number }}</span>
+                                                <span>{% if set_entry.earned_points is not None %}{{ set_entry.earned_points }}{% else %}__{% endif %}/{{ set_entry.max_points }}</span>
+                                            </div>
+                                        {% endfor %}
+                                    </div>
+                                </div>
+                                <!-- <div class="quiz-actions">
+                                    <a href="/blackjack/result/{{ quiz.room_code }}/{{ participant.name }}/" class="btn btn-primary btn-lg">
+                                        <i data-lucide="bar-chart-3"></i>
+                                        View Detailed Results
+                                    </a>
+                                    <a href="/blackjack/join/" class="btn btn-outline btn-lg">
+                                        <i data-lucide="play"></i>
+                                        Join Another Quiz
+                                    </a>
+                                </div> -->
+                            </div>
+                        </div>
+
+                        <!-- Connection Status -->
+                        <div id="connectionStatus" class="connection-status d-none">
+                            <div class="status-indicator">
+                                <i data-lucide="wifi-off"></i>
+                                <span>Reconnecting...</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="col-lg-4">
+                        <aside class="blackjack-score-box score-box" id="blackjackScoreBox">
+                            <h6 class="mb-2 score-box__title">Set Points</h6>
+                            <div id="blackjackScoreList" class="blackjack-score-list score-box__list">
+                                {% for set_entry in set_scoreboard %}
+                                    <div class="blackjack-score-row score-box__row is-{{ set_entry.status }}" data-set-number="{{ set_entry.set_number }}" data-earned-points="{% if set_entry.earned_points is not None %}{{ set_entry.earned_points }}{% endif %}" data-max-points="{{ set_entry.max_points }}">
+                                        <div class="blackjack-score-badge score-box__badge">{{ forloop.counter }}</div>
+                                        <div class="blackjack-score-value score-box__value">
+                                            {% if set_entry.earned_points is not None %}
+                                                <span class="blackjack-score-earned">{{ set_entry.earned_points }}</span>
+                                            {% else %}
+                                                <span class="blackjack-score-earned blackjack-score-empty score-box__empty">__</span>
+                                            {% endif %}
+                                            <span class="score-box__separator">/</span>
+                                            <span>{{ set_entry.max_points }}</span>
+                                        </div>
+                                    </div>
+                                {% empty %}
+                                    <div class="text-muted small">No configured sets yet.</div>
+                                {% endfor %}
+                            </div>
+                            <div class="blackjack-score-total" id="blackjackScoreTotal">{{ score_total_earned }}/{{ score_total_max }}</div>
+                        </aside>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <!-- Bootstrap JS -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+
+    <style>
+        /* BlackJack Play Page Styles */
+        .blackjack-play-page {
+            min-height: 100vh;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+        }
+
+        .play-container {
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        /* Header */
+        .quiz-header {
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+            border-bottom: 1px solid rgba(255, 255, 255, 0.2);
+            padding: 1rem 0;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }
+
+        .header-content {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 1rem;
+        }
+
+        .quiz-info {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+        }
+
+        .room-code {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            background-color: rgba(255, 255, 255, 0.2);
+            color: var(--text-white);
+            padding: 0.5rem 1rem;
+            border-radius: var(--border-radius-xl);
+            font-family: var(--font-family-mono);
+            font-weight: 700;
+            font-size: 0.875rem;
+        }
+
+        .room-code i {
+            width: 16px;
+            height: 16px;
+        }
+
+        .quiz-title {
+            font-size: 1.5rem;
+            font-weight: 700;
+            color: var(--text-white);
+            margin: 0;
+        }
+
+        .participant-info {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+        }
+
+        .participant-avatar {
+            width: 48px;
+            height: 48px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, var(--secondary-500) 0%, var(--secondary-600) 100%);
+            color: var(--text-white);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 700;
+            font-size: 1.25rem;
+        }
+
+        .participant-avatar.busted {
+            background: linear-gradient(135deg, var(--error-500) 0%, var(--error-600) 100%);
+        }
+
+        .participant-avatar.blackjack {
+            background: linear-gradient(135deg, var(--success-500) 0%, var(--success-600) 100%);
+        }
+
+        .participant-details {
+            display: flex;
+            flex-direction: column;
+        }
+
+        .participant-name {
+            font-weight: 600;
+            color: var(--text-white);
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .status-badge {
+            font-size: 0.625rem;
+            font-weight: 700;
+            padding: 0.125rem 0.375rem;
+            border-radius: var(--border-radius-sm);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .status-badge.bust {
+            background-color: var(--error-500);
+            color: var(--text-white);
+        }
+
+        .status-badge.blackjack {
+            background-color: var(--success-500);
+            color: var(--text-white);
+        }
+
+        .participant-score {
+            color: rgba(255, 255, 255, 0.8);
+            font-size: 0.875rem;
+            font-weight: 500;
+        }
+
+        /* Points Header */
+        .points-header {
+            background: rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(5px);
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+            padding: 1rem 0;
+        }
+
+        .points-display {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 2rem;
+        }
+
+        .points-info, .progress-info {
+            display: flex;
+            gap: 2rem;
+            align-items: center;
+        }
+
+        .current-points, .overall-points, .target-distance, .question-progress {
+            text-align: center;
+            color: var(--text-white);
+        }
+
+        .points-value, .distance-value, .progress-value {
+            display: block;
+            font-size: 1.75rem;
+            font-weight: 700;
+            line-height: 1;
+        }
+
+        .points-label, .distance-label, .progress-label {
+            font-size: 0.875rem;
+            opacity: 0.8;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .blackjack-score-box {
+            position: sticky;
+            top: 110px;
+            background: var(--bg-primary);
+            border: 1px solid var(--border-color);
+            border-radius: var(--border-radius-lg);
+            box-shadow: var(--shadow-md);
+            padding: 0.75rem;
+        }
+
+        .blackjack-score-list {
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+            font-size: 0.875rem;
+        }
+
+        .blackjack-score-row {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            padding: 0.5rem 0.625rem;
+            border: 1px solid transparent;
+            border-radius: var(--border-radius-md);
+            background: var(--bg-secondary);
+        }
+
+        .blackjack-score-row.is-upcoming {
+            border-color: #d1d5db;
+            background: #f3f4f6;
+        }
+
+        .blackjack-score-row.is-current {
+            border-color: #86efac;
+            background: #f0fdf4;
+        }
+
+        .blackjack-score-row.is-played {
+            border-color: #bfdbfe;
+            background: #eff6ff;
+        }
+
+        .blackjack-score-total {
+            margin-top: 0.75rem;
+            padding-top: 0.75rem;
+            border-top: 1px solid var(--border-color);
+            font-weight: 700;
+            text-align: right;
+        }
+
+        .target-circle {
+            width: 80px;
+            height: 80px;
+            border: 3px solid rgba(255, 255, 255, 0.3);
+            border-radius: 50%;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            background: rgba(255, 255, 255, 0.1);
+            color: var(--text-white);
+        }
+
+        .target-number {
+            font-size: 1.75rem;
+            font-weight: 700;
+            line-height: 1;
+        }
+
+        .target-text {
+            font-size: 0.625rem;
+            opacity: 0.8;
+        }
+
+        .bust-warning {
+            display: none;
+            align-items: center;
+            gap: 0.5rem;
+            color: var(--warning-300);
+            font-weight: 600;
+            animation: pulse 2s infinite;
+        }
+
+        .bust-warning.show {
+            display: flex;
+        }
+
+        .bust-warning i {
+            width: 20px;
+            height: 20px;
+        }
+
+        /* Main Content */
+        .quiz-main {
+            flex: 1;
+            display: flex;
+            align-items: center;
+            padding: 2rem 0;
+        }
+
+        .game-state {
+            animation: fadeIn 0.5s ease-out;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(20px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        /* Waiting State */
+        .waiting-card {
+            text-align: center;
+            padding: 3rem 2rem;
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(20px);
+            border-radius: var(--border-radius-xl);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            color: var(--text-white);
+        }
+
+        .waiting-animation {
+            position: relative;
+            width: 120px;
+            height: 120px;
+            margin: 0 auto 2rem;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .pulse-ring {
+            position: absolute;
+            width: 100%;
+            height: 100%;
+            border: 2px solid rgba(255, 255, 255, 0.3);
+            border-radius: 50%;
+            animation: pulse 2s cubic-bezier(0.455, 0.03, 0.515, 0.955) infinite;
+            opacity: 0;
+        }
+
+        .delay-1 { animation-delay: 0.5s; }
+        .delay-2 { animation-delay: 1s; }
+
+        @keyframes pulse {
+            0% { transform: scale(0.8); opacity: 1; }
+            100% { transform: scale(1.4); opacity: 0; }
+        }
+
+        .waiting-animation i {
+            width: 48px;
+            height: 48px;
+            color: var(--text-white);
+            z-index: 2;
+        }
+
+        .waiting-card h2 {
+            font-size: 1.75rem;
+            font-weight: 700;
+            margin-bottom: 1rem;
+        }
+
+        .waiting-card p {
+            font-size: 1.125rem;
+            margin-bottom: 2rem;
+            opacity: 0.9;
+        }
+
+        .participants-count {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            background-color: rgba(255, 255, 255, 0.1);
+            padding: 0.75rem 1.5rem;
+            border-radius: var(--border-radius-xl);
+            font-weight: 600;
+            margin-bottom: 2rem;
+        }
+
+        .participants-count i {
+            width: 20px;
+            height: 20px;
+        }
+
+        .game-rules-preview {
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+            opacity: 0.8;
+        }
+
+        .rule-preview {
+            padding: 0.5rem;
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: var(--border-radius);
+            font-size: 0.875rem;
+        }
+
+        /* Question State */
+        .question-card {
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(20px);
+            border-radius: var(--border-radius-xl);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            overflow: hidden;
+            color: var(--text-white);
+        }
+
+        .question-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 1.5rem 2rem;
+            background: rgba(255, 255, 255, 0.1);
+            border-bottom: 1px solid rgba(255, 255, 255, 0.2);
+        }
+
+        .question-number {
+            font-size: 1.125rem;
+            font-weight: 700;
+        }
+
+        .timer-circle {
+            width: 60px;
+            height: 60px;
+            border: 4px solid rgba(255, 255, 255, 0.3);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 700;
+            background: rgba(255, 255, 255, 0.1);
+            position: relative;
+        }
+
+        .timer-circle.warning {
+            border-color: var(--warning-300);
+            color: var(--warning-300);
+        }
+
+        .timer-circle.danger {
+            border-color: var(--error-300);
+            color: var(--error-300);
+            animation: shake 0.5s infinite;
+        }
+
+        @keyframes shake {
+            0%, 100% { transform: translateX(0); }
+            25% { transform: translateX(-2px); }
+            75% { transform: translateX(2px); }
+        }
+
+        .question-content {
+            padding: 2rem;
+        }
+
+        .question-text {
+            font-size: 1.375rem;
+            font-weight: 600;
+            line-height: 1.6;
+            margin-bottom: 2rem;
+            text-align: center;
+        }
+
+        /* Hint Display */
+        .hint-display {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            background: rgba(255, 255, 255, 0.1);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            border-radius: var(--border-radius-lg);
+            padding: 1rem;
+            margin-bottom: 2rem;
+        }
+
+        .hint-icon {
+            width: 24px;
+            height: 24px;
+            color: var(--warning-300);
+            flex-shrink: 0;
+        }
+
+        .hint-text {
+            font-weight: 500;
+            flex: 1;
+        }
+
+        /* Answer Interface */
+        .answer-interface {
+            margin-bottom: 2rem;
+        }
+
+        .answer-input-container {
+            max-width: 400px;
+            margin: 0 auto;
+        }
+
+        .answer-label {
+            display: block;
+            font-size: 1.125rem;
+            font-weight: 600;
+            margin-bottom: 1rem;
+            text-align: center;
+        }
+
+        .answer-input {
+            height: 70px;
+            font-size: 1.5rem;
+            font-weight: 600;
+            text-align: center;
+            border: 3px solid rgba(255, 255, 255, 0.3);
+            border-radius: var(--border-radius-lg);
+            transition: all var(--transition-fast);
+            background: rgba(255, 255, 255, 0.1);
+            color: var(--text-white);
+        }
+
+        .answer-input::placeholder {
+            color: rgba(255, 255, 255, 0.5);
+        }
+
+        .answer-input:focus {
+            border-color: rgba(255, 255, 255, 0.6);
+            box-shadow: 0 0 0 4px rgba(255, 255, 255, 0.1);
+            outline: none;
+            background: rgba(255, 255, 255, 0.15);
+        }
+
+        .input-help {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.5rem;
+            margin-top: 0.75rem;
+            color: rgba(255, 255, 255, 0.7);
+            font-size: 0.875rem;
+        }
+
+        .input-help i {
+            width: 16px;
+            height: 16px;
+        }
+
+        /* Submit Button */
+        .submit-answer {
+            height: 60px;
+            font-size: 1.125rem;
+            font-weight: 600;
+            transition: all var(--transition-fast);
+            background: linear-gradient(135deg, rgba(255, 255, 255, 0.2) 0%, rgba(255, 255, 255, 0.1) 100%);
+            border: 2px solid rgba(255, 255, 255, 0.3);
+            color: var(--text-white);
+        }
+
+        .submit-answer:hover:not(:disabled) {
+            background: linear-gradient(135deg, rgba(255, 255, 255, 0.3) 0%, rgba(255, 255, 255, 0.2) 100%);
+            border-color: rgba(255, 255, 255, 0.5);
+        }
+
+        .submit-answer:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .submit-answer.loading {
+            position: relative;
+            color: transparent !important;
+        }
+
+        .submit-answer.loading::after {
+            content: '';
+            position: absolute;
+            width: 20px;
+            height: 20px;
+            top: 50%;
+            left: 50%;
+            margin-left: -10px;
+            margin-top: -10px;
+            border: 2px solid transparent;
+            border-top-color: currentColor;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        /* Submitted State */
+        .submitted-card {
+            text-align: center;
+            padding: 3rem 2rem;
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(20px);
+            border-radius: var(--border-radius-xl);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            color: var(--text-white);
+        }
+
+        .submitted-animation {
+            margin-bottom: 2rem;
+        }
+
+        .check-animation {
+            width: 120px;
+            height: 120px;
+            margin: 0 auto;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .check-icon {
+            width: 64px;
+            height: 64px;
+            color: var(--success-400);
+            animation: checkPop 0.6s ease-out;
+        }
+
+        @keyframes checkPop {
+            0% { transform: scale(0); }
+            50% { transform: scale(1.2); }
+            100% { transform: scale(1); }
+        }
+
+        .submitted-details {
+            background-color: rgba(255, 255, 255, 0.1);
+            padding: 1.5rem;
+            border-radius: var(--border-radius-lg);
+            margin-top: 2rem;
+        }
+
+        .answer-summary {
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+        }
+
+        .summary-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .summary-label {
+            color: rgba(255, 255, 255, 0.8);
+            font-weight: 500;
+        }
+
+        .summary-value {
+            font-weight: 700;
+        }
+
+        .summary-value.points {
+            color: var(--warning-300);
+        }
+
+        .summary-value.total {
+            color: var(--primary-300);
+        }
+
+        .summary-value.status {
+            color: var(--error-300);
+        }
+
+        /* Correct Answer State */
+        .correct-answer-card {
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(20px);
+            border-radius: var(--border-radius-xl);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            padding: 2rem;
+            text-align: center;
+            color: var(--text-white);
+        }
+
+        .answer-reveal {
+            margin-bottom: 2rem;
+        }
+
+        .reveal-icon {
+            width: 80px;
+            height: 80px;
+            margin: 0 auto 1rem;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            animation: bounce 1s ease-out;
+        }
+
+        .reveal-icon i {
+            width: 40px;
+            height: 40px;
+            color: var(--text-white);
+        }
+
+        @keyframes bounce {
+            0% { transform: scale(0); }
+            50% { transform: scale(1.1); }
+            100% { transform: scale(1); }
+        }
+
+        .answer-display {
+            margin: 1.5rem 0;
+        }
+
+        .answer-value {
+            font-size: 2.5rem;
+            font-weight: 700;
+            color: var(--success-300);
+        }
+
+        .comparison-display {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin: 2rem 0;
+            padding: 1.5rem;
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: var(--border-radius-lg);
+        }
+
+        .comparison-item {
+            flex: 1;
+            text-align: center;
+        }
+
+        .comparison-label {
+            font-size: 0.875rem;
+            color: rgba(255, 255, 255, 0.7);
+            margin-bottom: 0.5rem;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .comparison-value {
+            font-size: 1.5rem;
+            font-weight: 700;
+        }
+
+        .comparison-value.user-answer {
+            color: var(--primary-300);
+        }
+
+        .comparison-value.correct-answer {
+            color: var(--success-300);
+        }
+
+        .comparison-vs {
+            font-size: 1rem;
+            font-weight: 700;
+            color: rgba(255, 255, 255, 0.5);
+            margin: 0 1rem;
+        }
+
+        .points-breakdown {
+            margin-top: 2rem;
+            padding-top: 1rem;
+            border-top: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .points-calculation {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 0.5rem;
+            margin-bottom: 1rem;
+        }
+
+        .calc-label {
+            color: rgba(255, 255, 255, 0.8);
+            font-weight: 500;
+        }
+
+        .calc-formula {
+            font-family: var(--font-family-mono);
+            color: var(--warning-300);
+            font-weight: 600;
+        }
+
+        .explanation-text {
+            color: rgba(255, 255, 255, 0.8);
+            font-style: italic;
+            line-height: 1.6;
+        }
+
+        /* Busted State */
+        .busted-card {
+            text-align: center;
+            padding: 3rem 2rem;
+            background: linear-gradient(135deg, rgba(220, 38, 38, 0.2) 0%, rgba(153, 27, 27, 0.1) 100%);
+            backdrop-filter: blur(20px);
+            border-radius: var(--border-radius-xl);
+            border: 1px solid rgba(220, 38, 38, 0.3);
+            color: var(--text-white);
+        }
+
+        .busted-animation {
+            margin-bottom: 2rem;
+        }
+
+        .bust-icon {
+            width: 80px;
+            height: 80px;
+            color: var(--error-400);
+            animation: bustShake 1s ease-out;
+        }
+
+        @keyframes bustShake {
+            0% { transform: scale(0) rotate(-180deg); }
+            50% { transform: scale(1.2) rotate(-10deg); }
+            100% { transform: scale(1) rotate(0deg); }
+        }
+
+        .bust-details {
+            background: rgba(220, 38, 38, 0.1);
+            padding: 1.5rem;
+            border-radius: var(--border-radius-lg);
+            margin-top: 2rem;
+        }
+
+        .bust-points {
+            text-align: center;
+            margin-bottom: 1rem;
+        }
+
+        .bust-value {
+            display: block;
+            font-size: 2.5rem;
+            font-weight: 700;
+            color: var(--error-300);
+        }
+
+        .bust-label {
+            font-size: 0.875rem;
+            color: rgba(255, 255, 255, 0.8);
+        }
+
+        /* Quiz Ended State */
+        .ended-card {
+            text-align: center;
+            padding: 3rem 2rem;
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(20px);
+            border-radius: var(--border-radius-xl);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            color: var(--text-white);
+        }
+
+        .ended-animation {
+            margin-bottom: 2rem;
+        }
+
+        .result-icon {
+            width: 80px;
+            height: 80px;
+            animation: resultAppear 1s ease-out;
+        }
+
+        .result-icon.busted {
+            color: var(--error-400);
+        }
+
+        .result-icon.winner {
+            color: var(--warning-400);
+        }
+
+        .result-icon.normal {
+            color: var(--primary-300);
+        }
+
+        @keyframes resultAppear {
+            0% { transform: scale(0) rotate(-180deg); opacity: 0; }
+            50% { transform: scale(1.1) rotate(-10deg); opacity: 1; }
+            100% { transform: scale(1) rotate(0deg); opacity: 1; }
+        }
+
+        .final-score {
+            margin: 2rem 0;
+        }
+
+        .score-circle {
+            width: 120px;
+            height: 120px;
+            margin: 0 auto;
+            border: 4px solid rgba(255, 255, 255, 0.3);
+            border-radius: 50%;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            background: rgba(255, 255, 255, 0.1);
+        }
+
+        .score-value {
+            font-size: 2rem;
+            font-weight: 700;
+        }
+
+        .score-label {
+            font-size: 0.875rem;
+            font-weight: 500;
+            opacity: 0.8;
+        }
+
+        .quiz-actions {
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+            max-width: 300px;
+            margin: 0 auto;
+        }
+
+        .quiz-actions .btn {
+            background: rgba(255, 255, 255, 0.1);
+            border: 2px solid rgba(255, 255, 255, 0.3);
+            color: var(--text-white);
+        }
+
+        .quiz-actions .btn:hover {
+            background: rgba(255, 255, 255, 0.2);
+            border-color: rgba(255, 255, 255, 0.5);
+        }
+
+        /* Connection Status */
+        .connection-status {
+            position: fixed;
+            bottom: 2rem;
+            right: 2rem;
+            z-index: 1000;
+        }
+
+        .status-indicator {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            background-color: var(--error-500);
+            color: var(--text-white);
+            padding: 0.75rem 1rem;
+            border-radius: var(--border-radius-xl);
+            box-shadow: var(--shadow-lg);
+            font-weight: 500;
+            animation: slideIn 0.3s ease-out;
+        }
+
+        .status-indicator i {
+            width: 20px;
+            height: 20px;
+        }
+
+        /* Responsive Design */
+        @media (max-width: 768px) {
+            .header-content {
+                flex-direction: column;
+                text-align: center;
+                gap: 1rem;
+            }
+
+            .quiz-title {
+                font-size: 1.25rem;
+            }
+
+            .points-display {
+                flex-direction: column;
+                text-align: center;
+                gap: 1.5rem;
+            }
+
+            .points-info, .progress-info {
+                justify-content: center;
+            }
+
+            .question-header {
+                padding: 1rem 1.5rem;
+            }
+
+            .question-content {
+                padding: 1.5rem;
+            }
+
+            .question-text {
+                font-size: 1.25rem;
+            }
+
+            .quiz-actions {
+                max-width: 100%;
+            }
+
+            .waiting-card, .submitted-card, .ended-card, .correct-answer-card, .busted-card {
+                padding: 2rem 1.5rem;
+                margin: 1rem;
+            }
+
+            .comparison-display {
+                flex-direction: column;
+                gap: 1rem;
+            }
+
+            .comparison-vs {
+                transform: rotate(90deg);
+                margin: 0;
+            }
+
+            .target-circle {
+                width: 70px;
+                height: 70px;
+            }
+
+            .target-number {
+                font-size: 1.5rem;
+            }
+        }
+
+        @media (max-width: 576px) {
+            .quiz-main {
+                padding: 1rem 0;
+            }
+
+            .answer-input {
+                font-size: 1.25rem;
+                height: 60px;
+            }
+
+            .timer-circle {
+                width: 50px;
+                height: 50px;
+                font-size: 0.875rem;
+            }
+
+            .points-value, .distance-value, .progress-value {
+                font-size: 1.5rem;
+            }
+        }
+    </style>
+
+    {% include 'includes/_hub_return_to_lobby_player.html' %}
+    {% include 'includes/_game_tutorial_overlay.html' %}
+    {{ last_completed_set_summary|json_script:"blackjackLastSetSummaryData" }}
+<script>
+        document.addEventListener('DOMContentLoaded', function() {
+            lucide.createIcons();
+
+            // BlackJack Quiz Player Class
+            class BlackJackPlayer {
+                constructor() {
+                    this.roomCode = '{{ quiz.room_code }}';
+                    this.participantName = '{{ participant.name }}';
+                    this.hubSession = '{{ hub_session }}';
+                    this.websocket = null;
+                    this.questionTimer = null;
+                    this.questionStartTime = null;
+                    this.hasAnswered = false;
+                    this.currentPoints = {{ participant.total_points }};
+                    this.overallPoints = {{ participant.overall_points }};
+                    this.isBusted = {{ participant.is_busted|yesno:"true,false" }};
+                    this.totalQuestions = {{ current_set_question_count }};
+                    this.currentSetNumber = {{ current_set_number }};
+                    this.totalSets = {{ total_sets }};
+                    this.lastQuestionEndData = null;
+                    this.pendingAnswerResult = null;
+                    this.pendingQuestionEndedData = null;
+                    this.questionClosedAwaitingAutoSubmit = false;
+                    this.lastCompletedSetSummary = this.readJSONScript('blackjackLastSetSummaryData');
+                    this.hasActiveQuestionAtLoad = {% if quiz.current_question %}true{% else %}false{% endif %};
+                    
+                    this.init();
+                }
+
+                readJSONScript(elementId) {
+                    const element = document.getElementById(elementId);
+                    if (!element || !element.textContent) return null;
+                    try {
+                        return JSON.parse(element.textContent);
+                    } catch (_) {
+                        return null;
+                    }
+                }
+
+                init() {
+                    this.connectWebSocket();
+                    this.bindEvents();
+                    this.updatePointsDisplay();
+                    this.updateSetScoreRowStates();
+                    this.updateSetScoreTotal();
+                    this.renderCompletedSetScreens();
+                    
+                    // Start timer if there's an active question
+                    {% if quiz.current_question %}
+                        this.startQuestionTimer({{ quiz.current_question.time_limit }});
+                        this.loadCurrentQuestion();
+                    {% endif %}
+
+                    if ({% if show_initial_quiz_end_state %}true{% else %}false{% endif %}) {
+                        this.showState('quizEndedState');
+                        return;
+                    }
+                    if ({% if show_initial_set_end_state %}true{% else %}false{% endif %}) {
+                        this.showState('setEndedState');
+                        return;
+                    }
+                    
+                    // Show busted state if already busted
+                    if (this.isBusted && !this.hasActiveQuestionAtLoad) {
+                        this.showState('bustedState');
+                    }
+                }
+
+                connectWebSocket() {
+                    const wsScheme = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+                    const wsUrl = `${wsScheme}//${window.location.host}/ws/blackjack/${this.roomCode}/`;
+                    
+                    this.websocket = new WebSocket(wsUrl);
+                    
+                    this.websocket.onopen = () => {
+                        console.log('WebSocket connected');
+                        this.hideConnectionStatus();
+                        
+                        // Send join message
+                        this.websocket.send(JSON.stringify({
+                            type: 'participant_join',
+                            participant_name: this.participantName,
+                            hub_session: this.hubSession
+                        }));
+                    };
+                    
+                    this.websocket.onmessage = (event) => {
+                        const data = JSON.parse(event.data);
+                        this.handleWebSocketMessage(data);
+                    };
+                    
+                    this.websocket.onclose = () => {
+                        console.log('WebSocket disconnected');
+                        this.showConnectionStatus();
+                        setTimeout(() => this.connectWebSocket(), 3000);
+                    };
+                    
+                    this.websocket.onerror = (error) => {
+                        console.error('WebSocket error:', error);
+                        this.showConnectionStatus();
+                    };
+                }
+
+                handleWebSocketMessage(data) {
+                    switch(data.type) {
+                        case 'quiz_started':
+                            this.onQuizStarted();
+                            break;
+
+                        case 'tutorial_start':
+                            window.gameTutorial?.showFromPayload(data);
+                            break;
+                            
+                        case 'question_started':
+                            window.gameTutorial?.forceClose();
+                            this.onQuestionStarted(data.question);
+                            break;
+                            
+                        case 'question_ended':
+                            this.onQuestionEnded(data);
+                            break;
+
+                        case 'question_ending':
+                            this.onQuestionEnding(data);
+                            break;
+                            
+                        case 'quiz_ended':
+                            window.gameTutorial?.forceClose();
+                            this.onQuizEnded(data);
+                            break;
+                            
+                        case 'participant_count_updated':
+                            this.updateParticipantCount(data.count);
+                            break;
+
+                        case 'answer_submitted':
+                            this.onAnswerSubmitted(data);
+                            break;
+                            
+                        case 'show_leaderboard':
+                            window.showLeaderboard(this.hubSession);
+                            break;
+
+                        case 'hide_leaderboard':
+                            document.getElementById('leaderboardSidebar')?.classList.add('d-none');
+                            break;
+
+                        default:
+                            console.log('Unknown message type:', data.type);
+                    }
+                }
+
+                bindEvents() {
+                    // Submit answer button
+                    document.getElementById('submitAnswerBtn').addEventListener('click', () => {
+                        this.submitAnswer();
+                    });
+
+                    // Answer input
+                    const answerInput = document.getElementById('answerInput');
+                    answerInput.addEventListener('input', () => {
+                        const hasValue = answerInput.value.trim() !== '';
+                        document.getElementById('submitAnswerBtn').disabled = !hasValue || this.hasAnswered || this.isBusted;
+                    });
+
+                    // Allow Enter key to submit
+                    answerInput.addEventListener('keypress', (e) => {
+                        if (e.key === 'Enter' && !document.getElementById('submitAnswerBtn').disabled) {
+                            this.submitAnswer();
+                        }
+                    });
+                }
+
+                onQuizStarted() {
+                    this.showState('waitingQuizState');
+                }
+
+                onQuestionStarted(question) {
+                    const questionInSet = question.question_in_set || question.question_number || 0;
+                    const setNumber = question.set_number || 1;
+
+                    if (questionInSet === 1 && setNumber > this.currentSetNumber) {
+                        this.resetForNextSet(setNumber);
+                    }
+
+                    this.hasAnswered = false;
+                    this.pendingAnswerResult = null;
+                    this.pendingQuestionEndedData = null;
+                    this.questionClosedAwaitingAutoSubmit = false;
+                    this.questionStartTime = Date.now();
+                    this.currentSetNumber = setNumber;
+                    this.totalSets = question.total_sets || this.totalSets;
+                    this.totalQuestions = question.set_question_count || question.total_questions || this.totalQuestions;
+                    this.updateSetScoreRowStates();
+                    
+                    this.loadQuestion(question);
+                    this.startQuestionTimer(question.time_limit || 30);
+                    this.showState('questionState');
+                    
+                    // Update question progress
+                    document.getElementById('questionProgress').textContent = `${questionInSet}/${this.totalQuestions}`;
+                    //document.getElementById('questionNumber').textContent = question.question_number;
+                    
+                    // Focus on input
+                    setTimeout(() => {
+                        document.getElementById('answerInput').focus();
+                    }, 500);
+                }
+
+                onQuestionEnded(data) {
+                    clearInterval(this.questionTimer);
+                    this.lastQuestionEndData = data || {};
+                    if (this.questionClosedAwaitingAutoSubmit && this.hasAnswered && !this.pendingAnswerResult) {
+                        this.pendingQuestionEndedData = data || {};
+                        return;
+                    }
+                    this.questionClosedAwaitingAutoSubmit = false;
+                    this.pendingQuestionEndedData = null;
+                    this.finalizeQuestionEnd(data);
+                }
+
+                onQuestionEnding(data) {
+                    clearInterval(this.questionTimer);
+                    if (this.hasAnswered || this.isBusted) return;
+                    const answerInput = document.getElementById('answerInput');
+                    if (!answerInput || !answerInput.value.trim()) return;
+                    this.questionClosedAwaitingAutoSubmit = true;
+                    this.submitAnswer({
+                        questionId: data?.question_id || null,
+                    });
+                }
+
+                finalizeQuestionEnd(data) {
+                    if (this.pendingAnswerResult) {
+                        this.currentPoints = this.pendingAnswerResult.total_points;
+                        this.overallPoints = this.pendingAnswerResult.overall_points;
+                        this.isBusted = this.pendingAnswerResult.is_busted;
+                        this.updatePointsDisplay();
+                    }
+                    if (data.set_complete) {
+                        this.applySetResults(data.set_number, data.set_results);
+                        this.storeLastCompletedSetSummary(data.set_number, data.set_results);
+                        this.renderCompletedSetScreens();
+                        if (data.quiz_complete) {
+                            this.applyFinalScores(data?.final_scores);
+                            this.showState('quizEndedState');
+                            return;
+                        }
+                        this.showState('setEndedState');
+                        return;
+                    }
+                    
+                    if (data.correct_answer && this.hasAnswered) {
+                        if (this.isBusted) {
+                            document.getElementById('bustPoints').textContent = this.currentPoints;
+                            this.showState('bustedState');
+                        } else {
+                            this.showCorrectAnswer(data.correct_answer);
+                        }
+                    }
+                }
+
+                onQuizEnded(data) {
+                    clearInterval(this.questionTimer);
+                    this.applyFinalScores(data?.final_scores);
+                    this.renderCompletedSetScreens();
+                    this.showState('quizEndedState');
+                }
+
+                loadCurrentQuestion() {
+                    {% if quiz.current_question %}
+                    const question = {
+                        id: {{ quiz.current_question.id }},
+                        question_text: '{{ quiz.current_question.question_text|escapejs }}',
+                        time_limit: {{ quiz.current_question.time_limit }},
+                        question_number: {{ quiz.current_question_number }},
+                        question_in_set: {{ current_question_in_set }},
+                        set_question_count: {{ current_set_question_count }},
+                        set_number: {{ current_set_number }},
+                        total_sets: {{ total_sets }}
+                    };
+                    this.loadQuestion(question);
+                    {% endif %}
+                }
+
+                loadQuestion(question) {
+                    document.getElementById('questionText').textContent = question.question_text;
+                    document.getElementById('currentQuestionNumber').textContent = question.question_in_set || question.question_number;
+                    const currentSetQuestionCount = document.getElementById('currentSetQuestionCount');
+                    if (currentSetQuestionCount) {
+                        currentSetQuestionCount.textContent = question.set_question_count || this.totalQuestions;
+                    }
+
+                    // Reset input
+                    const answerInput = document.getElementById('answerInput');
+                    answerInput.value = '';
+                    answerInput.disabled = this.isBusted;
+
+                    const answerInterface = document.getElementById('answerInterface');
+                    if (answerInterface) {
+                        answerInterface.classList.toggle('d-none', this.isBusted);
+                    }
+                    const bustedQuestionNotice = document.getElementById('bustedQuestionNotice');
+                    if (bustedQuestionNotice) {
+                        bustedQuestionNotice.classList.toggle('d-none', !this.isBusted);
+                    }
+                    
+                    // Reset submit button
+                    const submitBtn = document.getElementById('submitAnswerBtn');
+                    submitBtn.classList.toggle('d-none', this.isBusted);
+                    submitBtn.disabled = this.isBusted || true;
+                    submitBtn.classList.remove('loading');
+                    document.getElementById('questionSubmitFeedback').classList.add('d-none');
+                    document.getElementById('questionSubmittedAnswer').textContent = '-';
+                }
+
+                startQuestionTimer(timeLimit) {
+                    let timeLeft = timeLimit;
+                    const timerElement = document.getElementById('playerTimeLeft');
+                    const circleElement = document.getElementById('playerTimerCircle');
+                    
+                    timerElement.textContent = timeLeft;
+                    circleElement.className = 'timer-circle';
+                    
+                    this.questionTimer = setInterval(() => {
+                        timeLeft--;
+                        timerElement.textContent = timeLeft;
+                        
+                        // Update timer circle appearance
+                        circleElement.className = 'timer-circle';
+                        if (timeLeft <= 10) {
+                            circleElement.classList.add('danger');
+                        } else if (timeLeft <= 20) {
+                            circleElement.classList.add('warning');
+                        }
+                        
+                        if (timeLeft <= 0) {
+                            clearInterval(this.questionTimer);
+                            this.onTimeUp();
+                        }
+                    }, 1000);
+                }
+
+                submitAnswer(options = {}) {
+                    if (this.isBusted) return;
+                    
+                    const answerInput = document.getElementById('answerInput');
+                    const userAnswer = answerInput.value.trim();
+                    
+                    if (!userAnswer || this.hasAnswered) return;
+                    
+                    const timeTaken = (Date.now() - this.questionStartTime) / 1000;
+                    
+                    // Disable interface
+                    answerInput.disabled = true;
+                    const submitBtn = document.getElementById('submitAnswerBtn');
+                    submitBtn.classList.add('loading');
+                    
+                    // Send answer via WebSocket
+                    this.websocket.send(JSON.stringify({
+                        type: 'participant_submit_answer',
+                        participant_name: this.participantName,
+                        hub_session: this.hubSession,
+                        question_id: options.questionId || null,
+                        user_answer: parseInt(userAnswer),
+                        time_taken: timeTaken
+                    }));
+                    
+                    this.hasAnswered = true;
+                }
+
+                onAnswerSubmitted(data) {
+                    this.pendingAnswerResult = data;
+                    document.getElementById('submittedAnswer').textContent = data.user_answer;
+                    document.getElementById('questionSubmittedAnswer').textContent = data.user_answer;
+                    document.getElementById('questionSubmitFeedback').classList.remove('d-none');
+                    const submitBtn = document.getElementById('submitAnswerBtn');
+                    submitBtn.classList.remove('loading');
+                    submitBtn.disabled = true;
+                    if (this.questionClosedAwaitingAutoSubmit && this.pendingQuestionEndedData) {
+                        const endedData = this.pendingQuestionEndedData;
+                        this.pendingQuestionEndedData = null;
+                        this.questionClosedAwaitingAutoSubmit = false;
+                        this.finalizeQuestionEnd(endedData);
+                    }
+                }
+
+                onTimeUp() {
+                    if (this.hasAnswered || this.isBusted) return;
+                    
+                    // Auto-submit if there's an answer
+                    const answerInput = document.getElementById('answerInput');
+                    if (answerInput.value.trim()) {
+                        this.submitAnswer();
+                    }
+                }
+
+                showCorrectAnswer(correctAnswerData) {
+                    document.getElementById('correctAnswerDisplay').textContent = correctAnswerData.correct_answer;
+                    document.getElementById('userAnswerDisplay').textContent = document.getElementById('submittedAnswer').textContent;
+                    document.getElementById('correctAnswerComparison').textContent = correctAnswerData.correct_answer;
+                    
+                    // Show calculation
+                    const userAnswer = parseInt(document.getElementById('submittedAnswer').textContent);
+                    const correctAnswer = correctAnswerData.correct_answer;
+                    const calculation = `|${userAnswer} - ${correctAnswer}| = ${Math.abs(userAnswer - correctAnswer)} stars`;
+                    document.getElementById('calculationDisplay').textContent = calculation;
+                    
+                    // Show explanation if available
+                    if (correctAnswerData.explanation) {
+                        document.getElementById('explanationText').textContent = correctAnswerData.explanation;
+                        document.getElementById('explanationText').style.display = 'block';
+                    }
+                    
+                    this.showState('correctAnswerState');
+                }
+
+                completeQuestionTransition(data) {
+                    return;
+                }
+
+                resetForNextSet(nextSetNumber) {
+                    this.currentPoints = 0;
+                    this.isBusted = false;
+                    this.hasAnswered = false;
+                    this.currentSetNumber = nextSetNumber || this.currentSetNumber;
+                    this.updatePointsDisplay();
+                    this.updateSetScoreRowStates();
+                }
+
+                applySetResults(setNumber, setResults) {
+                    try {
+                        if (!Array.isArray(setResults)) return;
+                        const me = setResults.find((participant) => participant.name === this.participantName);
+                        if (!me) return;
+                        const row = document.querySelector(`.blackjack-score-row[data-set-number="${setNumber}"]`);
+                        if (row) {
+                            row.dataset.earnedPoints = typeof me.awarded_points === 'number' ? String(me.awarded_points) : '';
+                            const earnedEl = row.querySelector('.blackjack-score-earned');
+                            if (earnedEl) {
+                                earnedEl.textContent = typeof me.awarded_points === 'number' ? me.awarded_points : '__';
+                                earnedEl.classList.toggle('blackjack-score-empty', typeof me.awarded_points !== 'number');
+                                earnedEl.classList.toggle('score-box__empty', typeof me.awarded_points !== 'number');
+                            }
+                        }
+                        if (typeof me.overall_points === 'number') {
+                            this.overallPoints = me.overall_points;
+                            const summary = document.getElementById('overallPointsSummary');
+                            if (summary) {
+                                summary.textContent = me.overall_points;
+                            }
+                            this.updatePointsDisplay();
+                        }
+                        this.updateSetScoreRowStates();
+                        this.updateSetScoreTotal();
+                    } catch (e) {
+                        console.warn('Unable to apply set results:', e);
+                    }
+                }
+
+                applyFinalScores(finalScores) {
+                    try {
+                        if (!Array.isArray(finalScores)) return;
+                        const me = finalScores.find((participant) => participant.name === this.participantName);
+                        if (!me) return;
+                        const finalScore = typeof me.total_score === 'number'
+                            ? me.total_score
+                            : (typeof me.overall_points === 'number' ? me.overall_points : me.total_points);
+                        if (typeof finalScore !== 'number') return;
+                        this.overallPoints = finalScore;
+                        this.updatePointsDisplay();
+
+                        const scoreEl = document.querySelector('#quizEndedState .score-value');
+                        if (scoreEl) {
+                            scoreEl.textContent = finalScore;
+                        }
+                        const finalOverallPoints = document.getElementById('finalOverallPoints');
+                        if (finalOverallPoints) {
+                            finalOverallPoints.textContent = finalScore;
+                        }
+                    } catch (e) {
+                        console.warn('Unable to update final score:', e);
+                    }
+                }
+
+                storeLastCompletedSetSummary(setNumber, setResults) {
+                    try {
+                        if (!Array.isArray(setResults)) return;
+                        const me = setResults.find((participant) => participant.name === this.participantName);
+                        if (!me) return;
+                        this.lastCompletedSetSummary = {
+                            set_number: setNumber,
+                            set_stars: typeof me.set_stars === 'number' ? me.set_stars : 0,
+                            awarded_points: typeof me.awarded_points === 'number' ? me.awarded_points : 0,
+                            overall_points: typeof me.overall_points === 'number' ? me.overall_points : this.overallPoints,
+                        };
+                    } catch (e) {
+                        console.warn('Unable to store set summary:', e);
+                    }
+                }
+
+                renderCompletedSetScreens() {
+                    this.renderSetSummaryCard();
+                    this.renderFinalSetSummaryList();
+                }
+
+                renderSetSummaryCard() {
+                    const summary = this.lastCompletedSetSummary;
+                    if (!summary) return;
+                    const map = {
+                        setEndedNumber: summary.set_number,
+                        setEndedStars: summary.set_stars,
+                        setEndedAwardedPoints: summary.awarded_points,
+                        setEndedOverallPoints: summary.overall_points,
+                        finalLastSetNumber: summary.set_number,
+                        finalSetStars: summary.set_stars,
+                        finalSetAwardedPoints: summary.awarded_points,
+                        finalOverallPoints: summary.overall_points,
+                    };
+                    Object.entries(map).forEach(([id, value]) => {
+                        const el = document.getElementById(id);
+                        if (el) {
+                            el.textContent = value ?? '-';
+                        }
+                    });
+                }
+
+                renderFinalSetSummaryList() {
+                    const list = document.getElementById('finalSetSummaryList');
+                    if (!list) return;
+                    const rows = Array.from(document.querySelectorAll('.blackjack-score-row'));
+                    list.innerHTML = rows.map((row) => {
+                        const setNumber = row.dataset.setNumber;
+                        const earnedPoints = row.dataset.earnedPoints;
+                        const maxPoints = row.dataset.maxPoints;
+                        const earnedDisplay = earnedPoints === undefined || earnedPoints === null || earnedPoints === '' ? '__' : earnedPoints;
+                        return `<div class="final-set-summary-row" data-set-number="${setNumber}"><span>Set ${setNumber}</span><span>${earnedDisplay}/${maxPoints}</span></div>`;
+                    }).join('');
+                }
+
+                showWaitingForNextQuestion() {
+                    if (this.isBusted) {
+                        this.showState('bustedState');
+                        return;
+                    }
+                    
+                    // Switch to a safe waiting state without destroying existing DOM nodes
+                    this.showState('waitingQuestionState');
+                    const waiting = document.getElementById('waitingQuestionState');
+                    if (waiting) {
+                        try { lucide.createIcons(); } catch (e) { /* ignore */ }
+                    }
+                }
+
+                showState(stateId) {
+                    // Hide all states
+                    document.querySelectorAll('.game-state').forEach(state => {
+                        state.classList.add('d-none');
+                    });
+                    
+                    // Show target state
+                    const targetState = document.getElementById(stateId);
+                    if (targetState) {
+                        targetState.classList.remove('d-none');
+                    }
+                }
+
+                updateParticipantCount(count) {
+                    const countElement = document.getElementById('waitingParticipantCount');
+                    if (countElement) {
+                        countElement.textContent = count;
+                    }
+                }
+
+                updatePointsDisplay() {
+                    document.getElementById('currentPoints').textContent = this.currentPoints;
+                    document.getElementById('overallPoints').textContent = this.overallPoints;
+                    
+                    const distance = this.isBusted ? this.currentPoints - 21 : 21 - this.currentPoints;
+                    document.getElementById('distanceFrom21').textContent = distance;
+                    const distanceLabel = document.querySelector('.distance-label');
+                    if (distanceLabel) {
+                        distanceLabel.textContent = this.isBusted ? 'Over 21' : 'From 21';
+                    }
+                    
+                    // Update bust warning
+                    const bustWarning = document.getElementById('bustWarning');
+                    if (this.currentPoints >= 18 && !this.isBusted) {
+                        bustWarning.classList.add('show');
+                    } else {
+                        bustWarning.classList.remove('show');
+                    }
+                    
+                    // Update header avatar and status
+                    const avatar = document.querySelector('.participant-avatar');
+                    avatar.classList.remove('busted', 'blackjack');
+                    if (this.isBusted) {
+                        avatar.classList.add('busted');
+                    } else if (this.currentPoints === 21) {
+                        avatar.classList.add('blackjack');
+                    }
+
+                    const participantStarsText = document.getElementById('participantStarsText');
+                    if (participantStarsText) {
+                        participantStarsText.textContent = `${this.currentPoints} stars this set`;
+                    }
+                    const participantOverallPointsText = document.getElementById('participantOverallPointsText');
+                    if (participantOverallPointsText) {
+                        participantOverallPointsText.textContent = `${this.overallPoints} points total`;
+                    }
+
+                    const participantName = document.querySelector('.participant-name');
+                    if (participantName) {
+                        participantName.querySelectorAll('.status-badge').forEach((badge) => badge.remove());
+                        if (this.isBusted || this.currentPoints === 21) {
+                            const badge = document.createElement('span');
+                            badge.className = `status-badge ${this.isBusted ? 'bust' : 'blackjack'}`;
+                            badge.textContent = this.isBusted ? 'BUSTED' : 'BLACKJACK!';
+                            participantName.appendChild(document.createTextNode(' '));
+                            participantName.appendChild(badge);
+                        }
+                    }
+                }
+
+                updateSetScoreRowStates() {
+                    this.reorderSetScoreRows();
+                    document.querySelectorAll('.blackjack-score-row').forEach((row) => {
+                        row.classList.remove('is-played', 'is-current', 'is-upcoming');
+                        const earnedPoints = row.dataset.earnedPoints;
+                        const setNumber = Number(row.dataset.setNumber);
+                        if (earnedPoints !== undefined && earnedPoints !== null && earnedPoints !== '') {
+                            row.classList.add('is-played');
+                        } else if (!Number.isNaN(setNumber) && setNumber === this.currentSetNumber) {
+                            row.classList.add('is-current');
+                        } else {
+                            row.classList.add('is-upcoming');
+                        }
+                    });
+                }
+
+                reorderSetScoreRows() {
+                    const list = document.getElementById('blackjackScoreList');
+                    if (!list) return;
+
+                    const rows = Array.from(list.querySelectorAll('.blackjack-score-row'));
+                    if (!rows.length) return;
+
+                    const playedRows = [];
+                    const upcomingRows = [];
+                    let currentRow = null;
+
+                    rows.forEach((row) => {
+                        const earnedPoints = row.dataset.earnedPoints;
+                        const setNumber = Number(row.dataset.setNumber);
+                        if (earnedPoints !== undefined && earnedPoints !== null && earnedPoints !== '') {
+                            playedRows.push(row);
+                        } else if (!Number.isNaN(setNumber) && setNumber === this.currentSetNumber && !currentRow) {
+                            currentRow = row;
+                        } else {
+                            upcomingRows.push(row);
+                        }
+                    });
+
+                    [...playedRows, ...(currentRow ? [currentRow] : []), ...upcomingRows].forEach((row) => {
+                        list.appendChild(row);
+                    });
+
+                    this.renumberSetScoreRows();
+                }
+
+                renumberSetScoreRows() {
+                    const rows = Array.from(document.querySelectorAll('#blackjackScoreList .blackjack-score-row'));
+                    rows.forEach((row, index) => {
+                        const badge = row.querySelector('.blackjack-score-badge');
+                        if (badge) {
+                            badge.textContent = String(index + 1);
+                        }
+                    });
+                }
+
+                updateSetScoreTotal() {
+                    const totalElement = document.getElementById('blackjackScoreTotal');
+                    if (!totalElement) return;
+                    let earnedTotal = 0;
+                    let maxTotal = 0;
+                    document.querySelectorAll('.blackjack-score-row').forEach((row) => {
+                        const earnedPoints = row.dataset.earnedPoints;
+                        const maxPoints = Number(row.dataset.maxPoints) || 0;
+                        if (earnedPoints === undefined || earnedPoints === null || earnedPoints === '') {
+                            return;
+                        }
+                        earnedTotal += Number(earnedPoints) || 0;
+                        maxTotal += maxPoints;
+                    });
+                    totalElement.textContent = `${earnedTotal}/${maxTotal}`;
+                }
+
+                showConnectionStatus() {
+                    document.getElementById('connectionStatus').classList.remove('d-none');
+                }
+
+                hideConnectionStatus() {
+                    document.getElementById('connectionStatus').classList.add('d-none');
+                }
+            }
+
+            // Initialize BlackJack Player
+            const player = new BlackJackPlayer();
+
+            const lobbyReturnController = createHubLobbyReturnController({
+                sessionCode: '{{ hub_session|default_if_none:""|escapejs }}',
+                gameKey: 'blackjack',
+                roomCode: '{{ quiz.room_code }}',
+                participantName: '{{ participant.name|escapejs }}',
+                csrfToken: '{{ csrf_token }}',
+            });
+            
+            // Minimal Hub listener for centralized navigation
+            (function() {
+                let hubCode = null;
+                try {
+                    hubCode = localStorage.getItem('hub_session_code');
+                    console.log("[HubScript2] Retrieved hub_session_code from localStorage:", hubCode);
+                } catch (err) {
+                    console.error("[HubScript2] Error accessing localStorage:", err);
+                }
+
+                if (!hubCode) {
+                    console.warn("[HubScript2] No hub_session_code found, exiting...");
+                    return;
+                }
+
+                const wsScheme = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+                const wsUrl = `${wsScheme}//${window.location.host}/ws/hub/${hubCode}/`;
+                console.log("[HubScript2] Connecting to WebSocket:", wsUrl);
+
+                const hubWS = new WebSocket(wsUrl);
+
+                hubWS.onopen = () => {
+                    console.log("[HubScript2] WebSocket connected successfully.");
+                };
+
+                hubWS.onmessage = (event) => {
+                    console.log("[HubScript2] Message received:", event.data);
+                    try {
+                        const data = JSON.parse(event.data);
+                        console.log("[HubScript2] Parsed data:", data);
+
+                        /*if (data.type === 'navigate' && data.step) {
+                            const step = data.step;
+                            console.log("[HubScript2] Navigation requested for:", step);
+
+                            const routes = {
+                                quiz: { join: '/quiz/join/', play: '/quiz/play/' },
+                                assign: { join: '/assign/join/', play: '/assign/play/' },
+                                estimation: { join: '/estimation/join/', play: '/estimation/play/' },
+                                where: { join: '/where/join/', play: '/where/play/' },
+                                who: { join: '/who/join/', play: '/who/play/' },
+                                who_that: { join: '/who-is-that/join/', play: '/who-is-that/play/' },
+                                blackjack: { join: '/blackjack/join/', play: '/blackjack/play/' },
+                            };
+
+                            const base = routes[step.game_key];
+                            console.log("[HubScript2] Base route:", base);
+
+                            if (base && step.room_code) {
+                                const u = new URL(base, window.location.origin);
+                                u.searchParams.set('room_code', step.room_code);
+                                u.searchParams.set('nickname', player.participantName);
+                                u.searchParams.set('hub_session', hubCode);
+
+                                const joinUrl = new URL(routes[step.game_key].join, window.location.origin);
+                                const playUrl = new URL(`${routes[step.game_key].play}${step.room_code}/${encodeURIComponent(player.participantName)}/`, window.location.origin);
+
+                                // Prepare join payload
+                                const csrfToken = "{{ csrf_token }}"; // or get dynamically if rendered server-side
+                                const body = JSON.stringify({
+                                room_code: step.room_code,
+                                participant_name: player.participantName,
+                                hub_session: hubCode,
+                                });
+
+                                // if (code) {
+                                //     try { localStorage.setItem('hub_session_code', code); } catch (_) {}
+                                // }
+
+                                try {
+                                    fetch(joinUrl.toString(), {
+                                        method: 'POST',
+                                        headers: {
+                                        'Content-Type': 'application/json',
+                                        'X-CSRFToken': csrfToken,
+                                        },
+                                        body: body,
+                                        credentials: 'same-origin',
+                                    })
+                                    .then(response => response.json())
+                                    .then(data => {
+                                        if (data.success) {
+                                        console.log('[HubScript2] Join successful, redirecting to play URL');
+                                        window.location.href = playUrl.toString();
+                                        } else {
+                                        console.error('[HubScript2] Join failed, falling back to play URL');
+                                        window.location.href = playUrl.toString();
+                                        }
+                                    })
+                                } catch (error) {
+                                console.error('[HubScript2] Error joining game:', error);
+                                window.location.href = playUrl.toString();
+                                }
+                            } else {
+                                console.warn("[HubScript2] Invalid navigation info:", step);
+                            }
+
+                        }*/
+                        if (data.type === 'players_recalled_to_lobby') {
+                            lobbyReturnController.returnToLobby({ markInactive: false });
+                        } else if (data.type === 'session_ended') {
+                            console.log("[HubScript2] Session ended message received.");
+                            const u = new URL(`/hub/lobby/${hubCode}/`, window.location.origin);
+                            u.searchParams.set('ended', '1');
+
+                            console.log("[HubScript2] Redirecting to lobby:", u.toString());
+                            window.location.href = u.toString();
+                        } else {
+                            console.log("[HubScript2] Unhandled message type:", data.type);
+                        }
+
+                    } catch (err) {
+                        console.error("[HubScript2] Failed to parse message:", event.data, err);
+                    }
+                };
+
+                hubWS.onerror = (err) => {
+                    console.error("[HubScript2] WebSocket error:", err);
+                };
+
+                hubWS.onclose = (e) => {
+                    console.warn("[HubScript2] WebSocket closed:", e.code, e.reason);
+                };
+            })();
+        });
+    </script>
+  {% include 'includes/_leaderboard_overlay.html' %}
+  {% include 'includes/accessibility_widget.html' %}
+</body>
+</html>
