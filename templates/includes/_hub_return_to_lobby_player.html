@@ -1,5 +1,56 @@
+<style>
+    .lobby-return-banner {
+        position: fixed;
+        right: 16px;
+        bottom: 16px;
+        z-index: 1100;
+        max-width: min(420px, calc(100vw - 32px));
+        background: rgba(17, 24, 39, 0.94);
+        color: #fff;
+        border-radius: 16px;
+        box-shadow: 0 18px 48px rgba(0, 0, 0, 0.28);
+        padding: 1rem 1rem 0.9rem;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        backdrop-filter: blur(12px);
+    }
+
+    .lobby-return-banner.d-none {
+        display: none !important;
+    }
+
+    .lobby-return-banner__title {
+        font-size: 0.95rem;
+        font-weight: 700;
+        margin-bottom: 0.35rem;
+    }
+
+    .lobby-return-banner__text {
+        font-size: 0.9rem;
+        line-height: 1.35;
+        margin-bottom: 0.85rem;
+        color: rgba(255, 255, 255, 0.92);
+    }
+
+    .lobby-return-banner__actions {
+        display: flex;
+        gap: 0.75rem;
+        flex-wrap: wrap;
+        align-items: center;
+    }
+
+    .lobby-return-banner__actions .btn {
+        margin: 0;
+    }
+</style>
+
 <script>
     function createHubLobbyReturnController(config) {
+        let countdownTimer = null;
+        let countdownEndsAtMs = null;
+        let countdownBanner = null;
+        let countdownText = null;
+        let countdownButton = null;
+
         function ensureReturnButton() {
             const buttonId = config.buttonId || 'returnToLobbyBtn';
             if (document.getElementById(buttonId)) {
@@ -25,6 +76,40 @@
             targetCard.appendChild(actions);
 
             try { lucide.createIcons(); } catch (_) {}
+        }
+
+        function ensureCountdownBanner() {
+            if (countdownBanner) {
+                return countdownBanner;
+            }
+
+            countdownBanner = document.createElement('div');
+            countdownBanner.id = 'lobbyReturnCountdownBanner';
+            countdownBanner.className = 'lobby-return-banner d-none';
+            countdownBanner.innerHTML = `
+                <div class="lobby-return-banner__title">Lobby-Rückkehr läuft</div>
+                <div class="lobby-return-banner__text" id="lobbyReturnCountdownText">
+                    Automatisches Zurückkehren in die Lobby in 10s
+                </div>
+                <div class="lobby-return-banner__actions">
+                    <button type="button" class="btn btn-primary btn-sm" id="lobbyReturnCountdownBtn">
+                        <i data-lucide="arrow-left"></i>
+                        In Lobby zurückkehren
+                    </button>
+                </div>
+            `;
+            document.body.appendChild(countdownBanner);
+
+            countdownText = countdownBanner.querySelector('#lobbyReturnCountdownText');
+            countdownButton = countdownBanner.querySelector('#lobbyReturnCountdownBtn');
+            if (countdownButton) {
+                countdownButton.addEventListener('click', () => {
+                    returnToLobby();
+                });
+            }
+
+            try { lucide.createIcons(); } catch (_) {}
+            return countdownBanner;
         }
 
         async function markParticipantReturnedToLobby() {
@@ -67,7 +152,76 @@
             return url;
         }
 
+        function clearRecallCountdown() {
+            if (countdownTimer) {
+                clearInterval(countdownTimer);
+            }
+            countdownTimer = null;
+            countdownEndsAtMs = null;
+            if (countdownBanner) {
+                countdownBanner.classList.add('d-none');
+            }
+        }
+
+        function renderRecallCountdown(remainingSeconds) {
+            ensureCountdownBanner();
+            const safeSeconds = Math.max(0, parseInt(remainingSeconds, 10) || 0);
+            if (countdownText) {
+                countdownText.textContent = `Automatisches Zurückkehren in die Lobby in ${safeSeconds}s`;
+            }
+            countdownBanner.classList.remove('d-none');
+        }
+
+        function startRecallCountdown(payload = {}) {
+            const durationSeconds = Math.max(1, parseInt(payload.duration_seconds, 10) || 10);
+            const serverNowMs = payload.server_now ? new Date(payload.server_now).getTime() : Date.now();
+            const endsAtMs = payload.ends_at ? new Date(payload.ends_at).getTime() : (serverNowMs + (durationSeconds * 1000));
+
+            if (Number.isNaN(endsAtMs)) {
+                return;
+            }
+
+            clearRecallCountdown();
+            countdownEndsAtMs = endsAtMs;
+
+            const updateCountdown = () => {
+                if (!countdownEndsAtMs) {
+                    clearRecallCountdown();
+                    return;
+                }
+                const remainingSeconds = Math.max(0, Math.ceil((countdownEndsAtMs - Date.now()) / 1000));
+                if (remainingSeconds <= 0) {
+                    clearRecallCountdown();
+                    return;
+                }
+                renderRecallCountdown(remainingSeconds);
+            };
+
+            updateCountdown();
+            countdownTimer = setInterval(updateCountdown, 250);
+        }
+
+        async function syncRecallCountdownState() {
+            if (!config.sessionCode) {
+                return;
+            }
+
+            try {
+                const response = await fetch(`/hub/api/session/${config.sessionCode}/recall-countdown/`, {
+                    credentials: 'same-origin',
+                });
+                const payload = await response.json();
+                if (!response.ok || !payload.success || !payload.active) {
+                    clearRecallCountdown();
+                    return;
+                }
+                startRecallCountdown(payload);
+            } catch (_) {}
+        }
+
         async function returnToLobby(options = {}) {
+            clearRecallCountdown();
+
             const markInactive = options.markInactive !== false;
             if (markInactive) {
                 await markParticipantReturnedToLobby();
@@ -80,6 +234,9 @@
         }
 
         ensureReturnButton();
+        ensureCountdownBanner();
+        syncRecallCountdownState();
+
         const button = document.getElementById(config.buttonId || 'returnToLobbyBtn');
         if (button) {
             button.addEventListener('click', () => {
@@ -89,6 +246,9 @@
 
         return {
             returnToLobby,
+            startRecallCountdown,
+            clearRecallCountdown,
+            syncRecallCountdownState,
         };
     }
 </script>

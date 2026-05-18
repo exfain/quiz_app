@@ -187,7 +187,7 @@ class ClueRushGameConsumer(AsyncWebsocketConsumer):
 
         await self.set_tutorial_active_db(quiz.id, False)
         # Update quiz with new question
-        await self.update_quiz_question(quiz, question)
+        await self.update_quiz_question(quiz, question, custom_time_limit)
         
         # Determine the effective time limit for this send (do NOT persist on the question)
         effective_time_limit = custom_time_limit if custom_time_limit is not None else question.time_limit
@@ -361,12 +361,20 @@ class ClueRushGameConsumer(AsyncWebsocketConsumer):
                 {
                     'type': 'participant_answered',
                     'answer': {
+                        'answer_id': answer.get('answer_id'),
+                        'participant_id': answer.get('participant_id'),
                         'participant_name': participant_name,
-                        'answer_text': answer_text,
+                        'question_id': answer.get('question_id'),
+                        'answer_text': answer.get('answer_text', answer_text),
                         'is_correct': answer['is_correct'],
+                        'is_manual_override': answer.get('is_manual_override', False),
+                        'can_mark_correct': answer.get('can_mark_correct', False),
                         'points_earned': answer['points_earned'],
+                        'total_score': answer.get('total_score'),
                         'is_close': answer.get('is_close', False),
-                        'time_taken': time_taken
+                        'time_taken': answer.get('time_taken', time_taken),
+                        'submitted_at': answer.get('submitted_at'),
+                        'submitted_clue_number': answer.get('submitted_clue_number'),
                     }
                 }
             )
@@ -559,6 +567,17 @@ class ClueRushGameConsumer(AsyncWebsocketConsumer):
             'answer': event['answer']
         }))
 
+    async def answer_corrected(self, event):
+        await self.send(text_data=json.dumps({
+            'type': 'answer_corrected',
+            'response': event.get('response'),
+            'participant_id': event.get('participant_id'),
+            'participant_name': event.get('participant_name'),
+            'question_id': event.get('question_id'),
+            'total_score': event.get('total_score'),
+            'progress_history': event.get('progress_history', []),
+        }))
+
     async def participant_joined(self, event):
         """Send new participant info to admin"""
         await self.send(text_data=json.dumps({
@@ -631,27 +650,37 @@ class ClueRushGameConsumer(AsyncWebsocketConsumer):
             # If already correct, no action
             if answer.is_correct:
                 return {
+                    'answer_id': answer.id,
+                    'participant_id': participant.id,
                     'participant_name': participant.name,
+                    'question_id': answer.question_id,
                     'points_earned': answer.points_earned,
                     'answer_text': answer.answer_text,
                     'time_taken': answer.time_taken,
+                    'total_score': participant.total_score,
+                    'submitted_clue_number': answer.submitted_clue_number,
+                    'is_manual_override': answer.is_manually_corrected,
+                    'can_mark_correct': False,
                 }
 
-            # Compute points like model.save() would on initial create
-            total_clues = quiz.current_question.clues.count()
-            current_clue_number = quiz.session.current_clue_number if hasattr(quiz, 'session') and quiz.session else 0
-            base_points = quiz.current_question.points
-            awarded = base_points + (total_clues - current_clue_number + 1)
-
             answer.is_correct = True
-            answer.points_earned = awarded
+            answer.is_manually_corrected = True
+            answer.points_earned = answer.calculate_points_from_submission_state()
             answer.save()
+            participant.refresh_from_db(fields=['total_score'])
 
             return {
+                'answer_id': answer.id,
+                'participant_id': participant.id,
                 'participant_name': participant.name,
+                'question_id': answer.question_id,
                 'points_earned': answer.points_earned,
                 'answer_text': answer.answer_text,
                 'time_taken': answer.time_taken,
+                'total_score': participant.total_score,
+                'submitted_clue_number': answer.submitted_clue_number,
+                'is_manual_override': True,
+                'can_mark_correct': False,
             }
         except (ClueRushGame.DoesNotExist, ClueRushParticipant.DoesNotExist):
             return None
@@ -785,9 +814,7 @@ class ClueRushGameConsumer(AsyncWebsocketConsumer):
     def start_quiz_db(self, quiz_id):
         try:
             quiz = ClueRushGame.objects.get(id=quiz_id)
-            quiz.status = 'active'
-            quiz.started_at = timezone.now()
-            quiz.save()
+            quiz.start_quiz()
         except ClueRushGame.DoesNotExist:
             pass
 
@@ -812,15 +839,21 @@ class ClueRushGameConsumer(AsyncWebsocketConsumer):
             pass
 
     @database_sync_to_async
-    def update_quiz_question(self, quiz, question):
+    def update_quiz_question(self, quiz, question, runtime_clue_duration=None):
+        started_at = timezone.now()
         quiz.current_question = question
-        quiz.question_start_time = timezone.now()
+        quiz.question_start_time = started_at
         # Reset clue tracking for the new question
         try:
             session = quiz.session
             if session:
+                session.is_question_active = True
                 session.current_clue_number = 0
                 session.is_clue_active = False
+                if runtime_clue_duration is not None and runtime_clue_duration > 0:
+                    session.question_end_time = started_at + timezone.timedelta(seconds=runtime_clue_duration)
+                else:
+                    session.question_end_time = None
                 session.clue_end_time = None
                 session.save()
         except Exception:
@@ -843,7 +876,9 @@ class ClueRushGameConsumer(AsyncWebsocketConsumer):
                 session = quiz.session
                 if session:
                     session.current_clue_number = 0
+                    session.is_question_active = False
                     session.is_clue_active = False
+                    session.question_end_time = None
                     session.clue_end_time = None
                     session.save()
             except Exception:
@@ -862,33 +897,50 @@ class ClueRushGameConsumer(AsyncWebsocketConsumer):
             quiz = ClueRushGame.objects.select_related('session', 'current_question').get(room_code=self.room_code)
             if not quiz.current_question:
                 return None
-            clues_qs = quiz.current_question.clues.order_by('order')
-            # Use current_clue as primary source to avoid off-by-one issues
-            # when clue ordering starts at 0 or when session counters get stale.
+            clues = list(quiz.current_question.clues.order_by('order', 'id'))
+            if not clues:
+                return None
+
+            next_index = 0
             if quiz.current_clue_id:
-                current_order = quiz.current_clue.order
-                next_obj = clues_qs.filter(order__gt=current_order).first()
-            else:
-                # No clue has been sent yet for this question: always start with the first clue
-                next_obj = clues_qs.first()
+                current_index = next(
+                    (idx for idx, clue in enumerate(clues) if clue.id == quiz.current_clue_id),
+                    None,
+                )
+                if current_index is None:
+                    next_index = 0
+                else:
+                    next_index = current_index + 1
+
+            if next_index >= len(clues):
+                return None
+
+            next_obj = clues[next_index]
             if not next_obj:
                 return None
             # Update DB state
+            clue_started_at = timezone.now()
             quiz.current_clue = next_obj
-            quiz.clue_start_time = timezone.now()
+            quiz.clue_start_time = clue_started_at
+            runtime_duration = next_obj.duration
             if hasattr(quiz, 'session') and quiz.session:
                 session = quiz.session
-                session.current_clue_number = next_obj.order
+                if quiz.question_start_time and session.question_end_time:
+                    override_seconds = int((session.question_end_time - quiz.question_start_time).total_seconds())
+                    if override_seconds > 0:
+                        runtime_duration = override_seconds
+                session.current_clue_number = next_index + 1
                 session.is_clue_active = True
-                session.clue_end_time = timezone.now() + timezone.timedelta(seconds=next_obj.duration)
+                session.clue_end_time = clue_started_at + timezone.timedelta(seconds=runtime_duration)
                 session.save()
             quiz.save()
-            has_next_clue = clues_qs.filter(order__gt=next_obj.order).exists()
+            has_next_clue = next_index < (len(clues) - 1)
             return {
                 'id': next_obj.id,
-                'order': next_obj.order,
+                'order': next_index + 1,
                 'clue_text': next_obj.clue_text,
-                'duration': next_obj.duration,
+                'duration': runtime_duration,
+                'end_time': session.clue_end_time.isoformat() if hasattr(quiz, 'session') and quiz.session and quiz.session.clue_end_time else None,
                 'has_next_clue': has_next_clue,
             }
         except ClueRushGame.DoesNotExist:
@@ -963,9 +1015,20 @@ class ClueRushGameConsumer(AsyncWebsocketConsumer):
                 is_close = False
             
             return {
+                'answer_id': answer.id,
+                'participant_id': participant.id,
+                'participant_name': participant.name,
+                'question_id': answer.question_id,
+                'answer_text': answer.answer_text,
                 'is_correct': answer.is_correct,
+                'is_manual_override': answer.is_manually_corrected,
                 'points_earned': answer.points_earned,
-                'is_close': is_close
+                'is_close': is_close,
+                'time_taken': answer.time_taken,
+                'total_score': participant.total_score,
+                'submitted_at': answer.submitted_at.isoformat() if answer.submitted_at else None,
+                'submitted_clue_number': answer.submitted_clue_number,
+                'can_mark_correct': not answer.is_correct,
             }
             
         except (ClueRushGame.DoesNotExist, ClueRushParticipant.DoesNotExist):
@@ -1038,27 +1101,30 @@ class ClueRushGameConsumer(AsyncWebsocketConsumer):
                 'points': current_question.points,
             }
 
-            clues_qs = list(current_question.clues.order_by('order'))
-            current_clue_order = None
-            if quiz.current_clue_id:
-                current_clue_order = quiz.current_clue.order
-            else:
-                try:
-                    session = quiz.session
-                    current_clue_order = session.current_clue_number if session else None
-                except Exception:
-                    current_clue_order = None
+            clues_qs = list(current_question.clues.order_by('order', 'id'))
+            try:
+                session = quiz.session
+            except Exception:
+                session = None
 
-            if current_clue_order is not None:
-                for clue in clues_qs:
-                    if clue.order <= current_clue_order:
-                        revealed_clues.append({
-                            'id': clue.id,
-                            'order': clue.order,
-                            'clue_text': clue.clue_text,
-                            'duration': clue.duration,
-                            'has_next_clue': any(c.order > clue.order for c in clues_qs),
-                        })
+            current_clue = quiz.current_clue if (
+                quiz.current_clue_id and
+                quiz.current_clue.clue_question_id == current_question.id
+            ) else None
+            current_clue_order = session.current_clue_number if session and session.is_clue_active else None
+            revealed_count = current_question.get_revealed_clue_count(
+                current_clue=current_clue,
+                current_clue_order=current_clue_order,
+            )
+
+            for position, clue in enumerate(clues_qs[:revealed_count], start=1):
+                revealed_clues.append({
+                    'id': clue.id,
+                    'order': position,
+                    'clue_text': clue.clue_text,
+                    'duration': clue.duration,
+                    'has_next_clue': position < len(clues_qs),
+                })
 
             try:
                 participant = quiz.participants.get(name=participant_name, hub_session_code=hub_session)
@@ -1071,7 +1137,9 @@ class ClueRushGameConsumer(AsyncWebsocketConsumer):
                     participant_answer = {
                         'answer_text': answer.answer_text,
                         'is_correct': answer.is_correct,
+                        'is_manual_override': answer.is_manually_corrected,
                         'points_earned': answer.points_earned,
+                        'time_taken': answer.time_taken,
                         'submitted_at': answer.submitted_at.isoformat() if answer.submitted_at else None,
                     }
             except ClueRushParticipant.DoesNotExist:
@@ -1100,11 +1168,13 @@ class ClueRushGameConsumer(AsyncWebsocketConsumer):
 
         history = []
         for idx, answer in enumerate(answers, start=1):
-            max_points = answer.question.clues.count()
+            max_points = answer.total_clues_at_submission or answer.question.clues.count()
             achieved_points = 0
             if answer.is_correct and max_points > 0:
-                derived = answer.points_earned - answer.question.points
-                achieved_points = max(0, min(derived, max_points))
+                achieved_points = answer.points_earned
+                if achieved_points > max_points:
+                    achieved_points = answer.points_earned - answer.question.points
+                achieved_points = max(0, min(achieved_points, max_points))
 
             history.append({
                 'question_number': idx,

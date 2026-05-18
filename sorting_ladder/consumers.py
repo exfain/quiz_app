@@ -267,7 +267,7 @@ class SortingLadderGameConsumer(AsyncWebsocketConsumer):
         await self.set_tutorial_active_db(quiz.id, False)
 
         for auto_result in round_state.get('auto_results', []):
-            progress_history = await self.get_participant_progress_history(
+            progress_history = await self.get_participant_progress_history_for_round_result(
                 auto_result['participant_name'],
                 auto_result['hub_session_code'],
             )
@@ -412,7 +412,7 @@ class SortingLadderGameConsumer(AsyncWebsocketConsumer):
         end_payload = await self.end_question_db(quiz.id)
 
         for auto_result in (end_payload or {}).get('auto_results', []):
-            progress_history = await self.get_participant_progress_history(
+            progress_history = await self.get_participant_progress_history_for_round_result(
                 auto_result['participant_name'],
                 auto_result['hub_session_code'],
             )
@@ -606,7 +606,10 @@ class SortingLadderGameConsumer(AsyncWebsocketConsumer):
             }))
             return
 
-        progress_history = await self.get_participant_progress_history(participant_name, hub_session_code)
+        progress_history = await self.get_participant_progress_history_for_round_result(
+            participant_name,
+            hub_session_code,
+        )
         result['progress_history'] = progress_history
 
         await self.channel_layer.group_send(
@@ -761,6 +764,7 @@ class SortingLadderGameConsumer(AsyncWebsocketConsumer):
         await self.send(text_data=json.dumps({
             'type': 'round_result',
             'participant_name': event['participant_name'],
+            'question_id': event.get('question_id'),
             'round_number': event.get('round_number'),
             'is_correct': event['is_correct'],
             'rounds_survived': event['rounds_survived'],
@@ -1052,6 +1056,7 @@ class SortingLadderGameConsumer(AsyncWebsocketConsumer):
             full_sorted_ids = [item.id for item in full_sorted_ids]
 
             return {
+                'question_id': question.id,
                 'round_number': round_number,
                 'is_correct': False,
                 'rounds_survived': participant.rounds_survived,
@@ -1168,6 +1173,7 @@ class SortingLadderGameConsumer(AsyncWebsocketConsumer):
         )
 
         return {
+            'question_id': question.id,
             'round_number': expected_round,
             'is_correct': submission.is_correct,
             'rounds_survived': participant.rounds_survived,
@@ -1275,6 +1281,7 @@ class SortingLadderGameConsumer(AsyncWebsocketConsumer):
             session.save(update_fields=['current_round', 'is_round_active', 'round_start_time', 'round_end_time'])
 
             return {
+                'question_id': topic.id,
                 'round_number': session.current_round,
                 'time_limit_seconds': session.time_limit_seconds,
                 'auto_results': auto_results,
@@ -1292,6 +1299,7 @@ class SortingLadderGameConsumer(AsyncWebsocketConsumer):
         session.start_next_round(next_element)
 
         return {
+            'question_id': topic.id,
             'round_number': session.current_round,
             'time_limit_seconds': session.time_limit_seconds,
             'active_element': {
@@ -1356,9 +1364,14 @@ class SortingLadderGameConsumer(AsyncWebsocketConsumer):
                 participant['name'],
                 participant.get('hub_session_code'),
             )
+            has_logged_answer = submissions_count >= current_round
+            has_pending_selection = expected_count > 0 and len(pending_order) == expected_count
             statuses.append({
                 'participant_name': participant['name'],
-                'has_answered': submissions_count >= current_round or (expected_count > 0 and len(pending_order) == expected_count),
+                'has_answered': has_logged_answer or has_pending_selection,
+                'has_selection': has_pending_selection,
+                'is_logged': has_logged_answer,
+                'answer_status': 'eingeloggt' if has_logged_answer else ('gegeben' if has_pending_selection else 'offen'),
             })
 
         return {
@@ -1540,6 +1553,7 @@ class SortingLadderGameConsumer(AsyncWebsocketConsumer):
             )
 
             latest_round_result = {
+                'question_id': question.id,
                 'round_number': len(submissions),
                 'is_correct': latest.is_correct,
                 'rounds_survived': participant.rounds_survived,
@@ -1548,12 +1562,18 @@ class SortingLadderGameConsumer(AsyncWebsocketConsumer):
                 'has_more_rounds': bool(has_more_rounds),
                 'per_question_rounds': correct_rounds,
                 'correct_order_ids': sorted_visible if has_more_rounds else full_sorted,
+                'progress_history': self._build_participant_progress_history_sync(
+                    quiz,
+                    participant,
+                    reveal_eliminated_current_question=True,
+                ),
             }
 
         # If participant has not submitted the current server round yet and is
         # still active, explicitly sync round start so interaction unlocks.
         if session.is_round_active and not participant.is_eliminated and len(submissions) < int(session.current_round or 0):
             round_started = {
+                'question_id': question.id,
                 'round_number': session.current_round,
                 'time_limit_seconds': session.time_limit_seconds,
             }
@@ -1671,11 +1691,28 @@ class SortingLadderGameConsumer(AsyncWebsocketConsumer):
     @database_sync_to_async
     def get_participant_progress_history(self, participant_name, hub_session_code):
         try:
-            quiz = SortingLadderGame.objects.select_related('current_question').get(room_code=self.room_code)
+            quiz = SortingLadderGame.objects.select_related('current_question', 'session').get(room_code=self.room_code)
             participant = quiz.participants.get(name=participant_name, hub_session_code=hub_session_code)
         except (SortingLadderGame.DoesNotExist, SortingLadderParticipant.DoesNotExist):
             return []
 
+        return self._build_participant_progress_history_sync(quiz, participant)
+
+    @database_sync_to_async
+    def get_participant_progress_history_for_round_result(self, participant_name, hub_session_code):
+        try:
+            quiz = SortingLadderGame.objects.select_related('current_question', 'session').get(room_code=self.room_code)
+            participant = quiz.participants.get(name=participant_name, hub_session_code=hub_session_code)
+        except (SortingLadderGame.DoesNotExist, SortingLadderParticipant.DoesNotExist):
+            return []
+
+        return self._build_participant_progress_history_sync(
+            quiz,
+            participant,
+            reveal_eliminated_current_question=True,
+        )
+
+    def _build_participant_progress_history_sync(self, quiz, participant, reveal_eliminated_current_question=False):
         submissions = (
             RoundSubmission.objects
             .filter(quiz=quiz, participant=participant)
@@ -1701,12 +1738,30 @@ class SortingLadderGameConsumer(AsyncWebsocketConsumer):
             if sub.is_correct:
                 entry['survived_rounds'] += 1
 
+        try:
+            session = quiz.session
+            current_round = int(session.current_round or 0)
+        except (SortingLadderSession.DoesNotExist, AttributeError, TypeError, ValueError):
+            current_round = 0
+
         completed = []
         current_question_id = quiz.current_question_id
         for entry in grouped.values():
             is_current_question = entry['question_id'] == current_question_id
-            is_complete_current = participant.is_eliminated or entry['submission_count'] >= entry['max_rounds']
-            if (not is_current_question) or is_complete_current:
+            if not is_current_question:
+                completed.append(entry)
+                continue
+
+            if participant.is_eliminated:
+                should_reveal_current = (
+                    reveal_eliminated_current_question
+                    or current_round > entry['submission_count']
+                )
+                if should_reveal_current:
+                    completed.append(entry)
+                continue
+
+            if entry['submission_count'] >= entry['max_rounds']:
                 completed.append(entry)
 
         completed.sort(key=lambda e: (e['first_submitted_at'], e['question_id']))

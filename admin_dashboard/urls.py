@@ -18,6 +18,7 @@ urlpatterns = [
     path('games/delete-all/', views.delete_all_game_instances, name='delete_all_game_instances'),
     path('sessions/clear/', views.clear_all_sessions, name='clear_sessions'),
     path('sessions/end/', views.end_session, name='end_session'),
+    path('sessions/end-all-active-games/', views.end_all_active_games, name='end_all_active_games'),
     path('sessions/delete/', views.delete_session, name='delete_session'),
     path('sessions/duplicate/', views.duplicate_session, name='duplicate_session'),
     path('sync/supabase/', views.sync_supabase, name='sync_supabase'),
@@ -275,6 +276,8 @@ urlpatterns = [
     path('clue-rush/<int:quiz_id>/selected-questions/', views.get_clue_rush_selected_questions, name='get_clue_rush_selected_questions'),
     path('clue-rush/delete/', views.delete_clue_rush_game, name='delete_clue_rush_game'),
     path('clue-rush/<str:room_code>/monitor/', views.clue_rush_monitor, name='clue_rush_monitor'),
+    path('clue-rush/<str:room_code>/promote-answer-correct/', views.promote_clue_rush_answer_correct, name='promote_clue_rush_answer_correct'),
+    path('clue-rush/<str:room_code>/end/', views.end_clue_rush_game_by_room_code, name='end_clue_rush_game_by_room_code'),
 
     # Clue Rush API endpoints
     path('api/clue-rush/<str:room_code>/participants/', views.api_clue_rush_participants, name='api_clue_rush_participants'),

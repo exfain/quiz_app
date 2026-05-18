@@ -4,10 +4,11 @@ from asgiref.sync import async_to_sync
 from django.contrib.auth.models import User
 from django.test import TestCase, TransactionTestCase
 from django.urls import reverse
+from django.utils import timezone
 from games_hub.models import HubGameStep, HubSession
 
 from .consumers import EstimationConsumer
-from .models import EstimationAnswer, EstimationParticipant, EstimationQuestion, EstimationQuiz
+from .models import EstimationAnswer, EstimationParticipant, EstimationQuestion, EstimationQuiz, EstimationSession
 
 
 class FakeChannelLayer:
@@ -416,6 +417,206 @@ class EstimationScoringTests(TransactionTestCase):
         self.assertEqual([participant.total_score for participant in participants], [4, 3, 2, 1])
 
 
+class EstimationPendingAnswerFinalizationTests(TransactionTestCase):
+    def make_consumer(self, quiz):
+        consumer = EstimationConsumer()
+        consumer.room_code = quiz.room_code
+        consumer.room_group_name = f'estimation_{quiz.room_code}'
+        consumer.channel_layer = FakeChannelLayer()
+        return consumer
+
+    def test_handle_admin_end_question_finalizes_pending_zone_answer(self):
+        user = User.objects.create_user(username='estimation-pending-zones')
+        question = EstimationQuestion.objects.create(
+            question_text='Estimate 100 zones',
+            correct_answer=100,
+            tolerance_percentage=10,
+            zone_count=5,
+            max_points=5,
+            created_by=user,
+        )
+        quiz = EstimationQuiz.objects.create(
+            title='Pending Zones',
+            room_code='9303',
+            creator=user,
+            status='active',
+            scoring_mode='zones',
+            current_question=question,
+            question_start_time=timezone.now() - timezone.timedelta(seconds=8),
+        )
+        participant = EstimationParticipant.objects.create(
+            quiz=quiz,
+            name='Alice',
+            hub_session_code='hub-zones',
+        )
+        session = EstimationSession.objects.create(
+            quiz=quiz,
+            is_question_active=True,
+            question_end_time=timezone.now() + timezone.timedelta(seconds=12),
+            pending_answers={
+                str(participant.id): {
+                    'question_id': question.id,
+                    'user_answer': '110',
+                    'updated_at': timezone.now().isoformat(),
+                    'participant_name': participant.name,
+                    'hub_session_code': participant.hub_session_code,
+                }
+            },
+        )
+        consumer = self.make_consumer(quiz)
+
+        async_to_sync(consumer.handle_admin_end_question)({})
+
+        answer = EstimationAnswer.objects.get(quiz=quiz, participant=participant, question=question)
+        payload = consumer.channel_layer.group_messages[-1][1]
+        participant.refresh_from_db()
+        quiz.refresh_from_db()
+        session.refresh_from_db()
+
+        self.assertEqual(answer.user_answer, 110)
+        self.assertEqual(answer.points_earned, 5)
+        self.assertEqual(participant.total_score, 5)
+        self.assertEqual(payload['evaluated_pending_answers'][0]['participant_name'], 'Alice')
+        self.assertEqual(payload['evaluated_pending_answers'][0]['points_earned'], 5)
+        self.assertIsNone(quiz.current_question)
+        self.assertEqual(session.pending_answers, {})
+
+    def test_handle_admin_end_question_finalizes_pending_rank_answer_before_ranking(self):
+        user = User.objects.create_user(username='estimation-pending-rank')
+        question = EstimationQuestion.objects.create(
+            question_text='Estimate 100 rank pending',
+            correct_answer=100,
+            created_by=user,
+        )
+        quiz = EstimationQuiz.objects.create(
+            title='Pending Rank',
+            room_code='9304',
+            creator=user,
+            status='active',
+            scoring_mode='rank',
+            current_question=question,
+            question_start_time=timezone.now() - timezone.timedelta(seconds=10),
+        )
+        alice = EstimationParticipant.objects.create(
+            quiz=quiz,
+            name='Alice',
+            hub_session_code='hub-rank',
+        )
+        bob = EstimationParticipant.objects.create(
+            quiz=quiz,
+            name='Bob',
+            hub_session_code='hub-rank',
+        )
+        EstimationAnswer.objects.create(
+            quiz=quiz,
+            participant=bob,
+            question=question,
+            user_answer=100,
+            time_taken=1.0,
+        )
+        session = EstimationSession.objects.create(
+            quiz=quiz,
+            is_question_active=True,
+            question_end_time=timezone.now() + timezone.timedelta(seconds=15),
+            pending_answers={
+                str(alice.id): {
+                    'question_id': question.id,
+                    'user_answer': '101',
+                    'updated_at': timezone.now().isoformat(),
+                    'participant_name': alice.name,
+                    'hub_session_code': alice.hub_session_code,
+                }
+            },
+        )
+        consumer = self.make_consumer(quiz)
+
+        async_to_sync(consumer.handle_admin_end_question)({})
+
+        payload = consumer.channel_layer.group_messages[-1][1]
+        alice_answer = EstimationAnswer.objects.get(quiz=quiz, participant=alice, question=question)
+        alice.refresh_from_db()
+        session.refresh_from_db()
+
+        self.assertEqual(alice_answer.user_answer, 101)
+        self.assertEqual(alice.total_score, 1)
+        self.assertEqual(
+            payload['rank_results'],
+            [
+                {
+                    'participant_name': 'Bob',
+                    'points_earned': 2,
+                    'rank_position': 1,
+                },
+                {
+                    'participant_name': 'Alice',
+                    'points_earned': 1,
+                    'rank_position': 2,
+                },
+            ],
+        )
+        self.assertEqual(payload['evaluated_pending_answers'][0]['points_earned'], 1)
+        self.assertEqual(session.pending_answers, {})
+
+    def test_pending_answer_does_not_override_existing_submitted_answer(self):
+        user = User.objects.create_user(username='estimation-pending-lock')
+        question = EstimationQuestion.objects.create(
+            question_text='Estimate 100 lock',
+            correct_answer=100,
+            tolerance_percentage=10,
+            zone_count=5,
+            max_points=5,
+            created_by=user,
+        )
+        quiz = EstimationQuiz.objects.create(
+            title='Pending Lock',
+            room_code='9305',
+            creator=user,
+            status='active',
+            scoring_mode='zones',
+            current_question=question,
+            question_start_time=timezone.now() - timezone.timedelta(seconds=10),
+        )
+        participant = EstimationParticipant.objects.create(
+            quiz=quiz,
+            name='Alice',
+            hub_session_code='hub-lock',
+        )
+        existing_answer = EstimationAnswer.objects.create(
+            quiz=quiz,
+            participant=participant,
+            question=question,
+            user_answer=100,
+            time_taken=2.0,
+        )
+        session = EstimationSession.objects.create(
+            quiz=quiz,
+            is_question_active=True,
+            question_end_time=timezone.now() + timezone.timedelta(seconds=10),
+            pending_answers={
+                str(participant.id): {
+                    'question_id': question.id,
+                    'user_answer': '130',
+                    'updated_at': timezone.now().isoformat(),
+                    'participant_name': participant.name,
+                    'hub_session_code': participant.hub_session_code,
+                }
+            },
+        )
+        consumer = self.make_consumer(quiz)
+
+        async_to_sync(consumer.handle_admin_end_question)({})
+
+        participant.refresh_from_db()
+        session.refresh_from_db()
+        answers = list(EstimationAnswer.objects.filter(quiz=quiz, participant=participant, question=question))
+
+        self.assertEqual(len(answers), 1)
+        self.assertEqual(answers[0].id, existing_answer.id)
+        self.assertEqual(answers[0].user_answer, 100)
+        self.assertEqual(participant.total_score, 5)
+        self.assertEqual(session.pending_answers, {})
+
+
 class EstimationRevealRenderTests(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(username='estimation-reveal-player')
@@ -467,6 +668,15 @@ class EstimationRevealRenderTests(TestCase):
         self.assertContains(response, 'id="rankResultsList"')
         self.assertContains(response, 'renderRankResults(rankResults)')
         self.assertContains(response, "performanceText.textContent = `Rank #${ownRankPosition} (${pointsForQuestion} pts)`;")
+
+    def test_play_page_syncs_pending_answers_and_consumes_evaluated_pending_results(self):
+        response = self.client.get(reverse('estimation:play', args=[self.quiz.room_code, self.participant.name]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "type: 'participant_update_pending_answer'")
+        self.assertContains(response, 'question_id: this.currentQuestionId')
+        self.assertContains(response, 'getOwnEvaluatedPendingAnswer(data.evaluated_pending_answers)')
+        self.assertContains(response, 'applyEvaluatedPendingAnswer(answer)')
 
 
 class EstimationScoreBoxViewTests(TestCase):

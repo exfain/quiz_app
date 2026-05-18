@@ -432,6 +432,14 @@
 
                 lobbyReturnState.countdownRemaining = 10;
                 updateLobbyReturnPrimaryLabel();
+                if (lobbyReturnState.sessionCode) {
+                    fetch(`/hub/api/session/${lobbyReturnState.sessionCode}/start-recall-countdown/`, {
+                        method: 'POST',
+                        headers: {
+                            'X-CSRFToken': '{{ csrf_token }}',
+                        },
+                    }).catch(() => {});
+                }
                 lobbyReturnState.countdownTimer = setInterval(() => {
                     lobbyReturnState.countdownRemaining -= 1;
                     if (lobbyReturnState.countdownRemaining <= 0) {

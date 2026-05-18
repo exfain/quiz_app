@@ -15,6 +15,15 @@ def _get_scoped_participants(quiz, session_code):
     return list(participants.order_by('name', 'id'))
 
 
+def _get_current_run_answers(quiz, participants=None):
+    answers = BlackJackAnswer.objects.filter(quiz=quiz)
+    if participants is not None:
+        answers = answers.filter(participant__in=participants)
+    if quiz.started_at:
+        answers = answers.filter(submitted_at__gte=quiz.started_at)
+    return answers
+
+
 def _get_finalized_set_numbers(quiz):
     session = getattr(quiz, 'session', None)
     if session:
@@ -69,8 +78,7 @@ def _build_set_points_lookup(quiz, participants, finalized_set_numbers):
         return results_by_set
 
     answers = list(
-        BlackJackAnswer.objects
-        .filter(quiz=quiz, participant__in=participants)
+        _get_current_run_answers(quiz, participants=participants)
         .select_related('participant')
         .order_by('question_number', 'submitted_at', 'id')
     )
@@ -189,8 +197,7 @@ def _build_last_completed_set_summary(quiz, participant, session_code):
 
     set_question_ids = quiz.get_set_question_ids(last_set_number, active_only=False)
     set_answers = list(
-        BlackJackAnswer.objects.filter(
-            quiz=quiz,
+        _get_current_run_answers(quiz).filter(
             participant=participant,
             question_id__in=set_question_ids,
         )
@@ -353,6 +360,7 @@ def blackjack_play(request, room_code, participant_name):
     try:
         session_code = request.GET.get('hub_session')
         quiz = get_object_or_404(BlackJackQuiz, room_code=room_code)
+        quiz.ensure_runtime_scoped_to_hub_session(session_code)
         participant = get_object_or_404(
             BlackJackParticipant, 
             quiz=quiz, 
@@ -381,9 +389,7 @@ def blackjack_play(request, room_code, participant_name):
             'participant': participant,
             'hub_session': session_code,
             'participant_count': quiz.get_participant_count(session_code),
-            'current_question_in_set': quiz.get_question_number_in_set(
-                question_id=quiz.current_question_id if quiz.current_question_id else None
-            ) or 1,
+            'current_question_in_set': quiz.get_current_question_position_in_set() or 1,
             'current_set_question_count': quiz.get_set_question_count(
                 question_id=quiz.current_question_id if quiz.current_question_id else None,
                 set_number=quiz.get_current_set_number(),
@@ -616,9 +622,7 @@ def get_quiz_status(request, room_code, participant_name):
                 question_id=quiz.current_question_id if quiz.current_question_id else None,
                 set_number=quiz.get_current_set_number(),
             ),
-            'question_in_set': quiz.get_question_number_in_set(
-                question_id=quiz.current_question_id if quiz.current_question_id else None
-            ),
+            'question_in_set': quiz.get_current_question_position_in_set(),
             'set_number': quiz.get_current_set_number(),
             'total_sets': quiz.get_total_sets(),
         }
@@ -631,7 +635,7 @@ def get_quiz_status(request, room_code, participant_name):
                 'question_text': question.question_text,
                 'time_limit': question.time_limit,
                 'question_number': quiz.current_question_number,
-                'question_in_set': quiz.get_question_number_in_set(question_id=question.id),
+                'question_in_set': quiz.get_current_question_position_in_set(),
                 'set_question_count': quiz.get_set_question_count(question_id=question.id),
                 'set_number': quiz.get_current_set_number(),
                 'total_sets': quiz.get_total_sets(),

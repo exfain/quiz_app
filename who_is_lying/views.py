@@ -5,7 +5,15 @@ from django.views.decorators.csrf import csrf_exempt
 from django.utils import timezone
 from django.db.models import Avg, Count, Q
 import json
-from .models import WhoQuiz, WhoQuestion, WhoParticipant, WhoAnswer, WhoSession
+from .models import (
+    WhoQuiz,
+    WhoQuestion,
+    WhoParticipant,
+    WhoAnswer,
+    WhoSession,
+    get_question_timer_state,
+    get_recently_ended_question_id,
+)
 
 
 def _get_ordered_quiz_questions(quiz):
@@ -113,7 +121,7 @@ def _build_question_scoreboard(quiz, participant):
         elif current_question_id and current_question_number == index:
             status = 'current'
             earned_points = None
-            max_points = question.get_total_possible_points()
+            max_points = None
         elif current_question_number == index:
             status = 'current'
             earned_points = None
@@ -294,6 +302,27 @@ def who_play(request, room_code, participant_name):
             participant,
         )
         
+        current_question_timer_state = None
+        current_question_people = []
+        current_question_started_at = None
+        current_question_end_time = None
+        server_now = timezone.now()
+        if quiz.current_question:
+            current_question_people = quiz.current_question.get_randomized_people(room_code=quiz.room_code).get('people', [])
+            try:
+                quiz_session = quiz.session
+            except WhoSession.DoesNotExist:
+                quiz_session = None
+            current_question_timer_state = get_question_timer_state(
+                quiz.current_question,
+                question_start_time=quiz.question_start_time,
+                question_end_time=quiz_session.question_end_time if quiz_session else None,
+                people_count=len(current_question_people),
+                server_now=server_now,
+            )
+            current_question_started_at = quiz.question_start_time
+            current_question_end_time = quiz_session.question_end_time if quiz_session else None
+
         context = {
             'quiz': quiz,
             'participant': participant,
@@ -302,6 +331,11 @@ def who_play(request, room_code, participant_name):
             'question_scoreboard': question_scoreboard,
             'initial_progress_history': initial_progress_history,
             'current_question_number': current_question_number,
+            'current_question_people': current_question_people,
+            'current_question_timer_state': current_question_timer_state,
+            'current_question_started_at': current_question_started_at,
+            'current_question_end_time': current_question_end_time,
+            'who_timer_server_now': server_now,
         }
         return render(request, 'who_is_lying/play.html', context)
         
@@ -401,6 +435,7 @@ def submit_answer(request, room_code, participant_name):
     """Submit an answer for the current question"""
     try:
         session_code = request.GET.get('hub_session')
+        data = json.loads(request.body)
         quiz = get_object_or_404(WhoQuiz, room_code=room_code)
         participant = get_object_or_404(
             WhoParticipant, 
@@ -408,19 +443,35 @@ def submit_answer(request, room_code, participant_name):
             name=participant_name,
             hub_session_code=session_code
         )
-        
-        # Check if there's an active question
-        if not quiz.current_question or quiz.status != 'active':
+
+        if quiz.status != 'active':
             return JsonResponse({
                 'success': False,
                 'error': 'No active question available.'
             })
-        
+
+        submitted_question_id = data.get('question_id')
+        if quiz.current_question_id:
+            if submitted_question_id is not None and str(submitted_question_id) != str(quiz.current_question_id):
+                return JsonResponse({
+                    'success': False,
+                    'error': 'The active question has changed.'
+                })
+            target_question = quiz.current_question
+        else:
+            recent_question_id = get_recently_ended_question_id(room_code)
+            if recent_question_id is None or submitted_question_id is None or str(submitted_question_id) != str(recent_question_id):
+                return JsonResponse({
+                    'success': False,
+                    'error': 'No active question available.'
+                })
+            target_question = get_object_or_404(WhoQuestion, id=recent_question_id)
+
         # Check if participant has already answered this question
         existing_answer = WhoAnswer.objects.filter(
             quiz=quiz,
             participant=participant,
-            question=quiz.current_question
+            question=target_question
         ).first()
         
         if existing_answer:
@@ -428,8 +479,7 @@ def submit_answer(request, room_code, participant_name):
                 'success': False,
                 'error': 'You have already answered this question.'
             })
-        
-        data = json.loads(request.body)
+
         selected_liars = data.get('selected_liars', [])
         time_taken = data.get('time_taken', 0)
         
@@ -437,7 +487,7 @@ def submit_answer(request, room_code, participant_name):
         answer = WhoAnswer.objects.create(
             quiz=quiz,
             participant=participant,
-            question=quiz.current_question,
+            question=target_question,
             selected_liars=selected_liars,
             time_taken=time_taken
         )

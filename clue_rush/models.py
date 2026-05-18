@@ -63,9 +63,47 @@ class ClueRushGame(SyncBase):
         return self.participants.filter(is_active=True)
 
     def start_quiz(self):
+        if self.status == 'waiting':
+            self.current_question = None
+            self.question_start_time = None
+            self.current_clue = None
+            self.clue_start_time = None
+            self.ended_at = None
+            self.save(update_fields=[
+                'current_question',
+                'question_start_time',
+                'current_clue',
+                'clue_start_time',
+                'ended_at',
+            ])
+            try:
+                session = self.session
+            except ClueRushSession.DoesNotExist:
+                session = None
+            if session:
+                session.total_questions_sent = 0
+                session.current_question_number = 0
+                session.is_question_active = False
+                session.question_end_time = None
+                session.current_clue_number = 0
+                session.is_clue_active = False
+                session.clue_end_time = None
+                session.total_responses_current_question = 0
+                session.correct_responses_current_question = 0
+                session.save(update_fields=[
+                    'total_questions_sent',
+                    'current_question_number',
+                    'is_question_active',
+                    'question_end_time',
+                    'current_clue_number',
+                    'is_clue_active',
+                    'clue_end_time',
+                    'total_responses_current_question',
+                    'correct_responses_current_question',
+                ])
         self.status = 'active'
         self.started_at = timezone.now()
-        self.save()
+        self.save(update_fields=['status', 'started_at'])
     
     def end_quiz(self, status='completed'):
         self.status = status
@@ -121,6 +159,49 @@ class ClueQuestion(SyncBase):
     def is_correct_answer(self, answer):
         return answer.lower().strip() == self.answer.lower().strip()
 
+    def get_revealed_clue_count(self, current_clue=None, current_clue_order=None):
+        if current_clue is not None and getattr(current_clue, 'clue_question_id', self.id) == self.id:
+            ordered_clue_ids = list(self.clues.order_by('order', 'id').values_list('id', flat=True))
+            try:
+                return ordered_clue_ids.index(current_clue.id) + 1
+            except ValueError:
+                current_clue_order = getattr(current_clue, 'order', current_clue_order)
+
+        try:
+            revealed_clue_count = int(current_clue_order)
+        except (TypeError, ValueError):
+            revealed_clue_count = 0
+
+        if revealed_clue_count <= 0:
+            return 0
+
+        return min(revealed_clue_count, self.clues.count())
+
+    def calculate_visible_clue_points(self, current_clue=None, current_clue_order=None):
+        revealed_clue_count = self.get_revealed_clue_count(
+            current_clue=current_clue,
+            current_clue_order=current_clue_order,
+        )
+        return self.calculate_points_for_visible_clue_number(revealed_clue_count)
+
+    def calculate_points_for_visible_clue_number(self, visible_clue_number, total_clues=None):
+        try:
+            normalized_visible_clue_number = int(visible_clue_number)
+        except (TypeError, ValueError):
+            normalized_visible_clue_number = 0
+
+        resolved_total_clues = total_clues if total_clues is not None else self.clues.count()
+        try:
+            resolved_total_clues = int(resolved_total_clues)
+        except (TypeError, ValueError):
+            resolved_total_clues = 0
+
+        if resolved_total_clues <= 0 or normalized_visible_clue_number <= 0:
+            return 0
+
+        normalized_visible_clue_number = min(normalized_visible_clue_number, resolved_total_clues)
+        return resolved_total_clues - normalized_visible_clue_number + 1
+
     def __str__(self):
         return f"{self.question_text[:50]}..."
 
@@ -151,7 +232,11 @@ class ClueAnswer(SyncBase):
     participant = models.ForeignKey(ClueRushParticipant, on_delete=models.CASCADE, related_name='clue_answers')
     question = models.ForeignKey(ClueQuestion, on_delete=models.CASCADE, related_name='clue_answers')
     answer_text = models.CharField(max_length=200)
+    auto_is_correct = models.BooleanField(default=False)
     is_correct = models.BooleanField(default=False)
+    is_manually_corrected = models.BooleanField(default=False)
+    submitted_clue_number = models.PositiveIntegerField(default=0)
+    total_clues_at_submission = models.PositiveIntegerField(default=0)
     points_earned = models.IntegerField(default=0)
     submitted_at = models.DateTimeField(auto_now_add=True)
     time_taken = models.FloatField(help_text="Time taken to answer in seconds", null=True, blank=True)
@@ -163,15 +248,34 @@ class ClueAnswer(SyncBase):
     def save(self, *args, **kwargs):
         if not self.pk:
             correct = self.answer_text.strip().lower() == self.question.answer.strip().lower()
+            self.auto_is_correct = correct
             self.is_correct = correct
+            self.is_manually_corrected = False
 
-            total_clues = self.question.clues.count()
-            current_clue_number = self.quiz.session.current_clue_number
-            # Use the answer's own question reference as stable scoring source.
-            # Avoid coupling to mutable quiz.current_question state.
-            points = self.question.points
+            current_clue = getattr(self.quiz, 'current_clue', None)
+            if current_clue is not None and current_clue.clue_question_id != self.question_id:
+                current_clue = None
+            try:
+                session = self.quiz.session
+                current_clue_number = session.current_clue_number if session else None
+            except Exception:
+                current_clue_number = None
+
+            submitted_clue_number = self.question.get_revealed_clue_count(
+                current_clue=current_clue,
+                current_clue_order=current_clue_number,
+            )
+            total_clues_at_submission = self.question.clues.count()
+            if submitted_clue_number <= 0 and total_clues_at_submission > 0:
+                submitted_clue_number = 1
+            self.submitted_clue_number = submitted_clue_number
+            self.total_clues_at_submission = total_clues_at_submission
+
             if correct:
-                self.points_earned = points + (total_clues - current_clue_number + 1)
+                self.points_earned = self.question.calculate_points_for_visible_clue_number(
+                    submitted_clue_number,
+                    total_clues=total_clues_at_submission,
+                )
             else:
                 self.points_earned = 0
 
@@ -179,6 +283,12 @@ class ClueAnswer(SyncBase):
 
         # Update participant's total score
         self.participant.calculate_score()
+
+    def calculate_points_from_submission_state(self):
+        return self.question.calculate_points_for_visible_clue_number(
+            self.submitted_clue_number,
+            total_clues=self.total_clues_at_submission or None,
+        )
 
 class ClueRushSession(SyncBase):
     quiz = models.OneToOneField(ClueRushGame, on_delete=models.CASCADE, related_name='session')

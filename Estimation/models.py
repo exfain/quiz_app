@@ -481,6 +481,7 @@ class EstimationSession(SyncBase):
     total_questions_sent = models.IntegerField(default=0)
     is_question_active = models.BooleanField(default=False)
     question_end_time = models.DateTimeField(null=True, blank=True)
+    pending_answers = models.JSONField(default=dict, blank=True)
     
     # Session statistics
     total_responses_current_question = models.IntegerField(default=0)
@@ -498,6 +499,7 @@ class EstimationSession(SyncBase):
         self.total_questions_sent += 1
         self.is_question_active = True
         self.question_end_time = timezone.now() + timezone.timedelta(seconds=90)  # Default 90 seconds
+        self.pending_answers = {}
         self.total_responses_current_question = 0
         self.average_score_current_question = 0
         self.average_accuracy_current_question = 0
@@ -508,6 +510,7 @@ class EstimationSession(SyncBase):
     def end_current_question(self):
         """End the current active question"""
         self.is_question_active = False
+        self.pending_answers = {}
         self.quiz.current_question = None
         self.quiz.question_start_time = None
         

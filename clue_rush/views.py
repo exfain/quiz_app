@@ -224,10 +224,15 @@ def get_game_status(request, room_code, participant_name):
         current_round = 0
         try:
             session = quiz.session
-            if session:
-                current_round = session.current_clue_number
+            current_clue_order = session.current_clue_number if session and session.is_clue_active else None
         except Exception:
-            current_round = 0
+            current_clue_order = None
+
+        if current_question:
+            current_round = current_question.get_revealed_clue_count(
+                current_clue=quiz.current_clue if quiz.current_clue_id else None,
+                current_clue_order=current_clue_order,
+            )
 
         status_data = {
             'game_status': quiz.status,

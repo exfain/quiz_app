@@ -4,7 +4,7 @@ from channels.db import database_sync_to_async
 from django.utils import timezone
 from django.core.cache import cache
 from .models import HubSession, HubParticipant, HubGameStep, GameVote
-from .active_game_guard import resolve_session_game_activation
+from .active_game_guard import is_game_routable_for_hub_auto_redirect, resolve_session_game_activation
 from QuizGame.models import Quiz as QuizGameModel
 from Assign.models import AssignQuiz
 from Estimation.models import EstimationQuiz
@@ -100,7 +100,7 @@ class HubConsumer(AsyncWebsocketConsumer):
     async def handle_navigate_direct(self, data):
         """Broadcast a navigate event with an explicit game selection.
         Expected payload: { type: 'navigate_direct', game_key: str, room_code: str }
-        Only redirects participants if the game is not completed.
+        Only redirects participants if the game is actually started and not completed.
         """
         game_key = data.get('game_key')
         room_code = data.get('room_code')
@@ -108,9 +108,13 @@ class HubConsumer(AsyncWebsocketConsumer):
             await self.send_json({'type': 'error', 'message': 'Missing game_key or room_code'})
             return
 
-        game_status = await self.get_game_status(game_key, room_code)
-        if game_status == 'completed':
+        game_route_state = await self.get_game_route_state(game_key, room_code)
+        if game_route_state.get('status') == 'completed':
             # Host navigates on their own; participants stay in the lobby
+            return
+        if not game_route_state.get('routable'):
+            # The real quiz_started mirror event performs participant routing
+            # after the game has been started in the game-specific backend.
             return
         activation = await self.activate_game_for_session(game_key, room_code)
         if not activation.get('success'):
@@ -209,6 +213,15 @@ class HubConsumer(AsyncWebsocketConsumer):
                 
     async def recall_to_lobby(self, event):
         await self.send_json({'type': 'recall_to_lobby', 'session_code': self.session_code})
+
+    async def lobby_return_countdown_started(self, event):
+        await self.send_json({
+            'type': 'lobby_return_countdown_started',
+            'session_code': event.get('session_code', self.session_code),
+            'duration_seconds': event.get('duration_seconds'),
+            'ends_at': event.get('ends_at'),
+            'server_now': event.get('server_now'),
+        })
 
     async def players_recalled_to_lobby(self, event):
         await self.send_json({
@@ -442,8 +455,8 @@ class HubConsumer(AsyncWebsocketConsumer):
             return {'error': 'session_not_found'}
 
     @database_sync_to_async
-    def get_game_status(self, game_key, room_code):
-        """Return the status string of a specific game instance, or None if not found."""
+    def get_game_route_state(self, game_key, room_code):
+        """Return routing-relevant state for a game instance."""
         model_map = {
             'quiz': QuizGameModel,
             'assign': AssignQuiz,
@@ -457,9 +470,12 @@ class HubConsumer(AsyncWebsocketConsumer):
         }
         model = model_map.get(game_key)
         if not model:
-            return None
+            return {'status': None, 'routable': False}
         game = model.objects.filter(room_code=room_code).first()
-        return getattr(game, 'status', None) if game else None
+        return {
+            'status': getattr(game, 'status', None) if game else None,
+            'routable': is_game_routable_for_hub_auto_redirect(game),
+        }
 
     @database_sync_to_async
     def get_active_game_for_session(self):
@@ -482,7 +498,7 @@ class HubConsumer(AsyncWebsocketConsumer):
                 if not model:
                     continue
                 game = model.objects.filter(room_code=step.room_code).first()
-                if game and getattr(game, 'status', None) == 'active':
+                if is_game_routable_for_hub_auto_redirect(game):
                     return step.game_key, step.room_code
             return None, None
         except HubSession.DoesNotExist:

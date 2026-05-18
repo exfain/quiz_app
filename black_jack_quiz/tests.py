@@ -1,10 +1,14 @@
 import json
+from datetime import timedelta
 from unittest.mock import patch
 
 from asgiref.sync import async_to_sync
 from django.contrib.auth.models import User
-from django.test import TestCase
+from django.test import TestCase, TransactionTestCase
 from django.urls import reverse
+from django.utils import timezone
+
+from games_hub.models import HubGameStep, HubSession
 
 from .consumers import BlackJackConsumer
 from .models import BlackJackAnswer, BlackJackParticipant, BlackJackQuestion, BlackJackQuiz, BlackJackSession
@@ -950,6 +954,57 @@ class BlackJackExplicitSetRuntimeTests(TestCase):
             'You are already busted for this set and cannot answer the remaining questions.'
         )
 
+    def test_unanswered_timeout_eliminates_participant_for_current_set(self):
+        self.session.set_selected_set_number(2)
+        self.session.save(update_fields=['selected_set_number'])
+
+        self.session.send_question(self.questions[1])
+        transition = self.session.end_current_question()
+
+        self.participant.refresh_from_db()
+        self.session.refresh_from_db()
+
+        self.assertFalse(transition['set_complete'])
+        self.assertEqual(
+            transition['no_answer_bust_participants'],
+            [{
+                'id': self.participant.id,
+                'name': self.participant.name,
+                'hub_session_code': '',
+                'reason': 'no_answer',
+                'total_points': 0,
+                'overall_points': 0,
+                'is_busted': True,
+            }],
+        )
+        self.assertTrue(self.participant.is_busted)
+        self.assertEqual(self.participant.total_points, 0)
+
+        self.session.send_question(self.questions[2])
+        response = self.client.get(
+            reverse('black_jack_quiz:play', args=[self.quiz.room_code, self.participant.name])
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, self.questions[2].question_text)
+        self.assertContains(response, 'Du bist für dieses Set ausgeschieden.')
+        self.assertContains(response, 'id="bustedQuestionNotice"')
+        self.assertContains(response, 'd-none" id="answerInterface"', html=False)
+
+    def test_answered_participant_is_not_eliminated_when_question_ends(self):
+        self.session.set_selected_set_number(2)
+        self.session.save(update_fields=['selected_set_number'])
+
+        self.session.send_question(self.questions[1])
+        self._answer_current_question(16)
+        transition = self.session.end_current_question()
+
+        self.participant.refresh_from_db()
+
+        self.assertEqual(transition['no_answer_bust_participants'], [])
+        self.assertFalse(self.participant.is_busted)
+        self.assertEqual(self.participant.total_points, 4)
+
     def test_play_view_renders_simple_mode_set_score_box_with_bottom_total(self):
         self.session.finalized_set_numbers = [1]
         self.session.completed_sets_count = 1
@@ -977,7 +1032,7 @@ class BlackJackExplicitSetRuntimeTests(TestCase):
         self.assertEqual(response.context['score_total_max'], 21)
         self.assertContains(response, 'class="blackjack-score-box score-box"')
         self.assertContains(response, 'id="blackjackScoreTotal"')
-        self.assertContains(response, '>1/21<', html=True)
+        self.assertContains(response, 'id="blackjackScoreTotal">1/21</div>', html=False)
         self.assertRegex(
             response.content.decode('utf-8'),
             r'(?s)data-set-number="1"[^>]*>.*?<div class="blackjack-score-badge score-box__badge">1</div>',
@@ -1016,6 +1071,50 @@ class BlackJackExplicitSetRuntimeTests(TestCase):
         self.assertContains(response, 'id="setEndedStars"')
         self.assertContains(response, 'id="setEndedAwardedPoints"')
         self.assertContains(response, 'id="setEndedOverallPoints"')
+
+    def test_play_view_counter_uses_played_order_for_out_of_order_questions(self):
+        questions = self.questions + [
+            BlackJackQuestion.objects.create(
+                question_text='Question 4',
+                correct_answer=40,
+                created_by=self.user,
+            )
+        ]
+        quiz = BlackJackQuiz.objects.create(
+            creator=self.user,
+            title='Out Of Order Counter Quiz',
+            status='active',
+            total_questions=4,
+            question_order=[[question.id for question in questions]],
+        )
+        quiz.selected_questions.set(questions)
+        session = BlackJackSession.objects.create(quiz=quiz)
+        participant = BlackJackParticipant.objects.create(quiz=quiz, name='Bob')
+
+        session.send_question(questions[2])
+        response = self.client.get(
+            reverse('black_jack_quiz:play', args=[quiz.room_code, participant.name])
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context['current_question_in_set'], 1)
+        self.assertContains(
+            response,
+            'Question <span id="currentQuestionNumber">1</span>/<span id="currentSetQuestionCount">4</span>',
+        )
+
+        session.end_current_question()
+        session.send_question(questions[0])
+        response = self.client.get(
+            reverse('black_jack_quiz:play', args=[quiz.room_code, participant.name])
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context['current_question_in_set'], 2)
+        self.assertContains(
+            response,
+            'Question <span id="currentQuestionNumber">2</span>/<span id="currentSetQuestionCount">4</span>',
+        )
 
     def test_play_view_renders_final_quiz_end_screen_with_last_set_and_all_sets_summary(self):
         final_quiz = BlackJackQuiz.objects.create(
@@ -1119,6 +1218,18 @@ class BlackJackExplicitSetRuntimeTests(TestCase):
         self.assertContains(response, "this.showState('setEndedState');")
         self.assertContains(response, "this.showState('quizEndedState');")
         self.assertContains(response, "id=\"finalSetSummaryList\"")
+
+    def test_play_view_handles_no_answer_timeout_elimination_payload(self):
+        response = self.client.get(
+            reverse('black_jack_quiz:play', args=[self.quiz.room_code, self.participant.name])
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'getOwnNoAnswerElimination(data)')
+        self.assertContains(response, 'applyNoAnswerElimination(noAnswerElimination)')
+        self.assertContains(response, 'no_answer_bust_participants')
+        self.assertContains(response, 'Keine Antwort wurde abgegeben. Du bist für dieses Set ausgeschieden.')
+        self.assertContains(response, 'Du kannst die restlichen Fragen dieses Sets weiter ansehen, aber nicht mehr antworten.')
 
     def test_play_view_renders_without_template_error_when_hub_session_is_missing(self):
         response = self.client.get(
@@ -1276,7 +1387,7 @@ class BlackJackRankingModeSetScoringTests(TestCase):
         self.assertEqual(response.context['score_total_max'], 2)
 
 
-class BlackJackHostSetProgressTests(TestCase):
+class BlackJackHostSetProgressTests(TransactionTestCase):
     def setUp(self):
         self.user = User.objects.create_superuser(
             username='blackjack_progress_admin',
@@ -1309,6 +1420,47 @@ class BlackJackHostSetProgressTests(TestCase):
             total_questions_sent=current_question_number,
         )
         return quiz
+
+    def _create_hub_session(self, code, started_at=None, is_active=True):
+        return HubSession.objects.create(
+            code=code,
+            name=code,
+            started_at=started_at,
+            is_active=is_active,
+        )
+
+    def _seed_stale_runtime_for_new_session(self, quiz, session):
+        stale_started_at = timezone.now() - timedelta(days=2, minutes=17)
+        quiz.status = 'active'
+        quiz.started_at = stale_started_at
+        quiz.current_question = self.questions[0]
+        quiz.current_question_number = 1
+        quiz.question_start_time = stale_started_at
+        quiz.save(update_fields=[
+            'status',
+            'started_at',
+            'current_question',
+            'current_question_number',
+            'question_start_time',
+        ])
+        session.current_question_number = 1
+        session.total_questions_sent = 1
+        session.completed_sets_count = 1
+        session.selected_set_number = 2
+        session.asked_question_ids = [self.questions[0].id]
+        session.finalized_set_numbers = [1]
+        session.is_question_active = True
+        session.question_end_time = timezone.now() + timedelta(seconds=45)
+        session.save(update_fields=[
+            'current_question_number',
+            'total_questions_sent',
+            'completed_sets_count',
+            'selected_set_number',
+            'asked_question_ids',
+            'finalized_set_numbers',
+            'is_question_active',
+            'question_end_time',
+        ])
 
     def test_monitor_uses_question_order_fallback_for_initial_set_questions(self):
         quiz = self._create_quiz(
@@ -1359,6 +1511,30 @@ class BlackJackHostSetProgressTests(TestCase):
         self.assertContains(response, self.questions[3].question_text)
         self.assertContains(response, 'data-select-set-url=')
         self.assertNotContains(response, 'id="setQuestions1" class="collapse show"', html=False)
+
+    def test_monitor_start_handler_waits_for_started_event_without_immediate_reload(self):
+        quiz = BlackJackQuiz.objects.create(
+            creator=self.user,
+            title='Waiting Start Quiz',
+            status='waiting',
+            total_questions=4,
+            question_order=[[question.id for question in self.questions]],
+        )
+        quiz.selected_questions.set(self.questions)
+        BlackJackSession.objects.create(quiz=quiz)
+
+        response = self.client.get(
+            reverse('admin_dashboard:blackjack_monitor', args=[quiz.room_code])
+        )
+
+        self.assertEqual(response.status_code, 200)
+        content = response.content.decode('utf-8')
+        start_function = content.split('startQuiz() {', 1)[1].split('\n        endQuiz() {', 1)[0]
+        self.assertIn('this.setStartButtonPending(true);', start_function)
+        self.assertIn("type: 'admin_start_quiz'", start_function)
+        self.assertNotIn('location.reload()', start_function)
+        self.assertIn('this.handleQuizStarted(data);', content)
+        self.assertIn('renderActiveControls()', content)
 
     def test_monitor_keeps_second_question_sendable_after_first_question(self):
         quiz = self._create_quiz(
@@ -1431,6 +1607,40 @@ class BlackJackHostSetProgressTests(TestCase):
         self.assertContains(response, 'Select Next Question (1/2)')
         self.assertNotContains(response, 'All 4 questions have been asked. The quiz is finished.')
         self.assertContains(response, self.questions[2].question_text)
+
+    def test_monitor_keeps_four_question_set_active_after_first_question(self):
+        quiz = BlackJackQuiz.objects.create(
+            creator=self.user,
+            title='Four Question Set Monitor Quiz',
+            status='active',
+            total_questions=4,
+            question_order=[[question.id for question in self.questions]],
+        )
+        quiz.selected_questions.set(self.questions)
+        session = BlackJackSession.objects.create(quiz=quiz)
+        participant = BlackJackParticipant.objects.create(
+            quiz=quiz,
+            name='Alice',
+            hub_session_code='HUB1',
+        )
+
+        session.send_question(self.questions[0])
+        BlackJackAnswer.objects.create(
+            quiz=quiz,
+            participant=participant,
+            question=quiz.current_question,
+            user_answer=self.questions[0].correct_answer + 1,
+        )
+        session.end_current_question()
+
+        response = self.client.get(
+            reverse('admin_dashboard:blackjack_monitor', args=[quiz.room_code])
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'Select Next Question (Set 1/1, 2/4)')
+        self.assertNotContains(response, 'All 4 questions have been asked. The quiz is finished.')
+        self.assertContains(response, self.questions[1].question_text)
 
     def test_select_set_endpoint_loads_second_set_questions(self):
         quiz = BlackJackQuiz.objects.create(
@@ -1667,6 +1877,231 @@ class BlackJackHostSetProgressTests(TestCase):
         self.assertEqual(payload['stats']['active_participants'], 1)
         self.assertEqual(payload['stats']['current_question_responses'], 1)
 
+    def test_blackjack_stats_endpoint_falls_back_to_active_hub_session_for_warning_counts(self):
+        quiz = BlackJackQuiz.objects.create(
+            creator=self.user,
+            title='Fallback Scoped Warning Quiz',
+            status='active',
+            total_questions=2,
+            current_question=self.questions[0],
+            current_question_number=1,
+        )
+        hub_session = HubSession.objects.create(
+            code='BJCUR',
+            name='BJCUR',
+            is_active=True,
+            started_at=timezone.now(),
+        )
+        HubGameStep.objects.create(
+            session=hub_session,
+            order=1,
+            game_key='blackjack',
+            room_code=quiz.room_code,
+        )
+        current_participant = BlackJackParticipant.objects.create(
+            quiz=quiz,
+            name='Alice',
+            hub_session_code=hub_session.code,
+            is_active=True,
+        )
+        BlackJackParticipant.objects.create(
+            quiz=quiz,
+            name='Old Bob',
+            hub_session_code='OLDHUB',
+            is_active=True,
+        )
+        BlackJackParticipant.objects.create(
+            quiz=quiz,
+            name='Lobby Carol',
+            hub_session_code=hub_session.code,
+            is_active=False,
+        )
+        BlackJackAnswer.objects.create(
+            quiz=quiz,
+            participant=current_participant,
+            question=self.questions[0],
+            user_answer=11,
+            question_number=1,
+        )
+
+        response = self.client.get(
+            reverse('admin_dashboard:api_blackjack_quiz_stats', args=[quiz.room_code])
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload['success'])
+        self.assertEqual(payload['stats']['participant_count'], 2)
+        self.assertEqual(payload['stats']['active_participants'], 1)
+        self.assertEqual(payload['stats']['current_question_responses'], 1)
+
+    def test_blackjack_stats_endpoint_reports_single_unanswered_active_player(self):
+        quiz = BlackJackQuiz.objects.create(
+            creator=self.user,
+            title='Unanswered Single Player Warning Quiz',
+            status='active',
+            total_questions=2,
+            current_question=self.questions[0],
+            current_question_number=1,
+        )
+        BlackJackParticipant.objects.create(
+            quiz=quiz,
+            name='Alice',
+            hub_session_code='HUB1',
+            is_active=True,
+        )
+        BlackJackParticipant.objects.create(
+            quiz=quiz,
+            name='Lobby Bob',
+            hub_session_code='HUB1',
+            is_active=False,
+        )
+
+        response = self.client.get(
+            reverse('admin_dashboard:api_blackjack_quiz_stats', args=[quiz.room_code]),
+            {'hub_session': 'HUB1'},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload['success'])
+        self.assertEqual(payload['stats']['participant_count'], 2)
+        self.assertEqual(payload['stats']['active_participants'], 1)
+        self.assertEqual(payload['stats']['current_question_responses'], 0)
+
+    def test_blackjack_stats_endpoint_keeps_current_answerer_relevant_after_busting_on_current_question(self):
+        quiz = BlackJackQuiz.objects.create(
+            creator=self.user,
+            title='Current Question Bust Warning Quiz',
+            status='active',
+            total_questions=3,
+            current_question=self.questions[0],
+            current_question_number=1,
+            question_order=[[self.questions[0].id, self.questions[1].id, self.questions[2].id]],
+        )
+        quiz.selected_questions.set(self.questions[:3])
+        participant = BlackJackParticipant.objects.create(
+            quiz=quiz,
+            name='Alice',
+            hub_session_code='HUB1',
+            is_active=True,
+        )
+        BlackJackAnswer.objects.create(
+            quiz=quiz,
+            participant=participant,
+            question=self.questions[0],
+            user_answer=self.questions[0].correct_answer + 25,
+            question_number=1,
+        )
+        participant.refresh_from_db()
+        self.assertTrue(participant.is_busted)
+
+        response = self.client.get(
+            reverse('admin_dashboard:api_blackjack_quiz_stats', args=[quiz.room_code]),
+            {'hub_session': 'HUB1'},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload['success'])
+        self.assertEqual(payload['stats']['active_participants'], 1)
+        self.assertEqual(payload['stats']['current_question_responses'], 1)
+
+    def test_blackjack_stats_endpoint_ignores_answers_before_current_run(self):
+        quiz = BlackJackQuiz.objects.create(
+            creator=self.user,
+            title='Current Run Warning Quiz',
+            status='active',
+            started_at=timezone.now(),
+            total_questions=2,
+            current_question=self.questions[0],
+            current_question_number=1,
+        )
+        participant = BlackJackParticipant.objects.create(
+            quiz=quiz,
+            name='Alice',
+            hub_session_code='HUB1',
+            is_active=True,
+        )
+        stale_answer = BlackJackAnswer.objects.create(
+            quiz=quiz,
+            participant=participant,
+            question=self.questions[0],
+            user_answer=11,
+            question_number=1,
+        )
+        BlackJackAnswer.objects.filter(pk=stale_answer.pk).update(
+            submitted_at=quiz.started_at - timedelta(days=1)
+        )
+
+        response = self.client.get(
+            reverse('admin_dashboard:api_blackjack_quiz_stats', args=[quiz.room_code]),
+            {'hub_session': 'HUB1'},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload['success'])
+        self.assertEqual(payload['stats']['active_participants'], 1)
+        self.assertEqual(payload['stats']['current_question_responses'], 0)
+        self.assertEqual(payload['stats']['total_answers'], 0)
+
+    def test_blackjack_stats_endpoint_excludes_no_answer_eliminated_participant_on_follow_up_question(self):
+        quiz = BlackJackQuiz.objects.create(
+            creator=self.user,
+            title='No Answer Follow Up Warning Quiz',
+            status='active',
+            total_questions=3,
+            question_order=[[self.questions[0].id, self.questions[1].id, self.questions[2].id]],
+        )
+        quiz.selected_questions.set(self.questions[:3])
+        session = BlackJackSession.objects.create(quiz=quiz)
+        eliminated = BlackJackParticipant.objects.create(
+            quiz=quiz,
+            name='Alice',
+            hub_session_code='HUB1',
+            is_active=True,
+        )
+        active = BlackJackParticipant.objects.create(
+            quiz=quiz,
+            name='Bob',
+            hub_session_code='HUB1',
+            is_active=True,
+        )
+
+        session.send_question(self.questions[0])
+        BlackJackAnswer.objects.create(
+            quiz=quiz,
+            participant=active,
+            question=self.questions[0],
+            user_answer=11,
+            question_number=1,
+        )
+        session.end_current_question()
+        eliminated.refresh_from_db()
+        self.assertTrue(eliminated.is_busted)
+
+        session.send_question(self.questions[1])
+        BlackJackAnswer.objects.create(
+            quiz=quiz,
+            participant=active,
+            question=self.questions[1],
+            user_answer=21,
+            question_number=2,
+        )
+
+        response = self.client.get(
+            reverse('admin_dashboard:api_blackjack_quiz_stats', args=[quiz.room_code]),
+            {'hub_session': 'HUB1'},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload['success'])
+        self.assertEqual(payload['stats']['participant_count'], 2)
+        self.assertEqual(payload['stats']['active_participants'], 1)
+        self.assertEqual(payload['stats']['current_question_responses'], 1)
+
     def test_monitor_contains_early_end_warning_and_set_switch_warning_hooks(self):
         quiz = BlackJackQuiz.objects.create(
             creator=self.user,
@@ -1702,6 +2137,7 @@ class BlackJackHostSetProgressTests(TestCase):
         self.assertContains(response, 'selectedSetHasRemainingQuestions')
         self.assertContains(response, 'select-set-btn')
         self.assertContains(response, "scopedUrl.searchParams.set('hub_session', hubSession);")
+        self.assertContains(response, "scopedStatsUrl.searchParams.set('hub_session', hubSession);")
         self.assertContains(response, "rowText.includes('bust')")
         self.assertContains(response, 'response.is_busted')
         html = response.content.decode('utf-8')
@@ -2035,10 +2471,10 @@ class BlackJackHostSetProgressTests(TestCase):
         )
         self.assertEqual(response.context['score_total_earned'], 0)
         self.assertEqual(response.context['score_total_max'], 0)
-        self.assertContains(response, '>0 stars this set<', html=True)
-        self.assertContains(response, '>0 points total<', html=True)
+        self.assertContains(response, 'id="participantStarsText">0 stars this set', html=False)
+        self.assertContains(response, 'id="participantOverallPointsText">0 points total', html=False)
         self.assertContains(response, 'blackjack-score-empty')
-        self.assertNotContains(response, '>17 points total<', html=True)
+        self.assertNotContains(response, 'id="participantOverallPointsText">17 points total', html=False)
 
     def test_waiting_quiz_with_stale_progress_can_still_select_second_set(self):
         quiz = BlackJackQuiz.objects.create(
@@ -2115,6 +2551,402 @@ class BlackJackHostSetProgressTests(TestCase):
         self.assertNotContains(response, 'All 4 questions have been asked. The quiz is finished.')
         self.assertContains(response, 'Select Next Question (Set 1/1, 1/4)')
 
+    def test_monitor_ignores_stale_session_progress_when_active_quiz_has_not_sent_first_question(self):
+        quiz = BlackJackQuiz.objects.create(
+            creator=self.user,
+            title='Fresh Active Start Monitor Quiz',
+            status='active',
+            total_questions=2,
+            question_order=[
+                [self.questions[0].id, self.questions[1].id],
+                [self.questions[2].id, self.questions[3].id],
+            ],
+            current_question_number=0,
+        )
+        quiz.selected_questions.set(self.questions)
+        BlackJackSession.objects.create(
+            quiz=quiz,
+            current_question_number=4,
+            total_questions_sent=4,
+            completed_sets_count=2,
+            selected_set_number=2,
+            asked_question_ids=[question.id for question in self.questions],
+            finalized_set_numbers=[1, 2],
+        )
+
+        response = self.client.get(
+            reverse('admin_dashboard:blackjack_monitor', args=[quiz.room_code])
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.context['quiz_complete'])
+        self.assertEqual(response.context['selected_set_number'], 1)
+        self.assertEqual(
+            [question.id for question in response.context['available_questions']],
+            [self.questions[0].id, self.questions[1].id],
+        )
+        self.assertContains(response, 'Select Next Question (Set 1/2, 1/2)')
+        self.assertNotContains(response, 'All 4 questions have been asked. The quiz is finished.')
+
+    def test_play_view_starts_neutral_when_active_quiz_has_not_sent_first_question(self):
+        quiz = BlackJackQuiz.objects.create(
+            creator=self.user,
+            title='Fresh Active Start Play Quiz',
+            status='active',
+            total_questions=2,
+            question_order=[
+                [self.questions[0].id, self.questions[1].id],
+                [self.questions[2].id, self.questions[3].id],
+            ],
+            current_question_number=0,
+        )
+        quiz.selected_questions.set(self.questions)
+        participant = BlackJackParticipant.objects.create(
+            quiz=quiz,
+            name='Alice',
+        )
+        BlackJackSession.objects.create(
+            quiz=quiz,
+            current_question_number=4,
+            total_questions_sent=4,
+            completed_sets_count=2,
+            selected_set_number=2,
+            asked_question_ids=[question.id for question in self.questions],
+            finalized_set_numbers=[1, 2],
+        )
+
+        response = self.client.get(
+            reverse('black_jack_quiz:play', args=[quiz.room_code, participant.name])
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.context['set_scoreboard'],
+            [
+                {'set_number': 1, 'earned_points': None, 'max_points': 21, 'status': 'current'},
+                {'set_number': 2, 'earned_points': None, 'max_points': 21, 'status': 'upcoming'},
+            ],
+        )
+        self.assertEqual(response.context['score_total_earned'], 0)
+        self.assertEqual(response.context['score_total_max'], 0)
+        self.assertFalse(response.context['show_initial_set_end_state'])
+        self.assertContains(response, 'blackjack-score-empty')
+        self.assertNotContains(response, 'data-earned-points="0"')
+
+    def test_monitor_resets_stale_runtime_for_unstarted_hub_session_before_game_start(self):
+        quiz = BlackJackQuiz.objects.create(
+            creator=self.user,
+            title='Fresh Session Monitor Reset Quiz',
+            status='waiting',
+            total_questions=2,
+            question_order=[
+                [self.questions[0].id, self.questions[1].id],
+                [self.questions[2].id, self.questions[3].id],
+            ],
+        )
+        quiz.selected_questions.set(self.questions)
+        session = BlackJackSession.objects.create(quiz=quiz)
+        self._seed_stale_runtime_for_new_session(quiz, session)
+        hub_session = self._create_hub_session('BJMONNEW')
+        HubGameStep.objects.create(
+            session=hub_session,
+            order=1,
+            game_key='blackjack',
+            room_code=quiz.room_code,
+            title=quiz.title,
+        )
+
+        response = self.client.get(
+            reverse('admin_dashboard:blackjack_monitor', args=[quiz.room_code])
+        )
+
+        quiz.refresh_from_db()
+        session.refresh_from_db()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(quiz.status, 'waiting')
+        self.assertIsNone(quiz.started_at)
+        self.assertIsNone(quiz.current_question_id)
+        self.assertEqual(quiz.current_question_number, 0)
+        self.assertIsNone(quiz.question_start_time)
+        self.assertEqual(session.current_question_number, 0)
+        self.assertEqual(session.total_questions_sent, 0)
+        self.assertEqual(session.completed_sets_count, 0)
+        self.assertEqual(session.selected_set_number, 1)
+        self.assertEqual(session.asked_question_ids, [])
+        self.assertEqual(session.finalized_set_numbers, [])
+        self.assertFalse(session.is_question_active)
+        self.assertIsNone(session.question_end_time)
+        self.assertFalse(response.context['quiz_complete'])
+        self.assertEqual(response.context['selected_set_number'], 1)
+        self.assertContains(response, 'Spiel starten')
+        self.assertContains(response, 'Select Next Question (Set 1/2, 1/2)')
+        self.assertContains(response, 'this.quizStartTime = null;', html=False)
+        self.assertContains(response, 'data-question-active="0"', html=False)
+
+    def test_play_view_resets_stale_runtime_for_unstarted_hub_session_before_game_start(self):
+        quiz = BlackJackQuiz.objects.create(
+            creator=self.user,
+            title='Fresh Session Play Reset Quiz',
+            status='waiting',
+            total_questions=2,
+            question_order=[
+                [self.questions[0].id, self.questions[1].id],
+                [self.questions[2].id, self.questions[3].id],
+            ],
+        )
+        quiz.selected_questions.set(self.questions)
+        session = BlackJackSession.objects.create(quiz=quiz)
+        self._seed_stale_runtime_for_new_session(quiz, session)
+        hub_session = self._create_hub_session('BJPLAYNEW')
+        participant = BlackJackParticipant.objects.create(
+            quiz=quiz,
+            name='Alice',
+            hub_session_code=hub_session.code,
+        )
+
+        response = self.client.get(
+            reverse('black_jack_quiz:play', args=[quiz.room_code, participant.name]),
+            {'hub_session': hub_session.code},
+        )
+
+        quiz.refresh_from_db()
+        session.refresh_from_db()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(quiz.status, 'waiting')
+        self.assertIsNone(quiz.started_at)
+        self.assertIsNone(quiz.current_question_id)
+        self.assertEqual(quiz.current_question_number, 0)
+        self.assertIsNone(quiz.question_start_time)
+        self.assertEqual(session.current_question_number, 0)
+        self.assertEqual(session.total_questions_sent, 0)
+        self.assertEqual(session.completed_sets_count, 0)
+        self.assertEqual(session.selected_set_number, 1)
+        self.assertEqual(session.asked_question_ids, [])
+        self.assertEqual(session.finalized_set_numbers, [])
+        self.assertFalse(session.is_question_active)
+        self.assertIsNone(session.question_end_time)
+        self.assertEqual(
+            response.context['set_scoreboard'],
+            [
+                {'set_number': 1, 'earned_points': None, 'max_points': 21, 'status': 'current'},
+                {'set_number': 2, 'earned_points': None, 'max_points': 21, 'status': 'upcoming'},
+            ],
+        )
+        self.assertEqual(response.context['score_total_earned'], 0)
+        self.assertEqual(response.context['score_total_max'], 0)
+        self.assertFalse(response.context['show_initial_set_end_state'])
+        self.assertContains(response, 'Waiting for BlackJack Quiz to Start')
+        self.assertContains(response, 'blackjack-score-empty')
+        self.assertContains(response, 'this.hasActiveQuestionAtLoad = false;', html=False)
+
+    def test_starting_completed_quiz_resets_stale_runtime_progress(self):
+        quiz = BlackJackQuiz.objects.create(
+            creator=self.user,
+            title='Completed Restart Quiz',
+            status='completed',
+            total_questions=2,
+            question_order=[
+                [self.questions[0].id, self.questions[1].id],
+                [self.questions[2].id, self.questions[3].id],
+            ],
+            current_question_number=4,
+        )
+        quiz.selected_questions.set(self.questions)
+        participant = BlackJackParticipant.objects.create(
+            quiz=quiz,
+            name='Alice',
+            total_points=8,
+            overall_points=15,
+            questions_answered=2,
+            is_busted=True,
+            final_score=24,
+        )
+        BlackJackAnswer.objects.create(
+            quiz=quiz,
+            participant=participant,
+            question=self.questions[0],
+            user_answer=11,
+            question_number=1,
+        )
+        session = BlackJackSession.objects.create(
+            quiz=quiz,
+            current_question_number=4,
+            total_questions_sent=4,
+            completed_sets_count=2,
+            selected_set_number=2,
+            asked_question_ids=[question.id for question in self.questions],
+            finalized_set_numbers=[1, 2],
+        )
+
+        quiz.start_quiz()
+
+        quiz.refresh_from_db()
+        participant.refresh_from_db()
+        session.refresh_from_db()
+
+        self.assertEqual(quiz.status, 'active')
+        self.assertEqual(quiz.current_question_number, 0)
+        self.assertIsNone(quiz.current_question_id)
+        self.assertEqual(BlackJackAnswer.objects.filter(quiz=quiz).count(), 0)
+        self.assertEqual(participant.total_points, 0)
+        self.assertEqual(participant.overall_points, 0)
+        self.assertEqual(participant.questions_answered, 0)
+        self.assertFalse(participant.is_busted)
+        self.assertEqual(participant.final_score, 0)
+        self.assertEqual(session.current_question_number, 0)
+        self.assertEqual(session.total_questions_sent, 0)
+        self.assertEqual(session.completed_sets_count, 0)
+        self.assertEqual(session.selected_set_number, 1)
+        self.assertEqual(session.asked_question_ids, [])
+        self.assertEqual(session.finalized_set_numbers, [])
+
+        response = self.client.get(
+            reverse('admin_dashboard:blackjack_monitor', args=[quiz.room_code])
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'Select Next Question (Set 1/2, 1/2)')
+        self.assertNotContains(response, 'All 4 questions have been asked. The quiz is finished.')
+
+    def test_fresh_active_start_ignores_stale_answers_from_previous_run(self):
+        started_at = timezone.now()
+        quiz = BlackJackQuiz.objects.create(
+            creator=self.user,
+            title='Fresh Active Start With Stale Answers Quiz',
+            status='active',
+            total_questions=2,
+            question_order=[
+                [self.questions[0].id, self.questions[1].id],
+                [self.questions[2].id, self.questions[3].id],
+            ],
+            current_question_number=0,
+            started_at=started_at,
+        )
+        quiz.selected_questions.set(self.questions)
+        participant = BlackJackParticipant.objects.create(
+            quiz=quiz,
+            name='Alice',
+        )
+        stale_answer = BlackJackAnswer.objects.create(
+            quiz=quiz,
+            participant=participant,
+            question=self.questions[0],
+            user_answer=11,
+            question_number=1,
+        )
+        BlackJackAnswer.objects.filter(pk=stale_answer.pk).update(
+            submitted_at=started_at - timedelta(minutes=5)
+        )
+        BlackJackParticipant.objects.filter(pk=participant.pk).update(
+            total_points=0,
+            overall_points=0,
+            questions_answered=0,
+            is_busted=False,
+            final_score=0,
+        )
+        session = BlackJackSession.objects.create(
+            quiz=quiz,
+            current_question_number=4,
+            total_questions_sent=4,
+            completed_sets_count=2,
+            selected_set_number=2,
+            asked_question_ids=[question.id for question in self.questions],
+            finalized_set_numbers=[1, 2],
+        )
+
+        self.assertEqual(session.get_asked_question_ids(), [])
+        self.assertEqual(session.get_finalized_set_numbers(), [])
+
+        monitor_response = self.client.get(
+            reverse('admin_dashboard:blackjack_monitor', args=[quiz.room_code])
+        )
+
+        self.assertEqual(monitor_response.status_code, 200)
+        self.assertFalse(monitor_response.context['quiz_complete'])
+        self.assertEqual(monitor_response.context['selected_set_number'], 1)
+        self.assertContains(monitor_response, 'Select Next Question (Set 1/2, 1/2)')
+        self.assertNotContains(monitor_response, 'All 4 questions have been asked. The quiz is finished.')
+        self.assertFalse(monitor_response.context['blackjack_set_overview'][0]['is_completed'])
+        self.assertFalse(monitor_response.context['blackjack_set_overview'][1]['is_completed'])
+
+        play_response = self.client.get(
+            reverse('black_jack_quiz:play', args=[quiz.room_code, participant.name])
+        )
+
+        self.assertEqual(play_response.status_code, 200)
+        self.assertEqual(
+            play_response.context['set_scoreboard'],
+            [
+                {'set_number': 1, 'earned_points': None, 'max_points': 21, 'status': 'current'},
+                {'set_number': 2, 'earned_points': None, 'max_points': 21, 'status': 'upcoming'},
+            ],
+        )
+        self.assertEqual(play_response.context['score_total_earned'], 0)
+        self.assertEqual(play_response.context['score_total_max'], 0)
+        self.assertContains(play_response, 'blackjack-score-empty')
+
+    def test_starting_fresh_active_quiz_clears_stale_previous_run_state(self):
+        started_at = timezone.now()
+        quiz = BlackJackQuiz.objects.create(
+            creator=self.user,
+            title='Fresh Active Restart Cleanup Quiz',
+            status='active',
+            total_questions=2,
+            question_order=[
+                [self.questions[0].id, self.questions[1].id],
+                [self.questions[2].id, self.questions[3].id],
+            ],
+            current_question_number=0,
+            started_at=started_at - timedelta(minutes=1),
+        )
+        quiz.selected_questions.set(self.questions)
+        participant = BlackJackParticipant.objects.create(
+            quiz=quiz,
+            name='Alice',
+        )
+        stale_answer = BlackJackAnswer.objects.create(
+            quiz=quiz,
+            participant=participant,
+            question=self.questions[0],
+            user_answer=11,
+            question_number=1,
+        )
+        BlackJackAnswer.objects.filter(pk=stale_answer.pk).update(
+            submitted_at=started_at - timedelta(minutes=5)
+        )
+        session = BlackJackSession.objects.create(
+            quiz=quiz,
+            current_question_number=4,
+            total_questions_sent=4,
+            completed_sets_count=2,
+            selected_set_number=2,
+            asked_question_ids=[question.id for question in self.questions],
+            finalized_set_numbers=[1, 2],
+        )
+
+        quiz.start_quiz()
+
+        quiz.refresh_from_db()
+        participant.refresh_from_db()
+        session.refresh_from_db()
+
+        self.assertEqual(quiz.status, 'active')
+        self.assertEqual(quiz.current_question_number, 0)
+        self.assertEqual(BlackJackAnswer.objects.filter(quiz=quiz).count(), 0)
+        self.assertEqual(participant.total_points, 0)
+        self.assertEqual(participant.overall_points, 0)
+        self.assertEqual(participant.questions_answered, 0)
+        self.assertFalse(participant.is_busted)
+        self.assertEqual(participant.final_score, 0)
+        self.assertEqual(session.current_question_number, 0)
+        self.assertEqual(session.total_questions_sent, 0)
+        self.assertEqual(session.completed_sets_count, 0)
+        self.assertEqual(session.selected_set_number, 1)
+        self.assertEqual(session.asked_question_ids, [])
+        self.assertEqual(session.finalized_set_numbers, [])
+
     def test_question_control_uses_session_send_progress_for_three_question_set(self):
         quiz = BlackJackQuiz.objects.create(
             creator=self.user,
@@ -2161,7 +2993,7 @@ class BlackJackHostSetProgressTests(TestCase):
         self.assertContains(response, 'All 3 questions have been asked. The quiz is finished.')
 
 
-class BlackJackTutorialRuntimeTests(TestCase):
+class BlackJackTutorialRuntimeTests(TransactionTestCase):
     def setUp(self):
         self.user = User.objects.create_user(username='blackjack-tutorial-user', password='pass')
         self.quiz = BlackJackQuiz.objects.create(
@@ -2197,9 +3029,13 @@ class BlackJackTutorialRuntimeTests(TestCase):
 
         self.quiz.refresh_from_db()
         self.assertTrue(self.quiz.tutorial_active)
-        message_types = [message['type'] for _, message in self.consumer.channel_layer.group_messages]
+        messages = [message for _, message in self.consumer.channel_layer.group_messages]
+        message_types = [message['type'] for message in messages]
         self.assertIn('quiz_started', message_types)
         self.assertIn('tutorial_start', message_types)
+        quiz_started = next(message for message in messages if message['type'] == 'quiz_started')
+        self.assertEqual(quiz_started['status'], 'active')
+        self.assertEqual(quiz_started['started_at'], self.quiz.started_at.isoformat())
 
     def test_first_question_start_clears_tutorial_active(self):
         question = BlackJackQuestion.objects.create(
@@ -2304,3 +3140,242 @@ class BlackJackTutorialRuntimeTests(TestCase):
             ).count(),
             1,
         )
+
+
+class BlackJackConsumerSetProgressTests(TransactionTestCase):
+    reset_sequences = True
+
+    def setUp(self):
+        self.user = User.objects.create_user(username='blackjack-consumer-set-user', password='pass')
+        self.quiz = BlackJackQuiz.objects.create(
+            creator=self.user,
+            title='Black Jack Consumer Set Quiz',
+            room_code='BJSET',
+            status='active',
+            total_questions=4,
+        )
+        BlackJackSession.objects.create(quiz=self.quiz)
+        self.consumer = BlackJackConsumer()
+        self.consumer.room_code = self.quiz.room_code
+        self.consumer.room_group_name = f'blackjack_{self.quiz.room_code}'
+        self.consumer.channel_layer = FakeChannelLayer()
+        self.consumer.channel_name = 'blackjack-consumer-set-channel'
+
+        async def _capture_send(*args, **kwargs):
+            return None
+
+        self.consumer.send = _capture_send
+
+    def _create_set_questions(self, prefix, correct_answer):
+        questions = [
+            BlackJackQuestion.objects.create(
+                question_text=f'{prefix} {index}',
+                correct_answer=correct_answer(index),
+                created_by=self.user,
+            )
+            for index in range(1, 5)
+        ]
+        self.quiz.question_order = [[question.id for question in questions]]
+        self.quiz.save(update_fields=['question_order'])
+        self.quiz.selected_questions.set(questions)
+        return questions
+
+    def _get_question_ended_message(self):
+        return [
+            message
+            for _, message in self.consumer.channel_layer.group_messages
+            if message.get('type') == 'question_ended'
+        ][-1]
+
+    def test_admin_end_question_keeps_four_question_set_open_after_first_question(self):
+        questions = self._create_set_questions('Set Question', lambda index: index * 10)
+        participant = BlackJackParticipant.objects.create(
+            quiz=self.quiz,
+            name='Alice',
+            hub_session_code='HUB1',
+            is_active=True,
+        )
+        self.quiz.session.send_question(questions[0])
+        BlackJackAnswer.objects.create(
+            quiz=self.quiz,
+            participant=participant,
+            question=self.quiz.current_question,
+            user_answer=questions[0].correct_answer + 1,
+        )
+
+        async_to_sync(self.consumer.handle_admin_end_question)({})
+
+        self.quiz.refresh_from_db()
+        self.quiz.session.refresh_from_db()
+        question_ended = self._get_question_ended_message()
+
+        self.assertFalse(question_ended['set_complete'])
+        self.assertFalse(self.quiz.session.is_set_complete(1))
+        self.assertEqual(
+            self.quiz.session.get_remaining_question_ids_for_set(1, active_only=True),
+            [question.id for question in questions[1:]],
+        )
+        self.assertIsNone(
+            self.quiz.get_next_question_send_error(
+                questions[1].id,
+                selected_set_number=1,
+            )
+        )
+
+    def test_admin_end_question_keeps_set_open_after_first_bust(self):
+        questions = self._create_set_questions('Bust Question', lambda index: 0)
+        participant = BlackJackParticipant.objects.create(
+            quiz=self.quiz,
+            name='Alice',
+            hub_session_code='HUB1',
+            is_active=True,
+        )
+        self.quiz.session.send_question(questions[0])
+        BlackJackAnswer.objects.create(
+            quiz=self.quiz,
+            participant=participant,
+            question=self.quiz.current_question,
+            user_answer=30,
+        )
+
+        async_to_sync(self.consumer.handle_admin_end_question)({})
+
+        participant.refresh_from_db()
+        self.quiz.refresh_from_db()
+        self.quiz.session.refresh_from_db()
+        question_ended = self._get_question_ended_message()
+
+        self.assertFalse(question_ended['set_complete'])
+        self.assertTrue(participant.is_busted)
+        self.assertFalse(self.quiz.session.is_set_complete(1))
+        self.assertEqual(len(self.quiz.session.get_remaining_question_ids_for_set(1, active_only=True)), 3)
+        self.assertIsNone(
+            self.quiz.get_next_question_send_error(
+                questions[1].id,
+                selected_set_number=1,
+            )
+        )
+
+    def test_current_question_payload_uses_played_set_order_for_out_of_order_questions(self):
+        questions = self._create_set_questions('Counter Question', lambda index: index * 10)
+
+        self.quiz.session.send_question(questions[2])
+        first_payload = async_to_sync(self.consumer.get_current_question_data)()
+
+        self.assertEqual(first_payload['question_in_set'], 1)
+        self.assertEqual(first_payload['set_question_count'], 4)
+
+        self.quiz.session.end_current_question()
+        self.quiz.session.send_question(questions[0])
+        second_payload = async_to_sync(self.consumer.get_current_question_data)()
+
+        self.assertEqual(second_payload['question_in_set'], 2)
+        self.assertEqual(second_payload['set_question_count'], 4)
+
+        self.quiz.session.end_current_question()
+        self.quiz.session.send_question(questions[3])
+        third_payload = async_to_sync(self.consumer.get_current_question_data)()
+
+        self.assertEqual(third_payload['question_in_set'], 3)
+        self.assertEqual(third_payload['set_question_count'], 4)
+
+        self.quiz.session.end_current_question()
+        self.quiz.session.send_question(questions[1])
+        fourth_payload = async_to_sync(self.consumer.get_current_question_data)()
+
+        self.assertEqual(fourth_payload['question_in_set'], 4)
+        self.assertEqual(fourth_payload['set_question_count'], 4)
+
+    def test_admin_end_question_broadcasts_no_answer_elimination(self):
+        questions = self._create_set_questions('No Answer Question', lambda index: index * 10)
+        participant = BlackJackParticipant.objects.create(
+            quiz=self.quiz,
+            name='Alice',
+            hub_session_code='HUB1',
+            is_active=True,
+        )
+        self.quiz.session.send_question(questions[0])
+
+        async_to_sync(self.consumer.handle_admin_end_question)({})
+
+        participant.refresh_from_db()
+        question_ended = self._get_question_ended_message()
+
+        self.assertTrue(participant.is_busted)
+        self.assertEqual(question_ended['no_answer_bust_participants'][0]['name'], 'Alice')
+        self.assertEqual(question_ended['no_answer_bust_participants'][0]['reason'], 'no_answer')
+        self.assertFalse(question_ended['set_complete'])
+
+    def test_participant_join_ignores_stale_runtime_for_unstarted_hub_session(self):
+        questions = self._create_set_questions('Join Question', lambda index: index * 10)
+        stale_started_at = timezone.now() - timedelta(days=1, minutes=9)
+        self.quiz.started_at = stale_started_at
+        self.quiz.current_question = questions[0]
+        self.quiz.current_question_number = 1
+        self.quiz.question_start_time = stale_started_at
+        self.quiz.save(update_fields=[
+            'started_at',
+            'current_question',
+            'current_question_number',
+            'question_start_time',
+        ])
+        self.quiz.session.current_question_number = 1
+        self.quiz.session.total_questions_sent = 1
+        self.quiz.session.completed_sets_count = 1
+        self.quiz.session.selected_set_number = 1
+        self.quiz.session.asked_question_ids = [questions[0].id]
+        self.quiz.session.finalized_set_numbers = [1]
+        self.quiz.session.is_question_active = True
+        self.quiz.session.question_end_time = timezone.now() + timedelta(seconds=30)
+        self.quiz.session.save(update_fields=[
+            'current_question_number',
+            'total_questions_sent',
+            'completed_sets_count',
+            'selected_set_number',
+            'asked_question_ids',
+            'finalized_set_numbers',
+            'is_question_active',
+            'question_end_time',
+        ])
+        hub_session = HubSession.objects.create(
+            code='BJJOINNEW',
+            name='BJJOINNEW',
+            is_active=True,
+        )
+        BlackJackParticipant.objects.create(
+            quiz=self.quiz,
+            name='Alice',
+            hub_session_code=hub_session.code,
+            is_active=True,
+        )
+        sent_messages = []
+
+        async def _capture_send(text_data=None, bytes_data=None):
+            if text_data:
+                sent_messages.append(json.loads(text_data))
+
+        self.consumer.send = _capture_send
+
+        async_to_sync(self.consumer.handle_participant_join)({
+            'participant_name': 'Alice',
+            'hub_session': hub_session.code,
+        })
+
+        self.quiz.refresh_from_db()
+        self.quiz.session.refresh_from_db()
+        sent_types = [message.get('type') for message in sent_messages]
+
+        self.assertEqual(self.quiz.status, 'waiting')
+        self.assertIsNone(self.quiz.started_at)
+        self.assertIsNone(self.quiz.current_question_id)
+        self.assertEqual(self.quiz.current_question_number, 0)
+        self.assertIsNone(self.quiz.question_start_time)
+        self.assertEqual(self.quiz.session.current_question_number, 0)
+        self.assertEqual(self.quiz.session.total_questions_sent, 0)
+        self.assertEqual(self.quiz.session.completed_sets_count, 0)
+        self.assertEqual(self.quiz.session.asked_question_ids, [])
+        self.assertEqual(self.quiz.session.finalized_set_numbers, [])
+        self.assertFalse(self.quiz.session.is_question_active)
+        self.assertIsNone(self.quiz.session.question_end_time)
+        self.assertNotIn('quiz_started', sent_types)
+        self.assertNotIn('question_started', sent_types)

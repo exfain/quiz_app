@@ -715,6 +715,30 @@ class QuizHostManualCorrectTests(TestCase):
         self.assertContains(response, 'returnToQuestionOverview()')
         self.assertNotContains(response, 'setTimeout(() => location.reload(), 3000);')
 
+    def test_quiz_monitor_hides_host_timer_when_question_review_starts(self):
+        question = QuizQuestion.objects.create(
+            question_text='Hide this timer',
+            question_type='true_false',
+            correct_answer='True',
+            created_by=self.user,
+        )
+        quiz = Quiz.objects.create(
+            title='Quick Quiz',
+            creator=self.user,
+            status='active',
+            current_question=question,
+        )
+
+        response = self.client.get(reverse('admin_dashboard:quiz_monitor', args=[quiz.room_code]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'id="questionTimerWrapper"')
+        self.assertContains(response, 'if (this.questionTimer) {')
+        self.assertContains(response, 'clearInterval(this.questionTimer);')
+        self.assertContains(response, 'this.questionTimer = null;')
+        self.assertContains(response, "const timerWrapper = document.getElementById('questionTimerWrapper');")
+        self.assertContains(response, "if (timerWrapper) timerWrapper.style.display = 'none';")
+
     def test_quiz_management_modal_removes_double_answer_option(self):
         response = self.client.get(reverse('admin_dashboard:quiz_management'))
 

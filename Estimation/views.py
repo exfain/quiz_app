@@ -466,6 +466,12 @@ def submit_answer(request, room_code, participant_name):
             user_answer=user_answer_float,
             time_taken=time_taken
         )
+
+        if hasattr(quiz, 'session'):
+            pending_answers = dict(quiz.session.pending_answers or {})
+            if pending_answers.pop(str(participant.id), None) is not None:
+                quiz.session.pending_answers = pending_answers
+                quiz.session.save(update_fields=['pending_answers', 'updated_at'])
         
         # Update participant's last activity
         participant.last_activity = timezone.now()

@@ -1,9 +1,92 @@
 from __future__ import annotations
 
+import math
+from datetime import timedelta
+
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
+from django.core.cache import cache
+from django.utils import timezone
 
 from .models import HubGameStep, HubSession
+
+
+LOBBY_RETURN_COUNTDOWN_SECONDS = 10
+
+
+def _get_lobby_return_countdown_cache_key(session_code: str) -> str:
+    return f'hub:lobby_return_countdown:{session_code}'
+
+
+def start_lobby_return_countdown(session_code: str, duration_seconds: int = LOBBY_RETURN_COUNTDOWN_SECONDS) -> dict:
+    safe_duration = max(1, int(duration_seconds or LOBBY_RETURN_COUNTDOWN_SECONDS))
+    ends_at = timezone.now() + timedelta(seconds=safe_duration)
+    payload = {
+        'session_code': session_code,
+        'duration_seconds': safe_duration,
+        'ends_at': ends_at.isoformat(),
+    }
+    cache.set(
+        _get_lobby_return_countdown_cache_key(session_code),
+        payload,
+        timeout=safe_duration + 30,
+    )
+    return payload
+
+
+def clear_lobby_return_countdown(session_code: str):
+    cache.delete(_get_lobby_return_countdown_cache_key(session_code))
+
+
+def get_lobby_return_countdown_state(session_code: str) -> dict:
+    payload = cache.get(_get_lobby_return_countdown_cache_key(session_code))
+    if not payload:
+        return {
+            'active': False,
+            'session_code': session_code,
+            'duration_seconds': LOBBY_RETURN_COUNTDOWN_SECONDS,
+            'remaining_seconds': 0,
+            'ends_at': None,
+            'server_now': timezone.now().isoformat(),
+        }
+
+    try:
+        ends_at = timezone.datetime.fromisoformat(payload['ends_at'])
+    except Exception:
+        clear_lobby_return_countdown(session_code)
+        return {
+            'active': False,
+            'session_code': session_code,
+            'duration_seconds': LOBBY_RETURN_COUNTDOWN_SECONDS,
+            'remaining_seconds': 0,
+            'ends_at': None,
+            'server_now': timezone.now().isoformat(),
+        }
+
+    if timezone.is_naive(ends_at):
+        ends_at = timezone.make_aware(ends_at, timezone.get_current_timezone())
+
+    now = timezone.now()
+    remaining_seconds = max(0, math.ceil((ends_at - now).total_seconds()))
+    if remaining_seconds <= 0:
+        clear_lobby_return_countdown(session_code)
+        return {
+            'active': False,
+            'session_code': session_code,
+            'duration_seconds': int(payload.get('duration_seconds') or LOBBY_RETURN_COUNTDOWN_SECONDS),
+            'remaining_seconds': 0,
+            'ends_at': ends_at.isoformat(),
+            'server_now': now.isoformat(),
+        }
+
+    return {
+        'active': True,
+        'session_code': session_code,
+        'duration_seconds': int(payload.get('duration_seconds') or LOBBY_RETURN_COUNTDOWN_SECONDS),
+        'remaining_seconds': remaining_seconds,
+        'ends_at': ends_at.isoformat(),
+        'server_now': now.isoformat(),
+    }
 
 
 def get_game_participant_model_map():
@@ -176,6 +259,8 @@ def broadcast_players_recalled_to_lobby(session_code: str):
     if not channel_layer:
         return
 
+    clear_lobby_return_countdown(session_code)
+
     async_to_sync(channel_layer.group_send)(
         f'hub_{session_code}',
         {
@@ -183,3 +268,25 @@ def broadcast_players_recalled_to_lobby(session_code: str):
             'session_code': session_code,
         },
     )
+
+
+def broadcast_lobby_return_countdown_started(
+    session_code: str,
+    duration_seconds: int = LOBBY_RETURN_COUNTDOWN_SECONDS,
+):
+    channel_layer = get_channel_layer()
+    countdown_state = start_lobby_return_countdown(session_code, duration_seconds=duration_seconds)
+    if not channel_layer:
+        return countdown_state
+
+    async_to_sync(channel_layer.group_send)(
+        f'hub_{session_code}',
+        {
+            'type': 'lobby_return_countdown_started',
+            'session_code': session_code,
+            'duration_seconds': countdown_state['duration_seconds'],
+            'ends_at': countdown_state['ends_at'],
+            'server_now': timezone.now().isoformat(),
+        },
+    )
+    return countdown_state

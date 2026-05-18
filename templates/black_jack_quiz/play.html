@@ -279,8 +279,8 @@
                                 <div class="busted-animation">
                                     <i data-lucide="x-circle" class="bust-icon"></i>
                                 </div>
-                                <h2>BUSTED!</h2>
-                                <p>You've exceeded 21 stars and are eliminated from this round.</p>
+                                <h2 id="bustedTitle">Ausgeschieden für dieses Set</h2>
+                                <p id="bustedReasonText">Du bist für dieses Set ausgeschieden.</p>
                                 <div class="bust-details">
                                     <div class="bust-info">
                                         <div class="bust-points">
@@ -288,7 +288,7 @@
                                             <span class="bust-label">Set Stars</span>
                                         </div>
                                         <div class="bust-message">
-                                            <p>Better luck next time! You can still watch the remaining questions.</p>
+                                            <p id="bustedHelpText">Du kannst die restlichen Fragen dieses Sets weiter ansehen, aber nicht mehr antworten.</p>
                                         </div>
                                     </div>
                                 </div>
@@ -1675,6 +1675,12 @@
                         this.isBusted = this.pendingAnswerResult.is_busted;
                         this.updatePointsDisplay();
                     }
+
+                    const noAnswerElimination = this.getOwnNoAnswerElimination(data);
+                    if (noAnswerElimination && !this.pendingAnswerResult) {
+                        this.applyNoAnswerElimination(noAnswerElimination);
+                    }
+
                     if (data.set_complete) {
                         this.applySetResults(data.set_number, data.set_results);
                         this.storeLastCompletedSetSummary(data.set_number, data.set_results);
@@ -1687,6 +1693,11 @@
                         this.showState('setEndedState');
                         return;
                     }
+
+                    if (noAnswerElimination && !this.pendingAnswerResult) {
+                        this.showState('bustedState');
+                        return;
+                    }
                     
                     if (data.correct_answer && this.hasAnswered) {
                         if (this.isBusted) {
@@ -1696,6 +1707,44 @@
                             this.showCorrectAnswer(data.correct_answer);
                         }
                     }
+                }
+
+                getOwnNoAnswerElimination(data) {
+                    const eliminatedParticipants = data?.no_answer_bust_participants || [];
+                    return eliminatedParticipants.find((participant) => {
+                        const sameName = participant.name === this.participantName;
+                        const sameSession = !this.hubSession || !participant.hub_session_code || participant.hub_session_code === this.hubSession;
+                        return sameName && sameSession && participant.reason === 'no_answer';
+                    }) || null;
+                }
+
+                applyNoAnswerElimination(elimination) {
+                    this.hasAnswered = false;
+                    this.isBusted = true;
+                    this.currentPoints = Number(elimination.total_points || 0);
+                    this.overallPoints = Number(elimination.overall_points ?? this.overallPoints);
+                    this.updatePointsDisplay();
+
+                    const answerInput = document.getElementById('answerInput');
+                    if (answerInput) answerInput.disabled = true;
+
+                    const answerInterface = document.getElementById('answerInterface');
+                    if (answerInterface) answerInterface.classList.add('d-none');
+
+                    const submitBtn = document.getElementById('submitAnswerBtn');
+                    if (submitBtn) {
+                        submitBtn.disabled = true;
+                        submitBtn.classList.add('d-none');
+                        submitBtn.classList.remove('loading');
+                    }
+
+                    document.getElementById('questionSubmitFeedback')?.classList.add('d-none');
+                    const bustPoints = document.getElementById('bustPoints');
+                    if (bustPoints) bustPoints.textContent = this.currentPoints;
+                    const reasonText = document.getElementById('bustedReasonText');
+                    if (reasonText) reasonText.textContent = 'Keine Antwort wurde abgegeben. Du bist für dieses Set ausgeschieden.';
+                    const helpText = document.getElementById('bustedHelpText');
+                    if (helpText) helpText.textContent = 'Du kannst die restlichen Fragen dieses Sets weiter ansehen, aber nicht mehr antworten.';
                 }
 
                 onQuizEnded(data) {
@@ -2251,7 +2300,9 @@
                             }
 
                         }*/
-                        if (data.type === 'players_recalled_to_lobby') {
+                        if (data.type === 'lobby_return_countdown_started') {
+                            lobbyReturnController.startRecallCountdown(data);
+                        } else if (data.type === 'players_recalled_to_lobby') {
                             lobbyReturnController.returnToLobby({ markInactive: false });
                         } else if (data.type === 'session_ended') {
                             console.log("[HubScript2] Session ended message received.");

@@ -52,6 +52,17 @@ def _serialize_game(step: HubGameStep, game) -> dict[str, Any]:
     }
 
 
+def is_game_routable_for_hub_auto_redirect(game) -> bool:
+    """Only route participants to games that have actually been started."""
+    if not game or getattr(game, 'status', None) != 'active':
+        return False
+
+    if hasattr(game, 'started_at') and getattr(game, 'started_at', None) is None:
+        return False
+
+    return True
+
+
 def _set_game_status(game, status: str):
     update_fields = ['status']
     game.status = status

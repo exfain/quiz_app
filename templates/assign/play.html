@@ -1285,24 +1285,54 @@
                     }
                 }
 
-                getCurrentQuestionNumber() {
-                    const normalizedQuestionId = Number(this.currentQuestionId);
+                getProgressEntryForScoreRow(question, questionNumber, progressByQuestionId = null, progressByQuestionNumber = null) {
+                    const byQuestionId = progressByQuestionId instanceof Map
+                        ? progressByQuestionId
+                        : new Map(
+                            (this.progressHistory || [])
+                                .map((entry) => [Number(entry?.question_id), entry])
+                                .filter(([questionId]) => !Number.isNaN(questionId))
+                        );
+                    const byQuestionNumber = progressByQuestionNumber instanceof Map
+                        ? progressByQuestionNumber
+                        : new Map(
+                            (this.progressHistory || [])
+                                .map((entry) => [Number(entry?.question_number), entry])
+                                .filter(([currentQuestionNumber]) => !Number.isNaN(currentQuestionNumber))
+                        );
+
+                    const normalizedQuestionId = Number(question?.id);
                     if (!Number.isNaN(normalizedQuestionId)) {
+                        return byQuestionId.get(normalizedQuestionId) || null;
+                    }
+
+                    return byQuestionNumber.get(questionNumber) || null;
+                }
+
+                getCurrentQuestionNumber() {
+                    if (this.currentQuestionId !== null && this.currentQuestionId !== undefined) {
+                        const normalizedQuestionId = Number(this.currentQuestionId);
                         const index = (this.scoreboardQuestions || []).findIndex((question) => Number(question?.id) === normalizedQuestionId);
                         if (index >= 0) {
                             return index + 1;
                         }
                     }
 
-                    const playedQuestions = new Set(
+                    const progressByQuestionId = new Map(
                         (this.progressHistory || [])
-                            .map((entry) => Number(entry?.question_number))
-                            .filter((questionNumber) => !Number.isNaN(questionNumber))
+                            .map((entry) => [Number(entry?.question_id), entry])
+                            .filter(([questionId]) => !Number.isNaN(questionId))
+                    );
+                    const progressByQuestionNumber = new Map(
+                        (this.progressHistory || [])
+                            .map((entry) => [Number(entry?.question_number), entry])
+                            .filter(([questionNumber]) => !Number.isNaN(questionNumber))
                     );
 
                     for (let index = 0; index < (this.scoreboardQuestions || []).length; index += 1) {
-                        const questionNumber = Number(this.scoreboardQuestions[index]?.number) || index + 1;
-                        if (!playedQuestions.has(questionNumber)) {
+                        const question = this.scoreboardQuestions[index];
+                        const questionNumber = Number(question?.number) || index + 1;
+                        if (!this.getProgressEntryForScoreRow(question, questionNumber, progressByQuestionId, progressByQuestionNumber)) {
                             return questionNumber;
                         }
                     }
@@ -2099,12 +2129,12 @@
 
                     (this.scoreboardQuestions || []).forEach((question, index) => {
                         const questionNumber = Number(question?.number) || index + 1;
-                        const normalizedQuestionId = Number(question?.id);
-                        const progressEntry = (
-                            !Number.isNaN(normalizedQuestionId)
-                                ? progressByQuestionId.get(normalizedQuestionId)
-                                : null
-                        ) || progressByQuestionNumber.get(questionNumber);
+                        const progressEntry = this.getProgressEntryForScoreRow(
+                            question,
+                            questionNumber,
+                            progressByQuestionId,
+                            progressByQuestionNumber
+                        );
                         const maxPoints = progressEntry?.max_rounds ?? question?.max_points;
                         const earnedPoints = progressEntry?.survived_rounds;
                         if (progressEntry) {
@@ -2270,7 +2300,9 @@
                             }
 
                         }*/
-                        if (data.type === 'players_recalled_to_lobby') {
+                        if (data.type === 'lobby_return_countdown_started') {
+                            lobbyReturnController.startRecallCountdown(data);
+                        } else if (data.type === 'players_recalled_to_lobby') {
                             lobbyReturnController.returnToLobby({ markInactive: false });
                         } else if (data.type === 'session_ended') {
                             console.log("[HubScript2] Session ended message received.");

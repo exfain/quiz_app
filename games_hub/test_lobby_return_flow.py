@@ -1,20 +1,24 @@
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 from asgiref.sync import async_to_sync
 from django.conf import settings
 from django.contrib.auth.models import User
-from django.test import TestCase
+from django.test import TransactionTestCase
 from django.urls import reverse
+from django.utils import timezone
 
 from Estimation.consumers import EstimationConsumer
 from Estimation.models import EstimationParticipant, EstimationQuiz
 from QuizGame.models import Quiz, QuizParticipant, QuizQuestion
+from black_jack_quiz.models import BlackJackQuiz
+from games_hub.consumers import HubConsumer
 from games_hub.models import HubGameStep, HubParticipant, HubSession
 
 
-class LobbyReturnFlowTests(TestCase):
+class LobbyReturnFlowTests(TransactionTestCase):
     def setUp(self):
         self.user = User.objects.create_superuser(
             username='lobby_guard_admin',
@@ -178,6 +182,7 @@ class LobbyReturnFlowTests(TestCase):
         self.assertContains(response, 'Teilnehmer sind noch im Spiel')
         self.assertContains(response, 'Teilnehmer in die Lobby zurückschicken (10)')
         self.assertContains(response, '/lobby-presence/')
+        self.assertContains(response, '/start-recall-countdown/')
         self.assertContains(response, '/recall-to-lobby/')
 
     def test_session_monitor_uses_same_recall_button_flow(self):
@@ -208,6 +213,152 @@ class LobbyReturnFlowTests(TestCase):
                 content = Path(settings.BASE_DIR / relative_path).read_text(encoding='utf-8')
                 self.assertIn("_hub_return_to_lobby_player.html", content)
                 self.assertIn('createHubLobbyReturnController', content)
+                self.assertIn('lobby_return_countdown_started', content)
+                self.assertIn('startRecallCountdown(data);', content)
                 self.assertIn("players_recalled_to_lobby", content)
                 self.assertIn("returnToLobby({ markInactive: false });", content)
                 self.assertNotIn("After 2 seconds, return to lobby with nickname preserved", content)
+
+    def test_shared_player_lobby_return_include_contains_countdown_banner(self):
+        content = Path(settings.BASE_DIR / 'templates/includes/_hub_return_to_lobby_player.html').read_text(encoding='utf-8')
+        self.assertIn('Automatisches Zurückkehren in die Lobby in', content)
+        self.assertIn('syncRecallCountdownState', content)
+        self.assertIn('startRecallCountdown', content)
+
+    def test_recall_countdown_state_is_inactive_by_default(self):
+        response = self.client.get(
+            reverse('games_hub:session_recall_countdown_state_api', args=[self.session.code])
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload['success'])
+        self.assertFalse(payload['active'])
+        self.assertEqual(payload['remaining_seconds'], 0)
+
+    def test_start_recall_countdown_endpoint_exposes_active_timer_state(self):
+        response = self.client.post(
+            reverse('games_hub:start_recall_countdown', args=[self.session.code])
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload['success'])
+        self.assertTrue(payload['active'])
+        self.assertEqual(payload['duration_seconds'], 10)
+        self.assertGreaterEqual(payload['remaining_seconds'], 9)
+        self.assertIsNotNone(payload['ends_at'])
+
+        state_response = self.client.get(
+            reverse('games_hub:session_recall_countdown_state_api', args=[self.session.code])
+        )
+        state_payload = state_response.json()
+        self.assertTrue(state_payload['active'])
+        self.assertGreaterEqual(state_payload['remaining_seconds'], 9)
+
+    def test_hub_join_does_not_redirect_to_active_blackjack_without_started_at(self):
+        session = HubSession.objects.create(code='BJROUTE1', name='Blackjack Routing')
+        blackjack_quiz = BlackJackQuiz.objects.create(
+            creator=self.user,
+            title='Prepared Black Jack',
+            status='active',
+            started_at=None,
+        )
+        HubGameStep.objects.create(
+            session=session,
+            order=0,
+            game_key='blackjack',
+            room_code=blackjack_quiz.room_code,
+            title=blackjack_quiz.title,
+        )
+        consumer = HubConsumer()
+        consumer.session_code = session.code
+
+        game_key, room_code = async_to_sync(consumer.get_active_game_for_session)()
+
+        self.assertIsNone(game_key)
+        self.assertIsNone(room_code)
+
+    def test_hub_join_redirects_to_blackjack_after_real_start(self):
+        session = HubSession.objects.create(code='BJROUTE2', name='Blackjack Routing')
+        blackjack_quiz = BlackJackQuiz.objects.create(
+            creator=self.user,
+            title='Started Black Jack',
+            status='active',
+            started_at=timezone.now(),
+        )
+        HubGameStep.objects.create(
+            session=session,
+            order=0,
+            game_key='blackjack',
+            room_code=blackjack_quiz.room_code,
+            title=blackjack_quiz.title,
+        )
+        consumer = HubConsumer()
+        consumer.session_code = session.code
+
+        game_key, room_code = async_to_sync(consumer.get_active_game_for_session)()
+
+        self.assertEqual(game_key, 'blackjack')
+        self.assertEqual(room_code, blackjack_quiz.room_code)
+
+    def test_navigate_direct_does_not_route_waiting_blackjack_before_start(self):
+        session = HubSession.objects.create(code='BJROUTE3', name='Blackjack Routing')
+        blackjack_quiz = BlackJackQuiz.objects.create(
+            creator=self.user,
+            title='Waiting Black Jack',
+            status='waiting',
+        )
+        HubGameStep.objects.create(
+            session=session,
+            order=0,
+            game_key='blackjack',
+            room_code=blackjack_quiz.room_code,
+            title=blackjack_quiz.title,
+        )
+        consumer = HubConsumer()
+        consumer.session_code = session.code
+        consumer.group_name = f'hub_{session.code}'
+        consumer.channel_layer = SimpleNamespace(group_send=AsyncMock())
+
+        async_to_sync(consumer.handle_navigate_direct)({
+            'game_key': 'blackjack',
+            'room_code': blackjack_quiz.room_code,
+        })
+
+        consumer.channel_layer.group_send.assert_not_awaited()
+        blackjack_quiz.refresh_from_db()
+        self.assertEqual(blackjack_quiz.status, 'waiting')
+        self.assertIsNone(blackjack_quiz.started_at)
+
+    def test_navigate_direct_routes_blackjack_after_real_start(self):
+        session = HubSession.objects.create(code='BJROUTE4', name='Blackjack Routing')
+        blackjack_quiz = BlackJackQuiz.objects.create(
+            creator=self.user,
+            title='Started Black Jack',
+            status='active',
+            started_at=timezone.now(),
+        )
+        HubGameStep.objects.create(
+            session=session,
+            order=0,
+            game_key='blackjack',
+            room_code=blackjack_quiz.room_code,
+            title=blackjack_quiz.title,
+        )
+        consumer = HubConsumer()
+        consumer.session_code = session.code
+        consumer.group_name = f'hub_{session.code}'
+        consumer.channel_layer = SimpleNamespace(group_send=AsyncMock())
+
+        async_to_sync(consumer.handle_navigate_direct)({
+            'game_key': 'blackjack',
+            'room_code': blackjack_quiz.room_code,
+        })
+
+        consumer.channel_layer.group_send.assert_awaited_once()
+        group_name, event = consumer.channel_layer.group_send.await_args.args
+        self.assertEqual(group_name, f'hub_{session.code}')
+        self.assertEqual(event['type'], 'navigate')
+        self.assertEqual(event['step']['game_key'], 'blackjack')
+        self.assertEqual(event['step']['room_code'], blackjack_quiz.room_code)

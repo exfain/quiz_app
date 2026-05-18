@@ -1367,6 +1367,7 @@
                     estimateInput.addEventListener('input', () => {
                         const hasValue = estimateInput.value.trim() !== '';
                         document.getElementById('submitAnswerBtn').disabled = !hasValue || this.hasAnswered;
+                        this.syncPendingAnswer(estimateInput.value);
                     });
 
                     // Allow Enter key to submit
@@ -1375,6 +1376,57 @@
                             this.submitAnswer();
                         }
                     });
+                }
+
+                syncPendingAnswer(userAnswer) {
+                    if (this.hasAnswered || !this.currentQuestionId) return;
+                    if (!this.websocket || this.websocket.readyState !== WebSocket.OPEN) return;
+
+                    this.websocket.send(JSON.stringify({
+                        type: 'participant_update_pending_answer',
+                        participant_name: this.participantName,
+                        hub_session: this.hubSession,
+                        question_id: this.currentQuestionId,
+                        user_answer: userAnswer
+                    }));
+                }
+
+                normalizeHubSessionValue(value) {
+                    if (value === null || value === undefined) return '';
+                    const normalizedValue = String(value).trim();
+                    return ['None', 'null', 'undefined'].includes(normalizedValue) ? '' : normalizedValue;
+                }
+
+                getOwnEvaluatedPendingAnswer(evaluatedPendingAnswers) {
+                    if (!Array.isArray(evaluatedPendingAnswers) || evaluatedPendingAnswers.length === 0) {
+                        return null;
+                    }
+
+                    const ownHubSession = this.normalizeHubSessionValue(this.hubSession);
+                    return evaluatedPendingAnswers.find((entry) => {
+                        if (entry?.participant_name !== this.participantName) return false;
+                        const entryHubSession = this.normalizeHubSessionValue(entry?.hub_session_code);
+                        if (!ownHubSession || !entryHubSession) return true;
+                        return ownHubSession === entryHubSession;
+                    }) || null;
+                }
+
+                applyEvaluatedPendingAnswer(answer) {
+                    if (!answer) return;
+
+                    const numericAnswer = Number(answer.user_answer);
+                    const numericPoints = parseInt(answer.points_earned || 0, 10) || 0;
+                    const numericAccuracy = parseFloat(answer.accuracy_percentage) || 0;
+                    const formattedAnswer = `${answer.user_answer}${this.currentUnit ? ' ' + this.currentUnit : ''}`;
+
+                    this.hasAnswered = true;
+                    this.lastSubmittedNumericAnswer = Number.isFinite(numericAnswer) ? numericAnswer : null;
+                    this.lastPointsEarned = numericPoints;
+                    this.lastAccuracyPercentage = numericAccuracy;
+
+                    document.getElementById('submittedEstimate').textContent = formattedAnswer;
+                    document.getElementById('pointsEarned').textContent = numericPoints;
+                    document.getElementById('accuracyPercent').textContent = `${numericAccuracy.toFixed(2)}%`;
                 }
 
                 readJsonScript(elementId, fallbackValue) {
@@ -1423,6 +1475,7 @@
                 onQuestionStarted(question) {
                     this.hasAnswered = false;
                     this.questionStartTime = Date.now();
+                    this.currentQuestionId = Number(question.id) || null;
                     this.currentUnit = question.unit_display || '';
                     const currentEntry = this.moveQuestionToNextFreeScoreSlot(question.id, question.max_points);
                     const nextQuestionNumber = Number(currentEntry?.number || question.question_number);
@@ -1452,6 +1505,11 @@
 
                 onQuestionEnded(data) {
                     clearInterval(this.questionTimer);
+
+                    if (!this.hasAnswered) {
+                        const evaluatedPendingAnswer = this.getOwnEvaluatedPendingAnswer(data.evaluated_pending_answers);
+                        this.applyEvaluatedPendingAnswer(evaluatedPendingAnswer);
+                    }
 
                     let pointsForQuestion = this.hasAnswered ? this.lastPointsEarned : 0;
                     if (Array.isArray(data.rank_results)) {
@@ -1498,6 +1556,7 @@
                 }
 
                 loadQuestion(question) {
+                    this.currentQuestionId = Number(question.id) || null;
                     document.getElementById('questionText').textContent = question.question_text;
                     
                     // Set unit display
@@ -1597,6 +1656,7 @@
                         type: 'participant_submit_answer',
                         participant_name: this.participantName,
                         hub_session: this.hubSession,
+                        question_id: this.currentQuestionId,
                         user_answer: parseFloat(userAnswer),
                         time_taken: timeTaken
                     }));
@@ -2065,7 +2125,9 @@
                             }
 
                         } */
-                        if (data.type === 'players_recalled_to_lobby') {
+                        if (data.type === 'lobby_return_countdown_started') {
+                            lobbyReturnController.startRecallCountdown(data);
+                        } else if (data.type === 'players_recalled_to_lobby') {
                             lobbyReturnController.returnToLobby({ markInactive: false });
                         } else if (data.type === 'session_ended') {
                             console.log("[HubScript2] Session ended message received.");

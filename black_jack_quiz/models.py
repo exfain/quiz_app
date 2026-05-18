@@ -60,14 +60,128 @@ class BlackJackQuiz(SyncBase):
         if session_code:
             return self.participants.filter(hub_session_code=session_code).count()
         return self.participants.count()
-    
+
+    def get_current_run_answers(self):
+        if self.status == 'waiting':
+            return self.blackjack_answers.none()
+        answers = self.blackjack_answers.all()
+        if self.started_at:
+            answers = answers.filter(submitted_at__gte=self.started_at)
+        return answers
+
+    def get_hub_session_for_runtime(self, hub_session_code=None):
+        from games_hub.models import HubGameStep, HubSession
+
+        if hub_session_code:
+            return HubSession.objects.filter(code=hub_session_code).first()
+
+        steps = HubGameStep.objects.select_related('session').filter(
+            game_key='blackjack',
+            room_code=self.room_code,
+        )
+        active_step = steps.filter(
+            session__is_active=True,
+            session__ended_at__isnull=True,
+        ).order_by('-id').first()
+        step = active_step or steps.order_by('-id').first()
+        return step.session if step else None
+
+    def has_runtime_state(self):
+        try:
+            session = self.session
+        except BlackJackSession.DoesNotExist:
+            session = None
+
+        return bool(
+            self.status != 'waiting'
+            or self.started_at is not None
+            or self.ended_at is not None
+            or self.current_question_id
+            or self.current_question_number > 0
+            or self.question_start_time is not None
+            or self.tutorial_active
+            or (session and (
+                session.current_question_number > 0
+                or session.total_questions_sent > 0
+                or session.completed_sets_count > 0
+                or session.is_question_active
+                or session.question_end_time is not None
+                or bool(session.asked_question_ids or [])
+                or bool(session.finalized_set_numbers or [])
+            ))
+        )
+
+    def is_runtime_stale_for_hub_session(self, hub_session_code=None):
+        hub_session = self.get_hub_session_for_runtime(hub_session_code)
+        if not hub_session or not self.has_runtime_state():
+            return False
+
+        if hub_session.started_at is None:
+            return True
+
+        if self.started_at is None:
+            return True
+
+        return self.started_at < hub_session.started_at
+
+    def reset_runtime_state_for_new_hub_session(self):
+        try:
+            session = self.session
+        except BlackJackSession.DoesNotExist:
+            session = None
+
+        self.status = 'waiting'
+        self.tutorial_active = False
+        self.started_at = None
+        self.ended_at = None
+        self.current_question = None
+        self.current_question_number = 0
+        self.question_start_time = None
+        self.save(update_fields=[
+            'status',
+            'tutorial_active',
+            'started_at',
+            'ended_at',
+            'current_question',
+            'current_question_number',
+            'question_start_time',
+        ])
+
+        if session:
+            session.reset_for_new_run()
+
+    def ensure_runtime_scoped_to_hub_session(self, hub_session_code=None):
+        if self.is_runtime_stale_for_hub_session(hub_session_code):
+            self.reset_runtime_state_for_new_hub_session()
+            return True
+        return False
+
     def get_active_participants(self, session_code=None):
         if session_code:
             return self.participants.filter(is_active=True, hub_session_code=session_code)
         return self.participants.filter(is_active=True)
-    
+
     def start_quiz(self):
-        if self.status == 'waiting':
+        try:
+            session = self.session
+        except BlackJackSession.DoesNotExist:
+            session = None
+
+        has_active_question_state = bool(
+            self.current_question_id
+            or self.question_start_time is not None
+            or (session and session.is_question_active)
+        )
+        should_reset_runtime_state = (
+            self.status in {'waiting', 'completed', 'cancelled'}
+            or (
+                self.status in {'active', 'inactive'}
+                and not has_active_question_state
+                and self.current_question_number == 0
+            )
+        )
+
+        if should_reset_runtime_state:
             self.blackjack_answers.all().delete()
             self.participants.update(
                 total_points=0,
@@ -352,6 +466,20 @@ class BlackJackQuiz(SyncBase):
             return len(explicit_sets[-1])
         return ((question_number - 1) % self.get_questions_per_set()) + 1
 
+    def get_current_question_position_in_set(self):
+        if not self.current_question_id:
+            return 0
+        try:
+            session = self.session
+        except Exception:
+            session = None
+        if session:
+            return session.get_played_question_position_in_set(
+                question_id=self.current_question_id,
+                active_only=False,
+            )
+        return self.get_question_number_in_set(question_id=self.current_question_id)
+
     def get_set_question_count(self, set_number=None, question_number=None, question_id=None):
         explicit_sets = self.get_explicit_question_sets()
         if explicit_sets:
@@ -611,7 +739,7 @@ class BlackJackParticipant(SyncBase):
             # Lower score is better - closest to 21 wins
             self.final_score = abs(21 - raw_total_points)
         
-        self.save()
+        self.save(update_fields=['questions_answered', 'total_points', 'is_busted', 'final_score'])
         return self.total_points
     
     def get_rank(self):
@@ -751,9 +879,19 @@ class BlackJackSession(SyncBase):
 
     def is_waiting_fresh_start_state(self):
         return (
-            self.quiz.status == 'waiting'
-            and not self.quiz.current_question_id
-            and not self.is_question_active
+            (
+                self.quiz.status == 'waiting'
+                and not self.quiz.current_question_id
+                and not self.is_question_active
+            )
+            or (
+                self.quiz.status == 'active'
+                and not self.quiz.current_question_id
+                and not self.is_question_active
+                and self.quiz.current_question_number == 0
+                and self.quiz.question_start_time is None
+                and not self.quiz.get_current_run_answers().exists()
+            )
         )
 
     def has_saved_progress_state(self):
@@ -808,7 +946,7 @@ class BlackJackSession(SyncBase):
 
         fallback_ids = []
         answer_ids = list(
-            self.quiz.blackjack_answers.order_by('question_number', 'submitted_at')
+            self.quiz.get_current_run_answers().order_by('question_number', 'submitted_at')
             .values_list('question_id', flat=True)
             .distinct()
         )
@@ -867,8 +1005,30 @@ class BlackJackSession(SyncBase):
     def get_sent_question_ids_for_set(self, set_number=None, active_only=True):
         normalized_set_number = self.normalize_set_number(set_number, active_only=active_only)
         set_question_ids = self.quiz.get_set_question_ids(normalized_set_number, active_only=active_only)
-        asked_ids = set(self.get_asked_question_ids())
-        return [question_id for question_id in set_question_ids if question_id in asked_ids]
+        set_question_id_lookup = set(set_question_ids)
+        return [
+            question_id
+            for question_id in self.get_asked_question_ids()
+            if question_id in set_question_id_lookup
+        ]
+
+    def get_played_question_position_in_set(self, question_id=None, set_number=None, active_only=False):
+        normalized_question_id = self.quiz._normalize_question_id(question_id or self.quiz.current_question_id)
+        if normalized_question_id is None:
+            return 0
+
+        normalized_set_number = self.normalize_set_number(
+            set_number or self.quiz.get_set_number_for_question_id(normalized_question_id, active_only=False),
+            active_only=active_only,
+        )
+        sent_question_ids = self.get_sent_question_ids_for_set(normalized_set_number, active_only=active_only)
+        if normalized_question_id in sent_question_ids:
+            return sent_question_ids.index(normalized_question_id) + 1
+
+        if self.quiz.current_question_id == normalized_question_id and self.is_question_active:
+            return len(sent_question_ids) + 1
+
+        return self.quiz.get_question_number_in_set(question_id=normalized_question_id)
 
     def get_remaining_question_ids_for_set(self, set_number=None, active_only=True):
         normalized_set_number = self.normalize_set_number(set_number, active_only=active_only)
@@ -972,8 +1132,51 @@ class BlackJackSession(SyncBase):
             'participants': participant_updates,
         }
 
+    def get_current_runtime_participants(self):
+        participants = self.quiz.participants.filter(is_active=True)
+        hub_session = self.quiz.get_hub_session_for_runtime()
+        if hub_session:
+            participants = participants.filter(hub_session_code=hub_session.code)
+        return participants
+
+    def mark_unanswered_current_question_participants_busted(self):
+        """Eliminate active set participants who submitted no answer for the current question."""
+        if not self.quiz.current_question_id:
+            return []
+
+        eligible_participants = self.get_current_runtime_participants().filter(is_busted=False)
+        answered_participant_ids = self.quiz.get_current_run_answers().filter(
+            question_id=self.quiz.current_question_id,
+            participant__in=eligible_participants,
+        ).values_list('participant_id', flat=True).distinct()
+        unanswered_participants = list(
+            eligible_participants.exclude(id__in=answered_participant_ids)
+        )
+        if not unanswered_participants:
+            return []
+
+        unanswered_ids = [participant.id for participant in unanswered_participants]
+        self.quiz.participants.filter(id__in=unanswered_ids).update(
+            is_busted=True,
+            total_points=0,
+            final_score=22,
+        )
+        return [
+            {
+                'id': participant.id,
+                'name': participant.name,
+                'hub_session_code': participant.hub_session_code or '',
+                'reason': 'no_answer',
+                'total_points': 0,
+                'overall_points': participant.overall_points,
+                'is_busted': True,
+            }
+            for participant in unanswered_participants
+        ]
+
     def end_current_question(self):
         """End the current active question"""
+        no_answer_bust_participants = self.mark_unanswered_current_question_participants_busted()
         set_result = self.finalize_completed_set()
         self.is_question_active = False
         self.quiz.current_question = None
@@ -987,6 +1190,7 @@ class BlackJackSession(SyncBase):
         self.save()
         return {
             **set_result,
+            'no_answer_bust_participants': no_answer_bust_participants,
             'quiz_complete': self.quiz.is_quiz_complete(),
         }
     

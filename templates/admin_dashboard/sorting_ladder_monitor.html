@@ -1423,17 +1423,30 @@ document.addEventListener('DOMContentLoaded', function() {
             }
 
             const answeredCount = statuses.filter((entry) => !!entry.has_answered).length;
+            const loggedCount = statuses.filter((entry) => !!entry.is_logged).length;
             const rows = statuses.map((entry) => {
-                const answered = !!entry.has_answered;
-                const marker = answered ? '✅' : '⏳';
-                const label = answered ? 'geantwortet' : 'offen';
-                return `<div><strong>${entry.participant_name}</strong>: ${marker} ${label}</div>`;
+                const isLogged = !!entry.is_logged;
+                const hasSelection = !!entry.has_selection || (!!entry.has_answered && !isLogged);
+                const label = isLogged ? 'eingeloggt' : (hasSelection ? 'gegeben' : 'offen');
+                const badgeClass = isLogged
+                    ? 'badge badge-success'
+                    : hasSelection
+                        ? 'badge badge-warning'
+                        : 'badge bg-secondary';
+                return `
+                    <div class="d-flex justify-content-between align-items-center py-1">
+                        <strong>${entry.participant_name}</strong>
+                        <span class="${badgeClass}">${label}</span>
+                    </div>
+                `;
             });
             container.innerHTML = rows.join('');
             if (responseCount) responseCount.textContent = `${answeredCount}/${statuses.length}`;
             this.allAnswersInRound = answeredCount === statuses.length;
             this.updateQuestionActionLabels();
-            this.currentPhaseLabel = answeredCount === statuses.length ? 'Alle Antworten eingegangen' : 'Warte auf Antworten';
+            this.currentPhaseLabel = answeredCount === statuses.length
+                ? (loggedCount === statuses.length ? 'Alle Antworten eingeloggt' : 'Alle Antworten gegeben')
+                : 'Warte auf Antworten';
             this.updateMonitorPhase();
         }
         

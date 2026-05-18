@@ -9,6 +9,7 @@ from django.test import Client, TestCase
 from django.urls import reverse
 from django.utils import timezone
 
+from games_hub.models import HubGameStep, HubSession
 from .models import (
     WhoThatAnswer,
     WhoThatParticipant,
@@ -488,7 +489,7 @@ class WhoThatQuestionStatusBoxTests(TestCase):
         self.assertIsNone(board[1]["result"])
         self.assertIsNone(board[2]["result"])
 
-    def test_play_view_marks_unanswered_previous_question_as_incorrect(self):
+    def test_play_view_keeps_active_current_question_neutral_before_evaluation(self):
         host = User.objects.create_user(
             username="host_status_missed",
             password="pw123456",
@@ -511,7 +512,7 @@ class WhoThatQuestionStatusBoxTests(TestCase):
         quiz = WhoThatQuiz.objects.create(
             creator=host,
             status="active",
-            current_question=question_two,
+            current_question=question_one,
             question_start_time=timezone.now(),
             question_order=[question_one.id, question_two.id],
         )
@@ -535,8 +536,11 @@ class WhoThatQuestionStatusBoxTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         board = response.context["question_status_board"]
-        self.assertEqual(board[0]["result"], "incorrect")
-        self.assertTrue(board[1]["is_current"])
+        current_entry = next(entry for entry in board if entry["id"] == question_one.id)
+        self.assertTrue(current_entry["is_current"])
+        self.assertIsNone(current_entry["result"])
+        self.assertEqual(current_entry["solution_text"], "")
+        self.assertIsNone(current_entry["earned_points"])
 
     def test_play_view_renders_solution_text_and_score_totals_for_played_questions(self):
         host = User.objects.create_user(
@@ -775,6 +779,248 @@ class WhoThatQuestionStatusBoxTests(TestCase):
         self.assertEqual(session.correct_responses_current_question, 0)
         self.assertEqual(session.average_response_time_current_question, 0)
 
+    def test_play_view_hides_previous_run_results_before_first_question(self):
+        host = User.objects.create_user(
+            username="host_status_fresh_start",
+            password="pw123456",
+            is_staff=True,
+        )
+        question_one = WhoThatQuestion.objects.create(
+            question_text="Fresh start person 1",
+            image=self._image_file("fresh-one.jpg"),
+            correct_answer="Ada Lovelace",
+            created_by=host,
+            points=1,
+        )
+        question_two = WhoThatQuestion.objects.create(
+            question_text="Fresh start person 2",
+            image=self._image_file("fresh-two.jpg"),
+            correct_answer="Grace Hopper",
+            created_by=host,
+            points=1,
+        )
+        quiz = WhoThatQuiz.objects.create(
+            creator=host,
+            status="waiting",
+            question_order=[question_one.id, question_two.id],
+        )
+        quiz.selected_questions.set([question_one, question_two])
+        WhoThatSession.objects.create(quiz=quiz)
+        participant = WhoThatParticipant.objects.create(
+            quiz=quiz,
+            name="FreshStartPlayer",
+            hub_session_code="RUN1",
+        )
+        WhoThatAnswer.objects.create(
+            quiz=quiz,
+            participant=participant,
+            question=question_one,
+            user_answer="Old wrong answer",
+            time_taken=1.0,
+        )
+
+        quiz.start_quiz()
+
+        response = self.client.get(
+            f"{reverse('who_is_that:play', args=[quiz.room_code, participant.name])}?hub_session=RUN1"
+        )
+
+        self.assertEqual(response.status_code, 200)
+        board = response.context["question_status_board"]
+        self.assertEqual(response.context["current_question_number"], 0)
+        self.assertEqual(len(board), 2)
+        self.assertIsNone(board[0]["result"])
+        self.assertEqual(board[0]["solution_text"], "")
+        self.assertIsNone(board[1]["result"])
+        self.assertEqual(board[1]["solution_text"], "")
+
+    def test_play_view_ignores_stale_active_session_progress_before_first_question(self):
+        host = User.objects.create_user(
+            username="host_status_active_stale_start",
+            password="pw123456",
+            is_staff=True,
+        )
+        question_one = WhoThatQuestion.objects.create(
+            question_text="Active stale person 1",
+            image=self._image_file("active-stale-one.jpg"),
+            correct_answer="Ada Lovelace",
+            created_by=host,
+            points=1,
+        )
+        question_two = WhoThatQuestion.objects.create(
+            question_text="Active stale person 2",
+            image=self._image_file("active-stale-two.jpg"),
+            correct_answer="Grace Hopper",
+            created_by=host,
+            points=1,
+        )
+        quiz = WhoThatQuiz.objects.create(
+            creator=host,
+            status="active",
+            started_at=timezone.now(),
+            question_order=[question_one.id, question_two.id],
+        )
+        quiz.selected_questions.set([question_one, question_two])
+        session = WhoThatSession.objects.create(
+            quiz=quiz,
+            current_question_number=2,
+            total_questions_sent=2,
+            is_question_active=False,
+        )
+        WhoThatSession.objects.filter(id=session.id).update(
+            updated_at=quiz.started_at - timezone.timedelta(seconds=5)
+        )
+        participant = WhoThatParticipant.objects.create(
+            quiz=quiz,
+            name="ActiveStalePlayer",
+            hub_session_code="ACTIVE-ST",
+        )
+
+        response = self.client.get(
+            f"{reverse('who_is_that:play', args=[quiz.room_code, participant.name])}?hub_session=ACTIVE-ST"
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["current_question_number"], 0)
+        board = response.context["question_status_board"]
+        self.assertEqual(len(board), 2)
+        self.assertIsNone(board[0]["result"])
+        self.assertEqual(board[0]["solution_text"], "")
+        self.assertIsNone(board[1]["result"])
+        self.assertEqual(board[1]["solution_text"], "")
+
+    def test_play_view_ignores_previous_run_answer_for_active_question(self):
+        host = User.objects.create_user(
+            username="host_status_previous_run_current",
+            password="pw123456",
+            is_staff=True,
+        )
+        question = WhoThatQuestion.objects.create(
+            question_text="Current person",
+            image=self._image_file("current-person.jpg"),
+            correct_answer="Alan Turing",
+            created_by=host,
+            points=1,
+        )
+        quiz = WhoThatQuiz.objects.create(
+            creator=host,
+            status="waiting",
+            question_order=[question.id],
+        )
+        quiz.selected_questions.set([question])
+        WhoThatSession.objects.create(quiz=quiz)
+        participant = WhoThatParticipant.objects.create(
+            quiz=quiz,
+            name="CurrentRunPlayer",
+            hub_session_code="RUN2",
+        )
+        WhoThatAnswer.objects.create(
+            quiz=quiz,
+            participant=participant,
+            question=question,
+            user_answer="Old answer",
+            time_taken=1.0,
+        )
+
+        quiz.start_quiz()
+        quiz.current_question = question
+        quiz.question_start_time = timezone.now()
+        quiz.save(update_fields=["current_question", "question_start_time"])
+        session = quiz.session
+        session.current_question_number = 1
+        session.total_questions_sent = 1
+        session.is_question_active = True
+        session.question_end_time = timezone.now() + timezone.timedelta(seconds=20)
+        session.save(update_fields=[
+            "current_question_number",
+            "total_questions_sent",
+            "is_question_active",
+            "question_end_time",
+            "updated_at",
+        ])
+
+        response = self.client.get(
+            f"{reverse('who_is_that:play', args=[quiz.room_code, participant.name])}?hub_session=RUN2"
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNone(response.context["current_participant_answer"])
+        board = response.context["question_status_board"]
+        self.assertEqual(len(board), 1)
+        self.assertTrue(board[0]["is_current"])
+        self.assertIsNone(board[0]["result"])
+        self.assertEqual(board[0]["solution_text"], "")
+        self.assertIsNone(board[0]["earned_points"])
+
+    def test_play_view_rejoin_only_uses_current_run_history(self):
+        host = User.objects.create_user(
+            username="host_status_rejoin_current_run_only",
+            password="pw123456",
+            is_staff=True,
+        )
+        question_one = WhoThatQuestion.objects.create(
+            question_text="Rejoin person 1",
+            image=self._image_file("rejoin-one.jpg"),
+            correct_answer="Frida Kahlo",
+            created_by=host,
+            points=1,
+        )
+        question_two = WhoThatQuestion.objects.create(
+            question_text="Rejoin person 2",
+            image=self._image_file("rejoin-two.jpg"),
+            correct_answer="Hedy Lamarr",
+            created_by=host,
+            points=1,
+        )
+        quiz = WhoThatQuiz.objects.create(
+            creator=host,
+            status="waiting",
+            question_order=[question_one.id, question_two.id],
+        )
+        quiz.selected_questions.set([question_one, question_two])
+        WhoThatSession.objects.create(quiz=quiz)
+        participant = WhoThatParticipant.objects.create(
+            quiz=quiz,
+            name="RejoinCurrentRunPlayer",
+            hub_session_code="RUN3",
+        )
+        WhoThatAnswer.objects.create(
+            quiz=quiz,
+            participant=participant,
+            question=question_one,
+            user_answer="Old answer",
+            time_taken=1.1,
+        )
+
+        quiz.start_quiz()
+        quiz.current_question = question_two
+        quiz.question_start_time = timezone.now()
+        quiz.save(update_fields=["current_question", "question_start_time"])
+        session = quiz.session
+        session.current_question_number = 1
+        session.total_questions_sent = 1
+        session.is_question_active = True
+        session.question_end_time = timezone.now() + timezone.timedelta(seconds=20)
+        session.save(update_fields=[
+            "current_question_number",
+            "total_questions_sent",
+            "is_question_active",
+            "question_end_time",
+            "updated_at",
+        ])
+
+        response = self.client.get(
+            f"{reverse('who_is_that:play', args=[quiz.room_code, participant.name])}?hub_session=RUN3"
+        )
+
+        self.assertEqual(response.status_code, 200)
+        board = response.context["question_status_board"]
+        self.assertEqual([entry["id"] for entry in board], [question_two.id, question_one.id])
+        self.assertTrue(board[0]["is_current"])
+        self.assertIsNone(board[0]["result"])
+        self.assertIsNone(board[1]["result"])
+        self.assertEqual(board[1]["solution_text"], "")
+
     def test_play_view_keeps_existing_history_for_active_session_rejoin(self):
         host = User.objects.create_user(
             username="host_status_active_rejoin",
@@ -833,6 +1079,156 @@ class WhoThatQuestionStatusBoxTests(TestCase):
         self.assertEqual(board[0]["earned_points"], 1)
         self.assertTrue(board[1]["is_current"])
         self.assertIsNone(board[1]["result"])
+        self.assertEqual(board[1]["solution_text"], "")
+        self.assertIsNone(board[1]["earned_points"])
+        self.assertContains(response, "entry.result = null;")
+        self.assertContains(response, "entry.solution_text = '';")
+        self.assertContains(response, "entry.earned_points = null;")
+
+    def test_play_view_shows_incorrect_solution_only_after_question_end(self):
+        host = User.objects.create_user(
+            username="host_status_incorrect_end",
+            password="pw123456",
+            is_staff=True,
+        )
+        question = WhoThatQuestion.objects.create(
+            question_text="Reveal wrong answer",
+            image=self._image_file("incorrect-end.jpg"),
+            correct_answer="Ada Lovelace",
+            created_by=host,
+            points=1,
+        )
+        quiz = WhoThatQuiz.objects.create(
+            creator=host,
+            status="active",
+            current_question=None,
+            question_order=[question.id],
+        )
+        quiz.selected_questions.set([question])
+        WhoThatSession.objects.create(
+            quiz=quiz,
+            current_question_number=1,
+            total_questions_sent=1,
+            is_question_active=False,
+        )
+        participant = WhoThatParticipant.objects.create(
+            quiz=quiz,
+            name="IncorrectAfterEnd",
+            hub_session_code=None,
+        )
+        WhoThatAnswer.objects.create(
+            quiz=quiz,
+            participant=participant,
+            question=question,
+            user_answer="Wrong Answer",
+            time_taken=1.0,
+        )
+
+        response = self.client.get(
+            reverse("who_is_that:play", args=[quiz.room_code, participant.name])
+        )
+
+        self.assertEqual(response.status_code, 200)
+        board = response.context["question_status_board"]
+        self.assertEqual(board[0]["result"], "incorrect")
+        self.assertEqual(board[0]["solution_text"], "Ada Lovelace")
+        self.assertEqual(board[0]["earned_points"], 0)
+
+    def test_play_view_shows_correct_solution_only_after_question_end(self):
+        host = User.objects.create_user(
+            username="host_status_correct_end",
+            password="pw123456",
+            is_staff=True,
+        )
+        question = WhoThatQuestion.objects.create(
+            question_text="Reveal correct answer",
+            image=self._image_file("correct-end.jpg"),
+            correct_answer="Grace Hopper",
+            created_by=host,
+            points=1,
+        )
+        quiz = WhoThatQuiz.objects.create(
+            creator=host,
+            status="active",
+            current_question=None,
+            question_order=[question.id],
+        )
+        quiz.selected_questions.set([question])
+        WhoThatSession.objects.create(
+            quiz=quiz,
+            current_question_number=1,
+            total_questions_sent=1,
+            is_question_active=False,
+        )
+        participant = WhoThatParticipant.objects.create(
+            quiz=quiz,
+            name="CorrectAfterEnd",
+            hub_session_code=None,
+        )
+        WhoThatAnswer.objects.create(
+            quiz=quiz,
+            participant=participant,
+            question=question,
+            user_answer="Grace Hopper",
+            time_taken=1.0,
+        )
+
+        response = self.client.get(
+            reverse("who_is_that:play", args=[quiz.room_code, participant.name])
+        )
+
+        self.assertEqual(response.status_code, 200)
+        board = response.context["question_status_board"]
+        self.assertEqual(board[0]["result"], "correct")
+        self.assertEqual(board[0]["solution_text"], "Grace Hopper")
+        self.assertEqual(board[0]["earned_points"], 1)
+
+    def test_play_view_marks_unanswered_revealed_question_incorrect_only_after_real_current_run_progress(self):
+        host = User.objects.create_user(
+            username="host_status_unanswered_after_reveal",
+            password="pw123456",
+            is_staff=True,
+        )
+        question = WhoThatQuestion.objects.create(
+            question_text="Reveal unanswered question",
+            image=self._image_file("reveal-unanswered.jpg"),
+            correct_answer="Katherine Johnson",
+            created_by=host,
+            points=1,
+        )
+        quiz = WhoThatQuiz.objects.create(
+            creator=host,
+            status="active",
+            started_at=timezone.now() - timezone.timedelta(minutes=1),
+            current_question=None,
+            question_order=[question.id],
+        )
+        quiz.selected_questions.set([question])
+        session = WhoThatSession.objects.create(
+            quiz=quiz,
+            current_question_number=1,
+            total_questions_sent=1,
+            is_question_active=False,
+        )
+        WhoThatSession.objects.filter(id=session.id).update(
+            updated_at=timezone.now() - timezone.timedelta(seconds=5)
+        )
+        participant = WhoThatParticipant.objects.create(
+            quiz=quiz,
+            name="RevealNoAnswerPlayer",
+            hub_session_code=None,
+        )
+
+        response = self.client.get(
+            reverse("who_is_that:play", args=[quiz.room_code, participant.name])
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["current_question_number"], 1)
+        board = response.context["question_status_board"]
+        self.assertEqual(board[0]["result"], "incorrect")
+        self.assertEqual(board[0]["solution_text"], "Katherine Johnson")
+        self.assertEqual(board[0]["earned_points"], 0)
 
     def test_play_view_uses_actual_send_order_for_out_of_order_current_question(self):
         host = User.objects.create_user(
@@ -1097,6 +1493,268 @@ class WhoThatHostManualCorrectTests(TestCase):
         self.assertEqual(live_response["user_answer"], "Grace Hopper")
         self.assertFalse(live_response["is_correct"])
         self.assertTrue(live_response["can_mark_correct"])
+
+    def test_live_responses_only_include_current_session_current_question_and_current_run(self):
+        current_question = WhoThatQuestion.objects.create(
+            question_text="Current live question",
+            image=self._image_file("live-current.jpg"),
+            correct_answer="Ada Lovelace",
+            created_by=self.user,
+            points=1,
+        )
+        previous_question = WhoThatQuestion.objects.create(
+            question_text="Previous live question",
+            image=self._image_file("live-previous.jpg"),
+            correct_answer="Grace Hopper",
+            created_by=self.user,
+            points=1,
+        )
+        quiz = WhoThatQuiz.objects.create(
+            creator=self.user,
+            status="active",
+            started_at=timezone.now() - timezone.timedelta(minutes=1),
+            current_question=current_question,
+            question_start_time=timezone.now(),
+        )
+        WhoThatSession.objects.create(
+            quiz=quiz,
+            is_question_active=True,
+            question_end_time=timezone.now() + timezone.timedelta(seconds=20),
+        )
+
+        session_a = HubSession.objects.create(
+            code="WTAA",
+            started_at=timezone.now() - timezone.timedelta(hours=1),
+            ended_at=timezone.now() - timezone.timedelta(minutes=30),
+            is_active=False,
+        )
+        session_b = HubSession.objects.create(
+            code="WTAB",
+            started_at=timezone.now() - timezone.timedelta(minutes=5),
+            is_active=True,
+        )
+        HubGameStep.objects.create(session=session_a, order=1, game_key="who_that", room_code=quiz.room_code)
+        HubGameStep.objects.create(session=session_b, order=1, game_key="who_that", room_code=quiz.room_code)
+
+        old_session_participant = WhoThatParticipant.objects.create(
+            quiz=quiz,
+            name="OldSession",
+            hub_session_code=session_a.code,
+        )
+        current_participant = WhoThatParticipant.objects.create(
+            quiz=quiz,
+            name="CurrentSession",
+            hub_session_code=session_b.code,
+        )
+        old_run_participant = WhoThatParticipant.objects.create(
+            quiz=quiz,
+            name="OldRunCurrentSession",
+            hub_session_code=session_b.code,
+        )
+
+        valid_answer = WhoThatAnswer.objects.create(
+            quiz=quiz,
+            participant=current_participant,
+            question=current_question,
+            user_answer="Ada Lovelace",
+            time_taken=1.2,
+        )
+        WhoThatAnswer.objects.create(
+            quiz=quiz,
+            participant=old_session_participant,
+            question=current_question,
+            user_answer="Old Session Answer",
+            time_taken=1.5,
+        )
+        WhoThatAnswer.objects.create(
+            quiz=quiz,
+            participant=current_participant,
+            question=previous_question,
+            user_answer="Previous Question Answer",
+            time_taken=1.1,
+        )
+        old_run_answer = WhoThatAnswer.objects.create(
+            quiz=quiz,
+            participant=old_run_participant,
+            question=current_question,
+            user_answer="Old Run Answer",
+            time_taken=1.8,
+        )
+        old_run_answer.submitted_at = quiz.started_at - timezone.timedelta(seconds=5)
+        old_run_answer.save(update_fields=["submitted_at"])
+
+        response = self.client.get(
+            reverse("admin_dashboard:api_who_that_live_responses", args=[quiz.room_code])
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload["success"])
+        self.assertEqual(len(payload["responses"]), 1)
+        live_response = payload["responses"][0]
+        self.assertEqual(live_response["answer_id"], valid_answer.id)
+        self.assertEqual(live_response["participant_name"], "CurrentSession")
+        self.assertEqual(live_response["hub_session_code"], session_b.code)
+        self.assertEqual(live_response["question_id"], current_question.id)
+        self.assertEqual(live_response["game_id"], quiz.id)
+
+    def test_live_responses_are_empty_without_active_current_question(self):
+        question = WhoThatQuestion.objects.create(
+            question_text="Ended live question",
+            image=self._image_file("live-ended.jpg"),
+            correct_answer="Alan Turing",
+            created_by=self.user,
+            points=1,
+        )
+        quiz = WhoThatQuiz.objects.create(
+            creator=self.user,
+            status="active",
+            started_at=timezone.now() - timezone.timedelta(minutes=1),
+            current_question=None,
+        )
+        WhoThatSession.objects.create(
+            quiz=quiz,
+            is_question_active=False,
+            question_end_time=None,
+        )
+        participant = WhoThatParticipant.objects.create(
+            quiz=quiz,
+            name="EndedPlayer",
+            hub_session_code="LIVE0",
+        )
+        WhoThatAnswer.objects.create(
+            quiz=quiz,
+            participant=participant,
+            question=question,
+            user_answer="Alan Turing",
+            time_taken=1.0,
+        )
+
+        response = self.client.get(
+            reverse("admin_dashboard:api_who_that_live_responses", args=[quiz.room_code])
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload["success"])
+        self.assertEqual(payload["responses"], [])
+
+    def test_live_responses_can_reload_last_ended_question_in_review_mode(self):
+        question = WhoThatQuestion.objects.create(
+            question_text="Ended review question",
+            image=self._image_file("live-review.jpg"),
+            correct_answer="Katherine Johnson",
+            created_by=self.user,
+            points=1,
+        )
+        quiz = WhoThatQuiz.objects.create(
+            creator=self.user,
+            status="active",
+            started_at=timezone.now() - timezone.timedelta(minutes=1),
+            current_question=None,
+        )
+        quiz.selected_questions.set([question])
+        WhoThatSession.objects.create(
+            quiz=quiz,
+            current_question_number=1,
+            total_questions_sent=1,
+            is_question_active=False,
+            question_end_time=None,
+        )
+        participant = WhoThatParticipant.objects.create(
+            quiz=quiz,
+            name="EndedPlayer",
+            hub_session_code="LIVE1",
+        )
+        answer = WhoThatAnswer.objects.create(
+            quiz=quiz,
+            participant=participant,
+            question=question,
+            user_answer="Wrong Name",
+            time_taken=1.0,
+        )
+
+        response = self.client.get(
+            f"{reverse('admin_dashboard:api_who_that_live_responses', args=[quiz.room_code])}?review_question={question.id}"
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload["success"])
+        self.assertEqual(len(payload["responses"]), 1)
+        live_response = payload["responses"][0]
+        self.assertEqual(live_response["answer_id"], answer.id)
+        self.assertEqual(live_response["question_id"], question.id)
+        self.assertEqual(live_response["participant_name"], participant.name)
+        self.assertTrue(live_response["can_mark_correct"])
+
+    def test_monitor_contains_live_response_scope_guards(self):
+        question = WhoThatQuestion.objects.create(
+            question_text="Guarded live question",
+            image=self._image_file("live-guard.jpg"),
+            correct_answer="Hedy Lamarr",
+            created_by=self.user,
+            points=1,
+        )
+        quiz = WhoThatQuiz.objects.create(
+            creator=self.user,
+            status="active",
+            current_question=question,
+            question_start_time=timezone.now(),
+        )
+        WhoThatSession.objects.create(
+            quiz=quiz,
+            is_question_active=True,
+            question_end_time=timezone.now() + timezone.timedelta(seconds=15),
+        )
+
+        response = self.client.get(
+            f"{reverse('admin_dashboard:who_that_monitor', args=[quiz.room_code])}?hub_session=LIVEB"
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "this.activeHubSessionCode = 'LIVEB';")
+        self.assertContains(response, "responsesUrl.searchParams.set('hub_session', this.activeHubSessionCode);")
+        self.assertContains(response, "isLiveResponseRelevant(response)")
+        self.assertContains(response, "response?.question_id")
+        self.assertContains(response, "response?.hub_session_code")
+        self.assertContains(response, "if (!this.isLiveResponseRelevant(response)) return;")
+
+    def test_monitor_renders_review_mode_and_back_to_overview_after_question_end(self):
+        question = WhoThatQuestion.objects.create(
+            question_text="Reviewable question",
+            image=self._image_file("review-mode.jpg"),
+            correct_answer="Rosalind Franklin",
+            created_by=self.user,
+            points=1,
+        )
+        quiz = WhoThatQuiz.objects.create(
+            creator=self.user,
+            status="active",
+            started_at=timezone.now() - timezone.timedelta(minutes=1),
+            current_question=None,
+        )
+        quiz.selected_questions.set([question])
+        WhoThatSession.objects.create(
+            quiz=quiz,
+            current_question_number=1,
+            total_questions_sent=1,
+            is_question_active=False,
+            question_end_time=None,
+        )
+
+        response = self.client.get(
+            f"{reverse('admin_dashboard:who_that_monitor', args=[quiz.room_code])}?hub_session=LIVEB&review_question={question.id}"
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Question Review")
+        self.assertContains(response, "The question has ended. Live responses remain visible")
+        self.assertContains(response, 'id="backToQuestionOverviewBtn"', html=False)
+        self.assertContains(response, f"this.reviewQuestionId = Number('{question.id}') || null;")
+        self.assertContains(response, "responsesUrl.searchParams.set('review_question', String(this.reviewQuestionId));")
+        self.assertContains(response, "this.enterQuestionReviewMode(this.currentQuestionId || this.reviewQuestionId);")
+        self.assertContains(response, "this.backToQuestionOverview();")
 
     def test_host_can_promote_answer_to_correct_without_double_scoring(self):
         question = WhoThatQuestion.objects.create(

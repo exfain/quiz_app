@@ -1225,12 +1225,15 @@ class AssignConsumer(AsyncWebsocketConsumer):
 
     def _build_progress_history(self, quiz, participant):
         question_number_by_id = {}
-        answers = list(
+        answer_qs = (
             AssignAnswer.objects
             .filter(quiz=quiz)
             .select_related('question')
             .order_by('submitted_at', 'id')
         )
+        if participant.hub_session_code:
+            answer_qs = answer_qs.filter(participant__hub_session_code=participant.hub_session_code)
+        answers = list(answer_qs)
         seen_question_ids = []
         for answer in answers:
             if answer.question_id not in seen_question_ids:

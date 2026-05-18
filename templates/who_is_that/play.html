@@ -2084,6 +2084,9 @@
                         ? this.moveQuestionToNextFreeStatusSlot(questionId)
                         : this.ensureQuestionStatusEntry(questionNumber, questionId);
                     if (entry) {
+                        entry.result = null;
+                        entry.solution_text = '';
+                        entry.earned_points = null;
                         entry.is_current = true;
                         this.currentQuestionNumber = Number(entry.number) || Number(questionNumber) || this.currentQuestionNumber;
                     }
@@ -2293,7 +2296,9 @@
                             }
 
                         }*/
-                        if (data.type === 'players_recalled_to_lobby') {
+                        if (data.type === 'lobby_return_countdown_started') {
+                            lobbyReturnController.startRecallCountdown(data);
+                        } else if (data.type === 'players_recalled_to_lobby') {
                             lobbyReturnController.returnToLobby({ markInactive: false });
                         } else if (data.type === 'session_ended') {
                             console.log("[HubScript2] Session ended message received.");

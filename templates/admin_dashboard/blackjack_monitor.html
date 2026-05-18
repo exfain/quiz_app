@@ -1182,6 +1182,7 @@ document.addEventListener('DOMContentLoaded', function() {
             this.websocket = null;
             this.isActive = '{{ quiz.status|escapejs }}' === 'active';
             this.questionTimer = null;
+            this.quizTimerInterval = null;
             this.quizStartTime = {% if quiz.started_at %}new Date('{{ quiz.started_at|date:"c" }}'){% else %}null{% endif %};
             this.liveResponseState = new Map();
             this.csrfToken = '{{ csrf_token }}';
@@ -1279,7 +1280,16 @@ document.addEventListener('DOMContentLoaded', function() {
             this.selectedSetHasRemainingQuestions = stateEl.dataset.selectedSetHasRemaining === '1';
             this.isQuestionRunning = stateEl.dataset.questionActive === '1';
             if (stateEl.dataset.selectSetUrl) this.selectSetUrl = stateEl.dataset.selectSetUrl;
-            if (stateEl.dataset.statsUrl) this.statsUrl = stateEl.dataset.statsUrl;
+            if (stateEl.dataset.statsUrl) {
+                const scopedStatsUrl = new URL(stateEl.dataset.statsUrl, window.location.origin);
+                const currentStatsUrl = new URL(this.statsUrl, window.location.origin);
+                const hubSession = currentStatsUrl.searchParams.get('hub_session')
+                    || new URLSearchParams(window.location.search).get('hub_session');
+                if (hubSession) {
+                    scopedStatsUrl.searchParams.set('hub_session', hubSession);
+                }
+                this.statsUrl = scopedStatsUrl.toString();
+            }
         }
 
         syncScoringModeHint() {
@@ -1336,17 +1346,18 @@ document.addEventListener('DOMContentLoaded', function() {
                     
                 case 'quiz_started':
                     console.log('Quiz started:', data.message);
-                    this.isActive = true;
-                    this.quizStartTime = new Date(data.timestamp);
-                    //this.updateQuizTimer();
-                    this.updateQuizStatus('active');
-                    // Enable question send buttons if they were disabled before start
-                    document.querySelectorAll('.send-question-btn').forEach(btn => {
-                        btn.disabled = false;
-                        btn.removeAttribute('title');
-                    });
-                    // Re-apply sent state so already-sent questions remain blocked
-                    this.applySentStates();
+                    this.handleQuizStarted(data);
+                    break;
+
+                case 'participants_not_in_lobby':
+                    this.setStartButtonPending(false);
+                    alert(data.message || 'Noch nicht alle Teilnehmer sind in der Lobby.');
+                    break;
+
+                case 'active_game_conflict':
+                case 'error':
+                    this.setStartButtonPending(false);
+                    alert(data.message || 'Das Spiel konnte nicht gestartet werden.');
                     break;
                     
                 case 'tutorial_start':
@@ -1392,6 +1403,93 @@ document.addEventListener('DOMContentLoaded', function() {
                     console.log('Unknown message type:', data.type);
             }
         }
+
+        handleQuizStarted(data) {
+            this.isActive = true;
+            const startedAt = data.started_at || data.timestamp;
+            this.quizStartTime = startedAt ? new Date(startedAt) : new Date();
+            if (Number.isNaN(this.quizStartTime.getTime())) {
+                this.quizStartTime = new Date();
+            }
+            this.updateQuizStatus(data.status || 'active');
+            this.renderActiveControls();
+            this.startQuizTimer();
+
+            document.querySelectorAll('.send-question-btn').forEach(btn => {
+                btn.disabled = false;
+                btn.removeAttribute('title');
+            });
+            this.applySentStates();
+        }
+
+        updateQuizStatus(status) {
+            const badge = document.querySelector('.quiz-controls .status-badge');
+            if (!badge) return;
+            badge.className = `status-badge status-${status}`;
+            const labels = {
+                active: 'Active',
+                inactive: 'Inactive',
+                waiting: 'Waiting',
+                completed: 'Completed'
+            };
+            badge.textContent = labels[status] || status;
+        }
+
+        renderActiveControls() {
+            const startBtn = document.getElementById('startQuizBtn');
+            const startControls = startBtn?.closest('.d-flex');
+            if (startControls) {
+                startControls.className = 'd-flex align-items-center gap-2';
+                startControls.innerHTML = `
+                    <button class="btn btn-outline-warning" id="setInactiveBtn">
+                        <i data-lucide="pause-circle"></i>
+                        Set inactive
+                    </button>
+                    <button class="btn btn-warning" id="endQuizBtn">
+                        <i data-lucide="square"></i>
+                        End Quiz
+                    </button>
+                `;
+            }
+            this.bindRuntimeButtons();
+            try { lucide.createIcons(); } catch(_) {}
+        }
+
+        bindRuntimeButtons() {
+            const endQuizBtn = document.getElementById('endQuizBtn');
+            if (endQuizBtn && endQuizBtn.dataset.bound !== '1') {
+                endQuizBtn.dataset.bound = '1';
+                endQuizBtn.addEventListener('click', () => {
+                    if (confirm('Are you sure you want to end this quiz?')) {
+                        this.endQuiz();
+                    }
+                });
+            }
+
+            const setInactiveBtn = document.getElementById('setInactiveBtn');
+            if (setInactiveBtn && setInactiveBtn.dataset.bound !== '1') {
+                setInactiveBtn.dataset.bound = '1';
+                setInactiveBtn.addEventListener('click', () => {
+                    if (confirm('Do you want to set this game inactive and preserve its current progress?')) {
+                        this.setInactive();
+                    }
+                });
+            }
+        }
+
+        setStartButtonPending(isPending) {
+            const startBtn = document.getElementById('startQuizBtn');
+            if (!startBtn) return;
+            if (!startBtn.dataset.originalHtml) {
+                startBtn.dataset.originalHtml = startBtn.innerHTML;
+            }
+            startBtn.disabled = isPending;
+            startBtn.classList.toggle('loading', isPending);
+            startBtn.innerHTML = isPending
+                ? '<span class="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>Startet...'
+                : startBtn.dataset.originalHtml;
+            try { lucide.createIcons(); } catch(_) {}
+        }
         
         bindEvents() {
             // Start Quiz button
@@ -1399,18 +1497,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 this.startQuiz();
             });
             
-            // End Quiz button
-            document.getElementById('endQuizBtn')?.addEventListener('click', () => {
-                if (confirm('Are you sure you want to end this quiz?')) {
-                    this.endQuiz();
-                }
-            });
-
-            document.getElementById('setInactiveBtn')?.addEventListener('click', () => {
-                if (confirm('Do you want to set this game inactive and preserve its current progress?')) {
-                    this.setInactive();
-                }
-            });
+            this.bindRuntimeButtons();
             
             // Send Question buttons
             document.querySelectorAll('.send-question-btn').forEach(btn => {
@@ -1488,6 +1575,7 @@ document.addEventListener('DOMContentLoaded', function() {
         
         startQuiz() {
             if (this.websocket && this.websocket.readyState === WebSocket.OPEN) {
+                this.setStartButtonPending(true);
                 // Also notify hub directly (in case backend mirror is unavailable)
                 try {
                     const qs = new URLSearchParams(window.location.search);
@@ -1509,8 +1597,9 @@ document.addEventListener('DOMContentLoaded', function() {
                     type: 'admin_start_quiz',
                     show_tutorial: showTutorial
                 }));
-                //reload page
-                location.reload();
+            } else {
+                this.setStartButtonPending(false);
+                alert('Die WebSocket-Verbindung ist noch nicht bereit. Bitte versuche es erneut.');
             }
         }
         
@@ -1693,6 +1782,9 @@ document.addEventListener('DOMContentLoaded', function() {
         
         startQuizTimer() {
             if (!this.quizStartTime) return;
+            if (this.quizTimerInterval) {
+                clearInterval(this.quizTimerInterval);
+            }
             
             const updateTimer = () => {
                 const now = new Date();
@@ -1707,7 +1799,7 @@ document.addEventListener('DOMContentLoaded', function() {
             };
             
             updateTimer();
-            setInterval(updateTimer, 1000);
+            this.quizTimerInterval = setInterval(updateTimer, 1000);
         }
         
         initializeLiveResponseState() {

@@ -93,7 +93,7 @@
                     </button>
                 </div>
                 <div class="card-body">
-                    {% if not quiz.current_question %}
+                    {% if not display_question %}
                         <!-- Question Selection -->
                         <div id="questionSelection">
                             <h6 class="mb-3">Select Next Question</h6>
@@ -156,21 +156,25 @@
                             {% endif %}
                         </div>
                     {% else %}
-                        <!-- Active Question Display -->
+                        <!-- Question / Review Display -->
                         <div id="activeQuestion">
                             <div class="active-question-header">
-                                <h6>Current Question</h6>
+                                <h6>{% if is_display_question_active %}Current Question{% else %}Question Review{% endif %}</h6>
+                                {% if is_display_question_active %}
                                     <div class="question-timer">
                                         <div class="timer-circle" id="questionTimerCircle">
-                                        <span id="questionTimeLeft">{{ current_question_time_left|default_if_none:quiz.current_question.time_limit }}</span>
+                                        <span id="questionTimeLeft">{{ current_question_time_left|default_if_none:display_question.time_limit }}</span>
                                         </div>
                                     </div>
+                                {% else %}
+                                    <span class="badge bg-secondary">Question ended</span>
+                                {% endif %}
                             </div>
                             
                             <div class="current-question-content">
                                 <div class="current-question-image">
-                                    {% if quiz.current_question.image %}
-                                        <img src="{{ quiz.current_question.image.url }}" alt="Current Question" class="active-question-img">
+                                    {% if display_question.image %}
+                                        <img src="{{ display_question.image.url }}" alt="Current Question" class="active-question-img">
                                     {% else %}
                                         <div class="no-image-placeholder">
                                             <i data-lucide="image"></i>
@@ -179,25 +183,30 @@
                                     {% endif %}
                                 </div>
                                 
-                                <div class="question-text">{{ quiz.current_question.question_text }}</div>
+                                <div class="question-text">{{ display_question.question_text }}</div>
                                 
                                 <div class="current-question-details">
+                                    {% if not is_display_question_active %}
+                                    <div class="alert alert-info mb-3">
+                                        The question has ended. Live responses remain visible so you can still mark answers as correct before returning to the overview.
+                                    </div>
+                                    {% endif %}
                                     <div class="answer-display">
                                         <div class="answer-label">Correct Answer:</div>
-                                        <div class="answer-value">{{ quiz.current_question.correct_answer }}</div>
+                                        <div class="answer-value">{{ display_question.correct_answer }}</div>
                                     </div>
                                     
-                                    {% if quiz.current_question.alternative_answers %}
+                                    {% if display_question.alternative_answers %}
                                     <div class="alt-answers-display">
                                         <div class="alt-label">Also Accepts:</div>
-                                        <div class="alt-value">{{ quiz.current_question.alternative_answers|join:", " }}</div>
+                                        <div class="alt-value">{{ display_question.alternative_answers|join:", " }}</div>
                                     </div>
                                     {% endif %}
                                     
-                                    {% if quiz.current_question.hint_text %}
+                                    {% if display_question.hint_text %}
                                     <div class="hint-display">
                                         <div class="hint-label">Hint:</div>
-                                        <div class="hint-value">{{ quiz.current_question.hint_text }}</div>
+                                        <div class="hint-value">{{ display_question.hint_text }}</div>
                                     </div>
                                     {% endif %}
                                     
@@ -212,10 +221,17 @@
                                 </div>
                                 
                                 <div class="question-actions">
+                                    {% if is_display_question_active %}
                                     <button class="btn btn-warning" id="endQuestionBtn">
                                         <i data-lucide="skip-forward"></i>
                                         End Question Early
                                     </button>
+                                    {% else %}
+                                    <button class="btn btn-outline-secondary" id="backToQuestionOverviewBtn">
+                                        <i data-lucide="arrow-left"></i>
+                                        Zurück zur Übersicht
+                                    </button>
+                                    {% endif %}
                                 </div>
                             </div>
                         </div>
@@ -946,6 +962,19 @@ document.addEventListener('DOMContentLoaded', function() {
     class WhoThatMonitor {
         constructor() {
             this.roomCode = '{{ quiz.room_code|escapejs }}';
+            this.gameId = Number('{{ quiz.id }}') || 0;
+            this.currentQuestionId = {% if display_question %}Number('{{ display_question.id }}') || null{% else %}null{% endif %};
+            this.reviewQuestionId = {% if review_question_id %}Number('{{ review_question_id }}') || null{% else %}null{% endif %};
+            this.isQuestionActive = {% if is_display_question_active %}true{% else %}false{% endif %};
+            this.activeHubSessionCode = '{{ active_hub_session_code|default_if_none:""|escapejs }}';
+            const responsesUrl = new URL(`/admin-dashboard/api/who-that/${this.roomCode}/responses/`, window.location.origin);
+            if (this.activeHubSessionCode) {
+                responsesUrl.searchParams.set('hub_session', this.activeHubSessionCode);
+            }
+            if (this.reviewQuestionId) {
+                responsesUrl.searchParams.set('review_question', String(this.reviewQuestionId));
+            }
+            this.responsesApiUrl = responsesUrl.toString();
             this.websocket = null;
             this.isActive = '{{ quiz.status|escapejs }}' === 'active';
             this.questionTimer = null;
@@ -1037,8 +1066,35 @@ document.addEventListener('DOMContentLoaded', function() {
             }
         }
 
+        getMonitorUrl(reviewQuestionId = null) {
+            const url = new URL(window.location.pathname, window.location.origin);
+            if (this.activeHubSessionCode) {
+                url.searchParams.set('hub_session', this.activeHubSessionCode);
+            }
+            if (reviewQuestionId) {
+                url.searchParams.set('review_question', String(reviewQuestionId));
+            }
+            return url.toString();
+        }
+
+        enterQuestionReviewMode(questionId) {
+            if (!questionId) {
+                location.reload();
+                return;
+            }
+            window.location.href = this.getMonitorUrl(questionId);
+        }
+
+        backToQuestionOverview() {
+            this.currentQuestionId = null;
+            this.reviewQuestionId = null;
+            this.isQuestionActive = false;
+            this.resetLiveResponseStateForQuestion();
+            window.location.href = this.getMonitorUrl();
+        }
+
         fetchResponses() {
-            fetch(`/admin-dashboard/api/who-that/{{ quiz.room_code }}/responses/`)
+            fetch(this.responsesApiUrl)
             .then(r => r.json())
             .then(data => {
                 if (data.success && data.responses) {
@@ -1061,12 +1117,37 @@ document.addEventListener('DOMContentLoaded', function() {
             return String(response.answer_id || response.participant_name || '');
         }
 
+        isLiveResponseRelevant(response) {
+            const currentQuestionId = Number(this.currentQuestionId || 0);
+            const responseQuestionId = Number(response?.question_id || 0);
+            if (!currentQuestionId || !responseQuestionId || responseQuestionId !== currentQuestionId) {
+                return false;
+            }
+
+            const responseGameId = Number(response?.game_id || 0);
+            if (responseGameId && this.gameId && responseGameId !== this.gameId) {
+                return false;
+            }
+
+            if (this.activeHubSessionCode) {
+                const responseSessionCode = String(response?.hub_session_code || '');
+                if (responseSessionCode !== this.activeHubSessionCode) {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
         replaceLiveResponses(responses) {
             if (!(this.liveResponseState instanceof Map)) {
                 this.liveResponseState = new Map();
             }
             this.liveResponseState.clear();
             (responses || []).forEach((response) => {
+                if (!this.isLiveResponseRelevant(response)) {
+                    return;
+                }
                 const key = this.getLiveResponseKey(response);
                 if (key) {
                     this.liveResponseState.set(key, response);
@@ -1122,6 +1203,10 @@ document.addEventListener('DOMContentLoaded', function() {
                 case 'quiz_started':
                     console.log('Quiz started:', data.message);
                     this.isActive = true;
+                    this.currentQuestionId = null;
+                    this.reviewQuestionId = null;
+                    this.isQuestionActive = false;
+                    this.resetLiveResponseStateForQuestion();
                     this.quizStartTime = new Date(data.timestamp);
                     //this.updateQuizTimer();
                     this.updateQuizStatus('active');
@@ -1143,18 +1228,26 @@ document.addEventListener('DOMContentLoaded', function() {
                     break;
                     
                 case 'question_started':
+                    this.currentQuestionId = Number(data.question?.id || 0) || null;
+                    this.reviewQuestionId = null;
+                    this.isQuestionActive = true;
                     this.resetLiveResponseStateForQuestion();
                     console.log('Question started');
                     location.reload(); // Refresh to show active question
                     break;
                     
                 case 'question_ended':
+                    this.isQuestionActive = false;
                     console.log('Question ended:', data.message);
-                    location.reload(); // Refresh to show ended question
+                    this.enterQuestionReviewMode(this.currentQuestionId || this.reviewQuestionId);
                     break;
                     
                 case 'quiz_ended':
                     console.log('Quiz ended:', data.message);
+                    this.currentQuestionId = null;
+                    this.reviewQuestionId = null;
+                    this.isQuestionActive = false;
+                    this.resetLiveResponseStateForQuestion();
                     // Clear persisted sent state so a new session starts fresh
                     this.resetSentStates();
                     location.reload(); // Refresh to show ended quiz
@@ -1163,6 +1256,10 @@ document.addEventListener('DOMContentLoaded', function() {
                 case 'quiz_inactive':
                     console.log('Quiz set inactive:', data.message);
                     this.isActive = false;
+                    this.currentQuestionId = null;
+                    this.reviewQuestionId = null;
+                    this.isQuestionActive = false;
+                    this.resetLiveResponseStateForQuestion();
                     location.reload();
                     break;
                     
@@ -1234,6 +1331,10 @@ document.addEventListener('DOMContentLoaded', function() {
             // Back to Hub button
             document.getElementById('backToHubBtn')?.addEventListener('click', () => {
                 this.backToHub();
+            });
+
+            document.getElementById('backToQuestionOverviewBtn')?.addEventListener('click', () => {
+                this.backToQuestionOverview();
             });
 
             // Share Code button
@@ -1462,7 +1563,7 @@ document.addEventListener('DOMContentLoaded', function() {
         }
         
         startQuestionTimer() {
-            {% if quiz.current_question %}
+            {% if display_question and is_display_question_active %}
                 // Prefer any override set at send-time (stored just before backend switched state)
                 let override = null;
                 try {
@@ -1649,6 +1750,7 @@ document.addEventListener('DOMContentLoaded', function() {
         
         addLiveResponse(response) {
             if (!(this.liveResponseState instanceof Map)) { this.liveResponseState = new Map(); }
+            if (!this.isLiveResponseRelevant(response)) return;
             const key = this.getLiveResponseKey(response);
             if (!key) return;
             this.liveResponseState.set(key, response);
@@ -1775,7 +1877,7 @@ document.addEventListener('DOMContentLoaded', function() {
     window.adminGameMonitor = monitor;
     
     // Start question timer if there's an active question
-    {% if quiz.current_question %}
+    {% if display_question and is_display_question_active %}
         monitor.startQuestionTimer();
     {% endif %}
 

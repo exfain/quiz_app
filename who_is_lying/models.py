@@ -1,10 +1,105 @@
 from django.db import models
+from django.core.cache import cache
 from games_website.models import SyncBase
 from django.contrib.auth.models import User
 from django.utils import timezone
+import math
 import random
 import string
 import json
+
+
+RECENTLY_ENDED_QUESTION_CACHE_TTL_SECONDS = 30
+
+
+def _get_recently_ended_question_cache_key(room_code):
+    return f'who_recently_ended_question:{room_code}'
+
+
+def remember_recently_ended_question(room_code, question_id):
+    if not room_code or not question_id:
+        return
+    cache.set(
+        _get_recently_ended_question_cache_key(room_code),
+        int(question_id),
+        RECENTLY_ENDED_QUESTION_CACHE_TTL_SECONDS,
+    )
+
+
+def get_recently_ended_question_id(room_code):
+    if not room_code:
+        return None
+    question_id = cache.get(_get_recently_ended_question_cache_key(room_code))
+    try:
+        return int(question_id) if question_id is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def clear_recently_ended_question(room_code):
+    if not room_code:
+        return
+    cache.delete(_get_recently_ended_question_cache_key(room_code))
+
+
+def get_question_timer_state(question, question_start_time=None, question_end_time=None, people_count=None, server_now=None):
+    """Derive the active per-person timer state for a running question."""
+    if not question:
+        return {
+            'time_per_person': 0,
+            'people_count': 0,
+            'current_person_index': 0,
+            'current_person_time_left': 0,
+            'question_complete': False,
+        }
+
+    server_now = server_now or timezone.now()
+    normalized_people_count = max(int(people_count if people_count is not None else len(question.people or [])), 0)
+    time_per_person = max(int(question.time_limit or 0), 0)
+
+    if normalized_people_count and question_start_time and question_end_time:
+        total_duration = max((question_end_time - question_start_time).total_seconds(), 0)
+        derived_time_per_person = int(round(total_duration / normalized_people_count)) if total_duration > 0 else 0
+        if derived_time_per_person > 0:
+            time_per_person = derived_time_per_person
+
+    if normalized_people_count <= 0 or time_per_person <= 0:
+        return {
+            'time_per_person': max(time_per_person, 0),
+            'people_count': normalized_people_count,
+            'current_person_index': 0,
+            'current_person_time_left': 0,
+            'question_complete': False,
+        }
+
+    current_person_index = 0
+    current_person_time_left = time_per_person
+    question_complete = False
+
+    if question_start_time:
+        elapsed_seconds = max((server_now - question_start_time).total_seconds(), 0)
+        total_duration = time_per_person * normalized_people_count
+        if elapsed_seconds >= total_duration:
+            current_person_index = normalized_people_count - 1
+            current_person_time_left = 0
+            question_complete = True
+        else:
+            current_person_index = min(int(elapsed_seconds // time_per_person), normalized_people_count - 1)
+            elapsed_in_current_person = elapsed_seconds - (current_person_index * time_per_person)
+            current_person_time_left = max(math.ceil(time_per_person - elapsed_in_current_person), 0)
+            if current_person_time_left == 0 and current_person_index < normalized_people_count - 1:
+                current_person_index += 1
+                current_person_time_left = time_per_person
+    elif question_end_time:
+        current_person_time_left = max(math.ceil((question_end_time - server_now).total_seconds()), 0)
+
+    return {
+        'time_per_person': time_per_person,
+        'people_count': normalized_people_count,
+        'current_person_index': current_person_index,
+        'current_person_time_left': current_person_time_left,
+        'question_complete': question_complete,
+    }
 
 
 class WhoQuiz(SyncBase):

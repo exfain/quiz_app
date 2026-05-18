@@ -9,6 +9,7 @@ from django.db import transaction
 from django.db.models import Count, Q, Avg
 from django.utils import timezone
 from django.contrib import messages
+from django.urls import NoReverseMatch, reverse
 import json
 import math
 from asgiref.sync import async_to_sync
@@ -22,7 +23,11 @@ from black_jack_quiz.models import BlackJackQuiz, BlackJackQuestion, BlackJackPa
 from clue_rush.models import ClueRushGame, ClueRushParticipant, ClueQuestion, Clue, ClueAnswer, ClueRushSession
 from who_is_that.models import WhoThatQuiz, WhoThatQuestion, WhoThatParticipant, WhoThatBundle
 from who_is_lying.models import WhoQuiz, WhoQuestion, WhoParticipant, WhoBundle
-from games_hub.active_game_guard import resolve_session_game_activation_for_room
+from games_hub.active_game_guard import (
+    _end_game_cleanly,
+    get_game_model_map,
+    resolve_session_game_activation_for_room,
+)
 from games_hub.models import HubSession, HubParticipant, HubGameStep
 from games_website.services import sync_all_models_to_supabase, restore_all_models_from_supabase
 
@@ -54,6 +59,16 @@ def _extract_hub_session_code(request):
         return None
     session_code = (data.get('hub_session') or data.get('session_code') or '').strip()
     return session_code or None
+
+
+def _get_active_hub_session_code_for_room(game_key, room_code):
+    steps = HubGameStep.objects.select_related('session').filter(
+        game_key=game_key,
+        room_code=room_code,
+    )
+    active_step = steps.filter(session__ended_at__isnull=True).order_by('-id').first()
+    step = active_step or steps.order_by('-id').first()
+    return step.session.code if step else None
 
 
 def _guard_session_game_start(request, game_key, room_code):
@@ -147,6 +162,26 @@ def end_session(request):
         return JsonResponse({'success': True})
     except HubSession.DoesNotExist:
         return JsonResponse({'success': False, 'error': 'Session nicht gefunden'}, status=404)
+    except Exception as e:
+        return JsonResponse({'success': False, 'error': str(e)}, status=500)
+
+
+@login_required
+@require_POST
+def end_all_active_games(request):
+    """End all currently active games across every supported game type."""
+    if not is_admin(request.user):
+        return JsonResponse({'success': False, 'error': 'Unauthorized'}, status=403)
+
+    try:
+        ended_games_count = 0
+        with transaction.atomic():
+            for model in get_game_model_map().values():
+                for game in model.objects.filter(status='active'):
+                    _end_game_cleanly(game)
+                    ended_games_count += 1
+
+        return JsonResponse({'success': True, 'ended_games_count': ended_games_count})
     except Exception as e:
         return JsonResponse({'success': False, 'error': str(e)}, status=500)
 
@@ -469,12 +504,74 @@ def clue_rush_monitor(request, room_code):
     participants = quiz.participants.all().filter(hub_session_code=hub_session).order_by('-total_score', 'name')
     # If the quiz has a predefined set of selected questions, show only those
     if quiz.selected_questions.exists():
-        available_questions = quiz.selected_questions.all().order_by('-created_at')
+        available_questions = quiz.selected_questions.all().prefetch_related('clues').order_by('-created_at')
     else:
-        available_questions = ClueQuestion.objects.filter(created_by=request.user).order_by('-created_at')
+        available_questions = ClueQuestion.objects.filter(created_by=request.user).prefetch_related('clues').order_by('-created_at')
     
     # Get or create quiz session
     quiz_session, created = ClueRushSession.objects.get_or_create(quiz=quiz)
+    for question in available_questions:
+        first_clue = next(iter(question.clues.all()), None)
+        question.host_timer_seconds = first_clue.duration if first_clue else question.time_limit
+
+    current_clue_time_left = 0
+    current_clue_has_next = False
+    current_revealed_clue_count = 0
+    current_question = quiz.current_question if quiz.current_question_id else None
+    current_clue = quiz.current_clue if (
+        current_question and
+        quiz.current_clue_id and
+        quiz.current_clue.clue_question_id == current_question.id
+    ) else None
+    current_clue_order = quiz_session.current_clue_number if quiz_session.is_clue_active else None
+    if current_question:
+        current_revealed_clue_count = current_question.get_revealed_clue_count(
+            current_clue=current_clue,
+            current_clue_order=current_clue_order,
+        )
+    if quiz.current_question_id and quiz.current_clue_id:
+        clue_ids = list(quiz.current_question.clues.order_by('order', 'id').values_list('id', flat=True))
+        try:
+            current_index = clue_ids.index(quiz.current_clue_id)
+        except ValueError:
+            current_index = -1
+        current_clue_has_next = current_index >= 0 and current_index < (len(clue_ids) - 1)
+        if current_clue_has_next and quiz_session.clue_end_time:
+            current_clue_time_left = max(
+                math.ceil((quiz_session.clue_end_time - timezone.now()).total_seconds()),
+                0,
+            )
+
+    response_session_code = hub_session or _get_active_hub_session_code_for_room('clue_rush', room_code)
+    live_response_question = quiz.current_question
+    scoped_live_answers = ClueAnswer.objects.filter(quiz=quiz).select_related('participant', 'question')
+    if quiz.started_at:
+        scoped_live_answers = scoped_live_answers.filter(submitted_at__gte=quiz.started_at)
+    if response_session_code is not None:
+        scoped_live_answers = scoped_live_answers.filter(participant__hub_session_code=response_session_code)
+    if live_response_question is None:
+        latest_answer = scoped_live_answers.order_by('-submitted_at', '-id').first()
+        live_response_question = latest_answer.question if latest_answer else None
+
+    initial_live_responses = []
+    if live_response_question is not None:
+        question_answers = scoped_live_answers.filter(question=live_response_question).order_by('-submitted_at', '-id')
+        for response in question_answers:
+            initial_live_responses.append({
+                'answer_id': response.id,
+                'participant_id': response.participant_id,
+                'participant_name': response.participant.name,
+                'question_id': response.question_id,
+                'answer_text': response.answer_text,
+                'is_correct': response.is_correct,
+                'is_manual_override': response.is_manually_corrected,
+                'can_mark_correct': not response.is_correct,
+                'points_earned': response.points_earned,
+                'time_taken': response.time_taken,
+                'total_score': response.participant.total_score,
+                'submitted_at': response.submitted_at.isoformat() if response.submitted_at else None,
+                'submitted_clue_number': response.submitted_clue_number,
+            })
 
     context = {
         'quiz': quiz,
@@ -482,9 +579,189 @@ def clue_rush_monitor(request, room_code):
         'participant_count': participants.count(),
         'available_questions': available_questions,
         'quiz_session': quiz_session,
+        'current_clue_time_left': current_clue_time_left,
+        'current_clue_has_next': current_clue_has_next,
+        'current_revealed_clue_count': current_revealed_clue_count,
+        'initial_live_responses': initial_live_responses,
         'lobby_url': _get_lobby_url(request, room_code),
     }
     return render(request, 'admin_dashboard/clue_rush_monitor.html', context)
+
+
+def _build_clue_rush_progress_history(quiz, participant):
+    answers = ClueAnswer.objects.filter(
+        quiz=quiz,
+        participant=participant,
+    ).select_related('question').order_by('submitted_at', 'id')
+    if quiz.started_at:
+        answers = answers.filter(submitted_at__gte=quiz.started_at)
+
+    history = []
+    for idx, answer in enumerate(answers, start=1):
+        max_points = answer.total_clues_at_submission or answer.question.clues.count()
+        achieved_points = answer.points_earned if answer.is_correct else 0
+        if max_points > 0:
+            achieved_points = max(0, min(achieved_points, max_points))
+        history.append({
+            'question_number': idx,
+            'correct_answer': answer.question.answer,
+            'achieved_points': achieved_points,
+            'max_points': max_points,
+        })
+    return history
+
+
+@admin_required
+@require_POST
+def promote_clue_rush_answer_correct(request, room_code):
+    try:
+        quiz = get_object_or_404(ClueRushGame, room_code=room_code)
+
+        if not request.user.is_superuser and quiz.creator != request.user:
+            return JsonResponse({'success': False, 'error': 'Unauthorized'}, status=403)
+
+        data = json.loads(request.body or '{}')
+        answer_id = data.get('answer_id')
+        if not answer_id:
+            return JsonResponse({'success': False, 'error': 'answer_id is required'}, status=400)
+
+        session_code = _extract_hub_session_code(request) or _get_active_hub_session_code_for_room('clue_rush', room_code)
+
+        with transaction.atomic():
+            answer = get_object_or_404(
+                ClueAnswer.objects.select_for_update().select_related('participant', 'question'),
+                id=answer_id,
+                quiz=quiz,
+            )
+
+            if quiz.started_at and answer.submitted_at and answer.submitted_at < quiz.started_at:
+                return JsonResponse({
+                    'success': False,
+                    'error': 'Only answers from the current Clue Rush run can be corrected.',
+                }, status=400)
+
+            if session_code is not None and answer.participant.hub_session_code != session_code:
+                return JsonResponse({
+                    'success': False,
+                    'error': 'This answer does not belong to the active session.',
+                }, status=400)
+
+            if answer.is_correct:
+                return JsonResponse({
+                    'success': False,
+                    'error': 'This answer is already marked correct.',
+                }, status=400)
+
+            if answer.submitted_clue_number <= 0:
+                if quiz.current_question_id == answer.question_id:
+                    answer.submitted_clue_number = quiz.current_question.get_revealed_clue_count(
+                        current_clue=quiz.current_clue if quiz.current_clue_id else None,
+                        current_clue_order=getattr(getattr(quiz, 'session', None), 'current_clue_number', None),
+                    )
+                if answer.submitted_clue_number <= 0:
+                    return JsonResponse({
+                        'success': False,
+                        'error': 'This answer has no stored clue position and cannot be corrected safely.',
+                    }, status=400)
+
+            if answer.total_clues_at_submission <= 0:
+                answer.total_clues_at_submission = answer.question.clues.count()
+
+            answer.is_correct = True
+            answer.is_manually_corrected = True
+            answer.points_earned = answer.calculate_points_from_submission_state()
+            answer.save()
+            answer.participant.refresh_from_db(fields=['total_score'])
+
+        response_payload = {
+            'answer_id': answer.id,
+            'participant_id': answer.participant_id,
+            'participant_name': answer.participant.name,
+            'question_id': answer.question_id,
+            'answer_text': answer.answer_text,
+            'is_correct': True,
+            'is_manual_override': True,
+            'can_mark_correct': False,
+            'points_earned': answer.points_earned,
+            'time_taken': answer.time_taken,
+            'total_score': answer.participant.total_score,
+            'submitted_at': answer.submitted_at.isoformat() if answer.submitted_at else None,
+            'submitted_clue_number': answer.submitted_clue_number,
+        }
+        progress_history = _build_clue_rush_progress_history(quiz, answer.participant)
+
+        channel_layer = get_channel_layer()
+        if channel_layer is not None:
+            async_to_sync(channel_layer.group_send)(
+                f'cluerush_{quiz.room_code}',
+                {
+                    'type': 'answer_corrected',
+                    'response': response_payload,
+                    'participant_id': answer.participant_id,
+                    'participant_name': answer.participant.name,
+                    'question_id': answer.question_id,
+                    'total_score': answer.participant.total_score,
+                    'progress_history': progress_history,
+                }
+            )
+
+        return JsonResponse({
+            'success': True,
+            **response_payload,
+            'progress_history': progress_history,
+        })
+    except Exception as e:
+        return JsonResponse({'success': False, 'error': str(e)}, status=400)
+
+
+@admin_required
+@require_POST
+def end_clue_rush_game_by_room_code(request, room_code):
+    """End a Clue Rush game by room code."""
+    try:
+        quiz = get_object_or_404(ClueRushGame, room_code=room_code)
+
+        if not request.user.is_superuser and quiz.creator != request.user:
+            return JsonResponse({
+                'success': False,
+                'error': 'You are not authorized to end this quiz.'
+            }, status=403)
+
+        session = getattr(quiz, 'session', None)
+        if session:
+            session.is_question_active = False
+            session.is_clue_active = False
+            session.question_end_time = None
+            session.clue_end_time = None
+            session.current_clue_number = 0
+            session.save(update_fields=[
+                'is_question_active',
+                'is_clue_active',
+                'question_end_time',
+                'clue_end_time',
+                'current_clue_number',
+            ])
+
+        quiz.current_question = None
+        quiz.question_start_time = None
+        quiz.current_clue = None
+        quiz.clue_start_time = None
+        quiz.end_quiz('completed')
+        quiz.save(update_fields=[
+            'status',
+            'ended_at',
+            'current_question',
+            'question_start_time',
+            'current_clue',
+            'clue_start_time',
+        ])
+
+        return JsonResponse({'success': True})
+    except Exception as e:
+        return JsonResponse({
+            'success': False,
+            'error': str(e)
+        }, status=400)
 
 
 @admin_required
@@ -1391,6 +1668,21 @@ def sessions_overview(request):
 
     active_games = []
 
+    def _resolve_game_end_url(end_url_name, room_code):
+        if not end_url_name:
+            return None
+
+        candidate_names = [end_url_name]
+        if ':' not in end_url_name:
+            candidate_names.append(f'admin_dashboard:{end_url_name}')
+
+        for candidate_name in candidate_names:
+            try:
+                return reverse(candidate_name, args=[room_code])
+            except NoReverseMatch:
+                continue
+        return None
+
     def _add_games(queryset, game_type, game_type_display, monitor_url_name, end_url_name, score_field='total_score'):
         for game in queryset:
             try:
@@ -1398,6 +1690,7 @@ def sessions_overview(request):
             except Exception:
                 participant_count = 0
             hub_session_code = room_code_to_hub_session.get(game.room_code)
+            end_url = _resolve_game_end_url(end_url_name, game.room_code)
             active_games.append({
                 'title': game.title,
                 'room_code': game.room_code,
@@ -1405,6 +1698,7 @@ def sessions_overview(request):
                 'game_type_display': game_type_display,
                 'monitor_url_name': monitor_url_name,
                 'end_url_name': end_url_name,
+                'end_url': end_url,
                 'participant_count': participant_count,
                 'started_at': getattr(game, 'started_at', None),
                 'hub_session_code': hub_session_code,
@@ -1417,7 +1711,7 @@ def sessions_overview(request):
     _add_games(WhoQuiz.objects.filter(status='active'), 'who', 'Who Is Lying?', 'admin_dashboard:who_monitor', 'admin_dashboard:end_who_quiz_by_room_code')
     _add_games(WhoThatQuiz.objects.filter(status='active'), 'who_that', 'Who Is That?', 'admin_dashboard:who_that_monitor', 'admin_dashboard:end_who_that_quiz_by_room_code')
     _add_games(BlackJackQuiz.objects.filter(status='active'), 'blackjack', 'Black Jack Quiz', 'admin_dashboard:blackjack_monitor', 'admin_dashboard:end_blackjack_quiz_by_room_code')
-    _add_games(ClueRushGame.objects.filter(status='active'), 'clue_rush', 'Clue Rush', 'admin_dashboard:clue_rush_monitor', None)
+    _add_games(ClueRushGame.objects.filter(status='active'), 'clue_rush', 'Clue Rush', 'admin_dashboard:clue_rush_monitor', 'admin_dashboard:end_clue_rush_game_by_room_code')
     _add_games(SortingLadderGame.objects.filter(status='active'), 'sorting_ladder', 'Sorting Ladder', 'admin_dashboard:sorting_ladder_monitor', 'admin_dashboard:end_sorting_ladder_game_by_room_code')
 
     # Session codes that have at least one active game running
@@ -5574,7 +5868,7 @@ def api_estimation_live_responses(request, room_code):
 
 
 
-from who_is_lying.models import WhoQuiz, WhoQuestion, WhoParticipant, WhoAnswer, WhoSession
+from who_is_lying.models import WhoQuiz, WhoQuestion, WhoParticipant, WhoAnswer, WhoSession, get_question_timer_state
 
 @admin_required
 def who_management(request):
@@ -5614,6 +5908,8 @@ def who_monitor(request, room_code):
     current_person_index = 0
     current_person_name = None
     current_question_time_per_person = None
+    current_question_started_at = None
+    who_timer_server_now = timezone.now()
     if quiz.current_question:
         randomized_people = quiz.current_question.get_randomized_people(room_code=quiz.room_code)
         current_question_people = []
@@ -5629,43 +5925,18 @@ def who_monitor(request, room_code):
             })
         current_question_time_per_person = max(int(quiz.current_question.time_limit or 0), 0)
         people_count = len(current_question_people)
-
-        if people_count and quiz.question_start_time and quiz_session.question_end_time:
-            total_duration = max(
-                (quiz_session.question_end_time - quiz.question_start_time).total_seconds(),
-                0,
-            )
-            derived_time_per_person = int(round(total_duration / people_count)) if total_duration > 0 else 0
-            if derived_time_per_person > 0:
-                current_question_time_per_person = derived_time_per_person
-
-        if current_question_time_per_person is not None and current_question_time_per_person <= 0:
-            current_question_time_per_person = None
-
+        timer_state = get_question_timer_state(
+            quiz.current_question,
+            question_start_time=quiz.question_start_time,
+            question_end_time=quiz_session.question_end_time,
+            people_count=people_count,
+            server_now=who_timer_server_now,
+        )
+        current_question_time_per_person = timer_state['time_per_person'] or None
+        current_person_index = timer_state['current_person_index']
+        current_question_time_left = timer_state['current_person_time_left']
+        current_question_started_at = quiz.question_start_time
         if people_count:
-            if current_question_time_per_person and quiz.question_start_time:
-                now = timezone.now()
-                elapsed = max((now - quiz.question_start_time).total_seconds(), 0)
-                current_person_index = min(int(elapsed // current_question_time_per_person), people_count - 1)
-                current_question_time_left = max(
-                    math.ceil(
-                        current_question_time_per_person
-                        - (elapsed - (current_person_index * current_question_time_per_person))
-                    ),
-                    0,
-                )
-
-                if current_question_time_left == 0 and current_person_index < people_count - 1:
-                    current_person_index += 1
-                    current_question_time_left = current_question_time_per_person
-            elif quiz_session.question_end_time:
-                current_question_time_left = max(
-                    math.ceil((quiz_session.question_end_time - timezone.now()).total_seconds()),
-                    0,
-                )
-            else:
-                current_question_time_left = current_question_time_per_person or 0
-
             current_person_name = current_question_people[current_person_index].get('name') or None
     
     context = {
@@ -5680,6 +5951,8 @@ def who_monitor(request, room_code):
         'current_person_index': current_person_index,
         'current_person_name': current_person_name,
         'current_question_time_per_person': current_question_time_per_person,
+        'current_question_started_at': current_question_started_at,
+        'who_timer_server_now': who_timer_server_now,
     }
     return render(request, 'admin_dashboard/who_lying_monitor.html', context)
 
@@ -6321,6 +6594,7 @@ def create_who_that_quiz(request):
 def who_that_monitor(request, room_code):
     """Real-time who is that quiz monitoring page"""
     hub_session = request.GET.get('hub_session')
+    active_hub_session_code = hub_session or _get_active_hub_session_code_for_room('who_that', room_code)
     quiz = get_object_or_404(WhoThatQuiz, room_code=room_code)
     
     # Ensure the logged-in user is the creator or is admin
@@ -6335,9 +6609,27 @@ def who_that_monitor(request, room_code):
     
     # Get or create quiz session
     quiz_session, created = WhoThatSession.objects.get_or_create(quiz=quiz)
+    review_question = None
+    raw_review_question_id = request.GET.get('review_question')
+    if raw_review_question_id and not (quiz.current_question_id and quiz_session.is_question_active):
+        try:
+            review_question_id = int(raw_review_question_id)
+        except (TypeError, ValueError):
+            review_question_id = None
+        if review_question_id:
+            if quiz.selected_questions.filter(id=review_question_id).exists():
+                review_question = quiz.selected_questions.filter(id=review_question_id).first()
+            else:
+                review_question = WhoThatQuestion.objects.filter(
+                    id=review_question_id,
+                    created_by=quiz.creator,
+                ).first()
+
+    display_question = quiz.current_question if quiz.current_question_id else review_question
+    is_display_question_active = bool(quiz.current_question_id and quiz_session.is_question_active)
     current_question_time_left = None
-    if quiz.current_question:
-        current_question_time_left = quiz.current_question.time_limit
+    if display_question and is_display_question_active:
+        current_question_time_left = display_question.time_limit
         if quiz_session.question_end_time:
             current_question_time_left = max(
                 0,
@@ -6350,6 +6642,10 @@ def who_that_monitor(request, room_code):
         'participant_count': participants.count(),
         'available_questions': available_questions,
         'quiz_session': quiz_session,
+        'active_hub_session_code': active_hub_session_code,
+        'display_question': display_question,
+        'is_display_question_active': is_display_question_active,
+        'review_question_id': review_question.id if review_question else None,
         'current_question_time_left': current_question_time_left,
         'lobby_url': _get_lobby_url(request, room_code),
     }
@@ -6829,6 +7125,8 @@ def api_who_that_live_responses(request, room_code):
     """Get live responses for current who is that question"""
     try:
         quiz = get_object_or_404(WhoThatQuiz, room_code=room_code)
+        active_hub_session_code = _extract_hub_session_code(request) or _get_active_hub_session_code_for_room('who_that', room_code)
+        quiz_session = WhoThatSession.objects.filter(quiz=quiz).first()
         
         # Ensure the logged-in user is the creator or is admin
         if not request.user.is_superuser and quiz.creator != request.user:
@@ -6838,8 +7136,11 @@ def api_who_that_live_responses(request, room_code):
             is_manual_override = response.is_correct and not response.question.check_answer(response.user_answer)
             return {
                 'answer_id': response.id,
+                'game_id': response.quiz_id,
+                'question_id': response.question_id,
                 'participant_id': response.participant_id,
                 'participant_name': response.participant.name,
+                'hub_session_code': response.participant.hub_session_code,
                 'user_answer': response.user_answer,
                 'formatted_answer': response.user_answer,
                 'points_earned': 1 if response.is_correct else 0,
@@ -6852,25 +7153,43 @@ def api_who_that_live_responses(request, room_code):
                 'submitted_at': response.submitted_at.isoformat(),
             }
 
-        if not quiz.current_question:
-            if not quiz.started_at:
-                return JsonResponse({
-                    'success': True,
-                    'responses': []
-                })
-            recent_qs = WhoThatAnswer.objects.filter(
-                quiz=quiz,
-                submitted_at__gte=quiz.started_at
-            ).select_related('participant', 'question').order_by('-submitted_at')[:20]
+        review_question = None
+        raw_review_question_id = request.GET.get('review_question')
+        if raw_review_question_id and not (quiz.current_question_id and quiz_session and quiz_session.is_question_active):
+            try:
+                review_question_id = int(raw_review_question_id)
+            except (TypeError, ValueError):
+                review_question_id = None
+            if review_question_id:
+                if quiz.selected_questions.filter(id=review_question_id).exists():
+                    review_question = quiz.selected_questions.filter(id=review_question_id).first()
+                else:
+                    review_question = WhoThatQuestion.objects.filter(
+                        id=review_question_id,
+                        created_by=quiz.creator,
+                    ).first()
+
+        response_question = None
+        if quiz.status == 'active' and quiz.current_question and (not quiz_session or quiz_session.is_question_active):
+            response_question = quiz.current_question
+        elif quiz.status in ('active', 'inactive') and review_question is not None:
+            response_question = review_question
+
+        if response_question is None:
             return JsonResponse({
                 'success': True,
-                'responses': [serialize_who_that_response(response) for response in recent_qs]
+                'responses': []
             })
         
         responses = WhoThatAnswer.objects.filter(
             quiz=quiz,
-            question=quiz.current_question
-        ).select_related('participant', 'question').order_by('-submitted_at')[:20]
+            question=response_question
+        ).select_related('participant', 'question')
+        if quiz.started_at:
+            responses = responses.filter(submitted_at__gte=quiz.started_at)
+        if active_hub_session_code:
+            responses = responses.filter(participant__hub_session_code=active_hub_session_code)
+        responses = responses.order_by('-submitted_at')[:20]
         
         responses_data = [serialize_who_that_response(response) for response in responses]
         
@@ -7198,8 +7517,9 @@ def create_black_jack_custom_quiz(request):
 @admin_required
 def blackjack_monitor(request, room_code):
     """Real-time BlackJack quiz monitoring page"""
-    hub_session = request.GET.get('hub_session')
+    hub_session = request.GET.get('hub_session') or _get_active_hub_session_code_for_room('blackjack', room_code)
     quiz = get_object_or_404(BlackJackQuiz, room_code=room_code)
+    quiz.ensure_runtime_scoped_to_hub_session(hub_session)
     
     # Ensure the logged-in user is the creator or is admin
     if not request.user.is_superuser and quiz.creator != request.user:
@@ -7228,7 +7548,7 @@ def blackjack_monitor(request, room_code):
 
     if quiz.current_question_id:
         current_set_number = quiz.get_set_number_for_question_id(quiz.current_question_id, active_only=False)
-        current_question_in_set = quiz.get_question_number_in_set(question_id=quiz.current_question_id)
+        current_question_in_set = quiz.get_current_question_position_in_set()
         current_set_question_count = quiz.get_set_question_count(question_id=quiz.current_question_id)
     else:
         current_set_number = selected_set_number
@@ -7243,7 +7563,7 @@ def blackjack_monitor(request, room_code):
     next_set_number = selected_set_number
     next_set_question_count = quiz.get_set_question_count(set_number=selected_set_number)
     total_game_questions = len(quiz.get_configured_question_ids(active_only=True)) if quiz.has_configured_question_pool() else quiz.get_total_game_questions()
-    sent_question_count = max(
+    sent_question_count = 0 if quiz_session.is_waiting_fresh_start_state() else max(
         int(quiz_session.total_questions_sent or 0),
         len(quiz_session.get_asked_question_ids()),
     )
@@ -7677,7 +7997,7 @@ def api_blackjack_quiz_stats(request, room_code):
     """Get real-time BlackJack quiz statistics"""
     try:
         quiz = get_object_or_404(BlackJackQuiz, room_code=room_code)
-        hub_session = request.GET.get('hub_session')
+        hub_session = request.GET.get('hub_session') or _get_active_hub_session_code_for_room('blackjack', room_code)
         
         # Ensure the logged-in user is the creator or is admin
         if not request.user.is_superuser and quiz.creator != request.user:
@@ -7688,13 +8008,22 @@ def api_blackjack_quiz_stats(request, room_code):
             participants = participants.filter(hub_session_code=hub_session)
         
         active_participants = participants.filter(is_active=True)
-        if quiz.current_question_id:
-            active_participants = active_participants.filter(is_busted=False)
+        current_answers = BlackJackAnswer.objects.none()
+        if quiz.current_question:
+            current_answers = quiz.get_current_run_answers().filter(
+                question=quiz.current_question,
+                participant__in=active_participants,
+            )
+            current_answered_participant_ids = current_answers.values_list('participant_id', flat=True).distinct()
+            active_participants = active_participants.filter(
+                Q(is_busted=False) | Q(id__in=current_answered_participant_ids)
+            )
+            current_answers = current_answers.filter(participant__in=active_participants)
 
         stats = {
             'participant_count': participants.count(),
             'active_participants': active_participants.count(),
-            'total_answers': BlackJackAnswer.objects.filter(quiz=quiz).count(),
+            'total_answers': quiz.get_current_run_answers().filter(participant__in=participants).count(),
             'current_question_responses': 0,
             'average_points': 0,
             'busted_count': participants.filter(is_busted=True).count(),
@@ -7708,13 +8037,7 @@ def api_blackjack_quiz_stats(request, room_code):
         
         # Current question stats
         if quiz.current_question:
-            current_answers = BlackJackAnswer.objects.filter(
-                quiz=quiz, 
-                question=quiz.current_question
-            )
-            if hub_session:
-                current_answers = current_answers.filter(participant__hub_session_code=hub_session)
-            stats['current_question_responses'] = current_answers.count()
+            stats['current_question_responses'] = current_answers.values('participant_id').distinct().count()
             if current_answers.exists():
                 avg_points = sum(answer.points_earned for answer in current_answers) / current_answers.count()
                 stats['current_question_avg_points'] = avg_points

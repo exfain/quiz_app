@@ -2,7 +2,16 @@ import json
 from channels.generic.websocket import AsyncWebsocketConsumer
 from channels.db import database_sync_to_async
 from django.utils import timezone
-from .models import WhoQuiz, WhoParticipant, WhoQuestion, WhoAnswer
+from .models import (
+    WhoQuiz,
+    WhoParticipant,
+    WhoQuestion,
+    WhoAnswer,
+    get_question_timer_state,
+    remember_recently_ended_question,
+    get_recently_ended_question_id,
+    clear_recently_ended_question,
+)
 from games_hub.active_game_guard import resolve_session_game_activation_for_room
 from games_hub.lobby_return_flow import ensure_session_players_ready_for_game_start_for_room
 from games_hub.models import HubGameStep
@@ -170,25 +179,16 @@ class WhoConsumer(AsyncWebsocketConsumer):
 
         # Update quiz/session state for the whole question set.
         await self.update_quiz_question(quiz.id, question.id, effective_time_limit)
-        question_number = await self.get_question_number_for_quiz(question.id)
-
-        # Get question data for the game
-        question_data = await self.get_question_data(question)
+        question_payload = await self.get_current_question_data()
+        if not question_payload:
+            return
         
         # Broadcast new question to all participants
         await self.channel_layer.group_send(
             self.room_group_name,
             {
                 'type': 'question_started',
-                'question': {
-                    'id': question.id,
-                    'question_number': question_number,
-                    'statement': question.statement,
-                    'time_limit': effective_time_limit,
-                    'points': question.points,
-                    'people': question_data['people'],
-                    'total_possible_points': question_data['total_possible_points']
-                }
+                'question': question_payload
             }
         )
 
@@ -196,6 +196,7 @@ class WhoConsumer(AsyncWebsocketConsumer):
         """Handle admin ending current question"""
         quiz = await self.get_quiz()
         if quiz:
+            await self.remember_recently_ended_current_question(quiz.id)
             await self.clear_current_question(quiz.id)
             
             await self.channel_layer.group_send(
@@ -277,10 +278,11 @@ class WhoConsumer(AsyncWebsocketConsumer):
         hub_session = data.get('hub_session')
         selected_liars = data.get('selected_liars', [])
         time_taken = data.get('time_taken', 0)
+        question_id = data.get('question_id')
 
         # Save the answer
         answer = await self.save_participant_answer(
-            participant_name, hub_session, selected_liars, time_taken
+            participant_name, hub_session, selected_liars, time_taken, question_id
         )
         
         if answer:
@@ -452,14 +454,32 @@ class WhoConsumer(AsyncWebsocketConsumer):
             if not question:
                 return None
             question_data = self.get_question_data_sync(question)
+            try:
+                session = quiz.session
+            except Exception:
+                session = None
+            server_now = timezone.now()
+            timer_state = get_question_timer_state(
+                question,
+                question_start_time=quiz.question_start_time,
+                question_end_time=session.question_end_time if session else None,
+                people_count=len(question_data['people']),
+                server_now=server_now,
+            )
             return {
                 'id': question.id,
                 'question_number': self.get_question_number_for_quiz_value(question.id),
                 'statement': question.statement,
-                'time_limit': question.time_limit,
+                'time_limit': timer_state['time_per_person'],
+                'time_per_person': timer_state['time_per_person'],
                 'points': question.points,
                 'people': question_data['people'],
                 'total_possible_points': question_data['total_possible_points'],
+                'current_person_index': timer_state['current_person_index'],
+                'current_person_time_left': timer_state['current_person_time_left'],
+                'question_started_at': quiz.question_start_time.isoformat() if quiz.question_start_time else None,
+                'question_end_time': session.question_end_time.isoformat() if session and session.question_end_time else None,
+                'server_now': server_now.isoformat(),
             }
         except WhoQuiz.DoesNotExist:
             return None
@@ -598,6 +618,7 @@ class WhoConsumer(AsyncWebsocketConsumer):
             quiz.status = 'active'
             quiz.started_at = timezone.now()
             quiz.save()
+            clear_recently_ended_question(quiz.room_code)
         except WhoQuiz.DoesNotExist:
             pass
 
@@ -609,6 +630,7 @@ class WhoConsumer(AsyncWebsocketConsumer):
             quiz.ended_at = timezone.now()
             quiz.current_question = None
             quiz.save()
+            clear_recently_ended_question(quiz.room_code)
         except WhoQuiz.DoesNotExist:
             pass
 
@@ -635,6 +657,7 @@ class WhoConsumer(AsyncWebsocketConsumer):
             from .models import WhoSession
             session, _ = WhoSession.objects.get_or_create(quiz=quiz)
         session.send_question(question, time_per_person=time_per_person)
+        clear_recently_ended_question(quiz.room_code)
 
     @database_sync_to_async
     def clear_current_question(self, quiz_id):
@@ -663,28 +686,40 @@ class WhoConsumer(AsyncWebsocketConsumer):
         }
 
     @database_sync_to_async
-    def save_participant_answer(self, participant_name, hub_session_code, selected_liars, time_taken):
+    def save_participant_answer(self, participant_name, hub_session_code, selected_liars, time_taken, question_id=None):
         try:
             quiz = WhoQuiz.objects.get(room_code=self.room_code)
             participant = quiz.participants.get(name=participant_name, hub_session_code=hub_session_code)
             
             if quiz.status != 'active':
                 return None
-            if not quiz.current_question:
+
+            target_question = None
+            if quiz.current_question_id:
+                if question_id is not None and str(question_id) != str(quiz.current_question_id):
+                    return None
+                target_question = quiz.current_question
+            else:
+                recent_question_id = get_recently_ended_question_id(self.room_code)
+                if recent_question_id is None or question_id is None or str(question_id) != str(recent_question_id):
+                    return None
+                target_question = WhoQuestion.objects.filter(id=recent_question_id).first()
+
+            if not target_question:
                 return None
             
             # Check if answer already exists
             existing_answer = WhoAnswer.objects.filter(
                 quiz=quiz,
                 participant=participant,
-                question=quiz.current_question
+                question=target_question
             ).first()
             
             if existing_answer:
                 return None  # Already answered
             
             # Get the same randomized data using the same room code
-            randomized_data = quiz.current_question.get_randomized_people(room_code=self.room_code)
+            randomized_data = target_question.get_randomized_people(room_code=self.room_code)
             position_to_original = randomized_data['position_to_original']
             
             # Convert selected liars from shuffled positions to original positions
@@ -698,7 +733,7 @@ class WhoConsumer(AsyncWebsocketConsumer):
             answer = WhoAnswer.objects.create(
                 quiz=quiz,
                 participant=participant,
-                question=quiz.current_question,
+                question=target_question,
                 selected_liars=original_selected_liars,
                 time_taken=time_taken
             )
@@ -710,7 +745,7 @@ class WhoConsumer(AsyncWebsocketConsumer):
             person_results = []
             for displayed_person in randomized_data['people']:
                 original_idx = displayed_person['original_index']
-                original_person = quiz.current_question.people[original_idx]
+                original_person = target_question.people[original_idx]
                 is_actually_lying = bool(original_person.get('is_lying', False))
                 was_selected = original_idx in selected_liars_set
                 if was_selected and is_actually_lying:
@@ -740,6 +775,16 @@ class WhoConsumer(AsyncWebsocketConsumer):
             
         except (WhoQuiz.DoesNotExist, WhoParticipant.DoesNotExist):
             return None
+
+    @database_sync_to_async
+    def remember_recently_ended_current_question(self, quiz_id):
+        try:
+            quiz = WhoQuiz.objects.get(id=quiz_id)
+        except WhoQuiz.DoesNotExist:
+            return
+
+        if quiz.current_question_id:
+            remember_recently_ended_question(quiz.room_code, quiz.current_question_id)
 
     @database_sync_to_async
     def mark_participant_active(self, participant_id):

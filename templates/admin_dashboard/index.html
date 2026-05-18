@@ -18,6 +18,9 @@
                 <a href="{% url 'games_hub:create_session' %}" class="btn btn-primary btn-md">
                     <i class="fas fa-plus-circle me-2"></i>New Session
                 </a>
+                <button type="button" class="btn btn-outline-danger btn-md" id="endAllActiveGamesBtn" {% if not active_games %}disabled{% endif %}>
+                    <i data-lucide="octagon-x" style="width:16px;height:16px;" class="me-1"></i>Alle aktiven Spiele beenden
+                </button>
                 <div class="btn-group" role="group">
                     <button id="btnGroupDrop1" type="button" class="btn btn-success dropdown-toggle" data-bs-toggle="dropdown" aria-expanded="false">
                         Backup / Restore
@@ -226,9 +229,9 @@
                                     {% endif %}
                                 </td>
                                 <td onclick="event.stopPropagation()">
-                                    {% if game.end_url_name %}
+                                    {% if game.end_url %}
                                     <button class="btn btn-sm btn-outline-danger end-game-btn"
-                                            data-end-url="{% url game.end_url_name game.room_code %}"
+                                            data-end-url="{{ game.end_url }}"
                                             data-title="{{ game.title }}"
                                             data-session-url="{% if game.hub_session_code %}{% url 'games_hub:monitor' game.hub_session_code %}{% else %}{% url 'admin_dashboard:sessions_overview' %}{% endif %}">
                                         <i data-lucide="square" style="width:14px;height:14px;"></i> End
@@ -449,6 +452,7 @@
 <script>
     document.addEventListener('DOMContentLoaded', function() {
         const clearSessionsBtn = document.getElementById('clearSessionsBtn');
+        const endAllActiveGamesBtn = document.getElementById('endAllActiveGamesBtn');
         const backupSupabaseBtn = document.getElementById('backupSupabaseBtn');
         const restoreSupabaseBtn = document.getElementById('restoreSupabaseBtn');
 
@@ -501,6 +505,42 @@
                         clearSessionsBtn.innerHTML = originalText;
                     });
                 }
+            });
+        }
+
+        if (endAllActiveGamesBtn) {
+            endAllActiveGamesBtn.addEventListener('click', function() {
+                if (!confirm('Wirklich alle aktuell aktiven Spiele beenden?')) {
+                    return;
+                }
+
+                const originalText = endAllActiveGamesBtn.innerHTML;
+                endAllActiveGamesBtn.disabled = true;
+                endAllActiveGamesBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>Beende...';
+
+                fetch('{% url "admin_dashboard:end_all_active_games" %}', {
+                    method: 'POST',
+                    headers: {
+                        'X-CSRFToken': '{{ csrf_token }}',
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({})
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        window.location.reload();
+                    } else {
+                        throw new Error(data.error || 'Failed to end active games');
+                    }
+                })
+                .catch(error => {
+                    console.error('Error:', error);
+                    alert('Failed to end active games: ' + error.message);
+                    endAllActiveGamesBtn.disabled = false;
+                    endAllActiveGamesBtn.innerHTML = originalText;
+                    lucide.createIcons();
+                });
             });
         }
 

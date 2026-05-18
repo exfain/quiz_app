@@ -450,6 +450,63 @@ class CheckRoundAnswerTest(TransactionTestCase):
             'max_rounds': 4,
         }])
 
+    def test_progress_history_ignores_stale_answers_from_other_hub_session(self):
+        question_one = AssignQuestion.objects.create(
+            question_text='Question one',
+            points=10,
+            time_limit=45,
+            left_items=['A', 'B'],
+            right_items=['X', 'Y'],
+            correct_matches={'0': 0, '1': 1},
+            created_by=self.user,
+        )
+        question_two = AssignQuestion.objects.create(
+            question_text='Question two',
+            points=10,
+            time_limit=45,
+            left_items=['C', 'D'],
+            right_items=['U', 'V'],
+            correct_matches={'0': 0, '1': 1},
+            created_by=self.user,
+        )
+        self.quiz.selected_questions.set([question_one, question_two])
+        self.quiz.question_order = [question_one.id, question_two.id]
+        self.quiz.current_question = question_two
+        self.quiz.status = 'active'
+        self.quiz.save(update_fields=['question_order', 'current_question', 'status'])
+
+        stale_participant = AssignParticipant.objects.create(
+            quiz=self.quiz,
+            name='Bob',
+            hub_session_code='sess2',
+        )
+        AssignAnswer.objects.create(
+            quiz=self.quiz,
+            participant=stale_participant,
+            question=question_one,
+            user_matches={'0': 0},
+            time_taken=3.0,
+        )
+
+        shuffled_matches = {}
+        for left_idx_str, correct_orig in question_two.correct_matches.items():
+            shuffled_matches[left_idx_str] = self._get_shuffled_pos_for_original(correct_orig, question=question_two)
+
+        result = async_to_sync(self.consumer.save_participant_answer)(
+            'Alice',
+            'sess1',
+            shuffled_matches,
+            12.0,
+            question_two.id,
+        )
+
+        self.assertEqual(result['progress_history'], [{
+            'question_id': question_two.id,
+            'question_number': 1,
+            'survived_rounds': 2,
+            'max_rounds': 2,
+        }])
+
     def test_assign_monitor_uses_correct_match_count_for_rounds_and_preview(self):
         """Admin-Monitor zeigt fachliche Rundenzahl und Match-Preview über correct_matches."""
         question = self._create_left_distractor_question()
@@ -729,6 +786,81 @@ class AssignPlayScoreboardViewTest(TestCase):
         )
         self.assertEqual(response.context['question_scoreboard'][1]['status'], 'current')
         self.assertContains(response, 'moveQuestionToNextFreeScoreSlot(question.id, question.total_possible_points);')
+
+    def test_assign_play_ignores_stale_other_session_answers_for_out_of_order_current_question(self):
+        question_one = self._create_question(
+            'Question one',
+            ['A', 'B'],
+            ['X', 'Y'],
+            {'0': 0, '1': 1},
+        )
+        question_two = self._create_question(
+            'Question two',
+            ['C', 'D'],
+            ['U', 'V'],
+            {'0': 0, '1': 1},
+        )
+        self.quiz.selected_questions.set([question_one, question_two])
+        self.quiz.question_order = [question_one.id, question_two.id]
+        self.quiz.current_question = question_two
+        self.quiz.save(update_fields=['question_order', 'current_question'])
+
+        stale_participant = AssignParticipant.objects.create(
+            quiz=self.quiz,
+            name='Bob',
+            hub_session_code='sess2',
+        )
+        AssignAnswer.objects.create(
+            quiz=self.quiz,
+            participant=stale_participant,
+            question=question_one,
+            user_matches={'0': 0},
+            time_taken=4.0,
+        )
+
+        response = self.client.get(
+            reverse('assign:play', args=[self.quiz.room_code, self.participant.name]),
+            {'hub_session': self.participant.hub_session_code},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.context['question_scoreboard'],
+            [
+                {
+                    'id': question_two.id,
+                    'number': 1,
+                    'earned_points': None,
+                    'max_points': 2,
+                    'status': 'current',
+                },
+                {
+                    'id': question_one.id,
+                    'number': 2,
+                    'earned_points': None,
+                    'max_points': None,
+                    'status': 'upcoming',
+                },
+            ],
+        )
+
+    def test_assign_play_uses_question_id_primary_score_mapping_in_client(self):
+        question_one = self._create_question(
+            'Question one',
+            ['A', 'B'],
+            ['X', 'Y'],
+            {'0': 0, '1': 1},
+        )
+        self.quiz.selected_questions.set([question_one])
+
+        response = self.client.get(
+            reverse('assign:play', args=[self.quiz.room_code, self.participant.name]),
+            {'hub_session': self.participant.hub_session_code},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'getProgressEntryForScoreRow(question, questionNumber')
+        self.assertContains(response, 'return byQuestionId.get(normalizedQuestionId) || null;')
 
     def test_assign_play_renders_cumulative_score_total_for_played_sets(self):
         question_one = self._create_question(

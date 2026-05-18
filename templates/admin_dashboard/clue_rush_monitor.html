@@ -121,8 +121,8 @@
                                     </div>
                                     <div class="d-flex align-items-center gap-2">
                                         <div>
-                                            <small class="text-muted d-block mb-1">Zeit in Sek.</small>
-                                            <input type="number" class="form-control form-control-sm question-time-input" placeholder="Time (s)" min="5" step="1" style="max-width: 120px;" value="{{ question.time_limit }}">
+                                            <small class="text-muted d-block mb-1">Bis nächstem Hinweis</small>
+                                            <input type="number" class="form-control form-control-sm question-time-input" placeholder="Time (s)" min="5" step="1" style="max-width: 120px;" value="{{ question.host_timer_seconds }}" data-default-time="{{ question.host_timer_seconds }}">
                                         </div>
                                         <button class="btn btn-secondary send-question-btn" data-question-id="{{ question.id }}" {% if quiz.status != 'active' %}disabled title="Start the quiz to send questions"{% endif %}>
                                             <i data-lucide="send"></i>
@@ -170,9 +170,9 @@
                                     </div>
                                     <ul class="list-group" id="clueList">
                                         {% for clue in quiz.current_question.clues.all %}
-                                        <li class="list-group-item d-flex justify-content-between align-items-center" data-clue-order="{{ clue.order }}">
-                                            <div class="clue-text"><strong>#{{ clue.order }}</strong> {{ clue.clue_text }}</div>
-                                            {% if quiz.current_clue and clue.order <= quiz.current_clue.order %}
+                                        <li class="list-group-item d-flex justify-content-between align-items-center" data-clue-order="{{ forloop.counter }}">
+                                            <div class="clue-text"><strong>#{{ forloop.counter }}</strong> {{ clue.clue_text }}</div>
+                                            {% if forloop.counter <= current_revealed_clue_count %}
                                             <span class="badge bg-success clue-status">Sent</span>
                                             {% else %}
                                             <span class="badge bg-secondary clue-status">Pending</span>
@@ -847,6 +847,8 @@
 }
 </style>
 
+{{ initial_live_responses|json_script:"initialClueRushResponsesData" }}
+
 <script>
 document.addEventListener('DOMContentLoaded', function() {
     // Save hub_session immediately for Back to Overview button
@@ -864,10 +866,24 @@ document.addEventListener('DOMContentLoaded', function() {
         constructor() {
             this.roomCode = '{{ quiz.room_code }}';
             this.websocket = null;
-            this.quizStartTime = {% if quiz.started_at %}new Date('{{ quiz.started_at|date:"c" }}'){% else %}null{% endif %};
             this.isActive = '{{ quiz.status }}' === 'active';
+            this.currentClueTimeLeft = {{ current_clue_time_left|default:0 }};
+            this.currentClueHasNext = {% if current_clue_has_next %}true{% else %}false{% endif %};
+            this.quizTimerInterval = null;
             this.liveResponseState = new Map();
+            this.initialLiveResponses = this.readJSONScript('initialClueRushResponsesData');
             this.init();
+        }
+
+        readJSONScript(id) {
+            const node = document.getElementById(id);
+            if (!node) return [];
+            try {
+                const parsed = JSON.parse(node.textContent || '[]');
+                return Array.isArray(parsed) ? parsed : [];
+            } catch (_) {
+                return [];
+            }
         }
 
         getStorageKey() {
@@ -993,6 +1009,9 @@ document.addEventListener('DOMContentLoaded', function() {
                 case 'participant_answered':
                     this.addLiveResponse(data.answer);
                     break;
+                case 'answer_corrected':
+                    this.applyCorrectedAnswer(data);
+                    break;
                 case 'close_answer_approved':
                     console.log('Close answer approved for', data.participant_name, '+', data.points_earned, 'pts');
                     break;
@@ -1025,12 +1044,17 @@ document.addEventListener('DOMContentLoaded', function() {
                     
                 case 'question_ended':
                     console.log('Question ended:', data.message);
+                    this.stopQuizTimer();
+                    this.setQuizTimer(0);
                     location.reload();
                     break;
                 case 'clue_started':
                     this.markClueSent(data.clue);
+                    this.startNextClueTimer(data.clue);
                     break;
                 case 'clue_sequence_completed':
+                    this.stopQuizTimer();
+                    this.setQuizTimer(0);
                     this.disableClueSending();
                     break;
                     
@@ -1092,6 +1116,12 @@ document.addEventListener('DOMContentLoaded', function() {
             // Back to Hub button
             document.getElementById('backToHubBtn')?.addEventListener('click', () => {
                 this.backToHub();
+            });
+
+            document.addEventListener('click', (event) => {
+                const promoteButton = event.target.closest('.promote-correct-btn');
+                if (!promoteButton) return;
+                this.promoteAnswerCorrect(promoteButton.dataset.answerId, promoteButton);
             });
             
             // Send Question buttons
@@ -1206,7 +1236,8 @@ document.addEventListener('DOMContentLoaded', function() {
                     const input = item ? item.querySelector('.question-time-input') : null;
                     if (input && input.value) {
                         const v = parseInt(input.value, 10);
-                        if (!isNaN(v) && v > 0) customTime = v;
+                        const defaultValue = parseInt(input.dataset.defaultTime || '', 10);
+                        if (!isNaN(v) && v > 0 && (isNaN(defaultValue) || v !== defaultValue)) customTime = v;
                     }
                 } catch(_) {}
 
@@ -1216,8 +1247,6 @@ document.addEventListener('DOMContentLoaded', function() {
                 };
                 if (customTime) {
                     payload.custom_time_limit = customTime;
-                    // Persist for admin-side timer after backend switches state
-                    try { localStorage.setItem(`override_time_${this.roomCode}`, String(customTime)); } catch(_) {}
                 }
 
                 this.websocket.send(JSON.stringify(payload));
@@ -1237,63 +1266,106 @@ document.addEventListener('DOMContentLoaded', function() {
         }
         
         startQuizTimer() {
-            if (!this.quizStartTime) return;
-            
-            const updateTimer = () => {
-                const now = new Date();
-                const elapsed = Math.floor((now - this.quizStartTime) / 1000);
-                const minutes = Math.floor(elapsed / 60);
-                const seconds = elapsed % 60;
-                const timerElement = document.getElementById('quizTimer');
-                if (timerElement) {
-                    timerElement.textContent = 
-                        `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+            if (this.currentClueHasNext && this.currentClueTimeLeft > 0) {
+                this.startCountdown(this.currentClueTimeLeft);
+                return;
+            }
+            this.setQuizTimer(0);
+        }
+
+        stopQuizTimer() {
+            if (this.quizTimerInterval) {
+                clearInterval(this.quizTimerInterval);
+                this.quizTimerInterval = null;
+            }
+        }
+
+        setQuizTimer(totalSeconds) {
+            const timerElement = document.getElementById('quizTimer');
+            if (!timerElement) return;
+            const safeSeconds = Math.max(0, parseInt(totalSeconds, 10) || 0);
+            const minutes = Math.floor(safeSeconds / 60);
+            const seconds = safeSeconds % 60;
+            timerElement.textContent = `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+        }
+
+        startCountdown(initialSeconds) {
+            this.stopQuizTimer();
+            let timeLeft = Math.max(0, parseInt(initialSeconds, 10) || 0);
+            this.setQuizTimer(timeLeft);
+            if (timeLeft <= 0) return;
+            this.quizTimerInterval = setInterval(() => {
+                timeLeft -= 1;
+                this.setQuizTimer(timeLeft);
+                if (timeLeft <= 0) {
+                    this.stopQuizTimer();
                 }
-            };
-            
-            updateTimer();
-            setInterval(updateTimer, 1000);
+            }, 1000);
+        }
+
+        startNextClueTimer(clue) {
+            if (!clue || clue.has_next_clue !== true) {
+                this.currentClueHasNext = false;
+                this.currentClueTimeLeft = 0;
+                this.stopQuizTimer();
+                this.setQuizTimer(0);
+                return;
+            }
+
+            let timeLeft = parseInt(clue.duration, 10);
+            if (clue.end_time) {
+                const endAt = new Date(clue.end_time);
+                if (!Number.isNaN(endAt.getTime())) {
+                    timeLeft = Math.max(0, Math.ceil((endAt.getTime() - Date.now()) / 1000));
+                }
+            }
+
+            this.currentClueHasNext = true;
+            this.currentClueTimeLeft = Math.max(0, timeLeft || 0);
+            this.startCountdown(this.currentClueTimeLeft);
         }
         
         initializeLiveResponseState() {
             if (!(this.liveResponseState instanceof Map)) {
                 this.liveResponseState = new Map();
             }
-            document.querySelectorAll('.participant-item').forEach((row) => {
-                const nameEl = row.querySelector('.participant-name');
-                const name = (nameEl?.textContent || '').trim();
-                if (!name) return;
-                const rowText = (row.textContent || '').toLowerCase();
-                const inferredEliminated = rowText.includes('eliminated') || rowText.includes('ausgeschieden');
-                const prev = this.liveResponseState.get(name) || { answered: false, eliminated: false };
-                this.liveResponseState.set(name, {
-                    answered: !!prev.answered,
-                    eliminated: !!(prev.eliminated || inferredEliminated),
-                });
+            this.liveResponseState.clear();
+            (this.initialLiveResponses || []).forEach((response) => {
+                const key = this.getLiveResponseKey(response);
+                if (!key) return;
+                this.liveResponseState.set(key, response);
             });
             this.renderLiveResponseState();
         }
 
         resetLiveResponseStateForQuestion() {
-            if (!(this.liveResponseState instanceof Map)) {
-                this.liveResponseState = new Map();
-            }
-            for (const [name, state] of this.liveResponseState.entries()) {
-                this.liveResponseState.set(name, { answered: false, eliminated: !!state?.eliminated });
-            }
+            this.initialLiveResponses = [];
+            this.liveResponseState = new Map();
             this.renderLiveResponseState();
+        }
+
+        getLiveResponseKey(response) {
+            if (!response) return '';
+            if (response.answer_id != null && response.answer_id !== '') {
+                return String(response.answer_id);
+            }
+            const participantName = (response.participant_name || '').trim();
+            if (!participantName) return '';
+            return `${participantName}:${response.question_id || ''}`;
         }
 
         renderLiveResponseState() {
             const responsesContainer = document.getElementById('liveResponses');
             if (!responsesContainer) return;
 
-            const entries = Array.from(this.liveResponseState.entries());
-            if (!entries.length) {
+            const responses = Array.from(this.liveResponseState.values()).sort((left, right) => {
+                return new Date(right.submitted_at || 0) - new Date(left.submitted_at || 0);
+            });
+            if (!responses.length) {
                 responsesContainer.innerHTML = `
                     <div class="no-responses">
                         <i data-lucide="clock"></i>
-                        <p>No participant status available yet.</p>
+                        <p>No responses yet. Send a question to see participant answers in real-time.</p>
                     </div>
                 `;
                 const responseCount = document.getElementById('responseCount');
@@ -1302,30 +1374,47 @@ document.addEventListener('DOMContentLoaded', function() {
                 return;
             }
 
-            responsesContainer.innerHTML = '';
-            let answeredCount = 0;
-            entries.forEach(([participantName, state]) => {
-                const eliminated = !!state?.eliminated;
-                const answered = !eliminated && !!state?.answered;
-                if (answered) answeredCount += 1;
+            responsesContainer.innerHTML = responses.map((response) => {
+                const participantName = this.escapeHtml(response.participant_name || '');
+                const answerText = this.escapeHtml(response.answer_text || '');
+                const clueNumber = Number(response.submitted_clue_number || 0);
+                const timeTaken = (typeof response.time_taken === 'number' && response.time_taken > 0)
+                    ? `${response.time_taken.toFixed(1)}s`
+                    : '-';
+                const badge = response.is_correct
+                    ? `<span class="badge ${response.is_manual_override ? 'bg-info text-dark' : 'bg-success'} ms-1" style="font-size:0.7rem;">${response.is_manual_override ? 'Correct (manual)' : 'Correct'}</span>`
+                    : '<span class="badge bg-danger ms-1" style="font-size:0.7rem;">Wrong</span>';
+                const clueBadge = clueNumber > 0
+                    ? `<span class="badge bg-secondary ms-1" style="font-size:0.7rem;">Hint #${clueNumber}</span>`
+                    : '';
+                const promoteButton = response.can_mark_correct
+                    ? `<button class="btn btn-sm btn-outline-success promote-correct-btn" data-answer-id="${this.escapeHtml(response.answer_id)}">Mark correct</button>`
+                    : '';
 
-                const quality = eliminated ? 'poor' : (answered ? 'excellent' : 'fair');
-                const detailText = eliminated ? 'Ausgeschieden' : (answered ? 'Antwort abgegeben' : 'Warte auf Antwort');
-
-                const row = document.createElement('div');
-                row.className = 'response-item';
-                row.innerHTML = `
-                    <div class="response-avatar ${quality}">${participantName.charAt(0).toUpperCase()}</div>
-                    <div class="response-content">
-                        <div class="response-name">${participantName}</div>
-                        <div class="response-details">${detailText}</div>
+                return `
+                    <div class="response-item" data-answer-id="${this.escapeHtml(response.answer_id)}">
+                        <div class="response-avatar ${response.is_correct ? 'excellent' : 'poor'}">
+                            ${participantName.charAt(0).toUpperCase()}
+                        </div>
+                        <div class="response-content">
+                            <div class="response-name">${participantName}</div>
+                            <div class="response-details">
+                                <span class="response-answer">${answerText}</span>
+                                ${badge}
+                                ${clueBadge}
+                                &nbsp;+${response.points_earned || 0} pts
+                            </div>
+                        </div>
+                        <div class="response-meta">
+                            <div class="response-time">${timeTaken}</div>
+                            <div class="response-actions">${promoteButton}</div>
+                        </div>
                     </div>
                 `;
-                responsesContainer.appendChild(row);
-            });
+            }).join('');
 
             const responseCount = document.getElementById('responseCount');
-            if (responseCount) responseCount.textContent = `${answeredCount}/${entries.length}`;
+            if (responseCount) responseCount.textContent = String(responses.length);
         }
 
         addParticipant(participant) {
@@ -1368,12 +1457,16 @@ document.addEventListener('DOMContentLoaded', function() {
         }
         
         addLiveResponse(response) {
-            if (!(this.liveResponseState instanceof Map)) { this.liveResponseState = new Map(); }
-            const participantName = (response.participant_name || '').trim();
-            if (!participantName) return;
-            const prev = this.liveResponseState.get(participantName) || { answered: false, eliminated: false };
-            this.liveResponseState.set(participantName, { answered: true, eliminated: !!(prev.eliminated || response.is_eliminated) });
+            if (!(this.liveResponseState instanceof Map)) {
+                this.liveResponseState = new Map();
+            }
+            const key = this.getLiveResponseKey(response);
+            if (!key) return;
+            this.liveResponseState.set(key, response);
             this.renderLiveResponseState();
+            if (response.participant_id && typeof response.total_score === 'number') {
+                this.updateParticipantScore(response.participant_id, response.total_score);
+            }
             return;
 
             console.log("Response: ", response);
@@ -1472,6 +1565,63 @@ document.addEventListener('DOMContentLoaded', function() {
             const count = document.querySelectorAll('.response-item').length;
             const responseCount = document.getElementById('responseCount');
             if (responseCount) responseCount.textContent = count;
+        }
+
+        applyCorrectedAnswer(data) {
+            const response = data?.response;
+            if (!response) return;
+            this.addLiveResponse(response);
+            if (data.participant_id && typeof data.total_score === 'number') {
+                this.updateParticipantScore(data.participant_id, data.total_score);
+            }
+        }
+
+        async promoteAnswerCorrect(answerId, button) {
+            if (!answerId) return;
+            if (!confirm('Mark this response as correct?')) {
+                return;
+            }
+
+            if (button) button.disabled = true;
+            try {
+                const response = await fetch('{% url "admin_dashboard:promote_clue_rush_answer_correct" quiz.room_code %}', {
+                    method: 'POST',
+                    headers: {
+                        'X-CSRFToken': '{{ csrf_token }}',
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        answer_id: answerId,
+                        hub_session: new URLSearchParams(window.location.search).get('hub_session') || '',
+                    })
+                });
+                const data = await response.json();
+                if (!response.ok || !data.success) {
+                    throw new Error(data.error || 'Unable to mark this answer as correct.');
+                }
+                this.addLiveResponse(data);
+                if (data.participant_id && typeof data.total_score === 'number') {
+                    this.updateParticipantScore(data.participant_id, data.total_score);
+                }
+            } catch (error) {
+                alert(error.message || 'Unable to mark this answer as correct.');
+            } finally {
+                if (button) button.disabled = false;
+            }
+        }
+
+        updateParticipantScore(participantId, totalScore) {
+            if (!participantId || typeof totalScore !== 'number') return;
+            const scoreEl = document.getElementById(`score-${participantId}`);
+            if (scoreEl) scoreEl.textContent = `${totalScore} pts`;
+            const editBtn = document.querySelector(`.edit-score-btn[data-participant-id="${participantId}"]`);
+            if (editBtn) editBtn.dataset.currentScore = totalScore;
+        }
+
+        escapeHtml(value) {
+            const div = document.createElement('div');
+            div.textContent = value == null ? '' : String(value);
+            return div.innerHTML;
         }
         
         updateParticipantCount() {

@@ -176,6 +176,8 @@
                                 data-current-person-index="{{ current_person_index }}"
                                 data-people-count="{{ current_question_people|length }}"
                                 data-time-per-person="{{ current_question_time_per_person|default:0 }}"
+                                data-question-started-at="{% if current_question_started_at %}{{ current_question_started_at|date:'c' }}{% endif %}"
+                                data-server-now="{% if who_timer_server_now %}{{ who_timer_server_now|date:'c' }}{% endif %}"
                             >
                                 <div class="statement-text">{{ quiz.current_question.statement }}</div>
                                 {% if current_question_people %}
@@ -940,6 +942,8 @@ document.addEventListener('DOMContentLoaded', function() {
             this.questionTimer = null;
             this.currentTimePerPerson = parseInt(document.querySelector('#activeQuestion .current-question-content')?.dataset.timePerPerson || '0', 10) || 0;
             this.currentPersonIndex = parseInt(document.querySelector('#activeQuestion .current-question-content')?.dataset.currentPersonIndex || '0', 10) || 0;
+            this.serverClockOffsetMs = 0;
+            this.questionTimeoutTriggered = false;
             this.quizStartTime = {% if quiz.started_at %}new Date('{{ quiz.started_at|date:"c" }}'){% else %}null{% endif %};
             this.liveResponseState = new Map();
             this.init();
@@ -1314,50 +1318,99 @@ document.addEventListener('DOMContentLoaded', function() {
                 }));
             }
         }
+
+        parseServerTimestamp(value) {
+            if (!value) return null;
+            const parsed = Date.parse(value);
+            return Number.isNaN(parsed) ? null : parsed;
+        }
+
+        syncServerClock(serverNowValue) {
+            const serverNowMs = this.parseServerTimestamp(serverNowValue);
+            if (serverNowMs === null) return;
+            this.serverClockOffsetMs = serverNowMs - Date.now();
+        }
+
+        getSynchronizedNowMs() {
+            return Date.now();
+        }
+
+        getQuestionTimerState() {
+            const questionContent = document.querySelector('#activeQuestion .current-question-content');
+            const peopleCount = parseInt(questionContent?.dataset.peopleCount || '0', 10) || 0;
+            const timePerPerson = parseInt(questionContent?.dataset.timePerPerson || '0', 10) || this.currentTimePerPerson;
+            const startedAtMs = this.parseServerTimestamp(questionContent?.dataset.questionStartedAt || '');
+
+            if (!peopleCount || !timePerPerson) {
+                return {
+                    currentPersonIndex: 0,
+                    currentPersonTimeLeft: 0,
+                    questionComplete: false,
+                };
+            }
+
+            if (startedAtMs === null) {
+                return {
+                    currentPersonIndex: Math.max(0, Math.min(this.currentPersonIndex, peopleCount - 1)),
+                    currentPersonTimeLeft: parseInt(document.getElementById('questionTimeLeft')?.textContent || String(timePerPerson), 10) || timePerPerson,
+                    questionComplete: false,
+                };
+            }
+
+            const elapsedSeconds = Math.max(0, (this.getSynchronizedNowMs() - startedAtMs) / 1000);
+            const totalDuration = timePerPerson * peopleCount;
+            if (elapsedSeconds >= totalDuration) {
+                return {
+                    currentPersonIndex: peopleCount - 1,
+                    currentPersonTimeLeft: 0,
+                    questionComplete: true,
+                };
+            }
+
+            const currentPersonIndex = Math.min(Math.floor(elapsedSeconds / timePerPerson), peopleCount - 1);
+            const elapsedInCurrentPerson = elapsedSeconds - (currentPersonIndex * timePerPerson);
+            const currentPersonTimeLeft = Math.max(Math.ceil(timePerPerson - elapsedInCurrentPerson), 0);
+
+            return {
+                currentPersonIndex,
+                currentPersonTimeLeft,
+                questionComplete: false,
+            };
+        }
         
         startQuestionTimer() {
             clearInterval(this.questionTimer);
+            this.questionTimeoutTriggered = false;
             const questionContent = document.querySelector('#activeQuestion .current-question-content');
-            const peopleCount = parseInt(questionContent?.dataset.peopleCount || '0', 10) || 0;
+            this.syncServerClock(questionContent?.dataset.serverNow || '');
             const configuredTimePerPerson = parseInt(questionContent?.dataset.timePerPerson || '0', 10) || this.currentTimePerPerson;
             if (configuredTimePerPerson > 0) {
                 this.currentTimePerPerson = configuredTimePerPerson;
             }
-            this.currentPersonIndex = parseInt(questionContent?.dataset.currentPersonIndex || String(this.currentPersonIndex), 10) || 0;
 
             const timerElement = document.getElementById('questionTimeLeft');
             const circleElement = document.getElementById('questionTimerCircle');
-            let currentTime = parseInt(timerElement?.textContent || '0', 10) || this.currentTimePerPerson;
-            if (currentTime <= 0 || !peopleCount) return;
-
-            this.updateCurrentPersonDisplay(this.currentPersonIndex);
-
             const renderTimerState = () => {
-                if (timerElement) timerElement.textContent = currentTime;
+                const state = this.getQuestionTimerState();
+                this.currentPersonIndex = state.currentPersonIndex;
+                this.updateCurrentPersonDisplay(this.currentPersonIndex);
+                if (timerElement) timerElement.textContent = state.currentPersonTimeLeft;
                 if (!circleElement) return;
                 circleElement.className = 'timer-circle';
-                if (currentTime <= 10) {
+                if (state.currentPersonTimeLeft <= 10) {
                     circleElement.classList.add('danger');
-                } else if (currentTime <= 20) {
+                } else if (state.currentPersonTimeLeft <= 20) {
                     circleElement.classList.add('warning');
+                }
+                if (state.questionComplete && !this.questionTimeoutTriggered) {
+                    this.questionTimeoutTriggered = true;
+                    clearInterval(this.questionTimer);
+                    this.onQuestionTimeout();
                 }
             };
             
             renderTimerState();
-            this.questionTimer = setInterval(() => {
-                currentTime -= 1;
-                if (currentTime <= 0) {
-                    if (this.currentPersonIndex >= peopleCount - 1) {
-                        renderTimerState();
-                        clearInterval(this.questionTimer);
-                        this.onQuestionTimeout();
-                        return;
-                    }
-                    this.updateCurrentPersonDisplay(this.currentPersonIndex + 1);
-                    currentTime = this.currentTimePerPerson;
-                }
-                renderTimerState();
-            }, 1000);
+            this.questionTimer = setInterval(renderTimerState, 250);
             // Clear one-time override so subsequent questions use their own values
             try { localStorage.removeItem(`override_time_${this.roomCode}`); } catch(_) {}
         }

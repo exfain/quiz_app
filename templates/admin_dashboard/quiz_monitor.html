@@ -164,7 +164,7 @@
                         <div id="activeQuestion">
                             <div class="active-question-header">
                                 <h6>Current Question</h6>
-                                <div class="question-timer">
+                                <div class="question-timer" id="questionTimerWrapper">
                                     <div class="timer-circle" id="questionTimerCircle">
                                         <span id="questionTimeLeft">{{ quiz.current_question.time_limit }}</span>
                                     </div>
@@ -1278,6 +1278,12 @@ document.addEventListener('DOMContentLoaded', function() {
         }
 
         showQuestionReviewState() {
+            if (this.questionTimer) {
+                clearInterval(this.questionTimer);
+                this.questionTimer = null;
+            }
+            const timerWrapper = document.getElementById('questionTimerWrapper');
+            if (timerWrapper) timerWrapper.style.display = 'none';
             const endBtn = document.getElementById('endQuestionBtn');
             const returnBtn = document.getElementById('returnToQuestionOverviewBtn');
             if (endBtn) endBtn.disabled = true;

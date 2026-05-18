@@ -8,7 +8,7 @@ import json
 from .models import AssignQuiz, AssignQuestion, AssignParticipant, AssignAnswer, AssignSession
 
 
-def _get_ordered_quiz_questions(quiz):
+def _get_ordered_quiz_questions(quiz, session_code=None):
     configured_questions = []
     configured_by_id = {}
     if quiz.selected_questions.exists():
@@ -29,6 +29,8 @@ def _get_ordered_quiz_questions(quiz):
         .select_related('question')
         .order_by('submitted_at', 'id')
     )
+    if session_code:
+        played_answers = played_answers.filter(participant__hub_session_code=session_code)
     for answer in played_answers:
         if answer.question_id in seen_ids:
             continue
@@ -49,8 +51,8 @@ def _get_ordered_quiz_questions(quiz):
     return questions
 
 
-def _build_participant_progress_history(quiz, participant):
-    ordered_questions = _get_ordered_quiz_questions(quiz)
+def _build_participant_progress_history(quiz, participant, session_code=None):
+    ordered_questions = _get_ordered_quiz_questions(quiz, session_code)
     question_number_by_id = {
         question.id: index
         for index, question in enumerate(ordered_questions, start=1)
@@ -235,8 +237,8 @@ def assign_play(request, room_code, participant_name):
         participant.last_activity = timezone.now()
         participant.save()
 
-        ordered_questions = _get_ordered_quiz_questions(quiz)
-        initial_progress_history = _build_participant_progress_history(quiz, participant)
+        ordered_questions = _get_ordered_quiz_questions(quiz, session_code)
+        initial_progress_history = _build_participant_progress_history(quiz, participant, session_code)
         progress_by_number = {
             entry['question_number']: entry
             for entry in initial_progress_history

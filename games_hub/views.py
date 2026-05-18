@@ -11,8 +11,11 @@ from django.db import connection, transaction
 from .models import HubSession, HubParticipant, HubGameStep, GameVote
 from .active_game_guard import resolve_session_game_activation
 from .lobby_return_flow import (
+    LOBBY_RETURN_COUNTDOWN_SECONDS,
+    broadcast_lobby_return_countdown_started,
     broadcast_players_recalled_to_lobby,
     ensure_session_players_ready_for_game_start,
+    get_lobby_return_countdown_state,
     mark_session_game_participants_inactive,
     mark_single_participant_inactive_for_lobby_return,
 )
@@ -762,6 +765,34 @@ def session_lobby_presence_api(request, session_code):
     session = get_object_or_404(HubSession, code=session_code)
     presence = ensure_session_players_ready_for_game_start(session.code)
     return JsonResponse({'success': True, **presence})
+
+
+@login_required
+def session_recall_countdown_state_api(request, session_code):
+    if request.method != 'GET':
+        return JsonResponse({'success': False, 'error': 'Method not allowed'}, status=405)
+
+    get_object_or_404(HubSession, code=session_code)
+    return JsonResponse({
+        'success': True,
+        **get_lobby_return_countdown_state(session_code),
+    })
+
+
+@login_required
+@require_POST
+def start_recall_countdown(request, session_code):
+    get_object_or_404(HubSession, code=session_code)
+    countdown_state = broadcast_lobby_return_countdown_started(
+        session_code,
+        duration_seconds=LOBBY_RETURN_COUNTDOWN_SECONDS,
+    )
+    return JsonResponse({
+        'success': True,
+        **get_lobby_return_countdown_state(session_code),
+        'duration_seconds': countdown_state['duration_seconds'],
+        'ends_at': countdown_state['ends_at'],
+    })
 
 
 @login_required

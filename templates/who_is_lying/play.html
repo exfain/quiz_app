@@ -1202,6 +1202,7 @@
                     this.websocket = null;
                     this.questionTimer = null;
                     this.questionStartTime = null;
+                    this.serverClockOffsetMs = 0;
                     this.selectedPeople = new Set();
                     this.hasAnswered = false;
                     this.peopleSequence = [];
@@ -1210,6 +1211,7 @@
                     this.scoreHistory = this.readJsonScript('whoInitialProgressData', []);
                     this.scoreboardQuestions = this.readJsonScript('whoQuestionScoreboardData', []);
                     this.currentQuestionIndex = Number(this.readJsonScript('whoCurrentQuestionNumber', 0)) || 0;
+                    this.activeQuestionId = null;
                     this.currentQuestionStatement = '';
                     this.currentSetResult = null;
                     this.questionHasEnded = false;
@@ -1224,8 +1226,11 @@
                     
                     // Start timer if there's an active question
                     {% if quiz.current_question %}
-                        this.loadCurrentQuestion();
-                        this.startQuestionTimer({{ quiz.current_question.time_limit }});
+                        const activeQuestion = this.loadCurrentQuestion();
+                        if (activeQuestion) {
+                            this.showState('questionState');
+                            this.startQuestionTimer(activeQuestion);
+                        }
                     {% endif %}
                 }
 
@@ -1320,6 +1325,68 @@
                     });
                 }
 
+                parseServerTimestamp(value) {
+                    if (!value) return null;
+                    const parsed = Date.parse(value);
+                    return Number.isNaN(parsed) ? null : parsed;
+                }
+
+                syncServerClock(serverNowValue) {
+                    const serverNowMs = this.parseServerTimestamp(serverNowValue);
+                    if (serverNowMs === null) return;
+                    this.serverClockOffsetMs = serverNowMs - Date.now();
+                }
+
+                getSynchronizedNowMs() {
+                    return Date.now();
+                }
+
+                getQuestionTimerState(question) {
+                    const peopleCount = Array.isArray(question?.people) ? question.people.length : this.peopleSequence.length;
+                    const timePerPerson = parseInt(question?.time_per_person || question?.time_limit || this.currentTimePerPerson, 10) || 0;
+                    const startedAtMs = this.parseServerTimestamp(question?.question_started_at);
+
+                    if (!peopleCount || !timePerPerson) {
+                        return {
+                            currentPersonIndex: 0,
+                            currentPersonTimeLeft: 0,
+                            questionComplete: false,
+                        };
+                    }
+
+                    if (startedAtMs === null) {
+                        const fallbackIndex = Number.isFinite(Number(question?.current_person_index))
+                            ? Number(question.current_person_index)
+                            : this.currentPersonPosition;
+                        const fallbackTimeLeft = parseInt(question?.current_person_time_left || timePerPerson, 10) || timePerPerson;
+                        return {
+                            currentPersonIndex: Math.max(0, Math.min(fallbackIndex, peopleCount - 1)),
+                            currentPersonTimeLeft: fallbackTimeLeft,
+                            questionComplete: false,
+                        };
+                    }
+
+                    const elapsedSeconds = Math.max(0, (this.getSynchronizedNowMs() - startedAtMs) / 1000);
+                    const totalDuration = timePerPerson * peopleCount;
+                    if (elapsedSeconds >= totalDuration) {
+                        return {
+                            currentPersonIndex: peopleCount - 1,
+                            currentPersonTimeLeft: 0,
+                            questionComplete: true,
+                        };
+                    }
+
+                    const currentPersonIndex = Math.min(Math.floor(elapsedSeconds / timePerPerson), peopleCount - 1);
+                    const elapsedInCurrentPerson = elapsedSeconds - (currentPersonIndex * timePerPerson);
+                    const currentPersonTimeLeft = Math.max(Math.ceil(timePerPerson - elapsedInCurrentPerson), 0);
+
+                    return {
+                        currentPersonIndex,
+                        currentPersonTimeLeft,
+                        questionComplete: false,
+                    };
+                }
+
                 onQuizStarted() {
                     this.showState('waitingQuizState');
                 }
@@ -1327,16 +1394,17 @@
                 onQuestionStarted(question) {
                     this.hasAnswered = false;
                     this.selectedPeople.clear();
-                    this.questionStartTime = Date.now();
+                    this.syncServerClock(question?.server_now);
+                    this.questionStartTime = this.parseServerTimestamp(question?.question_started_at) ?? this.getSynchronizedNowMs();
                     const currentEntry = this.moveQuestionToNextFreeScoreSlot(question?.id, question?.total_possible_points);
                     this.currentQuestionIndex = Number(currentEntry?.number || question?.question_number) || (this.currentQuestionIndex + 1) || 1;
-                    this.currentPersonPosition = 0;
+                    this.currentPersonPosition = Number(question?.current_person_index || 0) || 0;
                     this.questionHasEnded = false;
                     this.currentSetResult = null;
                     
                     this.loadQuestion(question);
                     this.showState('questionState');
-                    this.startQuestionTimer(question.time_limit);
+                    this.startQuestionTimer(question);
                     this.renderScoreHistory();
                 }
 
@@ -1371,18 +1439,28 @@
                         id: {{ quiz.current_question.id }},
                         question_number: {{ current_question_number|default:0 }},
                         statement: '{{ quiz.current_question.statement|escapejs }}',
-                        time_limit: {{ quiz.current_question.time_limit }},
-                        people: {{ quiz.current_question.get_randomized_people.people|safe }},
+                        time_limit: {{ current_question_timer_state.time_per_person|default:quiz.current_question.time_limit }},
+                        time_per_person: {{ current_question_timer_state.time_per_person|default:quiz.current_question.time_limit }},
+                        current_person_index: {{ current_question_timer_state.current_person_index|default:0 }},
+                        current_person_time_left: {{ current_question_timer_state.current_person_time_left|default:quiz.current_question.time_limit }},
+                        question_started_at: {% if current_question_started_at %}'{{ current_question_started_at|date:"c" }}'{% else %}null{% endif %},
+                        question_end_time: {% if current_question_end_time %}'{{ current_question_end_time|date:"c" }}'{% else %}null{% endif %},
+                        server_now: {% if who_timer_server_now %}'{{ who_timer_server_now|date:"c" }}'{% else %}null{% endif %},
+                        people: {{ current_question_people|safe }},
                         total_possible_points: {{ quiz.current_question.get_total_possible_points }}
                     };
                     this.loadQuestion(question);
+                    return question;
                     {% endif %}
+                    return null;
                 }
 
                 loadQuestion(question) {
+                    this.activeQuestionId = Number(question?.id) || null;
                     document.getElementById('statementText').textContent = question.statement;
                     this.currentQuestionStatement = question.statement || '';
                     this.peopleSequence = Array.isArray(question.people) ? question.people : [];
+                    this.currentPersonPosition = Number(question?.current_person_index ?? this.currentPersonPosition) || 0;
                     this.showCurrentPerson();
                 }
 
@@ -1412,63 +1490,52 @@
                     if (accuseBtn) accuseBtn.disabled = true;
                 }
 
-                advanceToNextPerson() {
-                    if (this.hasAnswered) return;
-                    this.currentPersonPosition += 1;
-                    if (this.currentPersonPosition >= this.peopleSequence.length) {
-                        this.submitAnswer();
-                        return;
-                    }
-                    this.showCurrentPerson();
-                    this.startQuestionTimer(this.currentTimePerPerson);
-                }
-
-                startQuestionTimer(timeLimit) {
+                startQuestionTimer(question) {
                     clearInterval(this.questionTimer);
-                    this.currentTimePerPerson = timeLimit;
-                    let timeLeft = timeLimit;
+                    this.syncServerClock(question?.server_now);
+                    this.currentTimePerPerson = parseInt(question?.time_per_person || question?.time_limit || this.currentTimePerPerson, 10) || this.currentTimePerPerson;
                     const timerElement = document.getElementById('playerTimeLeft');
                     const circleElement = document.getElementById('playerTimerCircle');
                     const submittedTimerElement = document.getElementById('playerTimeLeftSubmitted');
                     const submittedCircleElement = document.getElementById('playerTimerCircleSubmitted');
-                    
-                    timerElement.textContent = timeLeft;
-                    circleElement.className = 'timer-circle';
-                    if (submittedTimerElement && submittedCircleElement) {
-                        submittedTimerElement.textContent = timeLeft;
-                        submittedCircleElement.className = 'timer-circle';
-                    }
-                    
-                    this.questionTimer = setInterval(() => {
-                        timeLeft--;
-                        timerElement.textContent = timeLeft;
+
+                    const renderTimerState = () => {
+                        const timerState = this.getQuestionTimerState(question);
+                        this.currentPersonPosition = timerState.currentPersonIndex;
+                        this.showCurrentPerson();
+                        timerElement.textContent = timerState.currentPersonTimeLeft;
                         if (submittedTimerElement) {
-                            submittedTimerElement.textContent = timeLeft;
+                            submittedTimerElement.textContent = timerState.currentPersonTimeLeft;
                         }
-                        
+
                         // Update timer circle appearance (both timers)
                         circleElement.className = 'timer-circle';
-                        if (timeLeft <= 10) {
+                        if (timerState.currentPersonTimeLeft <= 10) {
                             circleElement.classList.add('danger');
                             if (submittedCircleElement) submittedCircleElement.className = 'timer-circle danger';
-                        } else if (timeLeft <= 20) {
+                        } else if (timerState.currentPersonTimeLeft <= 20) {
                             circleElement.classList.add('warning');
                             if (submittedCircleElement) submittedCircleElement.className = 'timer-circle warning';
                         } else if (submittedCircleElement) {
                             submittedCircleElement.className = 'timer-circle';
                         }
-                        
-                        if (timeLeft <= 0) {
+
+                        if (timerState.questionComplete) {
                             clearInterval(this.questionTimer);
-                            this.advanceToNextPerson();
+                            if (!this.hasAnswered) {
+                                this.submitAnswer();
+                            }
                         }
-                    }, 1000);
+                    };
+
+                    renderTimerState();
+                    this.questionTimer = setInterval(renderTimerState, 250);
                 }
 
                 submitAnswer() {
                     if (this.hasAnswered) return;
                     
-                    const timeTaken = (Date.now() - this.questionStartTime) / 1000;
+                    const timeTaken = Math.max(0, (this.getSynchronizedNowMs() - this.questionStartTime) / 1000);
                     const selectedLiars = Array.from(this.selectedPeople);
                     const completedQuestionNumber = document.getElementById('completedQuestionNumber');
                     if (completedQuestionNumber) {
@@ -1483,6 +1550,7 @@
                         type: 'participant_submit_answer',
                         participant_name: this.participantName,
                         hub_session: this.hubSession,
+                        question_id: this.activeQuestionId,
                         selected_liars: selectedLiars,
                         time_taken: timeTaken
                     }));
@@ -1684,7 +1752,7 @@
                         const isCurrent = this.currentQuestionIndex === questionNumber && !progressEntry;
                         const isPlayed = !!progressEntry;
                         const rowState = isCurrent ? 'is-current' : isPlayed ? 'is-played' : 'is-upcoming';
-                        const hasMaxPoints = maxPoints !== undefined && maxPoints !== null;
+                        const hasMaxPoints = isPlayed && maxPoints !== undefined && maxPoints !== null;
                         const row = document.createElement('div');
                         row.className = `score-history-row score-box__row ${rowState}`;
                         row.dataset.questionNumber = String(questionNumber);
@@ -1910,7 +1978,9 @@
                             }
 
                         }*/
-                        if (data.type === 'players_recalled_to_lobby') {
+                        if (data.type === 'lobby_return_countdown_started') {
+                            lobbyReturnController.startRecallCountdown(data);
+                        } else if (data.type === 'players_recalled_to_lobby') {
                             lobbyReturnController.returnToLobby({ markInactive: false });
                         } else if (data.type === 'session_ended') {
                             console.log("[HubScript2] Session ended message received.");

@@ -22,7 +22,7 @@ from Assign.models import AssignQuestion, AssignQuiz
 from Estimation.models import EstimationQuestion, EstimationQuiz
 from QuizGame.models import Quiz
 from black_jack_quiz.models import BlackJackQuiz
-from clue_rush.models import ClueRushGame
+from clue_rush.models import Clue, ClueQuestion, ClueRushGame, ClueRushSession
 from django.contrib.auth.models import User
 from django.test import Client, LiveServerTestCase, TestCase
 from django.urls import reverse
@@ -531,6 +531,131 @@ class SessionsTest(TestCase):
             resp,
             f'data-session-url="{reverse("admin_dashboard:sessions_overview")}"'
         )
+
+    def test_active_games_overview_renders_end_button_for_clue_rush(self):
+        game = ClueRushGame.objects.create(
+            creator=self.user,
+            title="Active Clue Rush",
+            status="active",
+        )
+
+        resp = self.client.get(reverse("admin_dashboard:sessions_overview"))
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(
+            resp,
+            reverse("admin_dashboard:end_clue_rush_game_by_room_code", args=[game.room_code]),
+        )
+        self.assertContains(resp, 'class="btn btn-sm btn-outline-danger end-game-btn"')
+
+    def test_end_clue_rush_game_by_room_code_completes_game_and_clears_runtime_state(self):
+        question = ClueQuestion.objects.create(
+            question_text="Guess the city",
+            answer="Berlin",
+            created_by=self.user,
+        )
+        clue = Clue.objects.create(
+            clue_question=question,
+            clue_text="Capital of Germany",
+            order=1,
+            duration=10,
+        )
+        game = ClueRushGame.objects.create(
+            creator=self.user,
+            title="Endable Clue Rush",
+            status="active",
+            current_question=question,
+            current_clue=clue,
+        )
+        ClueRushSession.objects.create(
+            quiz=game,
+            is_question_active=True,
+            is_clue_active=True,
+            current_clue_number=1,
+        )
+
+        resp = self.client.post(
+            reverse("admin_dashboard:end_clue_rush_game_by_room_code", args=[game.room_code]),
+            data=json.dumps({}),
+            content_type="application/json",
+        )
+
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertTrue(resp.json()["success"])
+
+        game.refresh_from_db()
+        game.session.refresh_from_db()
+
+        self.assertEqual(game.status, "completed")
+        self.assertIsNotNone(game.ended_at)
+        self.assertIsNone(game.current_question_id)
+        self.assertIsNone(game.current_clue_id)
+        self.assertFalse(game.session.is_question_active)
+        self.assertFalse(game.session.is_clue_active)
+        self.assertEqual(game.session.current_clue_number, 0)
+        self.assertIsNone(game.session.question_end_time)
+        self.assertIsNone(game.session.clue_end_time)
+
+    def test_sessions_overview_renders_end_all_active_games_button(self):
+        Quiz.objects.create(
+            creator=self.user,
+            title="Bulk End Visible Quiz",
+            status="active",
+        )
+
+        resp = self.client.get(reverse("admin_dashboard:sessions_overview"))
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, 'id="endAllActiveGamesBtn"', html=False)
+        self.assertContains(resp, 'Alle aktiven Spiele beenden')
+        self.assertContains(resp, reverse("admin_dashboard:end_all_active_games"))
+        self.assertNotContains(resp, 'id="endAllActiveGamesBtn" disabled', html=False)
+
+    def test_end_all_active_games_completes_every_active_game_type(self):
+        active_quiz = Quiz.objects.create(
+            creator=self.user,
+            title="Bulk End Quick Quiz",
+            status="active",
+        )
+        active_blackjack = BlackJackQuiz.objects.create(
+            creator=self.user,
+            title="Bulk End Black Jack",
+            status="active",
+        )
+        active_clue_rush = ClueRushGame.objects.create(
+            creator=self.user,
+            title="Bulk End Clue Rush",
+            status="active",
+        )
+        waiting_quiz = Quiz.objects.create(
+            creator=self.user,
+            title="Waiting Quiz",
+            status="waiting",
+        )
+
+        resp = self.client.post(
+            reverse("admin_dashboard:end_all_active_games"),
+            data=json.dumps({}),
+            content_type="application/json",
+        )
+
+        self.assertEqual(resp.status_code, 200, resp.content)
+        payload = resp.json()
+        self.assertTrue(payload["success"])
+        self.assertEqual(payload["ended_games_count"], 3)
+
+        active_quiz.refresh_from_db()
+        active_blackjack.refresh_from_db()
+        active_clue_rush.refresh_from_db()
+        waiting_quiz.refresh_from_db()
+
+        self.assertEqual(active_quiz.status, "completed")
+        self.assertEqual(active_blackjack.status, "completed")
+        self.assertEqual(active_clue_rush.status, "completed")
+        self.assertIsNotNone(active_quiz.ended_at)
+        self.assertIsNotNone(active_blackjack.ended_at)
+        self.assertIsNotNone(active_clue_rush.ended_at)
+        self.assertEqual(waiting_quiz.status, "waiting")
 
     # -- Neue Session mit je einem Spiel pro Typ ------------------------------
 

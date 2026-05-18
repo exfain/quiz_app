@@ -100,7 +100,7 @@ class BlackJackConsumer(AsyncWebsocketConsumer):
                 await self.send(text_data=json.dumps(payload))
                 return
             show_tutorial = bool(data.get('show_tutorial', True))
-            await self.start_quiz_db(quiz.get('id'))
+            started_quiz = await self.start_quiz_db(quiz.get('id'))
             tutorial_payload = None
             if quiz.get('tutorial_enabled') and show_tutorial:
                 await self.set_tutorial_active_db(quiz.get('id'), True)
@@ -113,13 +113,18 @@ class BlackJackConsumer(AsyncWebsocketConsumer):
                 self.room_group_name,
                 {
                     'type': 'quiz_started',
-                    'message': 'BlackJack Quiz has started!'
+                    'message': 'BlackJack Quiz has started!',
+                    'status': started_quiz.get('status', 'active') if started_quiz else 'active',
+                    'started_at': started_quiz.get('started_at') if started_quiz else None,
+                    'timestamp': started_quiz.get('started_at') if started_quiz else None,
                 }
             )
             await self.hub_mirror_event('quiz_started', {
                 'room_code': self.room_code,
                 'game_key': 'blackjack',
-                'message': 'BlackJack Quiz has started!'
+                'message': 'BlackJack Quiz has started!',
+                'status': started_quiz.get('status', 'active') if started_quiz else 'active',
+                'started_at': started_quiz.get('started_at') if started_quiz else None,
             })
             if tutorial_payload:
                 await self.channel_layer.group_send(
@@ -211,6 +216,7 @@ class BlackJackConsumer(AsyncWebsocketConsumer):
                     'set_complete': transition.get('set_complete', False),
                     'set_number': transition.get('set_number'),
                     'set_results': transition.get('participants', []),
+                    'no_answer_bust_participants': transition.get('no_answer_bust_participants', []),
                     'final_scores': final_scores,
                 }
             )
@@ -317,8 +323,9 @@ class BlackJackConsumer(AsyncWebsocketConsumer):
         participant_name = data.get('participant_name')
         hub_session = data.get('hub_session')
         participant = await self.get_participant_by_name(participant_name, hub_session)
-        
+
         if participant:
+            await self.ensure_runtime_scoped_to_hub_session(hub_session)
             await self.mark_participant_active(participant['id'])
             
             # Broadcast to admin
@@ -340,7 +347,10 @@ class BlackJackConsumer(AsyncWebsocketConsumer):
             if quiz and quiz.get('status') == 'active':
                 await self.send(text_data=json.dumps({
                     'type': 'quiz_started',
-                    'message': 'Quiz is already in progress'
+                    'message': 'Quiz is already in progress',
+                    'status': quiz.get('status'),
+                    'started_at': quiz.get('started_at'),
+                    'timestamp': quiz.get('started_at'),
                 }))
                 tutorial_payload = await self.get_tutorial_payload(quiz.get('id'))
                 if tutorial_payload:
@@ -384,7 +394,10 @@ class BlackJackConsumer(AsyncWebsocketConsumer):
         """Send quiz started message"""
         await self.send(text_data=json.dumps({
             'type': 'quiz_started',
-            'message': event['message']
+            'message': event['message'],
+            'status': event.get('status', 'active'),
+            'started_at': event.get('started_at'),
+            'timestamp': event.get('timestamp') or event.get('started_at'),
         }))
 
     async def question_started(self, event):
@@ -410,6 +423,7 @@ class BlackJackConsumer(AsyncWebsocketConsumer):
             'set_complete': event.get('set_complete', False),
             'set_number': event.get('set_number'),
             'set_results': event.get('set_results', []),
+            'no_answer_bust_participants': event.get('no_answer_bust_participants', []),
             'final_scores': event.get('final_scores', []),
         }))
 
@@ -463,7 +477,7 @@ class BlackJackConsumer(AsyncWebsocketConsumer):
                 'question_text': question.question_text,
                 'time_limit': question.time_limit,
                 'question_number': quiz.current_question_number,
-                'question_in_set': quiz.get_question_number_in_set(question_id=question.id),
+                'question_in_set': quiz.get_current_question_position_in_set(),
                 'set_question_count': quiz.get_set_question_count(question_id=question.id),
                 'set_number': quiz.get_current_set_number(),
                 'total_sets': quiz.get_total_sets(),
@@ -482,12 +496,11 @@ class BlackJackConsumer(AsyncWebsocketConsumer):
                 'title': quiz.title,
                 'tutorial_enabled': quiz.tutorial_enabled,
                 'tutorial_active': quiz.tutorial_active,
+                'started_at': quiz.started_at.isoformat() if quiz.started_at else None,
                 'current_question_number': quiz.current_question_number,
                 'total_questions': quiz.total_questions,
                 'total_game_questions': quiz.get_total_game_questions(),
-                'question_in_set': quiz.get_question_number_in_set(
-                    question_id=quiz.current_question_id if quiz.current_question_id else None
-                ) or 1,
+                'question_in_set': quiz.get_current_question_position_in_set() or 1,
                 'set_question_count': quiz.get_set_question_count(
                     question_id=quiz.current_question_id if quiz.current_question_id else None,
                     set_number=quiz.get_current_set_number(),
@@ -550,8 +563,20 @@ class BlackJackConsumer(AsyncWebsocketConsumer):
         try:
             quiz = BlackJackQuiz.objects.get(id=quiz_id)
             quiz.start_quiz()
+            return {
+                'status': quiz.status,
+                'started_at': quiz.started_at.isoformat() if quiz.started_at else None,
+            }
         except BlackJackQuiz.DoesNotExist:
-            pass
+            return None
+
+    @database_sync_to_async
+    def ensure_runtime_scoped_to_hub_session(self, hub_session_code=None):
+        try:
+            quiz = BlackJackQuiz.objects.get(room_code=self.room_code)
+            return quiz.ensure_runtime_scoped_to_hub_session(hub_session_code)
+        except BlackJackQuiz.DoesNotExist:
+            return False
 
     @database_sync_to_async
     def end_quiz_db(self, quiz_id):
@@ -600,14 +625,14 @@ class BlackJackConsumer(AsyncWebsocketConsumer):
     def update_quiz_question(self, quiz_data, question):
         try:
             quiz = BlackJackQuiz.objects.get(id=quiz_data['id'])
+            if hasattr(quiz, 'session'):
+                quiz.session.send_question(question)
+                return
+
             quiz.current_question = question
             quiz.question_start_time = timezone.now()
             quiz.current_question_number += 1
             quiz.save()
-            
-            # Update session
-            if hasattr(quiz, 'session'):
-                quiz.session.send_question(question)
         except BlackJackQuiz.DoesNotExist:
             pass
 
@@ -615,13 +640,12 @@ class BlackJackConsumer(AsyncWebsocketConsumer):
     def clear_current_question(self, quiz_id):
         try:
             quiz = BlackJackQuiz.objects.get(id=quiz_id)
+            if hasattr(quiz, 'session'):
+                return quiz.session.end_current_question()
+
             quiz.current_question = None
             quiz.question_start_time = None
             quiz.save()
-            
-            # End current question in session
-            if hasattr(quiz, 'session'):
-                return quiz.session.end_current_question()
             return {
                 'set_complete': False,
                 'set_number': quiz.get_current_set_number(),

@@ -1054,6 +1054,12 @@
                         case 'answer_submitted':
                             this.setScoreHistory(data.progress_history);
                             break;
+                        case 'answer_corrected':
+                            this.onAnswerCorrected(data);
+                            break;
+                        case 'participant_rehydrated':
+                            this.onParticipantRehydrated(data.answer);
+                            break;
                         case 'progress_history':
                             this.setScoreHistory(data.history);
                             break;
@@ -1091,6 +1097,51 @@
                     if (data && data.correct_answer && this.hasAnswered) {
                         this.showCorrectAnswer(data.correct_answer);
                     }
+                }
+
+                onAnswerCorrected(data) {
+                    if (!data || data.participant_name !== this.participantName) {
+                        return;
+                    }
+                    if (Array.isArray(data.progress_history)) {
+                        this.setScoreHistory(data.progress_history);
+                    }
+                    if (typeof data.total_score === 'number') {
+                        const scoreEl = document.querySelector('#quizEndedState .score-value');
+                        if (scoreEl) scoreEl.textContent = data.total_score;
+                    }
+                }
+
+                onParticipantRehydrated(answer) {
+                    if (!answer || !answer.answer_text) {
+                        return;
+                    }
+                    this.hasAnswered = true;
+                    this.selectedAnswer = answer.answer_text;
+
+                    const shortAnswerInput = document.getElementById('shortAnswerInput');
+                    if (shortAnswerInput) {
+                        shortAnswerInput.value = answer.answer_text;
+                        shortAnswerInput.disabled = true;
+                    }
+
+                    const submitButton = document.getElementById('submitAnswerBtn');
+                    if (submitButton) {
+                        submitButton.disabled = true;
+                    }
+
+                    const submittedAnswerText = document.getElementById('submittedAnswerText');
+                    if (submittedAnswerText) {
+                        submittedAnswerText.textContent = answer.answer_text;
+                    }
+
+                    const submittedTime = document.getElementById('submittedTime');
+                    if (submittedTime) {
+                        const seconds = Number(answer.time_taken || 0);
+                        submittedTime.textContent = seconds > 0 ? seconds.toFixed(1) : '-';
+                    }
+
+                    this.showState('answerSubmittedState');
                 }
 
                 resetClues() {
@@ -1500,7 +1551,9 @@
                             }
 
                         }*/
-                        if (data.type === 'players_recalled_to_lobby') {
+                        if (data.type === 'lobby_return_countdown_started') {
+                            lobbyReturnController.startRecallCountdown(data);
+                        } else if (data.type === 'players_recalled_to_lobby') {
                             lobbyReturnController.returnToLobby({ markInactive: false });
                         } else if (data.type === 'session_ended') {
                             console.log("[HubScript2] Session ended message received.");

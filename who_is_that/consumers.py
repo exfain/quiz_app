@@ -287,7 +287,11 @@ class WhoThatConsumer(AsyncWebsocketConsumer):
                     'type': 'participant_answered',
                     'answer': {
                         'answer_id': answer['answer_id'],
+                        'game_id': answer['game_id'],
+                        'question_id': answer['question_id'],
+                        'participant_id': answer['participant_id'],
                         'participant_name': participant_name,
+                        'hub_session_code': answer['hub_session_code'],
                         'user_answer': answer['user_answer'],
                         'is_correct': answer['is_correct'],
                         'is_manual_override': False,
@@ -295,7 +299,8 @@ class WhoThatConsumer(AsyncWebsocketConsumer):
                         'points_earned': answer['points_earned'],
                         'accuracy_percentage': answer['accuracy_percentage'],
                         'match_quality': answer['match_quality'],
-                        'time_taken': time_taken
+                        'time_taken': answer['time_taken'],
+                        'submitted_at': answer['submitted_at'],
                     }
                 }
             )
@@ -665,12 +670,18 @@ class WhoThatConsumer(AsyncWebsocketConsumer):
 
             return {
                 'answer_id': answer.id,
+                'game_id': quiz.id,
+                'question_id': answer.question_id,
+                'participant_id': participant.id,
+                'hub_session_code': participant.hub_session_code,
                 'user_answer': answer.user_answer,
                 'is_correct': answer.is_correct,
                 'can_mark_correct': not answer.is_correct,
                 'points_earned': answer.points_earned,
                 'accuracy_percentage': answer.get_accuracy_percentage(),
-                'match_quality': answer.get_match_quality()
+                'match_quality': answer.get_match_quality(),
+                'time_taken': answer.time_taken,
+                'submitted_at': answer.submitted_at.isoformat(),
             }
 
         except (WhoThatQuiz.DoesNotExist, WhoThatParticipant.DoesNotExist):

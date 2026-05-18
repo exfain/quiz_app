@@ -149,6 +149,13 @@ class WhoLyingConsumerTests(TransactionTestCase):
             consumer.channel_layer.group_messages[-1][1]['question']['time_limit'],
             15,
         )
+        payload = consumer.channel_layer.group_messages[-1][1]['question']
+        self.assertEqual(payload['time_per_person'], 15)
+        self.assertEqual(payload['current_person_index'], 0)
+        self.assertTrue(14 <= payload['current_person_time_left'] <= 15)
+        self.assertIsNotNone(payload['question_started_at'])
+        self.assertIsNotNone(payload['question_end_time'])
+        self.assertIsNotNone(payload['server_now'])
 
     def test_save_participant_answer_returns_person_results_for_reveal(self):
         user = User.objects.create_user(username='who-reveal-consumer')
@@ -280,6 +287,7 @@ class WhoLyingConsumerTests(TransactionTestCase):
             creator=user,
             status='active',
             current_question=current_question,
+            question_start_time=timezone.now() - timezone.timedelta(seconds=31),
             question_order=[first_question.id, current_question.id],
         )
         quiz.selected_questions.add(first_question, current_question)
@@ -287,6 +295,13 @@ class WhoLyingConsumerTests(TransactionTestCase):
             quiz=quiz,
             name='Ada',
             hub_session_code='HUB4',
+        )
+        WhoSession.objects.create(
+            quiz=quiz,
+            current_question_number=2,
+            total_questions_sent=2,
+            is_question_active=True,
+            question_end_time=timezone.now() + timezone.timedelta(seconds=19),
         )
         consumer, sent_messages = self.make_consumer(quiz)
 
@@ -297,6 +312,12 @@ class WhoLyingConsumerTests(TransactionTestCase):
 
         payload = next(message for message in sent_messages if message['type'] == 'question_started')
         self.assertEqual(payload['question']['question_number'], 2)
+        self.assertEqual(payload['question']['time_per_person'], 25)
+        self.assertEqual(payload['question']['current_person_index'], 1)
+        self.assertTrue(18 <= payload['question']['current_person_time_left'] <= 19)
+        self.assertIsNotNone(payload['question']['question_started_at'])
+        self.assertIsNotNone(payload['question']['question_end_time'])
+        self.assertIsNotNone(payload['question']['server_now'])
 
     def test_admin_send_question_uses_actual_send_order_for_question_number(self):
         user = User.objects.create_user(username='who-send-order')
@@ -348,6 +369,66 @@ class WhoLyingConsumerTests(TransactionTestCase):
         second_payload = consumer.channel_layer.group_messages[1][1]
         self.assertEqual(first_payload['question']['question_number'], 1)
         self.assertEqual(second_payload['question']['question_number'], 2)
+
+    def test_auto_submit_after_host_end_still_scores_recently_ended_question(self):
+        user = User.objects.create_user(username='who-ended-submit')
+        question = WhoQuestion.objects.create(
+            statement='Wer luegt nach dem Host-Ende?',
+            points=10,
+            time_limit=20,
+            people=[
+                {'name': 'Alice', 'is_lying': False},
+                {'name': 'Bob', 'is_lying': True},
+                {'name': 'Cara', 'is_lying': False},
+                {'name': 'Dan', 'is_lying': True},
+            ],
+            created_by=user,
+        )
+        quiz = WhoQuiz.objects.create(
+            title='Who Host End',
+            room_code='7623',
+            creator=user,
+            status='active',
+            current_question=question,
+            question_start_time=timezone.now() - timezone.timedelta(seconds=5),
+        )
+        WhoSession.objects.create(
+            quiz=quiz,
+            current_question_number=1,
+            total_questions_sent=1,
+            is_question_active=True,
+            question_end_time=timezone.now() + timezone.timedelta(seconds=75),
+        )
+        participant = WhoParticipant.objects.create(
+            quiz=quiz,
+            name='Ada',
+            hub_session_code='HUB6',
+        )
+        consumer, sent_messages = self.make_consumer(quiz)
+        randomized = question.get_randomized_people(room_code=quiz.room_code)
+        truth_displayed = next(
+            person for person in randomized['people']
+            if not question.people[person['original_index']]['is_lying']
+        )
+
+        async_to_sync(consumer.handle_admin_end_question)({})
+        async_to_sync(consumer.handle_participant_submit_answer)({
+            'participant_name': participant.name,
+            'hub_session': participant.hub_session_code,
+            'question_id': question.id,
+            'selected_liars': [truth_displayed['id']],
+            'time_taken': 3.6,
+        })
+
+        answer = WhoAnswer.objects.get(quiz=quiz, participant=participant, question=question)
+        participant.refresh_from_db()
+        quiz.refresh_from_db()
+
+        self.assertIsNone(quiz.current_question_id)
+        self.assertEqual(answer.points_earned, -1)
+        self.assertEqual(participant.total_score, -1)
+        payload = next(message for message in sent_messages if message['type'] == 'answer_submitted')
+        self.assertEqual(payload['points_earned'], -1)
 
     def test_admin_set_time_per_person_is_blocked_during_running_question(self):
         user = User.objects.create_user(username='who-time-locked')
@@ -467,7 +548,7 @@ class WhoLyingMonitorViewTests(TestCase):
         self.session.save(update_fields=['question_end_time'])
 
         response = self.client.get(
-            reverse('admin_dashboard:who_lying_monitor', args=[self.quiz.room_code])
+            reverse('admin_dashboard:who_monitor', args=[self.quiz.room_code])
         )
 
         self.assertEqual(response.status_code, 200)
@@ -484,21 +565,23 @@ class WhoLyingMonitorViewTests(TestCase):
         self.assertContains(response, 'active-current')
         self.assertContains(response, randomized_people[expected_index]['name'])
         self.assertContains(response, 'updateCurrentPersonDisplay(index)')
+        self.assertContains(response, 'data-question-started-at=')
+        self.assertContains(response, 'data-server-now=')
+        self.assertContains(response, 'getQuestionTimerState()')
         self.assertContains(response, "case 'time_per_person_updated':")
 
     def test_monitor_does_not_render_non_negative_score_clamp(self):
         response = self.client.get(
-            reverse('admin_dashboard:who_lying_monitor', args=[self.quiz.room_code])
+            reverse('admin_dashboard:who_monitor', args=[self.quiz.room_code])
         )
 
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, 'id="editScoreInput"')
-        self.assertNotContains(response, 'min="0"')
+        self.assertContains(response, '<input type="number" class="form-control" id="editScoreInput" step="1">', html=False)
         self.assertContains(response, 'Please enter a valid integer.')
 
     def test_monitor_does_not_render_points_per_id_badge(self):
         response = self.client.get(
-            reverse('admin_dashboard:who_lying_monitor', args=[self.quiz.room_code])
+            reverse('admin_dashboard:who_monitor', args=[self.quiz.room_code])
         )
 
         self.assertEqual(response.status_code, 200)
@@ -507,7 +590,7 @@ class WhoLyingMonitorViewTests(TestCase):
 
     def test_monitor_uses_actual_truth_status_for_current_question_people(self):
         response = self.client.get(
-            reverse('admin_dashboard:who_lying_monitor', args=[self.quiz.room_code])
+            reverse('admin_dashboard:who_monitor', args=[self.quiz.room_code])
         )
 
         self.assertEqual(response.status_code, 200)
@@ -519,7 +602,7 @@ class WhoLyingMonitorViewTests(TestCase):
 
     def test_monitor_disables_live_time_controls_during_running_question(self):
         response = self.client.get(
-            reverse('admin_dashboard:who_lying_monitor', args=[self.quiz.room_code])
+            reverse('admin_dashboard:who_monitor', args=[self.quiz.room_code])
         )
 
         self.assertEqual(response.status_code, 200)
@@ -530,6 +613,7 @@ class WhoLyingMonitorViewTests(TestCase):
         self.assertContains(response, 'id="updateTimePerPersonBtn" disabled', html=False)
 
     def test_update_question_blocks_running_question_content_changes(self):
+        original_statement = self.question.statement
         response = self.client.post(
             reverse('admin_dashboard:update_who_question'),
             data=json.dumps({
@@ -546,7 +630,7 @@ class WhoLyingMonitorViewTests(TestCase):
 
         self.assertEqual(response.status_code, 400)
         self.question.refresh_from_db()
-        self.assertEqual(self.question.statement, 'Wer lÃ¼gt?')
+        self.assertEqual(self.question.statement, original_statement)
         self.assertEqual(self.question.time_limit, 18)
         self.assertEqual(
             self.question.people,
@@ -605,9 +689,46 @@ class WhoLyingPlayViewTests(TestCase):
         self.assertContains(response, 'falsch')
         self.assertContains(response, '.selection-instructions {')
         self.assertContains(response, 'display: none;')
+        self.assertContains(response, 'question_id: this.activeQuestionId')
         self.assertContains(response, 'lügt nicht')
         self.assertContains(response, 'gedrückt')
         self.assertContains(response, 'Set-Auflösung')
+
+    def test_play_view_embeds_server_timer_sync_fields_for_active_question(self):
+        question = WhoQuestion.objects.create(
+            statement='Aktive Runde',
+            points=10,
+            time_limit=18,
+            people=[
+                {'name': 'A', 'is_lying': False},
+                {'name': 'B', 'is_lying': True},
+                {'name': 'C', 'is_lying': False},
+            ],
+            created_by=self.user,
+        )
+        start_time = timezone.now() - timezone.timedelta(seconds=19)
+        self.quiz.current_question = question
+        self.quiz.question_start_time = start_time
+        self.quiz.save(update_fields=['current_question', 'question_start_time'])
+        session = WhoSession.objects.create(quiz=self.quiz)
+        session.question_end_time = start_time + timezone.timedelta(seconds=54)
+        session.save(update_fields=['question_end_time'])
+
+        response = self.client.get(
+            reverse('who_is_lying:play', args=[self.quiz.room_code, self.participant.name]),
+            {'hub_session': self.participant.hub_session_code},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context['current_question_timer_state']['time_per_person'], 18)
+        self.assertEqual(response.context['current_question_timer_state']['current_person_index'], 1)
+        self.assertTrue(16 <= response.context['current_question_timer_state']['current_person_time_left'] <= 17)
+        self.assertContains(response, 'question_started_at')
+        self.assertContains(response, 'current_person_time_left')
+        self.assertContains(response, 'server_now')
+        self.assertContains(response, 'getQuestionTimerState(question)')
+        self.assertContains(response, 'this.startQuestionTimer(activeQuestion);')
+
 class WhoLyingScoreBoxViewTests(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(username='who-score-box', password='secret')
@@ -694,7 +815,7 @@ class WhoLyingScoreBoxViewTests(TestCase):
             },
         )
         self.assertEqual(response.context['question_scoreboard'][1]['status'], 'current')
-        self.assertEqual(response.context['question_scoreboard'][1]['max_points'], 2)
+        self.assertIsNone(response.context['question_scoreboard'][1]['max_points'])
         self.assertEqual(response.context['question_scoreboard'][2]['status'], 'upcoming')
         self.assertIsNone(response.context['question_scoreboard'][2]['max_points'])
         self.assertContains(response, 'score-box__row')
@@ -702,6 +823,7 @@ class WhoLyingScoreBoxViewTests(TestCase):
         self.assertContains(response, 'whoQuestionScoreboardData')
         self.assertContains(response, 'whoInitialProgressData')
         self.assertContains(response, 'whoCurrentQuestionNumber')
+        self.assertContains(response, 'const hasMaxPoints = isPlayed && maxPoints !== undefined && maxPoints !== null;')
 
     def test_play_view_uses_actual_send_order_for_out_of_order_current_round(self):
         first_question = WhoQuestion.objects.create(
@@ -758,3 +880,55 @@ class WhoLyingScoreBoxViewTests(TestCase):
         )
         self.assertEqual(response.context['current_question_number'], 2)
         self.assertContains(response, 'moveQuestionToNextFreeScoreSlot(question?.id, question?.total_possible_points);')
+
+    def test_play_view_rejoin_after_host_end_uses_saved_post_end_history(self):
+        first_question = WhoQuestion.objects.create(
+            statement='Runde 1',
+            points=10,
+            time_limit=20,
+            people=[
+                {'name': 'Alice', 'is_lying': False},
+                {'name': 'Bob', 'is_lying': True},
+            ],
+            created_by=self.user,
+        )
+        next_question = WhoQuestion.objects.create(
+            statement='Runde 2',
+            points=10,
+            time_limit=20,
+            people=[
+                {'name': 'Cara', 'is_lying': False},
+                {'name': 'Dan', 'is_lying': True},
+            ],
+            created_by=self.user,
+        )
+        self.quiz.question_order = [first_question.id, next_question.id]
+        self.quiz.save(update_fields=['question_order'])
+        self.quiz.selected_questions.add(first_question, next_question)
+        WhoAnswer.objects.create(
+            quiz=self.quiz,
+            participant=self.participant,
+            question=first_question,
+            selected_liars=[0],
+            time_taken=2.5,
+        )
+
+        response = self.client.get(
+            reverse('who_is_lying:play', args=[self.quiz.room_code, self.participant.name]),
+            {'hub_session': self.participant.hub_session_code},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context['current_question_number'], 2)
+        self.assertEqual(
+            response.context['initial_progress_history'],
+            [{
+                'question_id': first_question.id,
+                'question_number': 1,
+                'points': -1,
+                'max_points': 1,
+            }],
+        )
+        self.assertEqual(response.context['question_scoreboard'][0]['status'], 'played')
+        self.assertEqual(response.context['question_scoreboard'][0]['earned_points'], -1)
+        self.assertEqual(response.context['question_scoreboard'][1]['status'], 'current')

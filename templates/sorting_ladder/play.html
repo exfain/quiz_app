@@ -1332,6 +1332,13 @@
                     this.currentSelection = [];
                     this.isEliminated = false;
                     this.moreRoundsInQuestion = true;
+                    this.hasSubmittedMove = false;
+                    this.currentRoundItemId = null;
+                    this.pendingRoundResult = null;
+                    this.pendingRoundStart = null;
+                    this.latestResolvedRound = 0;
+                    this.lastSubmitWasTimeout = false;
+                    this.roundTimerEnded = false;
 
                     // Total rounds = number_of_items_in_topic - 1
                     this.totalRoundsForQuestion = Math.max((this.shuffledItems.length || 0) - 1, 1);
@@ -1717,12 +1724,20 @@
                     if (data.participant_name !== this.participantName) {
                         return;
                     }
-
-                    this.setProgressHistory(data.progress_history);
+                    if (data.question_id && this.currentQuestion?.id && Number(data.question_id) !== Number(this.currentQuestion.id)) {
+                        return;
+                    }
 
                     const resultRound = Number(data.round_number || 0);
+                    const shouldDeferProgressHistory = !!data.is_eliminated && resultRound >= this.currentRound;
+                    if (!shouldDeferProgressHistory) {
+                        this.setProgressHistory(data.progress_history);
+                    }
                     if (resultRound > 0 && resultRound < this.currentRound) {
                         this.applyRoundResult(data, true);
+                        if (shouldDeferProgressHistory) {
+                            this.setProgressHistory(data.progress_history);
+                        }
                         this.pendingRoundResult = null;
                         if (!this.isEliminated && this.moreRoundsInQuestion) {
                             this.showState('topicState');
@@ -1738,6 +1753,9 @@
 
                 onRoundStarted(roundData) {
                     if (!this.moreRoundsInQuestion) return;
+                    if (roundData?.question_id && this.currentQuestion?.id && Number(roundData.question_id) !== Number(this.currentQuestion.id)) {
+                        return;
+                    }
 
                     const nextRoundNumber = (roundData && typeof roundData.round_number === 'number')
                         ? roundData.round_number
@@ -1745,7 +1763,9 @@
                     const justFinishedRound = Math.max(nextRoundNumber - 1, 0);
 
                     if (this.pendingRoundResult && Number(this.pendingRoundResult.round_number || 0) === justFinishedRound) {
-                        this.applyRoundResult(this.pendingRoundResult, true);
+                        const pendingRoundResult = this.pendingRoundResult;
+                        this.applyRoundResult(pendingRoundResult, true);
+                        this.setProgressHistory(pendingRoundResult.progress_history);
                         this.pendingRoundResult = null;
                         if (this.isEliminated) {
                             return;
@@ -1907,7 +1927,9 @@
 
                 onQuestionEnded(data) {
                     if (this.pendingRoundResult) {
-                        this.applyRoundResult(this.pendingRoundResult, true);
+                        const pendingRoundResult = this.pendingRoundResult;
+                        this.applyRoundResult(pendingRoundResult, true);
+                        this.setProgressHistory(pendingRoundResult.progress_history);
                         this.pendingRoundResult = null;
                     }
                     if (Array.isArray(data?.correct_order_ids) && data.correct_order_ids.length) {
@@ -2072,7 +2094,9 @@
                         const data = JSON.parse(event.data);
                         console.log("[HubScript2] Parsed data:", data);
 
-                        if (data.type === 'players_recalled_to_lobby') {
+                        if (data.type === 'lobby_return_countdown_started') {
+                            lobbyReturnController.startRecallCountdown(data);
+                        } else if (data.type === 'players_recalled_to_lobby') {
                             lobbyReturnController.returnToLobby({ markInactive: false });
                         } else if (data.type === 'session_ended') {
                             console.log("[HubScript2] Session ended message received.");

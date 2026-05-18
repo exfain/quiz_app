@@ -39,6 +39,7 @@ class SortingLadderPendingSelectionTest(TransactionTestCase):
             title='Sorting Test',
             creator=self.user,
             room_code='6789',
+            status='active',
         )
         self.participant = SortingLadderParticipant.objects.create(
             quiz=self.quiz,
@@ -116,6 +117,9 @@ class SortingLadderPendingSelectionTest(TransactionTestCase):
         self.assertEqual(status['statuses'], [{
             'participant_name': self.participant.name,
             'has_answered': True,
+            'has_selection': True,
+            'is_logged': False,
+            'answer_status': 'gegeben',
         }])
 
         previous_count = len(self.consumer.channel_layer.sent)
@@ -133,12 +137,14 @@ class SortingLadderPendingSelectionTest(TransactionTestCase):
 
         self.assertIsNotNone(round_result)
         self.assertEqual(round_result['participant_name'], self.participant.name)
+        self.assertEqual(round_result['question_id'], question.id)
         self.assertEqual(round_result['round_number'], 1)
         self.assertTrue(round_result['is_correct'])
         self.assertFalse(round_result['is_eliminated'])
         self.assertTrue(round_result['has_more_rounds'])
 
         self.assertIsNotNone(round_started)
+        self.assertEqual(round_started['round']['question_id'], question.id)
         self.assertEqual(round_started['round']['round_number'], 2)
 
         submission = RoundSubmission.objects.get(
@@ -151,11 +157,28 @@ class SortingLadderPendingSelectionTest(TransactionTestCase):
         self.assertEqual(self.participant.rounds_survived, 1)
         self.assertFalse(self.participant.is_eliminated)
 
-        session = self.quiz.session
-        session.refresh_from_db()
-        self.assertEqual(session.current_round, 2)
-        self.assertTrue(session.is_round_active)
-        self.assertEqual(SortingLadderGameConsumer._pending_round_orders, {})
+    def test_round_answer_status_marks_logged_submission_as_eingeloggt(self):
+        question, items = self._create_question_with_items(
+            [('Small', 1), ('Medium', 2), ('Large', 3)],
+            starting_index=1,
+        )
+        self._set_live_round(question, [items[1], items[0], items[2]], current_round=1)
+        RoundSubmission.objects.create(
+            quiz=self.quiz,
+            participant=self.participant,
+            question=question,
+            all_elements=[items[0].id, items[1].id],
+        )
+
+        status = async_to_sync(self.consumer.get_round_answer_status_db)(self.quiz.id)
+
+        self.assertEqual(status['statuses'], [{
+            'participant_name': self.participant.name,
+            'has_answered': True,
+            'has_selection': False,
+            'is_logged': True,
+            'answer_status': 'eingeloggt',
+        }])
 
     def test_host_early_end_question_evaluates_pending_final_round_selection(self):
         """Frühes Fragenende in der letzten Runde wertet die vorhandene Auswahl vor dem Reveal aus."""
@@ -233,6 +256,54 @@ class SortingLadderPendingSelectionTest(TransactionTestCase):
         self.quiz.refresh_from_db()
         self.assertEqual(self.quiz.current_question_id, question_two.id)
 
+    def test_multiple_correct_rounds_keep_active_participant_advancing(self):
+        question, _items = self._create_question_with_items(
+            [('One', 1), ('Two', 2), ('Three', 3), ('Four', 4)],
+            starting_index=1,
+        )
+
+        payload = async_to_sync(self.consumer.initialize_question_for_quiz)(
+            self.quiz.id,
+            question.id,
+            None,
+        )
+
+        self.assertIsNotNone(payload)
+        shuffled_ids = [entry['id'] for entry in payload['items']]
+        self.assertEqual(len(shuffled_ids), 4)
+        rank_map = dict(question.elements.values_list('id', 'correct_rank'))
+
+        for round_number in range(1, len(shuffled_ids)):
+            visible_ids = shuffled_ids[:round_number + 1]
+            ordered_ids = sorted(visible_ids, key=lambda item_id: rank_map[item_id])
+
+            result = async_to_sync(self.consumer.save_round_full_order)(
+                self.participant.name,
+                self.participant.hub_session_code,
+                ordered_ids,
+                False,
+            )
+
+            self.assertIsNotNone(result)
+            self.assertEqual(result['question_id'], question.id)
+            self.assertEqual(result['round_number'], round_number)
+            self.assertTrue(result['is_correct'])
+            self.assertFalse(result['is_eliminated'])
+            self.assertEqual(result['correct_order_ids'], ordered_ids)
+
+            self.participant.refresh_from_db()
+            self.assertFalse(self.participant.is_eliminated)
+            self.assertEqual(self.participant.rounds_survived, round_number)
+
+            if round_number < len(shuffled_ids) - 1:
+                next_round = async_to_sync(self.consumer.start_next_round_db)(self.quiz.id)
+                self.assertIsNotNone(next_round)
+                self.assertEqual(next_round['question_id'], question.id)
+                self.assertEqual(next_round['round_number'], round_number + 1)
+                self.quiz.session.refresh_from_db()
+                self.assertEqual(self.quiz.session.current_round, round_number + 1)
+                self.assertTrue(self.quiz.session.is_round_active)
+
     def test_timer_timeout_evaluates_pending_selected_order_without_login(self):
         """Bei Timer-Ende wird eine vorhandene, nicht eingeloggte Auswahl korrekt ausgewertet."""
         question, items = self._create_question_with_items(
@@ -302,6 +373,157 @@ class SortingLadderPendingSelectionTest(TransactionTestCase):
         self.participant.refresh_from_db()
         self.assertTrue(self.participant.is_eliminated)
 
+
+class SortingLadderScoreBoxTimingTests(TransactionTestCase):
+    def setUp(self):
+        SortingLadderGameConsumer._pending_round_orders = {}
+        self.user = User.objects.create_user(username='sorting-score-timing', password='pass')
+        self.quiz = SortingLadderGame.objects.create(
+            title='Sorting Timing',
+            creator=self.user,
+            room_code='6791',
+            status='active',
+        )
+        self.participant = SortingLadderParticipant.objects.create(
+            quiz=self.quiz,
+            name='Alice',
+            hub_session_code='sess2',
+            is_active=True,
+        )
+        self.consumer = SortingLadderGameConsumer()
+        self.consumer.room_code = self.quiz.room_code
+        self.consumer.room_group_name = f'sortingladder_{self.quiz.room_code}'
+        self.consumer.channel_layer = DummyChannelLayer()
+        self.consumer.channel_name = 'sorting-score-timing-channel'
+
+        async def _noop_send(*args, **kwargs):
+            return None
+
+        self.consumer.send = _noop_send
+
+    def _create_question_with_items(self, texts_and_ranks, starting_index):
+        question = SortingQuestion.objects.create(
+            question_text='Sort these items',
+            description='Timing test question.',
+            upper_label='Highest',
+            lower_label='Lowest',
+            points=10,
+            round_time_limit=30,
+            created_by=self.user,
+        )
+        items = []
+        for text, rank in texts_and_ranks:
+            items.append(
+                SortingItem.objects.create(
+                    topic=question,
+                    text=text,
+                    correct_rank=rank,
+                )
+            )
+        question.starting_item = items[starting_index]
+        question.save(update_fields=['starting_item'])
+        return question, items
+
+    def _set_live_round(self, question, ordered_items, current_round=1):
+        self.quiz.current_question = question
+        self.quiz.save(update_fields=['current_question'])
+        session, _ = SortingLadderSession.objects.get_or_create(quiz=self.quiz)
+        session.shuffled_item_ids = ",".join(str(item.id) for item in ordered_items)
+        session.current_round = current_round
+        session.is_round_active = True
+        session.time_limit_seconds = 30
+        session.round_start_time = timezone.now()
+        session.round_end_time = timezone.now() + timezone.timedelta(seconds=30)
+        session.save()
+        return session
+
+    def test_progress_history_hides_eliminated_current_set_until_next_round_starts(self):
+        question, items = self._create_question_with_items(
+            [('Small', 1), ('Medium', 2), ('Large', 3)],
+            starting_index=1,
+        )
+        self._set_live_round(question, [items[1], items[0], items[2]], current_round=1)
+
+        result = async_to_sync(self.consumer.save_round_full_order)(
+            self.participant.name,
+            self.participant.hub_session_code,
+            [items[1].id, items[0].id],
+            False,
+        )
+
+        self.assertIsNotNone(result)
+        self.assertTrue(result['is_eliminated'])
+        result_history = async_to_sync(self.consumer.get_participant_progress_history_for_round_result)(
+            self.participant.name,
+            self.participant.hub_session_code,
+        )
+        self.assertEqual(
+            result_history,
+            [{
+                'question_number': 1,
+                'survived_rounds': 0,
+                'max_rounds': 2,
+            }],
+        )
+
+        history_before_next_round = async_to_sync(self.consumer.get_participant_progress_history)(
+            self.participant.name,
+            self.participant.hub_session_code,
+        )
+        self.assertEqual(history_before_next_round, [])
+
+        snapshot = async_to_sync(self.consumer.get_rejoin_snapshot)(
+            self.participant.name,
+            self.participant.hub_session_code,
+        )
+        self.assertEqual(
+            snapshot['latest_round_result']['progress_history'],
+            [{
+                'question_number': 1,
+                'survived_rounds': 0,
+                'max_rounds': 2,
+            }],
+        )
+
+        session = self.quiz.session
+        session.current_round = 2
+        session.save(update_fields=['current_round'])
+
+        history_after_next_round = async_to_sync(self.consumer.get_participant_progress_history)(
+            self.participant.name,
+            self.participant.hub_session_code,
+        )
+        self.assertEqual(
+            history_after_next_round,
+            [{
+                'question_number': 1,
+                'survived_rounds': 0,
+                'max_rounds': 2,
+            }],
+        )
+
+
+class SortingLadderScoreBoxTimingTemplateTests(TestCase):
+    def test_player_template_defers_elimination_history_until_round_or_question_progresses(self):
+        template_path = Path(__file__).resolve().parent.parent / 'templates' / 'sorting_ladder' / 'play.html'
+        template_source = template_path.read_text(encoding='utf-8')
+
+        self.assertIn('const shouldDeferProgressHistory = !!data.is_eliminated && resultRound >= this.currentRound;', template_source)
+        self.assertIn('if (!shouldDeferProgressHistory) {', template_source)
+        self.assertIn('this.setProgressHistory(pendingRoundResult.progress_history);', template_source)
+
+
+class SortingLadderRoundInteractionScopeTemplateTests(TestCase):
+    def test_player_template_resets_round_state_for_new_question_and_ignores_stale_round_events(self):
+        template_path = Path(__file__).resolve().parent.parent / 'templates' / 'sorting_ladder' / 'play.html'
+        template_source = template_path.read_text(encoding='utf-8')
+
+        self.assertIn('this.currentRoundItemId = null;', template_source)
+        self.assertIn('this.pendingRoundResult = null;', template_source)
+        self.assertIn('this.latestResolvedRound = 0;', template_source)
+        self.assertIn('if (data.question_id && this.currentQuestion?.id && Number(data.question_id) !== Number(this.currentQuestion.id)) {', template_source)
+        self.assertIn('if (roundData?.question_id && this.currentQuestion?.id && Number(roundData.question_id) !== Number(this.currentQuestion.id)) {', template_source)
+
     def test_round_result_ui_keeps_timer_running_after_logged_answer(self):
         """Die Round-Result-UI darf den lokalen Countdown nach dem Einloggen nicht stoppen."""
         template_path = Path(__file__).resolve().parent.parent / 'templates' / 'sorting_ladder' / 'play.html'
@@ -317,6 +539,50 @@ class SortingLadderPendingSelectionTest(TransactionTestCase):
         self.assertIn("this.pendingRoundResult = data;", body)
         self.assertNotIn("this.roundTimerEnded = true;", body)
         self.assertNotIn("clearInterval(this.roundTimer);", body)
+
+
+class SortingLadderConsumerEventPayloadTests(TestCase):
+    def test_live_round_result_event_includes_question_id_for_client_side_stale_event_guards(self):
+        consumer = SortingLadderGameConsumer()
+        direct_messages = []
+
+        async def _capture_send(*args, **kwargs):
+            text_data = kwargs.get('text_data')
+            if text_data is None and args:
+                text_data = args[0]
+            if text_data:
+                direct_messages.append(json.loads(text_data))
+
+        consumer.send = _capture_send
+
+        async_to_sync(consumer.round_result)({
+            'participant_name': 'Alice',
+            'question_id': 42,
+            'round_number': 2,
+            'is_correct': True,
+            'rounds_survived': 2,
+            'is_eliminated': False,
+            'points': 20,
+            'has_more_rounds': True,
+            'per_question_rounds': 2,
+            'correct_order_ids': [7, 8, 9],
+            'progress_history': [],
+        })
+
+        self.assertEqual(direct_messages, [{
+            'type': 'round_result',
+            'participant_name': 'Alice',
+            'question_id': 42,
+            'round_number': 2,
+            'is_correct': True,
+            'rounds_survived': 2,
+            'is_eliminated': False,
+            'points': 20,
+            'has_more_rounds': True,
+            'per_question_rounds': 2,
+            'correct_order_ids': [7, 8, 9],
+            'progress_history': [],
+        }])
 
 
 class SortingLadderMonitorTimerTest(TestCase):
@@ -381,8 +647,18 @@ class SortingLadderMonitorTimerTest(TestCase):
         self.assertIn("case 'round_ended':", template_source)
         self.assertIn("this.stopRoundTimer();", template_source)
 
+    def test_monitor_template_distinguishes_given_and_logged_answer_badges(self):
+        template_path = Path(__file__).resolve().parent.parent / 'templates' / 'admin_dashboard' / 'sorting_ladder_monitor.html'
+        template_source = template_path.read_text(encoding='utf-8')
 
-class SortingLadderRoundAnswerStatusScopeTest(TestCase):
+        self.assertIn("const isLogged = !!entry.is_logged;", template_source)
+        self.assertIn("const hasSelection = !!entry.has_selection || (!!entry.has_answered && !isLogged);", template_source)
+        self.assertIn("'badge badge-success'", template_source)
+        self.assertIn("'badge badge-warning'", template_source)
+        self.assertIn("const label = isLogged ? 'eingeloggt' : (hasSelection ? 'gegeben' : 'offen');", template_source)
+
+
+class SortingLadderRoundAnswerStatusScopeTest(TransactionTestCase):
     def setUp(self):
         self.user = User.objects.create_user(username='sorting-scope', password='pass')
         self.quiz = SortingLadderGame.objects.create(
@@ -465,6 +741,9 @@ class SortingLadderRoundAnswerStatusScopeTest(TestCase):
         self.assertEqual(status['statuses'], [{
             'participant_name': self.current_participant.name,
             'has_answered': False,
+            'has_selection': False,
+            'is_logged': False,
+            'answer_status': 'offen',
         }])
 
 

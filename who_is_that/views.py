@@ -23,6 +23,42 @@ def _get_current_question_time_context(quiz):
     return current_question_time_left, current_question_end_time
 
 
+def _get_current_run_answers_queryset(quiz, participant=None):
+    answers = WhoThatAnswer.objects.filter(quiz=quiz)
+    if participant is not None:
+        answers = answers.filter(participant=participant)
+    if quiz.status == 'waiting':
+        return answers.none()
+    if quiz.started_at:
+        answers = answers.filter(submitted_at__gte=quiz.started_at)
+    return answers
+
+
+def _has_current_run_session_progress(quiz, session, has_current_run_answers=False):
+    if not session or quiz.status == 'waiting':
+        return False
+
+    if quiz.current_question_id:
+        return True
+
+    if has_current_run_answers:
+        return True
+
+    if not quiz.started_at:
+        return False
+
+    if not (session.current_question_number or session.total_questions_sent):
+        return False
+
+    if session.is_question_active or session.question_end_time:
+        return True
+
+    if not session.updated_at:
+        return False
+
+    return session.updated_at > quiz.started_at
+
+
 def _get_ordered_quiz_questions(quiz):
     selected_questions = list(quiz.selected_questions.all())
     configured_order_ids = []
@@ -38,7 +74,7 @@ def _get_ordered_quiz_questions(quiz):
     fallback_questions = {}
     played_questions = []
     seen_played_ids = set()
-    for answer in WhoThatAnswer.objects.filter(quiz=quiz).select_related('question').order_by('submitted_at', 'id'):
+    for answer in _get_current_run_answers_queryset(quiz).select_related('question').order_by('submitted_at', 'id'):
         fallback_questions[answer.question_id] = answer.question
         if answer.question_id in seen_played_ids:
             continue
@@ -81,9 +117,15 @@ def _get_ordered_quiz_questions(quiz):
 def _build_question_status_board(quiz, participant):
     ordered_questions = _get_ordered_quiz_questions(quiz)
     session = getattr(quiz, 'session', None)
-    current_question_number = session.current_question_number if session else 0
+    has_current_run_answers = _get_current_run_answers_queryset(quiz).exists()
+    has_session_progress = _has_current_run_session_progress(
+        quiz,
+        session,
+        has_current_run_answers=has_current_run_answers,
+    )
+    current_question_number = session.current_question_number if session and has_session_progress else 0
     current_question_id = quiz.current_question_id
-    current_question_active = bool(session and session.is_question_active and current_question_id)
+    current_question_active = bool(session and session.is_question_active and current_question_id and has_session_progress)
 
     if quiz.status == 'waiting':
         current_question_number = 0
@@ -92,8 +134,8 @@ def _build_question_status_board(quiz, participant):
 
     answers_by_question_id = {
         answer.question_id: answer
-        for answer in WhoThatAnswer.objects.filter(
-            quiz=quiz,
+        for answer in _get_current_run_answers_queryset(
+            quiz,
             participant=participant,
         ).select_related('question')
     }
@@ -102,18 +144,26 @@ def _build_question_status_board(quiz, participant):
     if total_questions == 0:
         total_questions = max(current_question_number, len(answers_by_question_id))
 
+    revealed_question_count = 0
+    if current_question_active:
+        revealed_question_count = max(current_question_number - 1, 0)
+    elif has_session_progress and current_question_number > 0 and not current_question_id:
+        revealed_question_count = current_question_number
+
     board = []
     for index in range(total_questions):
         question = ordered_questions[index] if index < len(ordered_questions) else None
         question_number = index + 1
         answer = answers_by_question_id.get(question.id) if question else None
-        is_current = current_question_active and question_number == current_question_number
+        is_current = bool(
+            current_question_active and
+            question and
+            question.id == current_question_id
+        )
 
         if answer and not is_current:
             result = 'correct' if answer.is_correct else 'incorrect'
-        elif question_number < current_question_number:
-            result = 'incorrect'
-        elif question_number == current_question_number and current_question_number > 0 and not current_question_id:
+        elif revealed_question_count and question_number <= revealed_question_count and not is_current:
             result = 'incorrect'
         else:
             result = None
@@ -303,11 +353,10 @@ def who_that_play(request, room_code, participant_name):
             'current_question_end_time': current_question_end_time,
         }
         context['current_participant_answer'] = (
-            WhoThatAnswer.objects.filter(
-                quiz=quiz,
+            _get_current_run_answers_queryset(
+                quiz,
                 participant=participant,
-                question_id=quiz.current_question_id,
-            ).first()
+            ).filter(question_id=quiz.current_question_id).first()
             if quiz.current_question_id else
             None
         )
