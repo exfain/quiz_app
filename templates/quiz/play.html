@@ -1445,7 +1445,7 @@
 
                 applyManualAnswerCorrection(data) {
                     if (!data || data.participant_name !== this.participantName) return;
-                    this.pushProgressEntry(true, data.question_id);
+                    this.pushProgressEntry(!!data.is_correct, data.question_id);
                 }
 
                 loadCurrentQuestion() {

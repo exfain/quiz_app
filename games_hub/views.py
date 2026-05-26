@@ -19,9 +19,11 @@ from .lobby_return_flow import (
     mark_session_game_participants_inactive,
     mark_single_participant_inactive_for_lobby_return,
 )
+from .spectator import build_spectator_state
 from QuizGame.models import Quiz as QuizGameModel, QuizParticipant, QuizQuestion
 from sorting_ladder.models import SortingLadderGame, SortingLadderParticipant, SortingQuestion
 from clue_rush.models import ClueRushGame, ClueRushParticipant
+from wer_weiss_mehr.models import WerWeissMehrGame, WerWeissMehrParticipant, WerWeissMehrQuestion
 from Assign.models import AssignQuiz, AssignParticipant, AssignQuestion
 from Estimation.models import EstimationQuiz, EstimationParticipant, EstimationQuestion
 from where_is_this.models import WhereQuiz, WhereParticipant, WhereQuestion
@@ -93,6 +95,7 @@ def create_session(request):
             'blackjack':      BlackJackQuiz,
             'clue_rush':      ClueRushGame,
             'sorting_ladder': SortingLadderGame,
+            'wer_weiss_mehr': WerWeissMehrGame,
         }
 
         for order, entry in enumerate(games_ordered):
@@ -133,6 +136,7 @@ def _get_game_instances():
         ('blackjack',      BlackJackQuiz,      'Black Jack',      'spade'),
         ('clue_rush',      ClueRushGame,       'Clue Rush',       'zap'),
         ('sorting_ladder', SortingLadderGame,  'Sorting Ladder',  'list-ordered'),
+        ('wer_weiss_mehr', WerWeissMehrGame,   'Wer weiß mehr?', 'layers'),
     ]
     games = []
     for game_key, model, label, icon in GAME_TYPES:
@@ -205,7 +209,8 @@ def get_leaderboard_data(session):
             'who_that': (WhoThatQuiz, WhoThatParticipant, 'Who is That?'),
             'where': (WhereQuiz, WhereParticipant, 'Where is This?'),
             'blackjack': (BlackJackQuiz, BlackJackParticipant, 'Black Jack'),
-            'sorting_ladder': (SortingLadderGame, SortingLadderParticipant, 'Sorting Ladder')
+            'sorting_ladder': (SortingLadderGame, SortingLadderParticipant, 'Sorting Ladder'),
+            'wer_weiss_mehr': (WerWeissMehrGame, WerWeissMehrParticipant, 'Wer weiß mehr?'),
         }
         
         # Process each game step
@@ -365,6 +370,7 @@ def monitor(request, session_code: str):
         'who':            WhoQuiz,
         'who_that':       WhoThatQuiz,
         'blackjack':      BlackJackQuiz,
+        'wer_weiss_mehr': WerWeissMehrGame,
     }
     for step in steps:
         model = _game_model_map.get(step.game_key)
@@ -391,6 +397,7 @@ def monitor(request, session_code: str):
         'who_that': WhoThatQuiz.objects.filter(status='waiting', creator=user).values('title', 'room_code'),
         'blackjack': BlackJackQuiz.objects.filter(status='waiting', creator=user).values('title', 'room_code'),
         'sorting_ladder': SortingLadderGame.objects.filter(status='waiting', creator=user).values('title', 'room_code'),
+        'wer_weiss_mehr': WerWeissMehrGame.objects.filter(status='waiting', creator=user).values('title', 'room_code'),
     }
 
     # All lobby participants for the right column
@@ -418,6 +425,15 @@ def spectate_session(request, session_code: str):
     })
 
 
+def spectate_session_state(request, session_code: str):
+    """Return read-only spectator state. This endpoint never joins a participant."""
+    session = get_object_or_404(HubSession, code=session_code)
+    return JsonResponse(
+        build_spectator_state(session),
+        json_dumps_params={'ensure_ascii': False},
+    )
+
+
 @login_required
 @require_POST
 def add_step_to_session(request, session_code):
@@ -443,6 +459,7 @@ def add_step_to_session(request, session_code):
         'quiz': QuizGameModel, 'assign': AssignQuiz, 'estimation': EstimationQuiz,
         'where': WhereQuiz, 'who': WhoQuiz, 'who_that': WhoThatQuiz,
         'blackjack': BlackJackQuiz, 'sorting_ladder': SortingLadderGame, 'clue_rush': ClueRushGame,
+        'wer_weiss_mehr': WerWeissMehrGame,
     }
 
     if game_ids:
@@ -525,6 +542,7 @@ def _assign_questions_to_quiz(game_key: str, room_code: str, question_ids: list)
     from black_jack_quiz.models import BlackJackQuestion
     from sorting_ladder.models import SortingQuestion
     from clue_rush.models import ClueQuestion
+    from wer_weiss_mehr.models import WerWeissMehrQuestion
 
     quiz_model_map = {
         'quiz':           (QuizGameModel,      QuizQuestion),
@@ -536,6 +554,7 @@ def _assign_questions_to_quiz(game_key: str, room_code: str, question_ids: list)
         'blackjack':      (BlackJackQuiz,      BlackJackQuestion),
         'sorting_ladder': (SortingLadderGame,  SortingQuestion),
         'clue_rush':      (ClueRushGame,       ClueQuestion),
+        'wer_weiss_mehr': (WerWeissMehrGame,   WerWeissMehrQuestion),
     }
     entry = quiz_model_map.get(game_key)
     if not entry:
@@ -579,6 +598,9 @@ def auto_create_game_quiz(game_key: str, user, title: str):
         if game_key == 'sorting_ladder':
             obj = SortingLadderGame.objects.create(creator=user, title=title)
             return obj.room_code
+        if game_key == 'wer_weiss_mehr':
+            obj = WerWeissMehrGame.objects.create(creator=user, title=title)
+            return obj.room_code
     except Exception:
         return None
     return None
@@ -607,6 +629,7 @@ def get_available_questions(request, game_key):
         'blackjack':      (BlackJackQuestion,   'question_text'),
         'sorting_ladder': (SortingQuestion,     'question_text'),
         'clue_rush':      (ClueQuestion,        'question_text'),
+        'wer_weiss_mehr': (WerWeissMehrQuestion, 'question_text'),
     }
     entry = config.get(game_key)
     if not entry:
@@ -627,6 +650,7 @@ def get_game_instances(request, game_key):
         'quiz': QuizGameModel, 'assign': AssignQuiz, 'estimation': EstimationQuiz,
         'where': WhereQuiz, 'who': WhoQuiz, 'who_that': WhoThatQuiz,
         'blackjack': BlackJackQuiz, 'sorting_ladder': SortingLadderGame, 'clue_rush': ClueRushGame,
+        'wer_weiss_mehr': WerWeissMehrGame,
     }
     model = model_map.get(game_key)
     if not model:

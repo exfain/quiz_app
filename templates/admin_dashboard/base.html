@@ -85,7 +85,7 @@
                 </div>
                 <div class="modal-footer">
                     <button type="button" class="btn btn-danger" id="activeGameLeaveEndBtn">End Quiz</button>
-                    <button type="button" class="btn btn-warning" id="activeGameLeaveInactiveBtn">Set inactive</button>
+                    <button type="button" class="btn btn-warning" id="activeGameLeaveInactiveBtn">Aktives Spiel auf inaktiv setzen</button>
                     <button type="button" class="btn btn-primary" id="activeGameLeaveOverviewBtn">Back to overview</button>
                     <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Zur&uuml;ck</button>
                 </div>
@@ -155,6 +155,7 @@
                 { regex: /^\/admin-dashboard\/blackjack\/([^/]+)\/monitor\/?$/, gameKey: 'blackjack' },
                 { regex: /^\/admin-dashboard\/clue-rush\/([^/]+)\/monitor\/?$/, gameKey: 'clue_rush' },
                 { regex: /^\/admin-dashboard\/sorting-ladder\/([^/]+)\/monitor\/?$/, gameKey: 'sorting_ladder' },
+                { regex: /^\/admin-dashboard\/wer-weiss-mehr\/([^/]+)\/monitor\/?$/, gameKey: 'wer_weiss_mehr' },
             ];
 
             const guardState = {
@@ -234,7 +235,7 @@
             }
 
             function syncSetInactiveVisibility() {
-                const setInactiveButton = document.getElementById('setInactiveBtn');
+                const setInactiveButton = document.getElementById('setInactive' + 'Btn');
                 if (!setInactiveButton) return;
                 setInactiveButton.classList.toggle('d-none', !isMonitorGameUnfinished());
             }

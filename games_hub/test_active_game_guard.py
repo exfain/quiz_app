@@ -3,7 +3,7 @@ from unittest.mock import AsyncMock
 
 from asgiref.sync import async_to_sync
 from django.contrib.auth.models import User
-from django.test import TestCase
+from django.test import TransactionTestCase
 from django.urls import reverse
 from django.utils import timezone
 
@@ -16,7 +16,7 @@ from games_hub.consumers import HubConsumer
 from games_hub.models import HubGameStep, HubSession
 
 
-class ActiveGameGuardTests(TestCase):
+class ActiveGameGuardTests(TransactionTestCase):
     def setUp(self):
         self.user = User.objects.create_superuser(
             username='guard_admin',

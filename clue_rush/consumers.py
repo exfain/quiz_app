@@ -2,8 +2,9 @@ import json
 import asyncio
 from channels.generic.websocket import AsyncWebsocketConsumer
 from channels.db import database_sync_to_async
+from django.db import transaction
 from django.utils import timezone
-from .models import ClueRushGame, ClueRushParticipant, ClueQuestion, ClueAnswer
+from .models import ClueRushGame, ClueRushParticipant, ClueQuestion, ClueAnswer, CluePendingInput
 from games_hub.active_game_guard import resolve_session_game_activation_for_room
 from games_hub.lobby_return_flow import ensure_session_players_ready_for_game_start_for_room
 from games_hub.models import HubGameStep, HubSession
@@ -73,6 +74,8 @@ class ClueRushGameConsumer(AsyncWebsocketConsumer):
                 await self.handle_admin_set_inactive(text_data_json)
             elif message_type == 'participant_submit_answer':
                 await self.handle_participant_submit_answer(text_data_json)
+            elif message_type == 'participant_input_changed':
+                await self.handle_participant_input_changed(text_data_json)
             elif message_type == 'participant_join':
                 await self.handle_participant_join(text_data_json)
             elif message_type == 'admin_accept_close_answer':
@@ -235,16 +238,16 @@ class ClueRushGameConsumer(AsyncWebsocketConsumer):
                     self.auto_clue_task.cancel()
             except Exception:
                 pass
-            # Build correct answer payload before clearing the current question
-            correct_payload = await self.get_current_question_correct_payload()
-            await self.clear_current_question(quiz.id)
+            ended_payload = await self.finalize_current_question_for_end(data.get('hub_session'))
+            correct_payload = ended_payload.get('correct_answer')
             
             await self.channel_layer.group_send(
                 self.room_group_name,
                 {
                     'type': 'question_ended',
                     'message': 'Question time is up!',
-                    'correct_answer': correct_payload
+                    'correct_answer': correct_payload,
+                    'answers': ended_payload.get('answers', []),
                 }
             )
 
@@ -379,6 +382,13 @@ class ClueRushGameConsumer(AsyncWebsocketConsumer):
                 }
             )
 
+    async def handle_participant_input_changed(self, data):
+        participant_name = data.get('participant_name')
+        hub_session = data.get('hub_session')
+        answer_text = data.get('answer', '')
+        time_taken = data.get('time_taken', 0)
+        await self.store_pending_input(participant_name, hub_session, answer_text, time_taken)
+
     async def handle_participant_join(self, data):
         """Handle new participant joining"""
         participant_name = data.get('participant_name')
@@ -433,6 +443,13 @@ class ClueRushGameConsumer(AsyncWebsocketConsumer):
                     await self.send(text_data=json.dumps({
                         'type': 'participant_rehydrated',
                         'answer': snapshot['participant_answer']
+                    }))
+                if snapshot.get('revealed_answer'):
+                    await self.send(text_data=json.dumps({
+                        'type': 'question_ended',
+                        'message': 'Question already ended.',
+                        'correct_answer': snapshot.get('correct_answer'),
+                        'answers': [snapshot['revealed_answer']],
                     }))
 
     async def handle_admin_accept_close_answer(self, data):
@@ -543,7 +560,8 @@ class ClueRushGameConsumer(AsyncWebsocketConsumer):
         await self.send(text_data=json.dumps({
             'type': 'question_ended',
             'message': event['message'],
-            'correct_answer': event.get('correct_answer')
+            'correct_answer': event.get('correct_answer'),
+            'answers': event.get('answers', []),
         }))
 
     async def quiz_ended(self, event):
@@ -887,6 +905,199 @@ class ClueRushGameConsumer(AsyncWebsocketConsumer):
         except ClueRushGame.DoesNotExist:
             pass
 
+    @database_sync_to_async
+    def store_pending_input(self, participant_name, hub_session_code, answer_text, time_taken=0):
+        try:
+            quiz = ClueRushGame.objects.select_related('current_question', 'current_clue').get(room_code=self.room_code)
+            if quiz.status != 'active' or not quiz.current_question_id:
+                return None
+            participant = quiz.participants.get(name=participant_name, hub_session_code=hub_session_code)
+            if ClueAnswer.objects.filter(quiz=quiz, participant=participant, question=quiz.current_question).exists():
+                CluePendingInput.objects.filter(quiz=quiz, participant=participant, question=quiz.current_question).delete()
+                return None
+
+            submitted_clue_number, total_clues = self._get_current_clue_submission_state(quiz, quiz.current_question)
+            pending, _ = CluePendingInput.objects.update_or_create(
+                quiz=quiz,
+                participant=participant,
+                question=quiz.current_question,
+                defaults={
+                    'answer_text': (answer_text or '')[:200],
+                    'submitted_clue_number': submitted_clue_number,
+                    'total_clues_at_input': total_clues,
+                    'time_taken': self._coerce_positive_float(time_taken),
+                },
+            )
+            return pending.id
+        except (ClueRushGame.DoesNotExist, ClueRushParticipant.DoesNotExist):
+            return None
+
+    @database_sync_to_async
+    def finalize_current_question_for_end(self, hub_session_code=None):
+        try:
+            with transaction.atomic():
+                quiz = ClueRushGame.objects.select_for_update().select_related(
+                    'current_question',
+                    'current_clue',
+                ).get(room_code=self.room_code)
+                question = quiz.current_question
+                if not question:
+                    return {'correct_answer': None, 'answers': []}
+
+                correct_payload = {
+                    'question_id': question.id,
+                    'formatted_answer': (question.answer or '').strip(),
+                    'raw': question.answer,
+                }
+
+                participants = quiz.participants.filter(is_active=True)
+                if hub_session_code is not None:
+                    participants = participants.filter(hub_session_code=hub_session_code)
+                participants = list(participants.order_by('name'))
+
+                existing_answers = {
+                    answer.participant_id: answer
+                    for answer in ClueAnswer.objects.filter(
+                        quiz=quiz,
+                        question=question,
+                        participant__in=participants,
+                    ).select_related('participant', 'question')
+                }
+                pending_inputs = {
+                    pending.participant_id: pending
+                    for pending in CluePendingInput.objects.filter(
+                        quiz=quiz,
+                        question=question,
+                        participant__in=participants,
+                    )
+                }
+
+                answers = []
+                for participant in participants:
+                    answer = existing_answers.get(participant.id)
+                    if not answer:
+                        pending = pending_inputs.get(participant.id)
+                        submitted_clue_number, total_clues = self._get_current_clue_submission_state(quiz, question)
+                        answer = ClueAnswer(
+                            quiz=quiz,
+                            participant=participant,
+                            question=question,
+                            answer_text=((pending.answer_text if pending else '') or '')[:200],
+                            time_taken=pending.time_taken if pending else None,
+                            submitted_clue_number=pending.submitted_clue_number if pending and pending.submitted_clue_number else submitted_clue_number,
+                            total_clues_at_submission=pending.total_clues_at_input if pending and pending.total_clues_at_input else total_clues,
+                        )
+                        answer.save()
+                    answers.append(answer)
+
+                CluePendingInput.objects.filter(quiz=quiz, question=question, participant__in=participants).delete()
+
+                try:
+                    session = quiz.session
+                except Exception:
+                    session = None
+                if session:
+                    session.total_responses_current_question = len(answers)
+                    session.correct_responses_current_question = sum(1 for answer in answers if answer.is_correct)
+                    session.is_question_active = False
+                    session.is_clue_active = False
+                    session.question_end_time = None
+                    session.clue_end_time = None
+                    session.save(update_fields=[
+                        'total_responses_current_question',
+                        'correct_responses_current_question',
+                        'is_question_active',
+                        'is_clue_active',
+                        'question_end_time',
+                        'clue_end_time',
+                    ])
+
+                answer_payloads = [self._serialize_answer_for_event(answer) for answer in answers]
+
+                quiz.current_question = None
+                quiz.question_start_time = None
+                quiz.current_clue = None
+                quiz.clue_start_time = None
+                quiz.save(update_fields=['current_question', 'question_start_time', 'current_clue', 'clue_start_time'])
+
+                return {
+                    'correct_answer': correct_payload,
+                    'answers': answer_payloads,
+                }
+        except ClueRushGame.DoesNotExist:
+            return {'correct_answer': None, 'answers': []}
+
+    def _get_current_clue_submission_state(self, quiz, question):
+        current_clue = quiz.current_clue if (
+            quiz.current_clue_id and
+            quiz.current_clue and
+            quiz.current_clue.clue_question_id == question.id
+        ) else None
+        try:
+            session = quiz.session
+            current_clue_number = session.current_clue_number if session else None
+        except Exception:
+            current_clue_number = None
+
+        submitted_clue_number = question.get_revealed_clue_count(
+            current_clue=current_clue,
+            current_clue_order=current_clue_number,
+        )
+        total_clues = question.clues.count()
+        if submitted_clue_number <= 0 and total_clues > 0:
+            submitted_clue_number = 1
+        return submitted_clue_number, total_clues
+
+    def _serialize_answer_for_event(self, answer):
+        answer.participant.refresh_from_db(fields=['total_score'])
+        return {
+            'answer_id': answer.id,
+            'participant_id': answer.participant_id,
+            'participant_name': answer.participant.name,
+            'question_id': answer.question_id,
+            'answer_text': answer.answer_text,
+            'is_correct': answer.is_correct,
+            'is_manual_override': answer.is_manually_corrected,
+            'can_mark_correct': not answer.is_correct,
+            'points_earned': answer.points_earned,
+            'time_taken': answer.time_taken,
+            'total_score': answer.participant.total_score,
+            'submitted_at': answer.submitted_at.isoformat() if answer.submitted_at else None,
+            'submitted_clue_number': answer.submitted_clue_number,
+            'progress_history': self._build_participant_score_history(answer.quiz, answer.participant),
+        }
+
+    def _build_participant_score_history(self, quiz, participant):
+        answers = (
+            ClueAnswer.objects
+            .filter(quiz=quiz, participant=participant)
+            .select_related('question')
+            .order_by('submitted_at', 'id')
+        )
+        if quiz.started_at:
+            answers = answers.filter(submitted_at__gte=quiz.started_at)
+
+        history = []
+        for idx, answer in enumerate(answers, start=1):
+            max_points = answer.total_clues_at_submission or answer.question.clues.count()
+            achieved_points = 0
+            if answer.is_correct and max_points > 0:
+                achieved_points = max(0, min(answer.points_earned, max_points))
+            history.append({
+                'question_number': idx,
+                'correct_answer': answer.question.answer,
+                'achieved_points': achieved_points,
+                'max_points': max_points,
+            })
+        return history
+
+    def _coerce_positive_float(self, value):
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            return None
+        return parsed if parsed >= 0 else None
+
 
     @database_sync_to_async
     def advance_next_clue(self):
@@ -1001,6 +1212,11 @@ class ClueRushGameConsumer(AsyncWebsocketConsumer):
                 answer_text=answer_text,
                 time_taken=time_taken
             )
+            CluePendingInput.objects.filter(
+                quiz=quiz,
+                participant=participant,
+                question=quiz.current_question,
+            ).delete()
             # Compute closeness using rapidfuzz if available (only when not exactly correct)
             is_close = False
             try:
@@ -1091,6 +1307,8 @@ class ClueRushGameConsumer(AsyncWebsocketConsumer):
         question_payload = None
         revealed_clues = []
         participant_answer = None
+        revealed_answer = None
+        correct_answer = None
 
         current_question = quiz.current_question
         if current_question:
@@ -1144,11 +1362,32 @@ class ClueRushGameConsumer(AsyncWebsocketConsumer):
                     }
             except ClueRushParticipant.DoesNotExist:
                 participant_answer = None
+        else:
+            try:
+                participant = quiz.participants.get(name=participant_name, hub_session_code=hub_session)
+                latest_answer_qs = ClueAnswer.objects.filter(
+                    quiz=quiz,
+                    participant=participant,
+                ).select_related('question', 'participant').order_by('-submitted_at', '-id')
+                if quiz.started_at:
+                    latest_answer_qs = latest_answer_qs.filter(submitted_at__gte=quiz.started_at)
+                latest_answer = latest_answer_qs.first()
+                if latest_answer:
+                    correct_answer = {
+                        'question_id': latest_answer.question_id,
+                        'formatted_answer': (latest_answer.question.answer or '').strip(),
+                        'raw': latest_answer.question.answer,
+                    }
+                    revealed_answer = self._serialize_answer_for_event(latest_answer)
+            except ClueRushParticipant.DoesNotExist:
+                revealed_answer = None
 
         return {
             'question': question_payload,
             'revealed_clues': revealed_clues,
             'participant_answer': participant_answer,
+            'revealed_answer': revealed_answer,
+            'correct_answer': correct_answer,
         }
 
     @database_sync_to_async

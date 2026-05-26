@@ -52,6 +52,9 @@ urlpatterns = [
     # Sorting Ladder game
     path('sorting-ladder/', include('sorting_ladder.urls')),
 
+    # Wer weiß mehr game
+    path('wer-weiss-mehr/', include('wer_weiss_mehr.urls')),
+
 ]
 
 # Serve media files in development

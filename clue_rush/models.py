@@ -252,20 +252,24 @@ class ClueAnswer(SyncBase):
             self.is_correct = correct
             self.is_manually_corrected = False
 
-            current_clue = getattr(self.quiz, 'current_clue', None)
-            if current_clue is not None and current_clue.clue_question_id != self.question_id:
-                current_clue = None
-            try:
-                session = self.quiz.session
-                current_clue_number = session.current_clue_number if session else None
-            except Exception:
-                current_clue_number = None
+            submitted_clue_number = int(self.submitted_clue_number or 0)
+            total_clues_at_submission = int(self.total_clues_at_submission or 0)
+            if submitted_clue_number <= 0:
+                current_clue = getattr(self.quiz, 'current_clue', None)
+                if current_clue is not None and current_clue.clue_question_id != self.question_id:
+                    current_clue = None
+                try:
+                    session = self.quiz.session
+                    current_clue_number = session.current_clue_number if session else None
+                except Exception:
+                    current_clue_number = None
 
-            submitted_clue_number = self.question.get_revealed_clue_count(
-                current_clue=current_clue,
-                current_clue_order=current_clue_number,
-            )
-            total_clues_at_submission = self.question.clues.count()
+                submitted_clue_number = self.question.get_revealed_clue_count(
+                    current_clue=current_clue,
+                    current_clue_order=current_clue_number,
+                )
+            if total_clues_at_submission <= 0:
+                total_clues_at_submission = self.question.clues.count()
             if submitted_clue_number <= 0 and total_clues_at_submission > 0:
                 submitted_clue_number = 1
             self.submitted_clue_number = submitted_clue_number
@@ -289,6 +293,21 @@ class ClueAnswer(SyncBase):
             self.submitted_clue_number,
             total_clues=self.total_clues_at_submission or None,
         )
+
+
+class CluePendingInput(SyncBase):
+    quiz = models.ForeignKey(ClueRushGame, on_delete=models.CASCADE, related_name='pending_inputs')
+    participant = models.ForeignKey(ClueRushParticipant, on_delete=models.CASCADE, related_name='pending_inputs')
+    question = models.ForeignKey(ClueQuestion, on_delete=models.CASCADE, related_name='pending_inputs')
+    answer_text = models.CharField(max_length=200, blank=True, default='')
+    submitted_clue_number = models.PositiveIntegerField(default=0)
+    total_clues_at_input = models.PositiveIntegerField(default=0)
+    time_taken = models.FloatField(null=True, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        unique_together = ['quiz', 'participant', 'question']
+        ordering = ['-updated_at']
 
 class ClueRushSession(SyncBase):
     quiz = models.OneToOneField(ClueRushGame, on_delete=models.CASCADE, related_name='session')

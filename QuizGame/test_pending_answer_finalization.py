@@ -3,7 +3,7 @@ from unittest.mock import AsyncMock
 from asgiref.sync import async_to_sync
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
-from django.test import TestCase
+from django.test import TransactionTestCase
 from django.urls import reverse
 from django.utils import timezone
 
@@ -14,7 +14,7 @@ from .models import Quiz, QuizAnswer, QuizParticipant, QuizQuestion
 User = get_user_model()
 
 
-class QuizPendingAnswerFinalizationTest(TestCase):
+class QuizPendingAnswerFinalizationTest(TransactionTestCase):
     def setUp(self):
         cache.clear()
         self.user = User.objects.create_user(username='quick_quiz_player', password='testpass123')
@@ -60,7 +60,7 @@ class QuizPendingAnswerFinalizationTest(TestCase):
 
         self.assertIsNotNone(result)
         self.assertTrue(result['is_correct'])
-        self.assertEqual(result['points_earned'], 10)
+        self.assertEqual(result['points_earned'], 1)
         self.assertTrue(
             QuizAnswer.objects.filter(
                 quiz=self.quiz,
@@ -69,7 +69,7 @@ class QuizPendingAnswerFinalizationTest(TestCase):
             ).exists()
         )
         self.participant.refresh_from_db()
-        self.assertEqual(self.participant.total_score, 10)
+        self.assertEqual(self.participant.total_score, 1)
 
     def test_finalize_answer_handler_keeps_logged_answers_unchanged(self):
         initial = async_to_sync(self.consumer.save_participant_answer)(
@@ -105,7 +105,7 @@ class QuizPendingAnswerFinalizationTest(TestCase):
             1,
         )
         self.participant.refresh_from_db()
-        self.assertEqual(self.participant.total_score, 10)
+        self.assertEqual(self.participant.total_score, 1)
         self.consumer.send.assert_not_awaited()
         self.consumer.channel_layer.group_send.assert_not_awaited()
 

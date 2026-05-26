@@ -1461,6 +1461,11 @@
                     this.questionClosedAwaitingAutoSubmit = false;
                     this.lastCompletedSetSummary = this.readJSONScript('blackjackLastSetSummaryData');
                     this.hasActiveQuestionAtLoad = {% if quiz.current_question %}true{% else %}false{% endif %};
+                    this.currentQuestionId = {% if quiz.current_question %}{{ quiz.current_question.id }}{% else %}null{% endif %};
+                    this.currentQuestionEndTime = {% if current_question_end_time %}'{{ current_question_end_time|date:"c" }}'{% else %}null{% endif %};
+                    this.timeoutSyncInFlight = false;
+                    this.timeoutStatusSyncTimer = null;
+                    this.quizStatusUrl = '{% url "black_jack_quiz:quiz_status" quiz.room_code participant.name %}';
                     
                     this.init();
                 }
@@ -1485,7 +1490,7 @@
                     
                     // Start timer if there's an active question
                     {% if quiz.current_question %}
-                        this.startQuestionTimer({{ quiz.current_question.time_limit }});
+                        this.startQuestionTimer({{ quiz.current_question.time_limit }}, this.currentQuestionEndTime);
                         this.loadCurrentQuestion();
                     {% endif %}
 
@@ -1520,6 +1525,9 @@
                             participant_name: this.participantName,
                             hub_session: this.hubSession
                         }));
+                        if (this.timeoutSyncInFlight && this.currentQuestionId) {
+                            this.sendParticipantQuestionTimeout();
+                        }
                     };
                     
                     this.websocket.onmessage = (event) => {
@@ -1626,13 +1634,15 @@
                     this.pendingQuestionEndedData = null;
                     this.questionClosedAwaitingAutoSubmit = false;
                     this.questionStartTime = Date.now();
+                    this.currentQuestionId = question.id || null;
+                    this.currentQuestionEndTime = question.question_end_time || null;
                     this.currentSetNumber = setNumber;
                     this.totalSets = question.total_sets || this.totalSets;
                     this.totalQuestions = question.set_question_count || question.total_questions || this.totalQuestions;
                     this.updateSetScoreRowStates();
                     
                     this.loadQuestion(question);
-                    this.startQuestionTimer(question.time_limit || 30);
+                    this.startQuestionTimer(question.time_limit || 30, question.question_end_time || null);
                     this.showState('questionState');
                     
                     // Update question progress
@@ -1647,6 +1657,10 @@
 
                 onQuestionEnded(data) {
                     clearInterval(this.questionTimer);
+                    clearTimeout(this.timeoutStatusSyncTimer);
+                    this.timeoutSyncInFlight = false;
+                    this.currentQuestionId = null;
+                    this.currentQuestionEndTime = null;
                     this.lastQuestionEndData = data || {};
                     if (this.questionClosedAwaitingAutoSubmit && this.hasAnswered && !this.pendingAnswerResult) {
                         this.pendingQuestionEndedData = data || {};
@@ -1760,6 +1774,7 @@
                         id: {{ quiz.current_question.id }},
                         question_text: '{{ quiz.current_question.question_text|escapejs }}',
                         time_limit: {{ quiz.current_question.time_limit }},
+                        question_end_time: this.currentQuestionEndTime,
                         question_number: {{ quiz.current_question_number }},
                         question_in_set: {{ current_question_in_set }},
                         set_question_count: {{ current_set_question_count }},
@@ -1771,6 +1786,8 @@
                 }
 
                 loadQuestion(question) {
+                    this.currentQuestionId = question.id || this.currentQuestionId || null;
+                    this.currentQuestionEndTime = question.question_end_time || this.currentQuestionEndTime || null;
                     document.getElementById('questionText').textContent = question.question_text;
                     document.getElementById('currentQuestionNumber').textContent = question.question_in_set || question.question_number;
                     const currentSetQuestionCount = document.getElementById('currentSetQuestionCount');
@@ -1801,16 +1818,28 @@
                     document.getElementById('questionSubmittedAnswer').textContent = '-';
                 }
 
-                startQuestionTimer(timeLimit) {
-                    let timeLeft = timeLimit;
+                startQuestionTimer(timeLimit, questionEndTime = null) {
+                    clearInterval(this.questionTimer);
+                    const endTimestamp = questionEndTime ? new Date(questionEndTime).getTime() : null;
+                    const getTimeLeft = () => {
+                        if (endTimestamp && !Number.isNaN(endTimestamp)) {
+                            return Math.max(0, Math.ceil((endTimestamp - Date.now()) / 1000));
+                        }
+                        return Math.max(0, timeLimit);
+                    };
+                    let timeLeft = getTimeLeft();
                     const timerElement = document.getElementById('playerTimeLeft');
                     const circleElement = document.getElementById('playerTimerCircle');
                     
                     timerElement.textContent = timeLeft;
                     circleElement.className = 'timer-circle';
+                    if (timeLeft <= 0) {
+                        this.onTimeUp();
+                        return;
+                    }
                     
                     this.questionTimer = setInterval(() => {
-                        timeLeft--;
+                        timeLeft = endTimestamp && !Number.isNaN(endTimestamp) ? getTimeLeft() : Math.max(0, timeLeft - 1);
                         timerElement.textContent = timeLeft;
                         
                         // Update timer circle appearance
@@ -1875,11 +1904,106 @@
                 onTimeUp() {
                     if (this.hasAnswered || this.isBusted) return;
                     
-                    // Auto-submit if there's an answer
                     const answerInput = document.getElementById('answerInput');
-                    if (answerInput.value.trim()) {
-                        this.submitAnswer();
+                    if (answerInput && answerInput.value.trim()) {
+                        this.submitAnswer({ questionId: this.currentQuestionId || null });
+                        this.sendParticipantQuestionTimeout();
+                        this.scheduleTimeoutStatusSync();
+                        return;
                     }
+
+                    this.requestQuestionTimeoutSync();
+                }
+
+                requestQuestionTimeoutSync() {
+                    if (this.timeoutSyncInFlight) return;
+                    this.timeoutSyncInFlight = true;
+                    this.disableQuestionInputAfterTimeout();
+                    this.sendParticipantQuestionTimeout();
+                    this.scheduleTimeoutStatusSync();
+                }
+
+                sendParticipantQuestionTimeout() {
+                    if (!this.websocket || this.websocket.readyState !== WebSocket.OPEN) return false;
+                    this.websocket.send(JSON.stringify({
+                        type: 'participant_question_timeout',
+                        participant_name: this.participantName,
+                        hub_session: this.hubSession,
+                        question_id: this.currentQuestionId,
+                    }));
+                    return true;
+                }
+
+                disableQuestionInputAfterTimeout() {
+                    const answerInput = document.getElementById('answerInput');
+                    if (answerInput) answerInput.disabled = true;
+                    const submitBtn = document.getElementById('submitAnswerBtn');
+                    if (submitBtn) {
+                        submitBtn.disabled = true;
+                        submitBtn.classList.remove('loading');
+                    }
+                    const feedback = document.getElementById('questionSubmitFeedback');
+                    if (feedback) feedback.classList.remove('d-none');
+                    const submittedAnswer = document.getElementById('questionSubmittedAnswer');
+                    if (submittedAnswer) submittedAnswer.textContent = 'Keine Antwort';
+                    const waitingText = document.querySelector('#questionSubmitFeedback .zone-submit-waiting');
+                    if (waitingText) waitingText.textContent = 'Timer abgelaufen. Serverstatus wird synchronisiert...';
+                }
+
+                scheduleTimeoutStatusSync() {
+                    clearTimeout(this.timeoutStatusSyncTimer);
+                    this.timeoutStatusSyncTimer = setTimeout(() => this.syncQuestionStateAfterTimeout(), 1200);
+                }
+
+                syncQuestionStateAfterTimeout() {
+                    try {
+                        const statusUrl = new URL(this.quizStatusUrl, window.location.origin);
+                        if (this.hubSession) {
+                            statusUrl.searchParams.set('hub_session', this.hubSession);
+                        }
+                        fetch(statusUrl.toString(), { credentials: 'same-origin' })
+                            .then((response) => response.json())
+                            .then((data) => this.applyServerStatusAfterTimeout(data))
+                            .catch((error) => console.warn('Unable to sync BlackJack timeout state:', error));
+                    } catch (error) {
+                        console.warn('Unable to build BlackJack status URL:', error);
+                    }
+                }
+
+                applyServerStatusAfterTimeout(data) {
+                    if (!data || !data.success) return;
+                    this.currentPoints = Number(data.participant_points ?? this.currentPoints);
+                    this.overallPoints = Number(data.overall_points ?? this.overallPoints);
+                    this.isBusted = Boolean(data.is_busted);
+                    this.updatePointsDisplay();
+
+                    if (data.current_question) {
+                        if (data.current_question.id !== this.currentQuestionId) {
+                            this.timeoutSyncInFlight = false;
+                            this.onQuestionStarted(data.current_question);
+                        } else if (this.timeoutSyncInFlight && this.websocket?.readyState === WebSocket.OPEN) {
+                            this.sendParticipantQuestionTimeout();
+                            this.scheduleTimeoutStatusSync();
+                        }
+                        return;
+                    }
+
+                    clearInterval(this.questionTimer);
+                    this.currentQuestionId = null;
+                    this.currentQuestionEndTime = null;
+                    this.timeoutSyncInFlight = false;
+                    if (this.isBusted) {
+                        this.applyNoAnswerElimination({
+                            name: this.participantName,
+                            hub_session_code: this.hubSession,
+                            reason: 'no_answer',
+                            total_points: data.participant_points,
+                            overall_points: data.overall_points,
+                        });
+                        this.showState('bustedState');
+                        return;
+                    }
+                    this.showWaitingForNextQuestion();
                 }
 
                 showCorrectAnswer(correctAnswerData) {

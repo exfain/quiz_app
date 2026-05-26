@@ -828,7 +828,8 @@ document.addEventListener('DOMContentLoaded', function() {
             this.roomCode = '{{ quiz.room_code }}';
             this.websocket = null;
             this.questionTimer = null;
-            this.quizStartTime = {% if quiz.started_at %}new Date('{{ quiz.started_at|date:"c" }}'){% else %}null{% endif %};
+            this.quizStartTime = {% if quiz.status == 'active' and quiz.started_at %}new Date('{{ quiz.started_at|date:"c" }}'){% else %}null{% endif %};
+            this.quizStatus = '{{ quiz.status }}';
             this.isActive = '{{ quiz.status }}' === 'active';
             this.liveResponseState = new Map();
             this.init();
@@ -900,6 +901,9 @@ document.addEventListener('DOMContentLoaded', function() {
             this.connectWebSocket();
             this.bindEvents();
             this.startQuizTimer();
+            if (this.quizStatus === 'waiting') {
+                this.resetSentStates();
+            }
             this.applySentStates();
             this.initializeLiveResponseState();
             this.startResponsesPolling();
@@ -918,7 +922,9 @@ document.addEventListener('DOMContentLoaded', function() {
         }
 
         fetchResponses() {
-            fetch(`/admin-dashboard/api/quiz/{{ quiz.room_code }}/responses/`)
+            const hub = new URLSearchParams(window.location.search).get('hub_session');
+            const suffix = hub ? `?hub_session=${encodeURIComponent(hub)}` : '';
+            fetch(`/admin-dashboard/api/quiz/{{ quiz.room_code }}/responses/${suffix}`)
             .then(r => r.json())
             .then(data => {
                 if (data.success && data.responses) {
@@ -996,6 +1002,11 @@ document.addEventListener('DOMContentLoaded', function() {
                     
                 case 'participant_answered':
                     this.addLiveResponse(data.answer);
+                    break;
+
+                case 'answer_corrected':
+                    this.addLiveResponse(data);
+                    this.updateParticipantScore(data.participant_id, data.total_score);
                     break;
                     
                 case 'quiz_started':
@@ -1079,7 +1090,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 }
             });
 
-            document.getElementById('setInactiveBtn')?.addEventListener('click', () => {
+            document.getElementById('setInactive' + 'Btn')?.addEventListener('click', () => {
                 if (confirm('Do you want to set this game inactive and preserve its current progress?')) {
                     this.setInactive();
                 }
@@ -1148,9 +1159,15 @@ document.addEventListener('DOMContentLoaded', function() {
             });
 
             document.getElementById('liveResponses')?.addEventListener('click', (event) => {
+                const fieldButton = event.target.closest('.promote-field-correct-btn');
+                if (fieldButton) {
+                    this.promoteAnswerCorrect(fieldButton.dataset.answerId, fieldButton, fieldButton.dataset.fieldKey || null);
+                    return;
+                }
                 const button = event.target.closest('.promote-correct-btn');
-                if (!button) return;
-                this.promoteAnswerCorrect(button.dataset.answerId, button);
+                if (button) {
+                    this.promoteAnswerCorrect(button.dataset.answerId, button);
+                }
             });
         }
         
@@ -1342,7 +1359,7 @@ document.addEventListener('DOMContentLoaded', function() {
         }
         
         startQuizTimer() {
-            if (!this.quizStartTime) return;
+            if (!this.isActive || !this.quizStartTime) return;
             
             const updateTimer = () => {
                 const now = new Date();
@@ -1405,6 +1422,26 @@ document.addEventListener('DOMContentLoaded', function() {
                 const promoteButton = response.can_mark_correct
                     ? `<button class="btn btn-sm btn-outline-success promote-correct-btn" data-answer-id="${this.escapeHtml(response.answer_id)}">Mark correct</button>`
                     : '';
+                const fieldResults = Array.isArray(response.field_results) ? response.field_results : [];
+                const fieldMarkup = fieldResults.length > 1
+                    ? `<div class="response-fields mt-2">
+                        ${fieldResults.map((field) => {
+                            const fieldCorrect = !!field.is_correct;
+                            const fieldBadge = fieldCorrect
+                                ? '<span class="badge bg-success ms-1" style="font-size:0.65rem;">Correct</span>'
+                                : '<span class="badge bg-danger ms-1" style="font-size:0.65rem;">Wrong</span>';
+                            const fieldButton = !fieldCorrect
+                                ? `<button class="btn btn-sm btn-outline-success promote-field-correct-btn ms-2" data-answer-id="${this.escapeHtml(response.answer_id)}" data-field-key="${this.escapeHtml(field.key || '')}">Mark field correct</button>`
+                                : '';
+                            return `<div class="response-field-row">
+                                <span class="fw-semibold">${this.escapeHtml(field.label || field.key || 'Answer')}</span>:
+                                <span>${this.escapeHtml(field.answer || '')}</span>
+                                ${fieldBadge}
+                                ${fieldButton}
+                            </div>`;
+                        }).join('')}
+                    </div>`
+                    : '';
 
                 return `
                     <div class="response-item" data-answer-id="${this.escapeHtml(response.answer_id)}">
@@ -1417,6 +1454,7 @@ document.addEventListener('DOMContentLoaded', function() {
                                 <span class="response-answer">${answerText}</span>
                                 ${badge}
                                 &nbsp;+${response.points_earned} pts
+                                ${fieldMarkup}
                             </div>
                         </div>
                         <div class="response-meta">
@@ -1462,6 +1500,14 @@ document.addEventListener('DOMContentLoaded', function() {
             lucide.createIcons();
             this.initializeLiveResponseState();
         }
+
+        updateParticipantScore(participantId, totalScore) {
+            if (participantId === undefined || participantId === null || totalScore === undefined || totalScore === null) return;
+            const scoreEl = document.getElementById(`score-${participantId}`);
+            if (scoreEl) scoreEl.textContent = `${totalScore} pts`;
+            const editBtn = document.querySelector(`.edit-score-btn[data-participant-id="${participantId}"]`);
+            if (editBtn) editBtn.dataset.currentScore = totalScore;
+        }
         
         addLiveResponse(response) {
             if (!(this.liveResponseState instanceof Map)) { this.liveResponseState = new Map(); }
@@ -1471,9 +1517,12 @@ document.addEventListener('DOMContentLoaded', function() {
             this.renderLiveResponseState();
         }
 
-        async promoteAnswerCorrect(answerId, button) {
+        async promoteAnswerCorrect(answerId, button, fieldKey = null) {
             if (!answerId) return;
-            if (!confirm('Mark this response as correct? This can only be done once.')) {
+            const message = fieldKey
+                ? 'Mark this answer field as correct?'
+                : 'Mark this response as correct? This can only be done once.';
+            if (!confirm(message)) {
                 return;
             }
 
@@ -1485,7 +1534,7 @@ document.addEventListener('DOMContentLoaded', function() {
                         'X-CSRFToken': '{{ csrf_token }}',
                         'Content-Type': 'application/json'
                     },
-                    body: JSON.stringify({ answer_id: answerId })
+                    body: JSON.stringify(fieldKey ? { answer_id: answerId, field_key: fieldKey, is_correct: true } : { answer_id: answerId })
                 });
                 const data = await response.json();
                 if (!response.ok || !data.success) {
@@ -1495,10 +1544,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 this.liveResponseState.set(String(data.answer_id), data);
                 this.renderLiveResponseState();
 
-                const scoreEl = document.getElementById(`score-${data.participant_id}`);
-                if (scoreEl) scoreEl.textContent = `${data.total_score} pts`;
-                const editBtn = document.querySelector(`.edit-score-btn[data-participant-id="${data.participant_id}"]`);
-                if (editBtn) editBtn.dataset.currentScore = data.total_score;
+                this.updateParticipantScore(data.participant_id, data.total_score);
             } catch (error) {
                 alert(error.message || 'Unable to mark this answer as correct.');
             } finally {

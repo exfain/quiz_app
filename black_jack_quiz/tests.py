@@ -584,7 +584,7 @@ class BlackJackScoringModeConfigTests(TestCase):
         higher.save(update_fields=['total_points', 'final_score'])
 
         response = self.client.get(
-            reverse('black_jack_quiz:api_quiz_participants', args=[quiz.room_code])
+            reverse('black_jack_quiz:api_participants', args=[quiz.room_code])
         )
 
         self.assertEqual(response.status_code, 200)
@@ -716,7 +716,7 @@ class BlackJackMultiSetTransitionTests(TestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, 'Select Next Question (1/2)')
+        self.assertContains(response, 'Select Next Question (Set 1/2, 1/2)')
         self.assertNotContains(response, 'All 2 questions have been asked. The quiz is finished.')
 
     def test_play_view_shows_question_progress_within_current_set(self):
@@ -748,7 +748,7 @@ class BlackJackMultiSetTransitionTests(TestCase):
         closer.save(update_fields=['total_points', 'final_score'])
 
         response = self.client.get(
-            reverse('black_jack_quiz:api_quiz_participants', args=[quiz.room_code])
+            reverse('black_jack_quiz:api_participants', args=[quiz.room_code])
         )
 
         self.assertEqual(response.status_code, 200)
@@ -904,6 +904,31 @@ class BlackJackExplicitSetRuntimeTests(TestCase):
         self.assertContains(response, 'question_id: options.questionId || null,')
         self.assertContains(response, 'if (this.questionClosedAwaitingAutoSubmit && this.pendingQuestionEndedData) {')
         self.assertContains(response, 'this.finalizeQuestionEnd(endedData);')
+
+    def test_play_view_requests_server_timeout_sync_when_timer_expires_without_input(self):
+        response = self.client.get(
+            reverse('black_jack_quiz:play', args=[self.quiz.room_code, self.participant.name])
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "type: 'participant_question_timeout'")
+        self.assertContains(response, 'this.requestQuestionTimeoutSync();')
+        self.assertContains(response, 'this.disableQuestionInputAfterTimeout();')
+        self.assertContains(response, 'this.syncQuestionStateAfterTimeout()')
+        self.assertContains(response, "this.applyNoAnswerElimination({")
+        self.assertContains(response, "this.showState('bustedState');")
+
+    def test_play_view_keeps_pending_input_timeout_as_answer_before_timeout_sync(self):
+        response = self.client.get(
+            reverse('black_jack_quiz:play', args=[self.quiz.room_code, self.participant.name])
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'if (answerInput && answerInput.value.trim()) {')
+        self.assertContains(response, 'this.submitAnswer({ questionId: this.currentQuestionId || null });')
+        self.assertContains(response, 'this.sendParticipantQuestionTimeout();')
+        self.assertContains(response, 'this.scheduleTimeoutStatusSync();')
+        self.assertNotContains(response, "user_answer: ''")
 
     def test_busted_participant_rejoin_in_same_set_still_sees_follow_up_question_with_lock_notice(self):
         self.session.set_selected_set_number(2)
@@ -1350,6 +1375,7 @@ class BlackJackRankingModeSetScoringTests(TestCase):
         quiz = BlackJackQuiz.objects.create(
             creator=self.user,
             title='Ranking Play View Quiz',
+            status='active',
             scoring_mode='rank',
             question_order=[[question.id]],
         )
@@ -1365,13 +1391,13 @@ class BlackJackRankingModeSetScoringTests(TestCase):
             quiz=quiz,
             participant=alice,
             question=question,
-            user_answer=9,
+            user_answer=8,
         )
         BlackJackAnswer.objects.create(
             quiz=quiz,
             participant=bob,
             question=question,
-            user_answer=8,
+            user_answer=9,
         )
 
         response = self.client.get(
@@ -1474,7 +1500,7 @@ class BlackJackHostSetProgressTests(TransactionTestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, 'Select Next Question (1/2)')
+        self.assertContains(response, 'Select Next Question (Set 1/1, 1/2)')
         self.assertNotContains(response, 'All 2 questions have been asked. The quiz is finished.')
         self.assertContains(response, self.questions[0].question_text)
         self.assertContains(response, self.questions[1].question_text)
@@ -1491,7 +1517,13 @@ class BlackJackHostSetProgressTests(TransactionTestCase):
             ],
         )
         quiz.selected_questions.set(self.questions)
-        BlackJackSession.objects.create(quiz=quiz)
+        BlackJackSession.objects.create(
+            quiz=quiz,
+            current_question_number=1,
+            total_questions_sent=1,
+            selected_set_number=2,
+            asked_question_ids=[self.questions[0].id],
+        )
 
         response = self.client.get(
             reverse('admin_dashboard:blackjack_monitor', args=[quiz.room_code])
@@ -1549,7 +1581,7 @@ class BlackJackHostSetProgressTests(TransactionTestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, 'Select Next Question (2/2)')
+        self.assertContains(response, 'Select Next Question (Set 1/1, 2/2)')
         self.assertNotContains(response, 'All 2 questions have been asked. The quiz is finished.')
         self.assertContains(response, self.questions[1].question_text)
 
@@ -1604,7 +1636,7 @@ class BlackJackHostSetProgressTests(TransactionTestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, 'Select Next Question (1/2)')
+        self.assertContains(response, 'Select Next Question (Set 2/2, 1/2)')
         self.assertNotContains(response, 'All 4 questions have been asked. The quiz is finished.')
         self.assertContains(response, self.questions[2].question_text)
 
@@ -1654,7 +1686,13 @@ class BlackJackHostSetProgressTests(TransactionTestCase):
             ],
         )
         quiz.selected_questions.set(self.questions)
-        BlackJackSession.objects.create(quiz=quiz)
+        BlackJackSession.objects.create(
+            quiz=quiz,
+            current_question_number=1,
+            total_questions_sent=1,
+            selected_set_number=2,
+            asked_question_ids=[self.questions[0].id],
+        )
 
         select_response = self.client.post(
             reverse('admin_dashboard:select_blackjack_set', args=[quiz.room_code]),
@@ -2275,14 +2313,20 @@ class BlackJackHostSetProgressTests(TransactionTestCase):
             current_question_number=1,
         )
         quiz.selected_questions.set([self.questions[0], inactive_question, self.questions[2]])
-        BlackJackSession.objects.create(quiz=quiz)
+        BlackJackSession.objects.create(
+            quiz=quiz,
+            current_question_number=1,
+            total_questions_sent=1,
+            selected_set_number=2,
+            asked_question_ids=[self.questions[0].id],
+        )
 
         response = self.client.get(
             reverse('admin_dashboard:blackjack_monitor', args=[quiz.room_code])
         )
 
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, 'Select Next Question (1/1)')
+        self.assertContains(response, 'Select Next Question (Set 2/2, 1/1)')
         self.assertNotContains(response, 'All 2 questions have been asked. The quiz is finished.')
         self.assertContains(response, self.questions[2].question_text)
 
@@ -3096,7 +3140,7 @@ class BlackJackTutorialRuntimeTests(TransactionTestCase):
         self.assertIn('question_ended', message_types)
         self.assertLess(message_types.index('question_ending'), message_types.index('question_ended'))
 
-    def test_save_participant_answer_accepts_recently_ended_question_with_question_id(self):
+    def test_save_participant_answer_rejects_recently_ended_no_answer_bust(self):
         question_one = BlackJackQuestion.objects.create(
             question_text='Question 1',
             correct_answer=10,
@@ -3129,16 +3173,16 @@ class BlackJackTutorialRuntimeTests(TransactionTestCase):
             question_id=question_one.id,
         )
 
-        self.assertIsNotNone(result)
-        self.assertEqual(result['user_answer'], 11)
-        self.assertEqual(result['points_earned'], 1)
+        participant.refresh_from_db()
+        self.assertIsNone(result)
+        self.assertTrue(participant.is_busted)
         self.assertEqual(
             BlackJackAnswer.objects.filter(
                 quiz=self.quiz,
                 participant=participant,
                 question=question_one,
             ).count(),
-            1,
+            0,
         )
 
 
@@ -3305,6 +3349,68 @@ class BlackJackConsumerSetProgressTests(TransactionTestCase):
         self.assertEqual(question_ended['no_answer_bust_participants'][0]['name'], 'Alice')
         self.assertEqual(question_ended['no_answer_bust_participants'][0]['reason'], 'no_answer')
         self.assertFalse(question_ended['set_complete'])
+
+    def test_participant_timeout_after_server_expiry_ends_question_and_busts_no_answer(self):
+        questions = self._create_set_questions('Participant Timeout Question', lambda index: index * 10)
+        participant = BlackJackParticipant.objects.create(
+            quiz=self.quiz,
+            name='Alice',
+            hub_session_code='HUB1',
+            is_active=True,
+        )
+        self.quiz.session.send_question(questions[0])
+        self.quiz.session.question_end_time = timezone.now() - timedelta(seconds=1)
+        self.quiz.session.save(update_fields=['question_end_time'])
+
+        async_to_sync(self.consumer.handle_participant_question_timeout)({
+            'participant_name': participant.name,
+            'hub_session': participant.hub_session_code,
+            'question_id': questions[0].id,
+        })
+
+        participant.refresh_from_db()
+        self.quiz.refresh_from_db()
+        self.quiz.session.refresh_from_db()
+        message_types = [message['type'] for _, message in self.consumer.channel_layer.group_messages]
+        question_ended = self._get_question_ended_message()
+
+        self.assertIn('question_ending', message_types)
+        self.assertIn('question_ended', message_types)
+        self.assertIsNone(self.quiz.current_question_id)
+        self.assertFalse(self.quiz.session.is_question_active)
+        self.assertIsNone(self.quiz.session.question_end_time)
+        self.assertTrue(participant.is_busted)
+        self.assertEqual(question_ended['no_answer_bust_participants'][0]['name'], 'Alice')
+        self.assertEqual(question_ended['no_answer_bust_participants'][0]['reason'], 'no_answer')
+
+    def test_participant_timeout_before_server_expiry_does_not_end_question(self):
+        questions = self._create_set_questions('Early Participant Timeout Question', lambda index: index * 10)
+        participant = BlackJackParticipant.objects.create(
+            quiz=self.quiz,
+            name='Alice',
+            hub_session_code='HUB1',
+            is_active=True,
+        )
+        self.quiz.session.send_question(questions[0])
+        self.quiz.session.question_end_time = timezone.now() + timedelta(seconds=30)
+        self.quiz.session.save(update_fields=['question_end_time'])
+
+        async_to_sync(self.consumer.handle_participant_question_timeout)({
+            'participant_name': participant.name,
+            'hub_session': participant.hub_session_code,
+            'question_id': questions[0].id,
+        })
+
+        participant.refresh_from_db()
+        self.quiz.refresh_from_db()
+        self.quiz.session.refresh_from_db()
+        message_types = [message['type'] for _, message in self.consumer.channel_layer.group_messages]
+
+        self.assertNotIn('question_ending', message_types)
+        self.assertNotIn('question_ended', message_types)
+        self.assertEqual(self.quiz.current_question_id, questions[0].id)
+        self.assertTrue(self.quiz.session.is_question_active)
+        self.assertFalse(participant.is_busted)
 
     def test_participant_join_ignores_stale_runtime_for_unstarted_hub_session(self):
         questions = self._create_set_questions('Join Question', lambda index: index * 10)

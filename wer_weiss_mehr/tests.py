@@ -1,0 +1,1212 @@
+import json
+from unittest.mock import AsyncMock
+
+from asgiref.sync import async_to_sync
+from django.contrib.auth.models import User
+from django.test import TestCase, TransactionTestCase
+from django.urls import reverse
+
+from games_hub.active_game_guard import (
+    is_game_routable_for_hub_auto_redirect,
+    resolve_session_game_activation,
+)
+from games_hub.models import HubGameStep, HubSession
+from .consumers import WerWeissMehrConsumer
+from .models import (
+    WerWeissMehrAnswerOption,
+    WerWeissMehrGame,
+    WerWeissMehrParticipant,
+    WerWeissMehrPendingInput,
+    WerWeissMehrQuestion,
+    WerWeissMehrRound,
+    WerWeissMehrRoundResponse,
+    WerWeissMehrSession,
+    normalize_answer_text,
+)
+from .services import (
+    apply_manual_correction,
+    build_game_state,
+    end_current_round,
+    finish_set,
+    next_round_or_finish,
+    start_set,
+    store_pending_input,
+    submit_answer,
+)
+
+
+class DummyChannelLayer:
+    def __init__(self):
+        self.sent = []
+
+    async def group_send(self, group, payload):
+        self.sent.append((group, payload))
+
+
+class WerWeissMehrRuntimeTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username='host')
+        self.game = WerWeissMehrGame.objects.create(title='Test', creator=self.user, status='active')
+        WerWeissMehrSession.objects.create(quiz=self.game)
+        self.question = WerWeissMehrQuestion.objects.create(
+            question_text='Wie heissen Bundeslaender?',
+            round_time_limit=30,
+            created_by=self.user,
+        )
+        self.bayern = WerWeissMehrAnswerOption.objects.create(
+            question=self.question,
+            canonical_text='Bayern',
+        )
+        self.saarland = WerWeissMehrAnswerOption.objects.create(
+            question=self.question,
+            canonical_text='Saarland',
+        )
+        self.thueringen = WerWeissMehrAnswerOption.objects.create(
+            question=self.question,
+            canonical_text='Thüringen',
+            aliases=['Thueringen'],
+        )
+        self.question.recalculate_answer_sort_order()
+        self.game.selected_questions.add(self.question)
+        self.p1 = WerWeissMehrParticipant.objects.create(quiz=self.game, name='Lisa', hub_session_code='ABC')
+        self.p2 = WerWeissMehrParticipant.objects.create(quiz=self.game, name='Max', hub_session_code='ABC')
+
+    def test_normalization_accepts_umlauts_and_aliases(self):
+        self.assertEqual(normalize_answer_text(' Thüringen '), 'thueringen')
+        self.assertEqual(normalize_answer_text('Thueringen'), 'thueringen')
+        self.assertEqual(normalize_answer_text('Nordrhein-Westfalen'), 'nordrhein westfalen')
+        self.assertEqual(self.question.find_matching_answer('Thueringen'), self.thueringen)
+
+    def test_start_quiz_initializes_runtime_after_guard_activation(self):
+        self.game.status = 'active'
+        self.game.started_at = None
+        self.game.current_question = self.question
+        self.game.save(update_fields=['status', 'started_at', 'current_question'])
+        session = self.game.session
+        session.phase = WerWeissMehrSession.PHASE_REVIEW
+        session.current_round = 3
+        session.save(update_fields=['phase', 'current_round'])
+
+        self.game.start_quiz()
+        self.game.refresh_from_db()
+        session.refresh_from_db()
+
+        self.assertEqual(self.game.status, 'active')
+        self.assertIsNotNone(self.game.started_at)
+        self.assertIsNone(self.game.current_question)
+        self.assertEqual(session.phase, WerWeissMehrSession.PHASE_IDLE)
+        self.assertEqual(session.current_round, 0)
+
+    def test_half_started_state_is_not_reported_as_running(self):
+        self.game.status = 'active'
+        self.game.started_at = None
+        self.game.current_question = self.question
+        self.game.save(update_fields=['status', 'started_at', 'current_question'])
+        session = self.game.session
+        session.phase = WerWeissMehrSession.PHASE_REVIEW
+        session.current_round = 3
+        session.save(update_fields=['phase', 'current_round'])
+
+        state = build_game_state(self.game, hub_session_code='ABC')
+
+        self.assertEqual(state['game_status'], 'waiting')
+        self.assertEqual(state['phase'], WerWeissMehrSession.PHASE_IDLE)
+        self.assertEqual(state['current_round'], 0)
+        self.assertIsNone(state['question'])
+        self.assertEqual(len(state['available_questions']), 1)
+
+    def test_duplicate_same_round_hidden_answer_survives_for_all_players(self):
+        start_set(self.game, self.question.id, hub_session_code='ABC')
+        submit_answer(self.game, self.p1, 'Thüringen')
+        submit_answer(self.game, self.p2, 'Thueringen')
+
+        end_current_round(self.game)
+        next_round_or_finish(self.game)
+
+        self.p1.refresh_from_db()
+        self.p2.refresh_from_db()
+        self.assertEqual(self.p1.total_score, 1)
+        self.assertEqual(self.p2.total_score, 1)
+        self.assertTrue(self.game.session.revealed_answers.filter(id=self.thueringen.id).exists())
+
+    def test_answer_revealed_before_round_start_eliminates_later_players(self):
+        start_set(self.game, self.question.id, hub_session_code='ABC')
+        submit_answer(self.game, self.p1, 'Thüringen')
+        submit_answer(self.game, self.p2, 'Bayern')
+        end_current_round(self.game)
+        next_round_or_finish(self.game)
+
+        submit_answer(self.game, self.p1, 'Thüringen')
+        end_current_round(self.game)
+
+        response = WerWeissMehrRoundResponse.objects.get(
+            quiz=self.game,
+            participant=self.p1,
+            question=self.question,
+            round_number=2,
+        )
+        self.assertEqual(response.final_status, WerWeissMehrRoundResponse.STATUS_WRONG)
+        next_round_or_finish(self.game)
+        self.p1.refresh_from_db()
+        self.assertEqual(self.p1.total_score, 1)
+
+    def test_manual_correction_maps_to_concrete_target_answer(self):
+        start_set(self.game, self.question.id, hub_session_code='ABC')
+        submit_answer(self.game, self.p1, 'Thüringn')
+        end_current_round(self.game)
+        response = WerWeissMehrRoundResponse.objects.get(
+            quiz=self.game,
+            participant=self.p1,
+            question=self.question,
+            round_number=1,
+        )
+        self.assertEqual(response.final_status, WerWeissMehrRoundResponse.STATUS_WRONG)
+
+        apply_manual_correction(self.game, response.id, self.thueringen.id)
+
+        response.refresh_from_db()
+        self.p1.refresh_from_db()
+        self.assertTrue(response.is_correct)
+        self.assertTrue(response.is_manual_override)
+        self.assertEqual(response.matched_answer_id, self.thueringen.id)
+        self.assertEqual(self.p1.total_score, 1)
+        state = build_game_state(self.game, hub_session_code='ABC')
+        score_by_name = {
+            score['participant_name']: score
+            for score in state['scorebox'][0]['scores']
+        }
+        self.assertEqual(score_by_name['Lisa']['points'], 1)
+        self.assertEqual(score_by_name['Lisa']['max_points'], 3)
+
+        next_round_or_finish(self.game)
+
+        response.refresh_from_db()
+        self.p1.refresh_from_db()
+        self.assertEqual(self.p1.total_score, 1)
+        self.assertTrue(self.game.session.revealed_answers.filter(id=self.thueringen.id).exists())
+
+    def test_manual_correction_during_active_round_updates_live_score_and_survival(self):
+        self.game.start_quiz()
+        start_set(self.game, self.question.id, hub_session_code='ABC')
+        submit_answer(self.game, self.p1, 'Thuringn')
+        response = WerWeissMehrRoundResponse.objects.get(
+            quiz=self.game,
+            participant=self.p1,
+            question=self.question,
+            round_number=1,
+        )
+        self.assertEqual(response.final_status, WerWeissMehrRoundResponse.STATUS_WRONG)
+        self.assertEqual(self.game.session.phase, WerWeissMehrSession.PHASE_ROUND_ACTIVE)
+
+        apply_manual_correction(self.game, response.id, self.thueringen.id)
+
+        response.refresh_from_db()
+        self.p1.refresh_from_db()
+        state = build_game_state(self.game, hub_session_code='ABC')
+        lisa_response = next(item for item in state['responses'] if item['participant_name'] == 'Lisa')
+        lisa_score = next(score for score in state['scorebox'][0]['scores'] if score['participant_name'] == 'Lisa')
+        self.assertEqual(response.final_status, WerWeissMehrRoundResponse.STATUS_MANUAL_CORRECTED)
+        self.assertTrue(response.is_correct)
+        self.assertTrue(response.is_manual_override)
+        self.assertEqual(response.matched_answer_id, self.thueringen.id)
+        self.assertEqual(self.p1.total_score, 1)
+        self.assertEqual(lisa_response['final_status'], WerWeissMehrRoundResponse.STATUS_MANUAL_CORRECTED)
+        self.assertEqual(lisa_response['auto_status'], WerWeissMehrRoundResponse.STATUS_WRONG)
+        self.assertEqual(lisa_score['points'], 1)
+        self.assertTrue(any(
+            tile['id'] == self.thueringen.id and tile['revealed']
+            for tile in state['question']['tiles']
+        ))
+
+        end_current_round(self.game)
+        response.refresh_from_db()
+        self.p1.refresh_from_db()
+        self.assertEqual(response.matched_answer_id, self.thueringen.id)
+        self.assertEqual(response.final_status, WerWeissMehrRoundResponse.STATUS_MANUAL_CORRECTED)
+        self.assertEqual(self.p1.total_score, 1)
+
+    def test_manual_correction_rejects_answer_revealed_before_current_round(self):
+        start_set(self.game, self.question.id, hub_session_code='ABC')
+        submit_answer(self.game, self.p1, 'Bayern')
+        submit_answer(self.game, self.p2, 'Saarland')
+        end_current_round(self.game)
+        next_round_or_finish(self.game)
+
+        submit_answer(self.game, self.p1, 'Bayernn')
+        end_current_round(self.game)
+        response = WerWeissMehrRoundResponse.objects.get(
+            quiz=self.game,
+            participant=self.p1,
+            question=self.question,
+            round_number=2,
+        )
+
+        with self.assertRaisesMessage(ValueError, 'bereits vor Beginn dieser Runde'):
+            apply_manual_correction(self.game, response.id, self.bayern.id)
+
+        response.refresh_from_db()
+        self.assertFalse(response.is_correct)
+        self.assertEqual(response.final_status, WerWeissMehrRoundResponse.STATUS_WRONG)
+
+    def test_inactive_game_rejects_pending_and_submit(self):
+        start_set(self.game, self.question.id, hub_session_code='ABC')
+        self.game.status = 'inactive'
+        self.game.save(update_fields=['status'])
+
+        pending = store_pending_input(self.game, self.p1, 'Bayern')
+
+        self.assertIsNone(pending)
+        self.assertFalse(WerWeissMehrPendingInput.objects.filter(quiz=self.game, participant=self.p1).exists())
+        with self.assertRaisesMessage(ValueError, 'Das Spiel ist nicht aktiv.'):
+            submit_answer(self.game, self.p1, 'Bayern')
+        self.assertFalse(WerWeissMehrRoundResponse.objects.filter(quiz=self.game, participant=self.p1).exists())
+
+        payload = build_game_state(self.game, hub_session_code='ABC', participant_name='Lisa')
+        self.assertEqual(payload['game_status'], 'inactive')
+        self.assertFalse(payload['participant_state']['can_answer'])
+
+
+class WerWeissMehrConsumerTests(TransactionTestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username='host')
+        self.game = WerWeissMehrGame.objects.create(title='Live Start', creator=self.user, status='waiting')
+        WerWeissMehrSession.objects.create(quiz=self.game)
+        self.hub_session = HubSession.objects.create(code='WWMSTART', name='WWM Start')
+        HubGameStep.objects.create(
+            session=self.hub_session,
+            order=1,
+            game_key='wer_weiss_mehr',
+            room_code=self.game.room_code,
+            title=self.game.title,
+        )
+
+    def test_admin_start_quiz_sends_current_server_state_to_host(self):
+        consumer = WerWeissMehrConsumer()
+        consumer.room_code = self.game.room_code
+        consumer.room_group_name = f'werweissmehr_{self.game.room_code}'
+        consumer.channel_layer = DummyChannelLayer()
+        consumer.send = AsyncMock()
+
+        async_to_sync(consumer.handle_admin_start_quiz)({})
+
+        self.game.refresh_from_db()
+        self.assertEqual(self.game.status, 'active')
+        self.assertIsNotNone(self.game.started_at)
+
+        payloads = [
+            json.loads(call.kwargs['text_data'])
+            for call in consumer.send.await_args_list
+        ]
+        state_payload = next(payload for payload in payloads if payload.get('type') == 'state')
+        self.assertEqual(state_payload['game_status'], 'active')
+        self.assertEqual(state_payload['phase'], WerWeissMehrSession.PHASE_IDLE)
+        self.assertTrue(
+            any(payload.get('type') == 'quiz_started' for _, payload in consumer.channel_layer.sent)
+        )
+        self.assertTrue(
+            any(
+                group == f'hub_{self.hub_session.code}'
+                and payload.get('type') == 'navigate'
+                and payload.get('step', {}).get('game_key') == 'wer_weiss_mehr'
+                and payload.get('step', {}).get('room_code') == self.game.room_code
+                for group, payload in consumer.channel_layer.sent
+            )
+        )
+
+    def test_admin_start_quiz_routes_to_explicit_hub_session(self):
+        stale_session = HubSession.objects.create(code='STALEWWM', name='Stale WWM')
+        HubGameStep.objects.create(
+            session=stale_session,
+            order=1,
+            game_key='wer_weiss_mehr',
+            room_code=self.game.room_code,
+            title='Stale step',
+        )
+        consumer = WerWeissMehrConsumer()
+        consumer.room_code = self.game.room_code
+        consumer.room_group_name = f'werweissmehr_{self.game.room_code}'
+        consumer.channel_layer = DummyChannelLayer()
+        consumer.send = AsyncMock()
+
+        async_to_sync(consumer.handle_admin_start_quiz)({'hub_session_code': self.hub_session.code})
+
+        navigate_groups = [
+            group for group, payload in consumer.channel_layer.sent
+            if payload.get('type') == 'navigate'
+            and payload.get('step', {}).get('game_key') == 'wer_weiss_mehr'
+        ]
+        self.assertIn(f'hub_{self.hub_session.code}', navigate_groups)
+        self.assertNotIn(f'hub_{stale_session.code}', navigate_groups)
+
+
+class WerWeissMehrAdminIntegrationTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_superuser(username='admin', password='testpass123', email='')
+        self.client.force_login(self.user)
+
+    def test_create_custom_game_can_create_and_select_inline_set(self):
+        response = self.client.post(
+            reverse('admin_dashboard:create_wer_weiss_mehr_custom_game'),
+            data=json.dumps({
+                'title': 'Bundesländer',
+                'question_text': 'Wie heißen die Bundesländer von Deutschland?',
+                'round_time_limit': 20,
+                'answers': [
+                    {'canonical_text': 'Thüringen', 'aliases': ['Thueringen']},
+                    {'canonical_text': 'Bayern', 'aliases': []},
+                ],
+            }),
+            content_type='application/json',
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload['success'])
+
+        game = WerWeissMehrGame.objects.get(id=payload['quiz_id'])
+        self.assertEqual(game.selected_questions.count(), 1)
+        question = game.selected_questions.get()
+        self.assertEqual(question.answers.count(), 2)
+
+        state = build_game_state(game)
+        self.assertEqual(len(state['available_questions']), 1)
+        self.assertEqual(state['available_questions'][0]['answer_count'], 2)
+        self.assertNotIn('answers_preview', state['available_questions'][0])
+
+    def test_hub_activation_initializes_wwm_runtime(self):
+        game = WerWeissMehrGame.objects.create(title='Guard Start', creator=self.user, status='active')
+        WerWeissMehrSession.objects.create(quiz=game)
+        session = HubSession.objects.create(code='WWMGUARD', name='Guard Start')
+        HubGameStep.objects.create(
+            session=session,
+            order=0,
+            game_key='wer_weiss_mehr',
+            room_code=game.room_code,
+            title=game.title,
+        )
+
+        result = resolve_session_game_activation(session.code, 'wer_weiss_mehr', game.room_code)
+
+        self.assertTrue(result['success'])
+        game.refresh_from_db()
+        self.assertEqual(game.status, 'active')
+        self.assertIsNotNone(game.started_at)
+        self.assertTrue(is_game_routable_for_hub_auto_redirect(game))
+
+    def test_start_endpoint_initializes_runtime_and_returns_state(self):
+        game = WerWeissMehrGame.objects.create(title='HTTP Start', creator=self.user, status='waiting')
+        WerWeissMehrSession.objects.create(quiz=game)
+        question = WerWeissMehrQuestion.objects.create(
+            question_text='Nenne Bundeslaender',
+            round_time_limit=30,
+            created_by=self.user,
+        )
+        WerWeissMehrAnswerOption.objects.create(question=question, canonical_text='Bayern')
+        game.selected_questions.add(question)
+        game.question_order = [question.id]
+        game.save(update_fields=['question_order'])
+        session = HubSession.objects.create(code='WWMHTTP', name='HTTP Start')
+        HubGameStep.objects.create(
+            session=session,
+            order=0,
+            game_key='wer_weiss_mehr',
+            room_code=game.room_code,
+            title=game.title,
+        )
+
+        response = self.client.post(
+            f'/wer-weiss-mehr/start/{game.room_code}/',
+            data=json.dumps({'hub_session': session.code}),
+            content_type='application/json',
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload['success'])
+        self.assertEqual(payload['game_status'], 'active')
+        self.assertEqual(len(payload['available_questions']), 1)
+        game.refresh_from_db()
+        self.assertEqual(game.status, 'active')
+        self.assertIsNotNone(game.started_at)
+        self.assertTrue(is_game_routable_for_hub_auto_redirect(game))
+
+    def test_start_set_endpoint_initializes_first_round_and_returns_state(self):
+        game = WerWeissMehrGame.objects.create(title='Set Start', creator=self.user, status='waiting')
+        WerWeissMehrSession.objects.create(quiz=game)
+        question = WerWeissMehrQuestion.objects.create(
+            question_text='Nenne Bundeslaender',
+            round_time_limit=30,
+            created_by=self.user,
+        )
+        WerWeissMehrAnswerOption.objects.create(question=question, canonical_text='Bayern')
+        WerWeissMehrAnswerOption.objects.create(question=question, canonical_text='Saarland')
+        question.recalculate_answer_sort_order()
+        game.selected_questions.add(question)
+        game.question_order = [question.id]
+        game.save(update_fields=['question_order'])
+        session = HubSession.objects.create(code='WWMSET', name='Set Start')
+        HubGameStep.objects.create(
+            session=session,
+            order=0,
+            game_key='wer_weiss_mehr',
+            room_code=game.room_code,
+            title=game.title,
+        )
+        WerWeissMehrParticipant.objects.create(
+            quiz=game,
+            name='Lisa',
+            hub_session_code=session.code,
+        )
+        game.start_quiz()
+
+        response = self.client.post(
+            f'/wer-weiss-mehr/start-set/{game.room_code}/',
+            data=json.dumps({
+                'hub_session': session.code,
+                'question_id': question.id,
+                'time_limit_seconds': 30,
+            }),
+            content_type='application/json',
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload['success'])
+        self.assertEqual(payload['phase'], WerWeissMehrSession.PHASE_ROUND_ACTIVE)
+        self.assertEqual(payload['current_round'], 1)
+        self.assertEqual(payload['question']['id'], question.id)
+        self.assertEqual(payload['question']['answer_count'], 2)
+        self.assertEqual([tile['text'] for tile in payload['question']['tiles']], ['Bayern', 'Saarland'])
+        self.assertFalse(any(tile['revealed'] for tile in payload['question']['tiles']))
+        self.assertEqual(
+            sorted(answer['text'] for answer in payload['target_answers']),
+            ['Bayern', 'Saarland'],
+        )
+
+        runtime_session = game.session
+        runtime_session.refresh_from_db()
+        game.refresh_from_db()
+        self.assertEqual(game.current_question_id, question.id)
+        self.assertEqual(runtime_session.phase, WerWeissMehrSession.PHASE_ROUND_ACTIVE)
+        self.assertEqual(runtime_session.current_round, 1)
+        self.assertIsNotNone(runtime_session.round_end_time)
+
+        participant_payload = build_game_state(
+            game,
+            hub_session_code=session.code,
+            participant_name='Lisa',
+        )
+        participant_state = participant_payload['participant_state']
+        self.assertTrue(participant_state['can_answer'])
+        self.assertEqual(participant_payload['available_questions'], [])
+        self.assertEqual(participant_payload['target_answers'], [])
+        self.assertEqual(participant_payload['responses'], [])
+        self.assertTrue(all(tile['text'] == '' for tile in participant_payload['question']['tiles']))
+
+    def test_end_round_endpoint_evaluates_submitted_pending_and_empty_answers(self):
+        game = WerWeissMehrGame.objects.create(title='End Round', creator=self.user, status='waiting')
+        WerWeissMehrSession.objects.create(quiz=game)
+        question = WerWeissMehrQuestion.objects.create(
+            question_text='Nenne Bundeslaender',
+            round_time_limit=30,
+            created_by=self.user,
+        )
+        WerWeissMehrAnswerOption.objects.create(question=question, canonical_text='Bayern')
+        WerWeissMehrAnswerOption.objects.create(question=question, canonical_text='Saarland')
+        question.recalculate_answer_sort_order()
+        game.selected_questions.add(question)
+        session = HubSession.objects.create(code='WWMROUND', name='End Round')
+        HubGameStep.objects.create(
+            session=session,
+            order=0,
+            game_key='wer_weiss_mehr',
+            room_code=game.room_code,
+            title=game.title,
+        )
+        p1 = WerWeissMehrParticipant.objects.create(quiz=game, name='Lisa', hub_session_code=session.code)
+        p2 = WerWeissMehrParticipant.objects.create(quiz=game, name='Max', hub_session_code=session.code)
+        WerWeissMehrParticipant.objects.create(quiz=game, name='Tom', hub_session_code=session.code)
+        game.start_quiz()
+        start_set(game, question.id, hub_session_code=session.code, time_limit_seconds=30)
+        submit_answer(game, p1, 'Bayern')
+        store_pending_input(game, p2, 'Saarland')
+
+        response = self.client.post(
+            reverse('admin_dashboard:end_wer_weiss_mehr_round', args=[game.room_code]),
+            data=json.dumps({'hub_session': session.code}),
+            content_type='application/json',
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload['success'])
+        self.assertEqual(payload['phase'], WerWeissMehrSession.PHASE_REVIEW)
+        self.assertEqual(payload['current_round'], 1)
+        self.assertFalse(payload['can_start_next_round'])
+        status_by_name = {item['participant_name']: item['final_status'] for item in payload['responses']}
+        self.assertEqual(status_by_name['Lisa'], WerWeissMehrRoundResponse.STATUS_CORRECT)
+        self.assertEqual(status_by_name['Max'], WerWeissMehrRoundResponse.STATUS_CORRECT)
+        self.assertEqual(status_by_name['Tom'], WerWeissMehrRoundResponse.STATUS_WRONG)
+        scores = {
+            score['participant_name']: score
+            for score in payload['scorebox'][0]['scores']
+        }
+        self.assertEqual(payload['scorebox'][0]['max_points'], 2)
+        self.assertEqual(scores['Lisa']['points'], 1)
+        self.assertEqual(scores['Lisa']['max_points'], 2)
+        self.assertEqual(scores['Max']['points'], 1)
+        self.assertEqual(scores['Tom']['points'], 0)
+
+        runtime_session = game.session
+        runtime_session.refresh_from_db()
+        self.assertEqual(runtime_session.phase, WerWeissMehrSession.PHASE_REVIEW)
+        self.assertIsNone(runtime_session.round_start_time)
+        self.assertIsNone(runtime_session.round_end_time)
+
+    def test_apply_correction_endpoint_maps_wrong_answer_to_target(self):
+        game = WerWeissMehrGame.objects.create(title='Manual Correction', creator=self.user, status='waiting')
+        WerWeissMehrSession.objects.create(quiz=game)
+        question = WerWeissMehrQuestion.objects.create(
+            question_text='Nenne Bundeslaender',
+            round_time_limit=30,
+            created_by=self.user,
+        )
+        bayern = WerWeissMehrAnswerOption.objects.create(question=question, canonical_text='Bayern')
+        thueringen = WerWeissMehrAnswerOption.objects.create(question=question, canonical_text='Thueringen')
+        question.recalculate_answer_sort_order()
+        game.selected_questions.add(question)
+        session = HubSession.objects.create(code='WWMCORR', name='Correction')
+        participant = WerWeissMehrParticipant.objects.create(
+            quiz=game,
+            name='Lisa',
+            hub_session_code=session.code,
+        )
+        game.start_quiz()
+        start_set(game, question.id, hub_session_code=session.code, time_limit_seconds=30)
+        submit_answer(game, participant, 'Thuringn')
+        end_current_round(game)
+
+        round_response = WerWeissMehrRoundResponse.objects.get(
+            quiz=game,
+            participant=participant,
+            question=question,
+            round_number=1,
+        )
+        self.assertEqual(round_response.final_status, WerWeissMehrRoundResponse.STATUS_WRONG)
+
+        response = self.client.post(
+            reverse('admin_dashboard:apply_wer_weiss_mehr_correction', args=[game.room_code]),
+            data=json.dumps({
+                'hub_session': session.code,
+                'response_id': round_response.id,
+                'target_answer_id': thueringen.id,
+            }),
+            content_type='application/json',
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload['success'])
+        response_by_name = {item['participant_name']: item for item in payload['responses']}
+        lisa_response = response_by_name['Lisa']
+        self.assertEqual(lisa_response['final_status'], WerWeissMehrRoundResponse.STATUS_MANUAL_CORRECTED)
+        self.assertTrue(lisa_response['is_correct'])
+        self.assertEqual(lisa_response['matched_answer_id'], thueringen.id)
+        self.assertNotIn('unclear', {item['final_status'] for item in payload['responses']})
+
+        tile_by_id = {tile['id']: tile for tile in payload['question']['tiles']}
+        self.assertFalse(tile_by_id[bayern.id]['revealed'])
+        self.assertTrue(tile_by_id[thueringen.id]['revealed'])
+
+        round_response.refresh_from_db()
+        self.assertTrue(round_response.is_correct)
+        self.assertTrue(round_response.is_manual_override)
+        self.assertEqual(round_response.matched_answer_id, thueringen.id)
+        participant.refresh_from_db()
+        self.assertEqual(participant.total_score, 1)
+        score = payload['scorebox'][0]['scores'][0]
+        self.assertEqual(score['points'], 1)
+        self.assertEqual(score['max_points'], 2)
+
+        participant_payload = build_game_state(
+            game,
+            hub_session_code=session.code,
+            participant_name='Lisa',
+        )
+        participant_tile_by_id = {tile['id']: tile for tile in participant_payload['question']['tiles']}
+        self.assertEqual(participant_tile_by_id[thueringen.id]['text'], 'Thueringen')
+        self.assertEqual(participant_payload['participant_state']['response']['final_status'], WerWeissMehrRoundResponse.STATUS_MANUAL_CORRECTED)
+        self.assertEqual(participant_payload['participant_state']['survived_rounds'], 1)
+        self.assertEqual(participant_payload['scorebox'][0]['scores'][0]['points'], 1)
+        self.assertEqual(participant_payload['scorebox'][0]['scores'][0]['max_points'], 2)
+
+    def test_apply_correction_endpoint_allows_active_round_live_response(self):
+        game = WerWeissMehrGame.objects.create(title='Active Correction', creator=self.user, status='waiting')
+        WerWeissMehrSession.objects.create(quiz=game)
+        question = WerWeissMehrQuestion.objects.create(
+            question_text='Nenne Bundeslaender',
+            round_time_limit=30,
+            created_by=self.user,
+        )
+        thueringen = WerWeissMehrAnswerOption.objects.create(question=question, canonical_text='Thueringen')
+        WerWeissMehrAnswerOption.objects.create(question=question, canonical_text='Saarland')
+        question.recalculate_answer_sort_order()
+        game.selected_questions.add(question)
+        session = HubSession.objects.create(code='WWMLIVECORR', name='Live Correction')
+        participant = WerWeissMehrParticipant.objects.create(
+            quiz=game,
+            name='Lisa',
+            hub_session_code=session.code,
+        )
+        game.start_quiz()
+        start_set(game, question.id, hub_session_code=session.code, time_limit_seconds=30)
+        submit_answer(game, participant, 'Thuringn')
+        round_response = WerWeissMehrRoundResponse.objects.get(
+            quiz=game,
+            participant=participant,
+            question=question,
+            round_number=1,
+        )
+
+        response = self.client.post(
+            reverse('admin_dashboard:apply_wer_weiss_mehr_correction', args=[game.room_code]),
+            data=json.dumps({
+                'hub_session': session.code,
+                'response_id': round_response.id,
+                'target_answer_id': thueringen.id,
+            }),
+            content_type='application/json',
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload['success'])
+        self.assertEqual(payload['phase'], WerWeissMehrSession.PHASE_ROUND_ACTIVE)
+        response_payload = payload['responses'][0]
+        self.assertEqual(response_payload['final_status'], WerWeissMehrRoundResponse.STATUS_MANUAL_CORRECTED)
+        self.assertEqual(response_payload['auto_status'], WerWeissMehrRoundResponse.STATUS_WRONG)
+        self.assertEqual(response_payload['matched_answer_id'], thueringen.id)
+        self.assertEqual(response_payload['round_number'], 1)
+        score = payload['scorebox'][0]['scores'][0]
+        self.assertEqual(score['points'], 1)
+        self.assertEqual(score['max_points'], 2)
+        participant.refresh_from_db()
+        self.assertEqual(participant.total_score, 1)
+
+    def test_next_round_endpoint_starts_round_two_after_review(self):
+        game = WerWeissMehrGame.objects.create(title='Next Round', creator=self.user, status='waiting')
+        WerWeissMehrSession.objects.create(quiz=game)
+        question = WerWeissMehrQuestion.objects.create(
+            question_text='Nenne Bundeslaender',
+            round_time_limit=30,
+            created_by=self.user,
+        )
+        bayern = WerWeissMehrAnswerOption.objects.create(question=question, canonical_text='Bayern')
+        WerWeissMehrAnswerOption.objects.create(question=question, canonical_text='Saarland')
+        WerWeissMehrAnswerOption.objects.create(question=question, canonical_text='Thueringen')
+        question.recalculate_answer_sort_order()
+        game.selected_questions.add(question)
+        session = HubSession.objects.create(code='WWMNEXT', name='Next Round')
+        HubGameStep.objects.create(
+            session=session,
+            order=0,
+            game_key='wer_weiss_mehr',
+            room_code=game.room_code,
+            title=game.title,
+        )
+        lisa = WerWeissMehrParticipant.objects.create(quiz=game, name='Lisa', hub_session_code=session.code)
+        max_player = WerWeissMehrParticipant.objects.create(quiz=game, name='Max', hub_session_code=session.code)
+        game.start_quiz()
+        start_set(game, question.id, hub_session_code=session.code, time_limit_seconds=30)
+        submit_answer(game, lisa, 'Bayern')
+        submit_answer(game, max_player, 'Falsch')
+        end_current_round(game)
+
+        review_state = build_game_state(game, hub_session_code=session.code)
+        self.assertEqual(review_state['phase'], WerWeissMehrSession.PHASE_REVIEW)
+        self.assertTrue(review_state['can_start_next_round'])
+
+        response = self.client.post(
+            reverse('admin_dashboard:next_wer_weiss_mehr_round', args=[game.room_code]),
+            data=json.dumps({'hub_session': session.code}),
+            content_type='application/json',
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload['success'])
+        self.assertEqual(payload['phase'], WerWeissMehrSession.PHASE_ROUND_ACTIVE)
+        self.assertEqual(payload['current_round'], 2)
+        self.assertTrue(any(tile['id'] == bayern.id and tile['revealed'] for tile in payload['question']['tiles']))
+        self.assertFalse(any(item['answer_text'] == 'Bayern' for item in payload['responses']))
+        participants = {item['name']: item for item in payload['participants']}
+        self.assertFalse(participants['Lisa']['is_eliminated'])
+        self.assertTrue(participants['Max']['is_eliminated'])
+
+        lisa_state = build_game_state(game, hub_session_code=session.code, participant_name='Lisa')
+        max_state = build_game_state(game, hub_session_code=session.code, participant_name='Max')
+        self.assertTrue(lisa_state['participant_state']['can_answer'])
+        self.assertFalse(max_state['participant_state']['can_answer'])
+
+    def test_next_round_endpoint_rejects_when_no_next_round_possible(self):
+        game = WerWeissMehrGame.objects.create(title='No Next Round', creator=self.user, status='waiting')
+        WerWeissMehrSession.objects.create(quiz=game)
+        question = WerWeissMehrQuestion.objects.create(
+            question_text='Nenne Bundesland',
+            round_time_limit=30,
+            created_by=self.user,
+        )
+        WerWeissMehrAnswerOption.objects.create(question=question, canonical_text='Bayern')
+        game.selected_questions.add(question)
+        session = HubSession.objects.create(code='WWMNONEXT', name='No Next Round')
+        participant = WerWeissMehrParticipant.objects.create(quiz=game, name='Lisa', hub_session_code=session.code)
+        game.start_quiz()
+        start_set(game, question.id, hub_session_code=session.code, time_limit_seconds=30)
+        submit_answer(game, participant, 'Bayern')
+        end_current_round(game)
+
+        response = self.client.post(
+            reverse('admin_dashboard:next_wer_weiss_mehr_round', args=[game.room_code]),
+            data=json.dumps({'hub_session': session.code}),
+            content_type='application/json',
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertFalse(response.json()['success'])
+        game.session.refresh_from_db()
+        self.assertEqual(game.session.phase, WerWeissMehrSession.PHASE_REVIEW)
+
+    def test_finish_set_endpoint_finalizes_review_without_starting_next_round(self):
+        game = WerWeissMehrGame.objects.create(title='Finish Review', creator=self.user, status='waiting')
+        WerWeissMehrSession.objects.create(quiz=game)
+        question = WerWeissMehrQuestion.objects.create(
+            question_text='Nenne Bundeslaender',
+            round_time_limit=30,
+            created_by=self.user,
+        )
+        bayern = WerWeissMehrAnswerOption.objects.create(question=question, canonical_text='Bayern')
+        WerWeissMehrAnswerOption.objects.create(question=question, canonical_text='Saarland')
+        WerWeissMehrAnswerOption.objects.create(question=question, canonical_text='Thueringen')
+        question.recalculate_answer_sort_order()
+        game.selected_questions.add(question)
+        session = HubSession.objects.create(code='WWMFINISH', name='Finish Review')
+        lisa = WerWeissMehrParticipant.objects.create(quiz=game, name='Lisa', hub_session_code=session.code)
+        max_player = WerWeissMehrParticipant.objects.create(quiz=game, name='Max', hub_session_code=session.code)
+        game.start_quiz()
+        start_set(game, question.id, hub_session_code=session.code, time_limit_seconds=30)
+        submit_answer(game, lisa, 'Bayern')
+        submit_answer(game, max_player, 'Falsch')
+        end_current_round(game)
+
+        review_state = build_game_state(game, hub_session_code=session.code)
+        self.assertTrue(review_state['can_start_next_round'])
+
+        response = self.client.post(
+            reverse('admin_dashboard:finish_wer_weiss_mehr_set', args=[game.room_code]),
+            data=json.dumps({'hub_session': session.code}),
+            content_type='application/json',
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload['success'])
+        self.assertEqual(payload['phase'], WerWeissMehrSession.PHASE_SET_COMPLETED)
+        self.assertEqual(payload['current_round'], 1)
+        self.assertFalse(payload['can_start_next_round'])
+        self.assertFalse(WerWeissMehrRound.objects.filter(
+            quiz=game,
+            question=question,
+            round_number=2,
+        ).exists())
+        self.assertTrue(any(tile['id'] == bayern.id and tile['revealed'] for tile in payload['question']['tiles']))
+
+        lisa.refresh_from_db()
+        max_player.refresh_from_db()
+        self.assertEqual(lisa.total_score, 1)
+        self.assertEqual(max_player.total_score, 0)
+        scores = {
+            score['participant_name']: score['points']
+            for score in payload['scorebox'][0]['scores']
+        }
+        self.assertEqual(scores['Lisa'], 1)
+        self.assertEqual(scores['Max'], 0)
+
+        participant_payload = build_game_state(game, hub_session_code=session.code, participant_name='Lisa')
+        self.assertEqual(participant_payload['phase'], WerWeissMehrSession.PHASE_SET_COMPLETED)
+        self.assertFalse(participant_payload['participant_state']['can_answer'])
+
+    def test_clear_set_endpoint_returns_host_to_set_selection_without_resetting_scores(self):
+        game = WerWeissMehrGame.objects.create(title='Clear Set', creator=self.user, status='waiting')
+        WerWeissMehrSession.objects.create(quiz=game)
+        first_question = WerWeissMehrQuestion.objects.create(
+            question_text='Nenne Bundeslaender',
+            round_time_limit=30,
+            created_by=self.user,
+        )
+        second_question = WerWeissMehrQuestion.objects.create(
+            question_text='Nenne Nachbarlaender',
+            round_time_limit=30,
+            created_by=self.user,
+        )
+        WerWeissMehrAnswerOption.objects.create(question=first_question, canonical_text='Bayern')
+        WerWeissMehrAnswerOption.objects.create(question=second_question, canonical_text='Frankreich')
+        first_question.recalculate_answer_sort_order()
+        second_question.recalculate_answer_sort_order()
+        game.selected_questions.add(first_question, second_question)
+        game.question_order = [first_question.id, second_question.id]
+        game.save(update_fields=['question_order'])
+        session = HubSession.objects.create(code='WWMCLEAR', name='Clear Set')
+        participant = WerWeissMehrParticipant.objects.create(
+            quiz=game,
+            name='Lisa',
+            hub_session_code=session.code,
+        )
+        game.start_quiz()
+        start_set(game, first_question.id, hub_session_code=session.code, time_limit_seconds=30)
+        submit_answer(game, participant, 'Bayern')
+        finish_set(game)
+
+        response = self.client.post(
+            reverse('admin_dashboard:clear_wer_weiss_mehr_set', args=[game.room_code]),
+            data=json.dumps({'hub_session': session.code}),
+            content_type='application/json',
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload['success'])
+        self.assertEqual(payload['phase'], WerWeissMehrSession.PHASE_IDLE)
+        self.assertIsNone(payload['question'])
+        self.assertEqual(payload['current_round'], 0)
+        self.assertEqual(len(payload['available_questions']), 2)
+        question_by_id = {item['id']: item for item in payload['available_questions']}
+        self.assertTrue(question_by_id[first_question.id]['is_completed'])
+        self.assertEqual(question_by_id[first_question.id]['status'], 'completed')
+        self.assertFalse(question_by_id[second_question.id]['is_completed'])
+        score_by_question = {row['question_id']: row for row in payload['scorebox']}
+        self.assertEqual(score_by_question[first_question.id]['scores'][0]['points'], 1)
+        participant.refresh_from_db()
+        game.refresh_from_db()
+        game.session.refresh_from_db()
+        self.assertEqual(participant.total_score, 1)
+        self.assertIsNone(game.current_question)
+        self.assertIn(first_question.id, game.session.completed_question_ids)
+
+    def test_finish_set_endpoint_evaluates_active_round_before_completion(self):
+        game = WerWeissMehrGame.objects.create(title='Finish Active', creator=self.user, status='waiting')
+        WerWeissMehrSession.objects.create(quiz=game)
+        question = WerWeissMehrQuestion.objects.create(
+            question_text='Nenne Bundeslaender',
+            round_time_limit=30,
+            created_by=self.user,
+        )
+        WerWeissMehrAnswerOption.objects.create(question=question, canonical_text='Bayern')
+        WerWeissMehrAnswerOption.objects.create(question=question, canonical_text='Saarland')
+        question.recalculate_answer_sort_order()
+        game.selected_questions.add(question)
+        session = HubSession.objects.create(code='WWMFINACT', name='Finish Active')
+        lisa = WerWeissMehrParticipant.objects.create(quiz=game, name='Lisa', hub_session_code=session.code)
+        max_player = WerWeissMehrParticipant.objects.create(quiz=game, name='Max', hub_session_code=session.code)
+        tom = WerWeissMehrParticipant.objects.create(quiz=game, name='Tom', hub_session_code=session.code)
+        game.start_quiz()
+        start_set(game, question.id, hub_session_code=session.code, time_limit_seconds=30)
+        submit_answer(game, lisa, 'Bayern')
+        store_pending_input(game, max_player, 'Saarland')
+
+        response = self.client.post(
+            reverse('admin_dashboard:finish_wer_weiss_mehr_set', args=[game.room_code]),
+            data=json.dumps({'hub_session': session.code}),
+            content_type='application/json',
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload['success'])
+        self.assertEqual(payload['phase'], WerWeissMehrSession.PHASE_SET_COMPLETED)
+        self.assertEqual(payload['current_round'], 1)
+
+        lisa.refresh_from_db()
+        max_player.refresh_from_db()
+        tom.refresh_from_db()
+        self.assertEqual(lisa.total_score, 1)
+        self.assertEqual(max_player.total_score, 1)
+        self.assertEqual(tom.total_score, 0)
+        self.assertEqual(
+            WerWeissMehrRound.objects.get(quiz=game, question=question, round_number=1).status,
+            WerWeissMehrRound.STATUS_COMPLETED,
+        )
+        self.assertFalse(payload['participant_state']['can_answer'] if payload.get('participant_state') else False)
+        scores = {
+            score['participant_name']: score['points']
+            for score in payload['scorebox'][0]['scores']
+        }
+        self.assertEqual(scores['Lisa'], 1)
+        self.assertEqual(scores['Max'], 1)
+        self.assertEqual(scores['Tom'], 0)
+
+    def test_host_grid_shows_answers_while_participant_payload_stays_masked(self):
+        game = WerWeissMehrGame.objects.create(title='Masked Grid', creator=self.user, status='waiting')
+        WerWeissMehrSession.objects.create(quiz=game)
+        question = WerWeissMehrQuestion.objects.create(
+            question_text='Nenne Bundeslaender',
+            round_time_limit=30,
+            created_by=self.user,
+        )
+        bayern = WerWeissMehrAnswerOption.objects.create(question=question, canonical_text='Bayern')
+        WerWeissMehrAnswerOption.objects.create(question=question, canonical_text='Saarland')
+        question.recalculate_answer_sort_order()
+        game.selected_questions.add(question)
+        session = HubSession.objects.create(code='WWMMASK', name='Mask')
+        participant = WerWeissMehrParticipant.objects.create(
+            quiz=game,
+            name='Lisa',
+            hub_session_code=session.code,
+        )
+        game.start_quiz()
+        start_set(game, question.id, hub_session_code=session.code, time_limit_seconds=30)
+
+        game.refresh_from_db()
+        state = build_game_state(game, hub_session_code=session.code)
+        self.assertEqual([tile['text'] for tile in state['question']['tiles']], ['Bayern', 'Saarland'])
+        self.assertFalse(any(tile['revealed'] for tile in state['question']['tiles']))
+        self.assertEqual(
+            sorted(answer['text'] for answer in state['target_answers']),
+            ['Bayern', 'Saarland'],
+        )
+        participant_state = build_game_state(game, hub_session_code=session.code, participant_name='Lisa')
+        self.assertEqual([tile['text'] for tile in participant_state['question']['tiles']], ['', ''])
+        self.assertFalse(any(tile['revealed'] for tile in participant_state['question']['tiles']))
+        self.assertEqual(participant_state['target_answers'], [])
+
+        submit_answer(game, participant, 'Bayern')
+        end_current_round(game)
+        game.refresh_from_db()
+        state = build_game_state(game, hub_session_code=session.code)
+        tile_by_id = {tile['id']: tile for tile in state['question']['tiles']}
+        self.assertTrue(tile_by_id[bayern.id]['revealed'])
+        self.assertEqual(tile_by_id[bayern.id]['text'], 'Bayern')
+        self.assertEqual(
+            [tile['text'] for tile in state['question']['tiles'] if tile['id'] != bayern.id],
+            ['Saarland'],
+        )
+        participant_state = build_game_state(game, hub_session_code=session.code, participant_name='Lisa')
+        participant_tile_by_id = {tile['id']: tile for tile in participant_state['question']['tiles']}
+        self.assertEqual(participant_tile_by_id[bayern.id]['text'], 'Bayern')
+        self.assertEqual(
+            [tile['text'] for tile in participant_state['question']['tiles'] if tile['id'] != bayern.id],
+            [''],
+        )
+
+    def test_end_endpoint_completes_game_and_disables_participant_answers(self):
+        game = WerWeissMehrGame.objects.create(title='HTTP End', creator=self.user, status='waiting')
+        WerWeissMehrSession.objects.create(quiz=game)
+        question = WerWeissMehrQuestion.objects.create(
+            question_text='Nenne Bundeslaender',
+            round_time_limit=30,
+            created_by=self.user,
+        )
+        WerWeissMehrAnswerOption.objects.create(question=question, canonical_text='Bayern')
+        WerWeissMehrAnswerOption.objects.create(question=question, canonical_text='Saarland')
+        question.recalculate_answer_sort_order()
+        game.selected_questions.add(question)
+        game.question_order = [question.id]
+        game.save(update_fields=['question_order'])
+        session = HubSession.objects.create(code='WWMEND', name='End Game')
+        HubGameStep.objects.create(
+            session=session,
+            order=0,
+            game_key='wer_weiss_mehr',
+            room_code=game.room_code,
+            title=game.title,
+        )
+        WerWeissMehrParticipant.objects.create(
+            quiz=game,
+            name='Lisa',
+            hub_session_code=session.code,
+        )
+        game.start_quiz()
+        start_set(game, question.id, hub_session_code=session.code, time_limit_seconds=30)
+
+        response = self.client.post(
+            f'/wer-weiss-mehr/end/{game.room_code}/',
+            data=json.dumps({'hub_session': session.code}),
+            content_type='application/json',
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload['success'])
+        self.assertEqual(payload['game_status'], 'completed')
+        self.assertEqual(payload['phase'], WerWeissMehrSession.PHASE_SET_COMPLETED)
+        self.assertEqual(payload['question']['id'], question.id)
+
+        game.refresh_from_db()
+        runtime_session = game.session
+        runtime_session.refresh_from_db()
+        self.assertEqual(game.status, 'completed')
+        self.assertIsNotNone(game.ended_at)
+        self.assertFalse(is_game_routable_for_hub_auto_redirect(game))
+        self.assertEqual(runtime_session.phase, WerWeissMehrSession.PHASE_SET_COMPLETED)
+        self.assertIsNone(runtime_session.round_start_time)
+        self.assertIsNone(runtime_session.round_end_time)
+
+        participant_payload = build_game_state(
+            game,
+            hub_session_code=session.code,
+            participant_name='Lisa',
+        )
+        self.assertEqual(participant_payload['game_status'], 'completed')
+        self.assertFalse(participant_payload['participant_state']['can_answer'])
+
+    def test_dashboard_active_games_has_wwm_end_url(self):
+        game = WerWeissMehrGame.objects.create(title='Dashboard End URL', creator=self.user, status='active')
+        game.started_at = game.created_at
+        game.save(update_fields=['started_at'])
+        WerWeissMehrSession.objects.create(quiz=game)
+
+        response = self.client.get(reverse('admin_dashboard:sessions_overview'))
+
+        self.assertEqual(response.status_code, 200)
+        wwm_game = next(item for item in response.context['active_games'] if item['room_code'] == game.room_code)
+        self.assertEqual(
+            wwm_game['end_url'],
+            reverse('admin_dashboard:end_wer_weiss_mehr_game_by_room_code', args=[game.room_code]),
+        )
+
+    def test_dashboard_end_endpoint_completes_wwm_game(self):
+        game = WerWeissMehrGame.objects.create(title='Dashboard End', creator=self.user, status='active')
+        WerWeissMehrSession.objects.create(quiz=game)
+
+        response = self.client.post(
+            reverse('admin_dashboard:end_wer_weiss_mehr_game_by_room_code', args=[game.room_code]),
+            data=json.dumps({}),
+            content_type='application/json',
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload['success'])
+        game.refresh_from_db()
+        self.assertEqual(game.status, 'completed')
+        self.assertIsNotNone(game.ended_at)
+
+    def test_end_endpoint_returns_json_for_auth_and_not_found_errors(self):
+        game = WerWeissMehrGame.objects.create(title='HTTP End Errors', creator=self.user, status='active')
+        WerWeissMehrSession.objects.create(quiz=game)
+
+        self.client.logout()
+        response = self.client.post(
+            f'/wer-weiss-mehr/end/{game.room_code}/',
+            data=json.dumps({}),
+            content_type='application/json',
+        )
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(response['Content-Type'], 'application/json')
+        self.assertFalse(response.json()['success'])
+
+        self.client.force_login(self.user)
+        response = self.client.post(
+            '/wer-weiss-mehr/end/9999/',
+            data=json.dumps({}),
+            content_type='application/json',
+        )
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response['Content-Type'], 'application/json')
+        self.assertFalse(response.json()['success'])
+
+    def test_participant_submit_endpoint_locks_answer_and_returns_participant_state(self):
+        game = WerWeissMehrGame.objects.create(title='HTTP Submit', creator=self.user, status='waiting')
+        WerWeissMehrSession.objects.create(quiz=game)
+        question = WerWeissMehrQuestion.objects.create(
+            question_text='Nenne Bundeslaender',
+            round_time_limit=30,
+            created_by=self.user,
+        )
+        WerWeissMehrAnswerOption.objects.create(question=question, canonical_text='Bayern')
+        game.selected_questions.add(question)
+        session = HubSession.objects.create(code='WWMSUB', name='Submit')
+        WerWeissMehrParticipant.objects.create(
+            quiz=game,
+            name='Lisa',
+            hub_session_code=session.code,
+        )
+        game.start_quiz()
+        start_set(game, question.id, hub_session_code=session.code, time_limit_seconds=30)
+
+        response = self.client.post(
+            f'/wer-weiss-mehr/submit/{game.room_code}/',
+            data=json.dumps({
+                'participant_name': 'Lisa',
+                'hub_session': session.code,
+                'answer_text': 'Bayern',
+            }),
+            content_type='application/json',
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload['success'])
+        self.assertEqual(payload['game_status'], 'active')
+        self.assertEqual(payload['phase'], WerWeissMehrSession.PHASE_ROUND_ACTIVE)
+        self.assertFalse(payload['participant_state']['can_answer'])
+        self.assertTrue(payload['participant_state']['has_submitted'])
+        self.assertEqual(payload['participant_state']['submitted_answer'], 'Bayern')
+        self.assertEqual(payload['participant_state']['response']['final_status'], 'submitted')
+
+        game.refresh_from_db()
+        host_state = build_game_state(game, hub_session_code=session.code)
+        self.assertEqual(len(host_state['responses']), 1)
+        self.assertEqual(host_state['responses'][0]['participant_name'], 'Lisa')
+        self.assertEqual(host_state['responses'][0]['answer_text'], 'Bayern')
+        self.assertEqual(host_state['responses'][0]['auto_status'], WerWeissMehrRoundResponse.STATUS_CORRECT)
+        self.assertEqual(host_state['responses'][0]['final_status'], WerWeissMehrRoundResponse.STATUS_CORRECT)
+        self.assertEqual(host_state['responses'][0]['round_number'], 1)
+        self.assertIsNotNone(host_state['responses'][0]['submitted_at'])
+
+    def test_participant_pending_endpoint_preserves_unlocked_input_for_round_end(self):
+        game = WerWeissMehrGame.objects.create(title='HTTP Pending', creator=self.user, status='waiting')
+        WerWeissMehrSession.objects.create(quiz=game)
+        question = WerWeissMehrQuestion.objects.create(
+            question_text='Nenne Bundeslaender',
+            round_time_limit=30,
+            created_by=self.user,
+        )
+        WerWeissMehrAnswerOption.objects.create(question=question, canonical_text='Bayern')
+        game.selected_questions.add(question)
+        session = HubSession.objects.create(code='WWMPEND', name='Pending')
+        participant = WerWeissMehrParticipant.objects.create(
+            quiz=game,
+            name='Lisa',
+            hub_session_code=session.code,
+        )
+        game.start_quiz()
+        start_set(game, question.id, hub_session_code=session.code, time_limit_seconds=30)
+
+        response = self.client.post(
+            f'/wer-weiss-mehr/pending/{game.room_code}/',
+            data=json.dumps({
+                'participant_name': 'Lisa',
+                'hub_session': session.code,
+                'answer_text': 'Bayern',
+            }),
+            content_type='application/json',
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()['pending_saved'])
+        self.assertTrue(WerWeissMehrPendingInput.objects.filter(
+            quiz=game,
+            participant=participant,
+            question=question,
+            answer_text='Bayern',
+        ).exists())
+
+        end_current_round(game)
+        round_response = WerWeissMehrRoundResponse.objects.get(
+            quiz=game,
+            participant=participant,
+            question=question,
+            round_number=1,
+        )
+        self.assertEqual(round_response.answer_text, 'Bayern')
+        self.assertTrue(round_response.is_correct)

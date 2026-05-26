@@ -936,6 +936,7 @@
                     this.selectedAnswer = null;
                     this.hasAnswered = false;
                     this.scoreHistory = [];
+                    this.pendingInputTimer = null;
                     
                     this.init();
                 }
@@ -1084,6 +1085,7 @@
                     this.hasAnswered = false;
                     this.selectedAnswer = null;
                     this.questionStartTime = Date.now();
+                    if (this.pendingInputTimer) clearTimeout(this.pendingInputTimer);
                     
                     this.resetClues();
                     this.loadQuestion(question);
@@ -1094,7 +1096,37 @@
                 onQuestionEnded(data) {
                     clearInterval(this.questionTimer);
                     this.setClueTimerVisible(false);
-                    if (data && data.correct_answer && this.hasAnswered) {
+                    if (this.pendingInputTimer) clearTimeout(this.pendingInputTimer);
+
+                    const ownResult = (data?.answers || []).find(answer => answer.participant_name === this.participantName);
+                    const answerText = ownResult
+                        ? (ownResult.answer_text || 'Keine Antwort')
+                        : (this.selectedAnswer || 'Keine Antwort');
+
+                    this.hasAnswered = true;
+                    this.selectedAnswer = answerText === 'Keine Antwort' ? '' : answerText;
+
+                    const shortAnswerInput = document.getElementById('shortAnswerInput');
+                    if (shortAnswerInput) {
+                        shortAnswerInput.disabled = true;
+                    }
+                    const submitButton = document.getElementById('submitAnswerBtn');
+                    if (submitButton) {
+                        submitButton.disabled = true;
+                    }
+                    const submittedAnswerText = document.getElementById('submittedAnswerText');
+                    if (submittedAnswerText) {
+                        submittedAnswerText.textContent = answerText;
+                    }
+                    const submittedTime = document.getElementById('submittedTime');
+                    if (submittedTime && ownResult) {
+                        const seconds = Number(ownResult.time_taken || 0);
+                        submittedTime.textContent = seconds > 0 ? seconds.toFixed(1) : '-';
+                    }
+                    if (ownResult && Array.isArray(ownResult.progress_history)) {
+                        this.setScoreHistory(ownResult.progress_history);
+                    }
+                    if (data && data.correct_answer) {
                         this.showCorrectAnswer(data.correct_answer);
                     }
                 }
@@ -1300,6 +1332,19 @@
                     input.addEventListener('input', () => {
                         this.selectedAnswer = input.value.trim();
                         document.getElementById('submitAnswerBtn').disabled = !this.selectedAnswer;
+                        if (this.pendingInputTimer) clearTimeout(this.pendingInputTimer);
+                        const pendingAnswer = this.selectedAnswer;
+                        this.pendingInputTimer = setTimeout(() => {
+                            if (this.hasAnswered || !this.websocket || this.websocket.readyState !== WebSocket.OPEN) return;
+                            const timeTaken = this.questionStartTime ? ((Date.now() - this.questionStartTime) / 1000) : 0;
+                            this.websocket.send(JSON.stringify({
+                                type: 'participant_input_changed',
+                                participant_name: this.participantName,
+                                hub_session: this.hubSession,
+                                answer: pendingAnswer,
+                                time_taken: timeTaken
+                            }));
+                        }, 180);
                     });
                     optionsContainer.appendChild(input);
 
@@ -1309,6 +1354,7 @@
 
                 submitAnswer() {
                     if (!this.selectedAnswer || this.hasAnswered) return;
+                    if (this.pendingInputTimer) clearTimeout(this.pendingInputTimer);
                     
                     const timeTaken = (Date.now() - this.questionStartTime) / 1000;
                     

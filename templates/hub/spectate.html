@@ -1,0 +1,634 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Spectator - {{ session.name|default:session.code }}</title>
+    <link rel="stylesheet" href="{% static 'theme.css' %}">
+    <style>
+        :root {
+            --spectator-bg: #08111f;
+            --spectator-card: rgba(255, 255, 255, 0.09);
+            --spectator-card-strong: rgba(255, 255, 255, 0.15);
+            --spectator-line: rgba(255, 255, 255, 0.18);
+            --spectator-text: #f6f2e8;
+            --spectator-muted: rgba(246, 242, 232, 0.72);
+            --spectator-accent: #ffcf4a;
+            --spectator-blue: #6fc4ff;
+            --spectator-green: #7ee083;
+            --spectator-red: #ff7979;
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            min-height: 100vh;
+            background:
+                radial-gradient(circle at 15% 10%, rgba(255, 207, 74, 0.18), transparent 32rem),
+                radial-gradient(circle at 85% 18%, rgba(111, 196, 255, 0.20), transparent 30rem),
+                linear-gradient(145deg, #08111f 0%, #111827 48%, #1e1510 100%);
+            color: var(--spectator-text);
+            font-family: "Trebuchet MS", "Segoe UI", sans-serif;
+            overflow-x: hidden;
+        }
+
+        .spectator-shell {
+            min-height: 100vh;
+            display: grid;
+            grid-template-rows: auto 1fr;
+            padding: clamp(1.25rem, 3vw, 3rem);
+            gap: clamp(1rem, 2vw, 2rem);
+        }
+
+        .spectator-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 1rem;
+            border: 1px solid var(--spectator-line);
+            background: rgba(0, 0, 0, 0.18);
+            border-radius: 28px;
+            padding: 1rem 1.25rem;
+            backdrop-filter: blur(14px);
+        }
+
+        .session-kicker,
+        .status-pill,
+        .meta-pill {
+            text-transform: uppercase;
+            letter-spacing: 0.12em;
+            font-size: clamp(0.75rem, 1.2vw, 0.95rem);
+            color: var(--spectator-muted);
+        }
+
+        .session-title {
+            margin: 0.25rem 0 0;
+            font-size: clamp(1.6rem, 4vw, 4.8rem);
+            line-height: 0.95;
+        }
+
+        .status-area {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            flex-wrap: wrap;
+            justify-content: flex-end;
+        }
+
+        .status-pill,
+        .meta-pill {
+            border: 1px solid var(--spectator-line);
+            border-radius: 999px;
+            padding: 0.65rem 0.9rem;
+            background: var(--spectator-card);
+        }
+
+        .status-dot {
+            width: 0.75rem;
+            height: 0.75rem;
+            border-radius: 50%;
+            display: inline-block;
+            margin-right: 0.45rem;
+            background: var(--spectator-red);
+            box-shadow: 0 0 18px currentColor;
+        }
+
+        .status-dot.online {
+            background: var(--spectator-green);
+        }
+
+        .stage {
+            border: 1px solid var(--spectator-line);
+            border-radius: 36px;
+            background: rgba(0, 0, 0, 0.24);
+            box-shadow: 0 32px 90px rgba(0, 0, 0, 0.35);
+            padding: clamp(1.25rem, 4vw, 4rem);
+            display: grid;
+            align-content: center;
+            min-height: min(72vh, 900px);
+        }
+
+        .waiting {
+            text-align: center;
+            max-width: 980px;
+            margin: 0 auto;
+        }
+
+        .waiting h2 {
+            font-size: clamp(2.2rem, 7vw, 7rem);
+            line-height: 0.95;
+            margin: 0 0 1rem;
+        }
+
+        .waiting p,
+        .question-subtitle {
+            color: var(--spectator-muted);
+            font-size: clamp(1.1rem, 2vw, 1.7rem);
+            margin: 0;
+        }
+
+        .game-grid {
+            display: grid;
+            gap: clamp(1rem, 2vw, 2rem);
+        }
+
+        .game-topline {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 1rem;
+            flex-wrap: wrap;
+        }
+
+        .game-label {
+            color: var(--spectator-accent);
+            font-size: clamp(1rem, 2vw, 1.5rem);
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.1em;
+        }
+
+        .game-title {
+            margin: 0.25rem 0 0;
+            font-size: clamp(2rem, 6vw, 6rem);
+            line-height: 0.95;
+        }
+
+        .timer {
+            min-width: 7.5rem;
+            text-align: center;
+            border: 1px solid rgba(255, 207, 74, 0.38);
+            color: var(--spectator-accent);
+            background: rgba(255, 207, 74, 0.08);
+            border-radius: 22px;
+            padding: 0.85rem 1rem;
+            font-size: clamp(1.6rem, 4vw, 4rem);
+            font-weight: 800;
+        }
+
+        .question-card,
+        .panel {
+            border: 1px solid var(--spectator-line);
+            background: var(--spectator-card);
+            border-radius: 28px;
+            padding: clamp(1rem, 2.5vw, 2.5rem);
+        }
+
+        .question-text {
+            margin: 0;
+            font-size: clamp(2rem, 5.8vw, 6.4rem);
+            line-height: 1.03;
+            letter-spacing: -0.045em;
+        }
+
+        .option-grid,
+        .two-column,
+        .answer-locks,
+        .clue-list,
+        .ladder-list,
+        .pair-grid,
+        .people-grid,
+        .tile-grid {
+            display: grid;
+            gap: 0.85rem;
+        }
+
+        .tile-grid {
+            grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+        }
+
+        .option-grid {
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        }
+
+        .two-column {
+            grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+        }
+
+        .passive-card {
+            border: 1px solid var(--spectator-line);
+            background: var(--spectator-card-strong);
+            border-radius: 22px;
+            padding: 1rem 1.2rem;
+            font-size: clamp(1.15rem, 2vw, 1.75rem);
+        }
+
+        .option-key,
+        .small-label {
+            color: var(--spectator-accent);
+            font-weight: 800;
+            margin-right: 0.55rem;
+        }
+
+        .reveal-card {
+            border-color: rgba(126, 224, 131, 0.48);
+            background: rgba(126, 224, 131, 0.11);
+        }
+
+        .reveal-title {
+            color: var(--spectator-green);
+            font-size: clamp(1rem, 1.6vw, 1.35rem);
+            font-weight: 800;
+            text-transform: uppercase;
+            letter-spacing: 0.12em;
+            margin-bottom: 0.5rem;
+        }
+
+        .reveal-answer {
+            font-size: clamp(1.8rem, 4.2vw, 4.8rem);
+            font-weight: 900;
+            line-height: 1;
+        }
+
+        .media-img {
+            max-width: min(100%, 900px);
+            max-height: 46vh;
+            object-fit: contain;
+            border-radius: 26px;
+            border: 1px solid var(--spectator-line);
+            display: block;
+            margin: 0 auto;
+        }
+
+        .muted {
+            color: var(--spectator-muted);
+        }
+
+        @media (max-width: 760px) {
+            .spectator-header,
+            .game-topline {
+                align-items: flex-start;
+                flex-direction: column;
+            }
+
+            .status-area {
+                justify-content: flex-start;
+            }
+        }
+    </style>
+</head>
+<body>
+    <main class="spectator-shell" id="spectator-root" data-state-url="{% url 'games_hub:spectate_session_state' session.code %}">
+        <header class="spectator-header">
+            <div>
+                <div class="session-kicker">Spectator View</div>
+                <h1 class="session-title">{{ session.name|default:session.code }}</h1>
+            </div>
+            <div class="status-area">
+                <div class="status-pill"><span class="status-dot" id="connectionDot"></span><span id="connectionText">Verbinde...</span></div>
+                <div class="meta-pill">Session {{ session.code }}</div>
+            </div>
+        </header>
+        <section class="stage" id="stage">
+            <div class="waiting">
+                <h2>Warte auf das naechste Spiel</h2>
+                <p>Der Spectator liest nur mit und erzeugt keine Teilnehmer.</p>
+            </div>
+        </section>
+    </main>
+
+    <script>
+    (() => {
+        const root = document.getElementById('spectator-root');
+        const stage = document.getElementById('stage');
+        const connectionDot = document.getElementById('connectionDot');
+        const connectionText = document.getElementById('connectionText');
+        const stateUrl = root.dataset.stateUrl;
+        let lastSignature = '';
+        let pollTimer = null;
+
+        function escapeHtml(value) {
+            return String(value ?? '')
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#039;');
+        }
+
+        function setConnectionState(online) {
+            connectionDot.classList.toggle('online', online);
+            connectionText.textContent = online ? 'Live' : 'Offline';
+        }
+
+        function timerMarkup(timer) {
+            if (!timer || timer.seconds_left === null || timer.seconds_left === undefined) {
+                return '<div class="timer">--</div>';
+            }
+            return `<div class="timer">${escapeHtml(timer.seconds_left)}</div>`;
+        }
+
+        function waitingMarkup(message) {
+            return `
+                <div class="waiting">
+                    <h2>${escapeHtml(message || 'Warte auf das naechste Spiel')}</h2>
+                    <p>Keine Eingabe, keine Wertung, keine Teilnehmerrolle.</p>
+                </div>
+            `;
+        }
+
+        function revealMarkup(question, label = 'Korrekte Antwort') {
+            if (!question || !question.correct_answer) return '';
+            return `
+                <div class="panel reveal-card">
+                    <div class="reveal-title">${escapeHtml(label)}</div>
+                    <div class="reveal-answer">${escapeHtml(question.correct_answer)}</div>
+                    ${question.explanation ? `<p class="question-subtitle">${escapeHtml(question.explanation)}</p>` : ''}
+                </div>
+            `;
+        }
+
+        function optionsMarkup(options) {
+            if (!options || !options.length) return '';
+            return `
+                <div class="option-grid">
+                    ${options.map(option => `
+                        <div class="passive-card">
+                            <span class="option-key">${escapeHtml(option.key)}</span>
+                            ${escapeHtml(option.text)}
+                        </div>
+                    `).join('')}
+                </div>
+            `;
+        }
+
+        function imageMarkup(url, altText) {
+            if (!url) return '';
+            return `<img class="media-img" src="${escapeHtml(url)}" alt="${escapeHtml(altText || '')}">`;
+        }
+
+        function commonQuestionMarkup(game, bodyHtml) {
+            const question = game.question;
+            if (!question) {
+                return waitingMarkup(game.message || 'Warte auf die naechste Frage');
+            }
+            return `
+                <div class="game-grid">
+                    <div class="game-topline">
+                        <div>
+                            <div class="game-label">${escapeHtml(game.label)} - ${escapeHtml(game.message || '')}</div>
+                            <h2 class="game-title">${escapeHtml(game.title)}</h2>
+                        </div>
+                        ${timerMarkup(game.timer)}
+                    </div>
+                    ${bodyHtml}
+                    <div class="question-subtitle">${escapeHtml(game.response_count || 0)} Antworten eingeloggt</div>
+                </div>
+            `;
+        }
+
+        function renderQuiz(game) {
+            const q = game.question;
+            return commonQuestionMarkup(game, `
+                <div class="question-card">
+                    <p class="question-text">${escapeHtml(q.text)}</p>
+                </div>
+                ${optionsMarkup(q.options)}
+                ${revealMarkup(q)}
+            `);
+        }
+
+        function renderEstimation(game) {
+            const q = game.question;
+            const zoneHtml = q.zones && q.zones.zones ? `
+                <div class="panel">
+                    <div class="reveal-title">Zonenwertung</div>
+                    <div class="clue-list">
+                        ${q.zones.zones.map(zone => `
+                            <div class="passive-card">Zone ${escapeHtml(zone.zone_number)}: ${escapeHtml(zone.absolute_range_display)} - ${escapeHtml(zone.points)} Punkte</div>
+                        `).join('')}
+                    </div>
+                </div>
+            ` : '';
+            return commonQuestionMarkup(game, `
+                <div class="question-card">
+                    <p class="question-text">${escapeHtml(q.text)}</p>
+                    ${q.unit ? `<p class="question-subtitle">Einheit: ${escapeHtml(q.unit)}</p>` : ''}
+                </div>
+                ${revealMarkup(q)}
+                ${zoneHtml}
+            `);
+        }
+
+        function renderWhere(game) {
+            const q = game.question;
+            const location = q.correct_location ? `
+                <div class="panel reveal-card">
+                    <div class="reveal-title">Korrekte Position</div>
+                    <div class="reveal-answer">${escapeHtml(q.correct_location.latitude)}, ${escapeHtml(q.correct_location.longitude)}</div>
+                    ${q.explanation ? `<p class="question-subtitle">${escapeHtml(q.explanation)}</p>` : ''}
+                </div>
+            ` : '';
+            return commonQuestionMarkup(game, `
+                ${imageMarkup(q.image_url, q.text)}
+                <div class="question-card">
+                    <p class="question-text">${escapeHtml(q.text)}</p>
+                </div>
+                ${location}
+            `);
+        }
+
+        function renderWhoThat(game) {
+            const q = game.question;
+            return commonQuestionMarkup(game, `
+                ${imageMarkup(q.image_url, q.text)}
+                <div class="question-card">
+                    <p class="question-text">${escapeHtml(q.text)}</p>
+                    ${q.category ? `<p class="question-subtitle">${escapeHtml(q.category)}</p>` : ''}
+                </div>
+                ${revealMarkup(q, 'Korrekte Loesung')}
+            `);
+        }
+
+        function renderBlackjack(game) {
+            const q = game.question;
+            return commonQuestionMarkup(game, `
+                <div class="question-card">
+                    <div class="game-label">Set ${escapeHtml(q.set_number)}/${escapeHtml(q.total_sets)} - Frage ${escapeHtml(q.question_in_set)}/${escapeHtml(q.set_question_count)} - Ziel 21</div>
+                    <p class="question-text">${escapeHtml(q.text)}</p>
+                </div>
+                ${revealMarkup(q)}
+            `);
+        }
+
+        function renderWho(game) {
+            const q = game.question;
+            const reveal = q.liars || q.truth_tellers;
+            const revealHtml = reveal ? `
+                <div class="two-column">
+                    <div class="panel reveal-card">
+                        <div class="reveal-title">Hat gelogen</div>
+                        <div class="people-grid">${(q.liars || []).map(name => `<div class="passive-card">${escapeHtml(name)}</div>`).join('') || '<div class="passive-card muted">Niemand</div>'}</div>
+                    </div>
+                    <div class="panel">
+                        <div class="reveal-title">Hat nicht gelogen</div>
+                        <div class="people-grid">${(q.truth_tellers || []).map(name => `<div class="passive-card">${escapeHtml(name)}</div>`).join('') || '<div class="passive-card muted">Niemand</div>'}</div>
+                    </div>
+                </div>
+            ` : `
+                <div class="panel">
+                    <div class="reveal-title">Aktuelle Person</div>
+                    <div class="reveal-answer">${escapeHtml(q.current_person || 'Warte auf Person')}</div>
+                </div>
+            `;
+            return commonQuestionMarkup(game, `
+                <div class="question-card">
+                    <p class="question-text">${escapeHtml(q.statement)}</p>
+                </div>
+                ${revealHtml}
+            `);
+        }
+
+        function renderClueRush(game) {
+            const q = game.question;
+            const clues = q.clues || [];
+            const locks = q.answer_locks || [];
+            return commonQuestionMarkup(game, `
+                <div class="question-card">
+                    <div class="game-label">Gesuchter Begriff${q.correct_answer ? `: ${escapeHtml(q.correct_answer)}` : ''}</div>
+                    <p class="question-text">${escapeHtml(q.text)}</p>
+                </div>
+                <div class="two-column">
+                    <div class="panel">
+                        <div class="reveal-title">Freigegebene Hinweise</div>
+                        <div class="clue-list">
+                            ${clues.map(clue => `<div class="passive-card"><span class="small-label">Hinweis ${escapeHtml(clue.number)}</span>${escapeHtml(clue.text)}</div>`).join('') || '<div class="passive-card muted">Noch kein Hinweis freigegeben.</div>'}
+                        </div>
+                    </div>
+                    <div class="panel">
+                        <div class="reveal-title">Eingeloggte Antworten</div>
+                        <div class="answer-locks">
+                            ${locks.map(lock => `<div class="passive-card">${escapeHtml(lock.participant)} hat bei Hinweis ${escapeHtml(lock.clue_number)} geantwortet</div>`).join('') || '<div class="passive-card muted">Noch keine Antwort eingeloggt.</div>'}
+                        </div>
+                    </div>
+                </div>
+            `);
+        }
+
+        function renderAssign(game) {
+            const q = game.question;
+            const pairs = q.correct_pairs || [];
+            return commonQuestionMarkup(game, `
+                <div class="question-card">
+                    <p class="question-text">${escapeHtml(q.text)}</p>
+                </div>
+                <div class="two-column">
+                    <div class="panel">
+                        <div class="reveal-title">Items</div>
+                        ${(q.left_items || []).map(item => `<div class="passive-card">${escapeHtml(item.text)}</div>`).join('')}
+                    </div>
+                    <div class="panel">
+                        <div class="reveal-title">Ziele</div>
+                        ${(q.right_items || []).map(item => `<div class="passive-card">${escapeHtml(item.text)}</div>`).join('')}
+                    </div>
+                </div>
+                ${pairs.length ? `<div class="panel reveal-card"><div class="reveal-title">Korrekte Zuordnungen</div><div class="pair-grid">${pairs.map(pair => `<div class="passive-card">${escapeHtml(pair.left)} -> ${escapeHtml(pair.right)}</div>`).join('')}</div></div>` : ''}
+            `);
+        }
+
+        function renderSorting(game) {
+            const q = game.question;
+            const finalOrder = q.final_order || [];
+            return commonQuestionMarkup(game, `
+                <div class="question-card">
+                    <div class="game-label">${escapeHtml(q.lower_label)} bis ${escapeHtml(q.upper_label)} - Runde ${escapeHtml(q.round || 0)}</div>
+                    <p class="question-text">${escapeHtml(q.text)}</p>
+                    ${q.description ? `<p class="question-subtitle">${escapeHtml(q.description)}</p>` : ''}
+                </div>
+                <div class="two-column">
+                    <div class="panel">
+                        <div class="reveal-title">Aktuelle Liste</div>
+                        <div class="ladder-list">${(q.placed_elements || []).map(item => `<div class="passive-card">${escapeHtml(item.text)}</div>`).join('') || '<div class="passive-card muted">Noch keine platzierten Elemente.</div>'}</div>
+                    </div>
+                    <div class="panel">
+                        <div class="reveal-title">Einzusortieren</div>
+                        <div class="passive-card">${q.active_element ? escapeHtml(q.active_element.text) : 'Kein aktives Element'}</div>
+                    </div>
+                </div>
+                ${finalOrder.length ? `<div class="panel reveal-card"><div class="reveal-title">Finale Reihenfolge</div>${finalOrder.map(item => `<div class="passive-card">${escapeHtml(item.text)}</div>`).join('')}</div>` : ''}
+            `);
+        }
+
+        function renderWerWeissMehr(game) {
+            const q = game.question;
+            return commonQuestionMarkup(game, `
+                <div class="question-card">
+                    <div class="game-label">Runde ${escapeHtml(q.round || 0)} - ${escapeHtml(q.revealed_count || 0)}/${escapeHtml(q.answer_count || 0)} aufgedeckt</div>
+                    <p class="question-text">${escapeHtml(q.text)}</p>
+                </div>
+                <div class="panel">
+                    <div class="tile-grid">
+                        ${(q.tiles || []).map(tile => `<div class="passive-card ${tile.revealed ? 'reveal-card' : ''}">${tile.revealed ? escapeHtml(tile.text) : '?'}</div>`).join('')}
+                    </div>
+                </div>
+            `);
+        }
+
+        const renderers = {
+            quiz: renderQuiz,
+            estimation: renderEstimation,
+            where: renderWhere,
+            who_that: renderWhoThat,
+            blackjack: renderBlackjack,
+            who: renderWho,
+            clue_rush: renderClueRush,
+            assign: renderAssign,
+            sorting_ladder: renderSorting,
+            wer_weiss_mehr: renderWerWeissMehr,
+        };
+
+        function renderState(state) {
+            const signature = JSON.stringify(state);
+            if (signature === lastSignature) return;
+            lastSignature = signature;
+
+            if (!state || !state.game) {
+                stage.innerHTML = waitingMarkup(state?.message);
+                return;
+            }
+
+            const renderer = renderers[state.game.game_key];
+            stage.innerHTML = renderer ? renderer(state.game) : waitingMarkup('Dieser Spieltyp hat noch keine Spectator-Anzeige.');
+        }
+
+        async function loadState() {
+            try {
+                const response = await fetch(stateUrl, {cache: 'no-store', credentials: 'same-origin'});
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                const state = await response.json();
+                setConnectionState(true);
+                renderState(state);
+            } catch (error) {
+                setConnectionState(false);
+                if (!lastSignature) {
+                    stage.innerHTML = waitingMarkup('Spectator-State konnte nicht geladen werden.');
+                }
+            }
+        }
+
+        function connectSocket() {
+            const scheme = window.location.protocol === 'https:' ? 'wss' : 'ws';
+            const socket = new WebSocket(`${scheme}://${window.location.host}/ws/hub/{{ session.code }}/`);
+            socket.onopen = () => setConnectionState(true);
+            socket.onmessage = () => loadState();
+            socket.onclose = () => {
+                setConnectionState(false);
+                window.setTimeout(connectSocket, 2500);
+            };
+            socket.onerror = () => setConnectionState(false);
+        }
+
+        loadState();
+        pollTimer = window.setInterval(loadState, 1500);
+        connectSocket();
+        window.addEventListener('beforeunload', () => {
+            if (pollTimer) window.clearInterval(pollTimer);
+        });
+    })();
+    </script>
+</body>
+</html>

@@ -5,7 +5,15 @@ from django.urls import reverse
 from django.utils import timezone
 
 from .consumers import ClueRushGameConsumer
-from .models import Clue, ClueAnswer, ClueQuestion, ClueRushGame, ClueRushParticipant, ClueRushSession
+from .models import (
+    Clue,
+    ClueAnswer,
+    CluePendingInput,
+    ClueQuestion,
+    ClueRushGame,
+    ClueRushParticipant,
+    ClueRushSession,
+)
 
 
 class ClueRushScoreBoxTests(TransactionTestCase):
@@ -632,3 +640,138 @@ class ClueRushScoreBoxTests(TransactionTestCase):
         self.assertContains(response, "this.onAnswerCorrected(data);", html=False)
         self.assertContains(response, "case 'participant_rehydrated':", html=False)
         self.assertContains(response, "this.onParticipantRehydrated(data.answer);", html=False)
+
+    def test_host_end_question_evaluates_pending_and_empty_answers(self):
+        user = User.objects.create_user(username='clue-host-end-pending')
+        question = self._create_question(user, clue_orders=[1, 2, 3, 4], answer='Brazil')
+        quiz, session = self._create_active_quiz(user, question, room_code='8432')
+        fourth_clue = question.clues.order_by('order', 'id')[3]
+        self._set_visible_clue(quiz, session, fourth_clue)
+        pending_player = ClueRushParticipant.objects.create(quiz=quiz, name='Ada', hub_session_code=None)
+        locked_player = ClueRushParticipant.objects.create(quiz=quiz, name='Ben', hub_session_code=None)
+        empty_player = ClueRushParticipant.objects.create(quiz=quiz, name='Cal', hub_session_code=None)
+        locked_answer = ClueAnswer.objects.create(
+            quiz=quiz,
+            participant=locked_player,
+            question=question,
+            answer_text='Brazil',
+            submitted_clue_number=2,
+            total_clues_at_submission=4,
+            time_taken=1.2,
+        )
+        CluePendingInput.objects.create(
+            quiz=quiz,
+            participant=pending_player,
+            question=question,
+            answer_text='Brazil',
+            submitted_clue_number=4,
+            total_clues_at_input=4,
+            time_taken=3.4,
+        )
+
+        consumer = ClueRushGameConsumer()
+        consumer.room_code = quiz.room_code
+        payload = async_to_sync(consumer.finalize_current_question_for_end)(None)
+
+        quiz.refresh_from_db()
+        session.refresh_from_db()
+        pending_player.refresh_from_db()
+        locked_player.refresh_from_db()
+        empty_player.refresh_from_db()
+
+        self.assertIsNone(quiz.current_question_id)
+        self.assertIsNone(quiz.current_clue_id)
+        self.assertFalse(session.is_question_active)
+        self.assertFalse(session.is_clue_active)
+        self.assertIsNone(session.question_end_time)
+        self.assertIsNone(session.clue_end_time)
+        self.assertEqual(session.total_responses_current_question, 3)
+        self.assertEqual(session.correct_responses_current_question, 2)
+        self.assertFalse(CluePendingInput.objects.filter(quiz=quiz, question=question).exists())
+
+        pending_answer = ClueAnswer.objects.get(quiz=quiz, participant=pending_player, question=question)
+        empty_answer = ClueAnswer.objects.get(quiz=quiz, participant=empty_player, question=question)
+        locked_answer.refresh_from_db()
+
+        self.assertTrue(pending_answer.is_correct)
+        self.assertEqual(pending_answer.submitted_clue_number, 4)
+        self.assertEqual(pending_answer.points_earned, 1)
+        self.assertEqual(pending_player.total_score, 1)
+        self.assertTrue(locked_answer.is_correct)
+        self.assertEqual(locked_answer.submitted_clue_number, 2)
+        self.assertEqual(locked_answer.points_earned, 3)
+        self.assertEqual(locked_player.total_score, 3)
+        self.assertFalse(empty_answer.is_correct)
+        self.assertEqual(empty_answer.answer_text, '')
+        self.assertEqual(empty_answer.points_earned, 0)
+        self.assertEqual(empty_player.total_score, 0)
+
+        answers_by_name = {answer['participant_name']: answer for answer in payload['answers']}
+        self.assertEqual(payload['correct_answer']['formatted_answer'], 'Brazil')
+        self.assertEqual(answers_by_name['Ada']['answer_text'], 'Brazil')
+        self.assertEqual(answers_by_name['Ada']['points_earned'], 1)
+        self.assertEqual(
+            answers_by_name['Ada']['progress_history'],
+            [{
+                'question_number': 1,
+                'correct_answer': 'Brazil',
+                'achieved_points': 1,
+                'max_points': 4,
+            }],
+        )
+        self.assertEqual(answers_by_name['Cal']['points_earned'], 0)
+
+        late_submit = async_to_sync(consumer.save_participant_answer)(empty_player.name, None, 'Brazil', 1.0)
+        self.assertIsNone(late_submit)
+        self.assertEqual(ClueAnswer.objects.filter(quiz=quiz, participant=empty_player, question=question).count(), 1)
+
+    def test_rejoin_after_host_end_question_reconstructs_reveal_state(self):
+        user = User.objects.create_user(username='clue-rejoin-after-host-end')
+        question = self._create_question(user, clue_orders=[1, 2, 3], answer='Brazil')
+        quiz, session = self._create_active_quiz(user, question, room_code='8433')
+        third_clue = question.clues.order_by('order', 'id')[2]
+        self._set_visible_clue(quiz, session, third_clue)
+        participant = ClueRushParticipant.objects.create(quiz=quiz, name='Ada', hub_session_code=None)
+        CluePendingInput.objects.create(
+            quiz=quiz,
+            participant=participant,
+            question=question,
+            answer_text='Brazil',
+            submitted_clue_number=3,
+            total_clues_at_input=3,
+            time_taken=2.0,
+        )
+        consumer = ClueRushGameConsumer()
+        consumer.room_code = quiz.room_code
+        async_to_sync(consumer.finalize_current_question_for_end)(None)
+
+        snapshot = async_to_sync(consumer.get_rejoin_snapshot)(participant.name, participant.hub_session_code)
+
+        self.assertIsNone(snapshot['question'])
+        self.assertEqual(snapshot['correct_answer']['formatted_answer'], 'Brazil')
+        self.assertEqual(snapshot['revealed_answer']['participant_name'], 'Ada')
+        self.assertEqual(snapshot['revealed_answer']['answer_text'], 'Brazil')
+        self.assertEqual(snapshot['revealed_answer']['progress_history'][0]['achieved_points'], 1)
+
+    def test_play_template_sends_pending_input_and_reveals_on_question_end(self):
+        user = User.objects.create_user(username='clue-pending-template')
+        quiz = ClueRushGame.objects.create(
+            title='Clue Pending Hooks',
+            room_code='8434',
+            creator=user,
+            status='active',
+        )
+        participant = ClueRushParticipant.objects.create(
+            quiz=quiz,
+            name='Ada',
+            hub_session_code=None,
+        )
+
+        response = self.client.get(
+            reverse('clue_rush:play', args=[quiz.room_code, participant.name])
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "type: 'participant_input_changed'", html=False)
+        self.assertContains(response, "const ownResult = (data?.answers || []).find", html=False)
+        self.assertContains(response, "this.showCorrectAnswer(data.correct_answer);", html=False)

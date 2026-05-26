@@ -1259,8 +1259,10 @@ document.addEventListener('DOMContentLoaded', function() {
         
         endCurrentQuestion() {
             if (this.websocket && this.websocket.readyState === WebSocket.OPEN) {
+                const hub = new URLSearchParams(window.location.search).get('hub_session') || window.__hubCode || '';
                 this.websocket.send(JSON.stringify({
-                    type: 'admin_end_question'
+                    type: 'admin_end_question',
+                    hub_session: hub
                 }));
             }
         }

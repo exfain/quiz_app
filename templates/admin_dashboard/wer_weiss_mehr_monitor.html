@@ -1,0 +1,657 @@
+{% extends "admin_dashboard/base.html" %}
+
+{% block title %}Wer weiß mehr? Monitor{% endblock %}
+{% block page_title %}Wer weiß mehr? Monitor{% endblock %}
+{% block page_subtitle %}Sets starten, Runden reviewen und Antworten manuell zuordnen{% endblock %}
+
+{% block content %}
+<div class="container-fluid py-3">
+    <div class="d-flex justify-content-between align-items-start gap-3 mb-4">
+        <div>
+            <h2 class="mb-1">{{ quiz.title }}</h2>
+            <div class="text-muted">Raum {{ quiz.room_code }} · <span id="participantCount">{{ participant_count }}</span> Teilnehmer</div>
+            {% if lobby_url %}
+                <a href="{{ lobby_url }}" target="_blank" class="small">{{ lobby_url }}</a>
+            {% endif %}
+        </div>
+        <div class="d-flex flex-wrap gap-2 justify-content-end">
+            <span class="badge bg-secondary align-self-center" id="statusBadge">{{ quiz.get_status_display }}</span>
+            <button class="btn btn-success {% if quiz.status != 'waiting' and quiz.status != 'inactive' %}d-none{% endif %}" id="startQuizBtn">
+                {% if quiz.status == 'inactive' %}Spiel reaktivieren{% else %}Spiel starten{% endif %}
+            </button>
+            <button class="btn btn-outline-warning {% if quiz.status != 'active' %}d-none{% endif %}" id="setInactiveBtn">Aktives Spiel auf inaktiv setzen</button>
+            <button class="btn btn-warning {% if quiz.status != 'active' %}d-none{% endif %}" id="endQuizBtn">Spiel beenden</button>
+            <a class="btn btn-outline-secondary" id="backToHubBtn" href="{% if hub_session %}/hub/monitor/{{ hub_session }}/{% else %}{% url 'admin_dashboard:home' %}{% endif %}">Zurück</a>
+        </div>
+    </div>
+
+    <div class="row g-4">
+        <div class="col-lg-8">
+            <div class="card border-0 shadow-sm mb-4">
+                <div class="card-header bg-white d-flex justify-content-between align-items-center">
+                    <h5 class="mb-0">Set-Steuerung</h5>
+                    <div class="fw-bold" id="timerBox"></div>
+                </div>
+                <div class="card-body">
+                    <div id="currentSet"></div>
+                    <div id="questionList"></div>
+                </div>
+            </div>
+
+            <div class="card border-0 shadow-sm">
+                <div class="card-header bg-white">
+                    <h5 class="mb-0">Review / Live Responses</h5>
+                </div>
+                <div class="card-body" id="responsesBox">
+                    Noch keine Antworten.
+                </div>
+            </div>
+        </div>
+        <div class="col-lg-4">
+            <div class="card border-0 shadow-sm mb-4">
+                <div class="card-header bg-white"><h6 class="mb-0">Teilnehmer</h6></div>
+                <div class="card-body" id="participantsBox"></div>
+            </div>
+            <div class="card border-0 shadow-sm">
+                <div class="card-header bg-white"><h6 class="mb-0">Scorebox</h6></div>
+                <div class="card-body" id="scorebox"></div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+.wwm-tiles { display:grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap:10px; }
+.wwm-tile { min-height:58px; border-radius:14px; display:grid; place-items:center; text-align:center; padding:8px; font-weight:700; border:1px solid #d9dee8; background:#f5f6f9; }
+.wwm-tile.revealed { background:#173f35; color:#fff; border-color:#173f35; }
+.wwm-tile.host-hidden { background:#fff; color:#172033; border-style:dashed; }
+.status-dot { width:10px; height:10px; border-radius:50%; display:inline-block; background:#adb5bd; }
+.status-dot.active { background:#198754; }
+</style>
+
+<script>
+const ROOM_CODE = '{{ quiz.room_code }}';
+const HUB_SESSION = '{{ hub_session|escapejs }}';
+const CSRF_TOKEN = '{{ csrf_token }}';
+const END_ROUND_URL = '{% url "admin_dashboard:end_wer_weiss_mehr_round" quiz.room_code %}';
+const NEXT_ROUND_URL = '{% url "admin_dashboard:next_wer_weiss_mehr_round" quiz.room_code %}';
+const FINISH_SET_URL = '{% url "admin_dashboard:finish_wer_weiss_mehr_set" quiz.room_code %}';
+const CLEAR_SET_URL = '{% url "admin_dashboard:clear_wer_weiss_mehr_set" quiz.room_code %}';
+const APPLY_CORRECTION_URL = '{% url "admin_dashboard:apply_wer_weiss_mehr_correction" quiz.room_code %}';
+let ws = null;
+let state = null;
+let timerInterval = null;
+let autoEndSentForRound = null;
+let pendingWsMessages = [];
+let hubWs = null;
+let hubReconnectTimer = null;
+let hostSessionEnded = false;
+let liveResponsePollTimer = null;
+
+function socketUrl() {
+    const scheme = window.location.protocol === 'https:' ? 'wss' : 'ws';
+    return `${scheme}://${window.location.host}/ws/wer-weiss-mehr/${ROOM_CODE}/`;
+}
+function hubSocketUrl() {
+    const scheme = window.location.protocol === 'https:' ? 'wss' : 'ws';
+    return `${scheme}://${window.location.host}/ws/hub/${HUB_SESSION}/`;
+}
+function connectSocket() {
+    ws = new WebSocket(socketUrl());
+    ws.onopen = () => {
+        flushPendingWsMessages();
+        fetchState();
+    };
+    ws.onmessage = event => {
+        const data = JSON.parse(event.data);
+        if (data.type === 'state') renderState(data);
+        if (['state_updated', 'quiz_started', 'quiz_ended'].includes(data.type)) fetchState();
+        if (data.type === 'participants_not_in_lobby') alert(data.message || 'Noch nicht alle Teilnehmer sind in der Lobby.');
+        if (data.type === 'active_game_conflict') alert(data.message || 'Ein anderes Spiel ist noch aktiv.');
+        if (data.type === 'error') {
+            alert(data.message || 'Aktion fehlgeschlagen.');
+            fetchState();
+        }
+    };
+    ws.onclose = () => setTimeout(connectSocket, 1500);
+}
+function connectHubSocket() {
+    if (!HUB_SESSION || hostSessionEnded || (hubWs && [WebSocket.OPEN, WebSocket.CONNECTING].includes(hubWs.readyState))) return;
+    hubWs = new WebSocket(hubSocketUrl());
+    hubWs.onmessage = event => {
+        let data;
+        try {
+            data = JSON.parse(event.data);
+        } catch (error) {
+            console.error('Invalid hub message', event.data, error);
+            return;
+        }
+        if (data.type === 'session_ended') {
+            hostSessionEnded = true;
+            if (timerInterval) clearInterval(timerInterval);
+            window.location.href = `/hub/monitor/${HUB_SESSION}/`;
+        } else if (['players_recalled_to_lobby', 'lobby_return_countdown_started', 'quiz_ended'].includes(data.type)) {
+            fetchState();
+        }
+    };
+    hubWs.onclose = () => {
+        hubWs = null;
+        if (!hostSessionEnded) {
+            if (hubReconnectTimer) clearTimeout(hubReconnectTimer);
+            hubReconnectTimer = setTimeout(connectHubSocket, 1500);
+        }
+    };
+}
+function sendWs(payload) {
+    const message = {hub_session_code: HUB_SESSION, ...payload};
+    if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify(message));
+        return true;
+    }
+    pendingWsMessages.push(message);
+    if (!ws || ws.readyState === WebSocket.CLOSED) connectSocket();
+    return false;
+}
+function flushPendingWsMessages() {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    const messages = pendingWsMessages;
+    pendingWsMessages = [];
+    messages.forEach(message => ws.send(JSON.stringify(message)));
+}
+function fetchState() {
+    const params = new URLSearchParams();
+    if (HUB_SESSION) params.set('hub_session', HUB_SESSION);
+    fetch(`/wer-weiss-mehr/state/${ROOM_CODE}/?${params}`)
+        .then(response => parseJsonResponse(response, 'State konnte nicht geladen werden.'))
+        .then(({payload}) => renderState(payload))
+        .catch(() => {
+            document.getElementById('questionList').innerHTML = '<div class="text-danger">State konnte nicht geladen werden.</div>';
+        });
+}
+async function parseJsonResponse(response, fallbackMessage) {
+    const contentType = response.headers.get('content-type') || '';
+    if (contentType.includes('application/json')) {
+        try {
+            return {response, payload: await response.json()};
+        } catch (error) {
+            console.error('Invalid JSON response', {url: response.url, status: response.status, error});
+            throw new Error(`${fallbackMessage} Der Server hat ungueltiges JSON geliefert.`);
+        }
+    }
+
+    const text = await response.text();
+    console.error('Unexpected non-JSON response', {
+        url: response.url,
+        status: response.status,
+        redirected: response.redirected,
+        contentType,
+        body: text.slice(0, 1200),
+    });
+    const hint = response.redirected
+        ? 'Moeglicherweise ist die Anmeldung abgelaufen.'
+        : 'Pruefe Server-Log, CSRF und URL.';
+    throw new Error(`${fallbackMessage} Der Server hat keine JSON-Antwort geliefert (HTTP ${response.status}). ${hint}`);
+}
+function startQuiz() {
+    const startBtn = document.getElementById('startQuizBtn');
+    if (startBtn) startBtn.disabled = true;
+    fetch(`/wer-weiss-mehr/start/${ROOM_CODE}/`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-CSRFToken': CSRF_TOKEN,
+        },
+        body: JSON.stringify({hub_session: HUB_SESSION}),
+        credentials: 'same-origin',
+    })
+        .then(response => parseJsonResponse(response, 'Das Spiel konnte nicht gestartet werden.'))
+        .then(({response, payload}) => {
+            if (!response.ok || !payload.success) {
+                throw new Error(payload.error || payload.message || 'Das Spiel konnte nicht gestartet werden.');
+            }
+            renderState(payload);
+        })
+        .catch(error => {
+            alert(error.message || 'Das Spiel konnte nicht gestartet werden.');
+            fetchState();
+        })
+        .finally(() => {
+            if (startBtn && state?.game_status !== 'active') startBtn.disabled = false;
+        });
+}
+function startSet(questionId, timeLimitSeconds) {
+    const buttons = document.querySelectorAll('.start-set-btn');
+    buttons.forEach(btn => btn.disabled = true);
+    fetch(`/wer-weiss-mehr/start-set/${ROOM_CODE}/`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-CSRFToken': CSRF_TOKEN,
+        },
+        body: JSON.stringify({
+            hub_session: HUB_SESSION,
+            question_id: questionId,
+            time_limit_seconds: timeLimitSeconds,
+        }),
+        credentials: 'same-origin',
+    })
+        .then(response => parseJsonResponse(response, 'Das Set konnte nicht gestartet werden.'))
+        .then(({response, payload}) => {
+            if (!response.ok || !payload.success) {
+                throw new Error(payload.error || payload.message || 'Das Set konnte nicht gestartet werden.');
+            }
+            renderState(payload);
+        })
+        .catch(error => {
+            alert(error.message || 'Das Set konnte nicht gestartet werden.');
+            fetchState();
+        })
+        .finally(() => {
+            buttons.forEach(btn => btn.disabled = state?.game_status !== 'active');
+        });
+}
+function endRound() {
+    const endBtn = document.getElementById('endRoundBtn');
+    if (endBtn) endBtn.disabled = true;
+    fetch(END_ROUND_URL, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-CSRFToken': CSRF_TOKEN,
+        },
+        body: JSON.stringify({hub_session: HUB_SESSION}),
+        credentials: 'same-origin',
+    })
+        .then(response => parseJsonResponse(response, 'Die Runde konnte nicht beendet werden.'))
+        .then(({response, payload}) => {
+            if (!response.ok || !payload.success) {
+                throw new Error(payload.error || payload.message || 'Die Runde konnte nicht beendet werden.');
+            }
+            renderState(payload);
+        })
+        .catch(error => {
+            alert(error.message || 'Die Runde konnte nicht beendet werden.');
+            fetchState();
+        })
+        .finally(() => {
+            if (endBtn && state?.phase === 'round_active') endBtn.disabled = false;
+        });
+}
+function nextRound() {
+    const nextBtn = document.getElementById('nextRoundBtn');
+    if (nextBtn) nextBtn.disabled = true;
+    fetch(NEXT_ROUND_URL, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-CSRFToken': CSRF_TOKEN,
+        },
+        body: JSON.stringify({hub_session: HUB_SESSION}),
+        credentials: 'same-origin',
+    })
+        .then(response => parseJsonResponse(response, 'Die naechste Runde konnte nicht gestartet werden.'))
+        .then(({response, payload}) => {
+            if (!response.ok || !payload.success) {
+                throw new Error(payload.error || payload.message || 'Die naechste Runde konnte nicht gestartet werden.');
+            }
+            renderState(payload);
+        })
+        .catch(error => {
+            alert(error.message || 'Die naechste Runde konnte nicht gestartet werden.');
+            fetchState();
+        })
+        .finally(() => {
+            if (nextBtn && state?.phase === 'review' && state?.can_start_next_round) nextBtn.disabled = false;
+        });
+}
+function finishSet() {
+    const finishBtn = document.getElementById('finishSetBtn');
+    if (finishBtn) finishBtn.disabled = true;
+    fetch(FINISH_SET_URL, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-CSRFToken': CSRF_TOKEN,
+        },
+        body: JSON.stringify({hub_session: HUB_SESSION}),
+        credentials: 'same-origin',
+    })
+        .then(response => parseJsonResponse(response, 'Das Set konnte nicht beendet werden.'))
+        .then(({response, payload}) => {
+            if (!response.ok || !payload.success) {
+                throw new Error(payload.error || payload.message || 'Das Set konnte nicht beendet werden.');
+            }
+            renderState(payload);
+        })
+        .catch(error => {
+            alert(error.message || 'Das Set konnte nicht beendet werden.');
+            fetchState();
+        })
+        .finally(() => {
+            if (finishBtn && state?.phase !== 'set_completed' && state?.game_status === 'active') finishBtn.disabled = false;
+        });
+}
+function clearSetSelection() {
+    const clearBtn = document.getElementById('clearSetBtn');
+    if (clearBtn) clearBtn.disabled = true;
+    fetch(CLEAR_SET_URL, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-CSRFToken': CSRF_TOKEN,
+        },
+        body: JSON.stringify({hub_session: HUB_SESSION}),
+        credentials: 'same-origin',
+    })
+        .then(response => parseJsonResponse(response, 'Die Setauswahl konnte nicht geladen werden.'))
+        .then(({response, payload}) => {
+            if (!response.ok || !payload.success) {
+                throw new Error(payload.error || payload.message || 'Die Setauswahl konnte nicht geladen werden.');
+            }
+            renderState(payload);
+        })
+        .catch(error => {
+            alert(error.message || 'Die Setauswahl konnte nicht geladen werden.');
+            fetchState();
+        })
+        .finally(() => {
+            if (clearBtn && state?.phase === 'set_completed') clearBtn.disabled = false;
+        });
+}
+function applyCorrection(responseId, targetAnswerId) {
+    if (!responseId || !targetAnswerId) {
+        alert('Antwort oder Zielantwort fehlt.');
+        return;
+    }
+    const button = document.querySelector(`.correction-btn[data-response-id="${responseId}"]`);
+    if (button) button.disabled = true;
+    fetch(APPLY_CORRECTION_URL, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-CSRFToken': CSRF_TOKEN,
+        },
+        body: JSON.stringify({
+            hub_session: HUB_SESSION,
+            response_id: responseId,
+            target_answer_id: targetAnswerId,
+        }),
+        credentials: 'same-origin',
+    })
+        .then(response => parseJsonResponse(response, 'Die Korrektur konnte nicht uebernommen werden.'))
+        .then(({response, payload}) => {
+            if (!response.ok || !payload.success) {
+                throw new Error(payload.error || payload.message || 'Die Korrektur konnte nicht uebernommen werden.');
+            }
+            renderState(payload);
+        })
+        .catch(error => {
+            alert(error.message || 'Die Korrektur konnte nicht uebernommen werden.');
+            fetchState();
+        })
+        .finally(() => {
+            if (button) button.disabled = false;
+        });
+}
+function endQuiz() {
+    const endBtn = document.getElementById('endQuizBtn');
+    if (endBtn) endBtn.disabled = true;
+    fetch(`/wer-weiss-mehr/end/${ROOM_CODE}/`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-CSRFToken': CSRF_TOKEN,
+        },
+        body: JSON.stringify({hub_session: HUB_SESSION}),
+        credentials: 'same-origin',
+    })
+        .then(response => parseJsonResponse(response, 'Das Spiel konnte nicht beendet werden.'))
+        .then(({response, payload}) => {
+            if (!response.ok || !payload.success) {
+                throw new Error(payload.error || payload.message || 'Das Spiel konnte nicht beendet werden.');
+            }
+            renderState(payload);
+        })
+        .catch(error => {
+            alert(error.message || 'Das Spiel konnte nicht beendet werden.');
+            fetchState();
+        })
+        .finally(() => {
+            if (endBtn && state?.game_status === 'active') endBtn.disabled = false;
+        });
+}
+function renderState(nextState) {
+    state = nextState;
+    document.getElementById('statusBadge').textContent = nextState.game_status;
+    document.getElementById('participantCount').textContent = (nextState.participants || []).length;
+    renderControls(nextState);
+    renderQuestionArea(nextState);
+    renderParticipants(nextState.participants || []);
+    renderResponses(nextState);
+    renderScorebox(nextState.scorebox || []);
+    startHostTimer(nextState);
+    syncLiveResponsePolling(nextState);
+}
+function renderControls(s) {
+    const status = s.game_status;
+    const startBtn = document.getElementById('startQuizBtn');
+    const inactiveBtn = document.getElementById('setInactiveBtn');
+    const endBtn = document.getElementById('endQuizBtn');
+    if (startBtn) {
+        startBtn.classList.toggle('d-none', !['waiting', 'inactive'].includes(status));
+        startBtn.textContent = status === 'inactive' ? 'Spiel reaktivieren' : 'Spiel starten';
+    }
+    if (inactiveBtn) inactiveBtn.classList.toggle('d-none', status !== 'active');
+    if (endBtn) endBtn.classList.toggle('d-none', status !== 'active');
+}
+function renderQuestionArea(s) {
+    const current = document.getElementById('currentSet');
+    const list = document.getElementById('questionList');
+    const isEnded = ['completed', 'cancelled'].includes(s.game_status);
+    if (isEnded && !s.question) {
+        current.innerHTML = `<div class="alert alert-success">Spiel beendet.</div>`;
+        list.innerHTML = '';
+        return;
+    }
+    if (!s.question) {
+        current.innerHTML = `<div class="alert alert-secondary">Kein Set aktiv. Wähle ein Set aus der Liste.</div>`;
+        list.innerHTML = (s.available_questions || []).map(q => `
+            <div class="border rounded-3 p-3 mb-2 d-flex justify-content-between align-items-center gap-3">
+                <div>
+                    <div class="fw-bold">${escapeHtml(q.question_text)} ${q.is_completed ? '<span class="badge bg-success ms-2">abgeschlossen</span>' : ''}</div>
+                    <div class="small text-muted">${q.answer_count} Antworten${q.is_completed ? ' - Punkte in der Scorebox finalisiert' : ''}</div>
+                </div>
+                <div class="d-flex align-items-center gap-2">
+                    <input type="number" class="form-control form-control-sm time-input" value="${q.round_time_limit}" min="5" style="width:90px" data-question-id="${q.id}" ${q.is_completed ? 'disabled' : ''}>
+                    <button class="btn btn-primary start-set-btn" data-question-id="${q.id}" ${s.game_status !== 'active' || q.is_completed ? 'disabled' : ''}>${q.is_completed ? 'Beendet' : 'Set starten'}</button>
+                </div>
+            </div>
+        `).join('') || '<div class="text-muted">Keine Sets diesem Spiel zugeordnet.</div>';
+        document.querySelectorAll('.start-set-btn').forEach(btn => btn.addEventListener('click', () => {
+            const input = document.querySelector(`.time-input[data-question-id="${btn.dataset.questionId}"]`);
+            startSet(parseInt(btn.dataset.questionId), parseInt(input.value) || 30);
+        }));
+        return;
+    }
+    list.innerHTML = '';
+    current.innerHTML = `
+        <div class="d-flex justify-content-between align-items-start gap-3 mb-3">
+            <div>
+                <div class="text-muted small">Phase: ${s.phase} · Runde ${s.current_round}</div>
+                <h3>${escapeHtml(s.question.question_text)}</h3>
+                <div>${s.question.revealed_count}/${s.question.answer_count} Antworten aufgedeckt</div>
+            </div>
+            <div class="${s.game_status === 'active' ? 'btn-group' : 'text-end'}">
+                ${s.game_status === 'active' ? `
+                ${s.phase === 'round_active' ? '<button class="btn btn-warning" id="endRoundBtn">Runde beenden</button>' : ''}
+                ${s.phase === 'review' && s.can_start_next_round ? '<button class="btn btn-success" id="nextRoundBtn">Nächste Runde</button>' : ''}
+                ${s.phase === 'set_completed' ? '<button class="btn btn-primary" id="clearSetBtn">Zur Setauswahl</button>' : ''}
+                ${s.phase !== 'set_completed' ? '<button class="btn btn-outline-danger" id="finishSetBtn">Set beenden</button>' : ''}
+                ` : '<span class="badge bg-success">Spiel beendet</span>'}
+            </div>
+        </div>
+        <div class="wwm-tiles mb-3">
+            ${s.question.tiles.map(tile => `<div class="wwm-tile ${tile.revealed ? 'revealed' : 'host-hidden'}" title="${tile.revealed ? 'Für Teilnehmer aufgedeckt' : 'Für Teilnehmer noch verdeckt'}">${escapeHtml(tile.text || '?')}</div>`).join('')}
+        </div>
+    `;
+    document.getElementById('endRoundBtn')?.addEventListener('click', endRound);
+    document.getElementById('nextRoundBtn')?.addEventListener('click', nextRound);
+    document.getElementById('clearSetBtn')?.addEventListener('click', clearSetSelection);
+    document.getElementById('finishSetBtn')?.addEventListener('click', finishSet);
+}
+/*
+function renderResponsesLegacy(s) {
+    const responses = s.responses || [];
+    if (!responses.length) {
+        document.getElementById('responsesBox').innerHTML = 'Noch keine Antworten.';
+        return;
+    }
+    const options = (s.target_answers || []).map(answer =>
+        `<option value="${answer.id}">${escapeHtml(answer.text)}${answer.revealed ? ' (aufgedeckt)' : ''}</option>`
+    ).join('');
+    document.getElementById('responsesBox').innerHTML = `
+        <div class="table-responsive"><table class="table align-middle">
+            <thead><tr><th>Teilnehmer</th><th>Antwort</th><th>Runde/Zeit</th><th>Auto</th><th>Zielantwort</th><th>Status</th><th>Korrektur</th></tr></thead>
+            <tbody>${responses.map(response => {
+                const canCorrect = response.id && !response.is_correct && ['round_active', 'review'].includes(s.phase);
+                return `
+                <tr>
+                    <td>${escapeHtml(response.participant_name)}</td>
+                    <td>${escapeHtml(response.answer_text || (response.has_pending_input ? '(Pending Input)' : ''))}</td>
+                    <td><div>Runde ${escapeHtml(response.round_number || s.current_round || '-')}</div><div class="small text-muted">${escapeHtml(formatTime(response.submitted_at))}</div></td>
+                    <td><span class="badge bg-${responseBadgeClass(response.auto_status)}">${escapeHtml(responseStatusLabel(response.auto_status))}</span></td>
+                    <td>${escapeHtml(response.matched_answer_text || '-')}</td>
+                    <td>${response.id && !response.is_correct ? `<div class="d-flex gap-2"><select class="form-select form-select-sm correction-target" data-response-id="${response.id}">${options}</select><button class="btn btn-sm btn-outline-primary correction-btn" data-response-id="${response.id}">Übernehmen</button></div>` : ''}</td>
+                </tr>
+            `}).join('')}</tbody>
+        </table></div>
+    `;
+    document.querySelectorAll('.correction-btn').forEach(btn => btn.addEventListener('click', () => {
+        const select = document.querySelector(`.correction-target[data-response-id="${btn.dataset.responseId}"]`);
+        applyCorrection(parseInt(btn.dataset.responseId), parseInt(select.value));
+    }));
+}
+*/
+function renderResponses(s) {
+    const responses = s.responses || [];
+    if (!responses.length) {
+        document.getElementById('responsesBox').innerHTML = 'Noch keine Antworten.';
+        return;
+    }
+    const options = (s.target_answers || []).map(answer =>
+        `<option value="${answer.id}">${escapeHtml(answer.text)}${answer.revealed ? ' (aufgedeckt)' : ''}</option>`
+    ).join('');
+    document.getElementById('responsesBox').innerHTML = `
+        <div class="table-responsive"><table class="table align-middle">
+            <thead><tr><th>Teilnehmer</th><th>Antwort</th><th>Runde/Zeit</th><th>Auto</th><th>Zielantwort</th><th>Status</th><th>Korrektur</th></tr></thead>
+            <tbody>${responses.map(response => {
+                const canCorrect = response.id && !response.is_correct && ['round_active', 'review'].includes(s.phase);
+                return `
+                <tr>
+                    <td>${escapeHtml(response.participant_name)}</td>
+                    <td>${escapeHtml(response.answer_text || '')}</td>
+                    <td><div>Runde ${escapeHtml(response.round_number || s.current_round || '-')}</div><div class="small text-muted">${escapeHtml(formatTime(response.submitted_at))}</div></td>
+                    <td><span class="badge bg-${responseBadgeClass(response.auto_status)}">${escapeHtml(responseStatusLabel(response.auto_status))}</span></td>
+                    <td>${escapeHtml(response.matched_answer_text || '-')}</td>
+                    <td><span class="badge bg-${response.is_manual_override ? 'primary' : (response.id ? 'info' : 'secondary')}">${escapeHtml(response.is_manual_override ? 'manuell korrigiert' : (response.id ? 'eingeloggt / bewertet' : 'pending'))}</span></td>
+                    <td>${canCorrect && options ? `<div class="d-flex gap-2"><select class="form-select form-select-sm correction-target" data-response-id="${response.id}">${options}</select><button class="btn btn-sm btn-outline-primary correction-btn" data-response-id="${response.id}">Uebernehmen</button></div>` : ''}</td>
+                </tr>
+            `}).join('')}</tbody>
+        </table></div>
+    `;
+    document.querySelectorAll('.correction-btn').forEach(btn => btn.addEventListener('click', () => {
+        const select = document.querySelector(`.correction-target[data-response-id="${btn.dataset.responseId}"]`);
+        applyCorrection(parseInt(btn.dataset.responseId), parseInt(select.value));
+    }));
+}
+function renderParticipants(participants) {
+    document.getElementById('participantsBox').innerHTML = participants.map(p => `
+        <div class="d-flex justify-content-between align-items-center border-bottom py-2">
+            <div><span class="status-dot ${p.is_active ? 'active' : ''}"></span> <strong>${escapeHtml(p.name)}</strong></div>
+            <div class="text-end small">
+                <div>${p.total_score} Punkte</div>
+                <div class="${p.is_eliminated ? 'text-warning' : 'text-success'}">${p.is_eliminated ? 'ausgeschieden' : 'aktiv'}</div>
+            </div>
+        </div>
+    `).join('') || '<div class="text-muted">Keine Teilnehmer.</div>';
+}
+function renderScorebox(rows) {
+    document.getElementById('scorebox').innerHTML = rows.map(row => `
+        <div class="mb-3">
+            <div class="fw-semibold">${escapeHtml(row.question_text)}</div>
+            <div class="small text-muted mb-1">Maximal ${row.max_points ?? row.answer_count ?? '-'} Punkte</div>
+            ${(row.scores || []).map(score => `<div class="d-flex justify-content-between small"><span>${escapeHtml(score.participant_name)}</span><strong>${score.points === null ? '-' : `${score.points}/${score.max_points ?? row.max_points ?? row.answer_count ?? '-'}`}</strong></div>`).join('')}
+        </div>
+    `).join('') || '<div class="text-muted">Noch keine Scores.</div>';
+}
+function startHostTimer(s) {
+    if (timerInterval) clearInterval(timerInterval);
+    timerInterval = null;
+    const box = document.getElementById('timerBox');
+    if (s.phase !== 'round_active' || !s.timer?.ends_at) {
+        box.textContent = '';
+        return;
+    }
+    function tick() {
+        const remaining = Math.max(0, Math.ceil((new Date(s.timer.ends_at).getTime() - Date.now()) / 1000));
+        box.textContent = `${remaining}s`;
+        if (remaining <= 0 && autoEndSentForRound !== s.current_round) {
+            autoEndSentForRound = s.current_round;
+            endRound();
+        }
+    }
+    tick();
+    timerInterval = setInterval(tick, 500);
+}
+function syncLiveResponsePolling(s) {
+    const shouldPoll = s?.game_status === 'active' && s?.phase === 'round_active';
+    if (shouldPoll && !liveResponsePollTimer) {
+        liveResponsePollTimer = setInterval(fetchState, 2000);
+    } else if (!shouldPoll && liveResponsePollTimer) {
+        clearInterval(liveResponsePollTimer);
+        liveResponsePollTimer = null;
+    }
+}
+document.getElementById('startQuizBtn')?.addEventListener('click', startQuiz);
+document.getElementById('setInactiveBtn')?.addEventListener('click', () => sendWs({type: 'admin_set_inactive'}));
+document.getElementById('endQuizBtn')?.addEventListener('click', endQuiz);
+window.adminGameMonitor = {
+    get isActive() {
+        return state?.game_status === 'active';
+    },
+    endQuiz() {
+        endQuiz();
+    },
+    setInactive() {
+        sendWs({type: 'admin_set_inactive'});
+    },
+};
+function escapeHtml(value) {
+    return String(value ?? '').replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[char]));
+}
+function responseStatusLabel(status) {
+    const labels = {
+        correct: 'korrekt',
+        wrong: 'falsch',
+        manual_corrected: 'manuell korrekt',
+        pending: 'pending',
+        submitted: 'eingeloggt',
+    };
+    return labels[status] || status || '-';
+}
+function responseBadgeClass(status) {
+    if (status === 'correct' || status === 'manual_corrected') return 'success';
+    if (status === 'wrong') return 'danger';
+    return 'secondary';
+}
+function formatTime(value) {
+    if (!value) return '-';
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return '-';
+    return date.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit', second: '2-digit'});
+}
+fetchState();
+connectSocket();
+connectHubSocket();
+</script>
+{% endblock %}

@@ -55,6 +55,8 @@ class BlackJackConsumer(AsyncWebsocketConsumer):
                 await self.handle_admin_set_inactive(text_data_json)
             elif message_type == 'participant_submit_answer':
                 await self.handle_participant_submit_answer(text_data_json)
+            elif message_type == 'participant_question_timeout':
+                await self.handle_participant_question_timeout(text_data_json)
             elif message_type == 'participant_join':
                 await self.handle_participant_join(text_data_json)
             elif message_type == 'ping':
@@ -164,15 +166,14 @@ class BlackJackConsumer(AsyncWebsocketConsumer):
             }))
             return
 
+        # Determine the effective time limit for this send (do NOT persist on the question)
+        effective_time_limit = custom_time_limit if custom_time_limit is not None else question.time_limit
         await self.set_tutorial_active_db(quiz.get('id'), False)
         # Update quiz with new question
-        await self.update_quiz_question(quiz, question)
+        await self.update_quiz_question(quiz, question, effective_time_limit)
         current_question_data = await self.get_current_question_data()
         if not current_question_data:
             return
-        
-        # Determine the effective time limit for this send (do NOT persist on the question)
-        effective_time_limit = custom_time_limit if custom_time_limit is not None else question.time_limit
         current_question_data['time_limit'] = effective_time_limit
         
         # Broadcast new question to all participants
@@ -186,6 +187,25 @@ class BlackJackConsumer(AsyncWebsocketConsumer):
 
     async def handle_admin_end_question(self, data):
         """Handle admin ending current question"""
+        await self.finish_current_question()
+
+    async def handle_participant_question_timeout(self, data):
+        """Let a participant trigger the authoritative server timeout path."""
+        timeout_state = await self.get_question_timeout_state(data.get('question_id'))
+        if not timeout_state.get('expired'):
+            await self.send(text_data=json.dumps({
+                'type': 'question_timeout_sync',
+                'active': timeout_state.get('active', False),
+                'expired': timeout_state.get('expired', False),
+                'current_question_id': timeout_state.get('current_question_id'),
+                'time_left': timeout_state.get('time_left'),
+            }))
+            return
+
+        await self.finish_current_question()
+
+    async def finish_current_question(self):
+        """End the active question and broadcast the same transition to every client."""
         quiz = await self.get_quiz()
         if quiz:
             # Get the correct answer before clearing the question
@@ -202,7 +222,9 @@ class BlackJackConsumer(AsyncWebsocketConsumer):
                 )
                 await asyncio.sleep(0.5)
             
-            transition = await self.clear_current_question(quiz.get('id'))
+            transition = await self.clear_current_question(quiz.get('id'), expected_question_id=ending_question_id)
+            if transition.get('already_ended'):
+                return transition
             quiz_complete = transition.get('quiz_complete', False)
             final_scores = await self.get_final_scores() if quiz_complete else []
             
@@ -228,6 +250,7 @@ class BlackJackConsumer(AsyncWebsocketConsumer):
                     'message': 'Quiz has ended. Thank you for participating!',
                     'final_scores': final_scores,
                 })
+            return transition
 
     async def handle_admin_end_quiz(self, data):
         """Handle admin ending the quiz"""
@@ -472,10 +495,12 @@ class BlackJackConsumer(AsyncWebsocketConsumer):
             question = quiz.current_question
             if not question:
                 return None
+            session = getattr(quiz, 'session', None)
             return {
                 'id': question.id,
                 'question_text': question.question_text,
                 'time_limit': question.time_limit,
+                'question_end_time': session.question_end_time.isoformat() if session and session.question_end_time else None,
                 'question_number': quiz.current_question_number,
                 'question_in_set': quiz.get_current_question_position_in_set(),
                 'set_question_count': quiz.get_set_question_count(question_id=question.id),
@@ -622,11 +647,11 @@ class BlackJackConsumer(AsyncWebsocketConsumer):
             return None
 
     @database_sync_to_async
-    def update_quiz_question(self, quiz_data, question):
+    def update_quiz_question(self, quiz_data, question, effective_time_limit=None):
         try:
             quiz = BlackJackQuiz.objects.get(id=quiz_data['id'])
             if hasattr(quiz, 'session'):
-                quiz.session.send_question(question)
+                quiz.session.send_question(question, time_limit=effective_time_limit)
                 return
 
             quiz.current_question = question
@@ -637,9 +662,16 @@ class BlackJackConsumer(AsyncWebsocketConsumer):
             pass
 
     @database_sync_to_async
-    def clear_current_question(self, quiz_id):
+    def clear_current_question(self, quiz_id, expected_question_id=None):
         try:
             quiz = BlackJackQuiz.objects.get(id=quiz_id)
+            if expected_question_id and quiz.current_question_id != expected_question_id:
+                return {
+                    'already_ended': True,
+                    'set_complete': False,
+                    'set_number': quiz.get_current_set_number(),
+                    'quiz_complete': quiz.is_quiz_complete(),
+                }
             if hasattr(quiz, 'session'):
                 return quiz.session.end_current_question()
 
@@ -672,6 +704,53 @@ class BlackJackConsumer(AsyncWebsocketConsumer):
         except BlackJackQuiz.DoesNotExist:
             pass
         return None
+
+    @database_sync_to_async
+    def get_question_timeout_state(self, question_id=None):
+        try:
+            quiz = BlackJackQuiz.objects.get(room_code=self.room_code)
+        except BlackJackQuiz.DoesNotExist:
+            return {'active': False, 'expired': False, 'current_question_id': None, 'time_left': None}
+
+        current_question_id = quiz.current_question_id
+        if not current_question_id or quiz.status != 'active':
+            return {
+                'active': False,
+                'expired': False,
+                'current_question_id': current_question_id,
+                'time_left': None,
+            }
+
+        try:
+            requested_question_id = int(question_id) if question_id is not None else None
+        except (TypeError, ValueError):
+            requested_question_id = None
+
+        if requested_question_id and requested_question_id != current_question_id:
+            return {
+                'active': False,
+                'expired': False,
+                'current_question_id': current_question_id,
+                'time_left': None,
+            }
+
+        session = getattr(quiz, 'session', None)
+        question_end_time = session.question_end_time if session else None
+        if not question_end_time:
+            return {
+                'active': True,
+                'expired': False,
+                'current_question_id': current_question_id,
+                'time_left': None,
+            }
+
+        now = timezone.now()
+        return {
+            'active': True,
+            'expired': now >= question_end_time,
+            'current_question_id': current_question_id,
+            'time_left': max(0, int((question_end_time - now).total_seconds() + 0.999)),
+        }
 
     @database_sync_to_async
     def save_participant_answer(self, participant_name, hub_session_code, user_answer, time_taken, question_id=None):

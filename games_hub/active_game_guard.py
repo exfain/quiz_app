@@ -18,6 +18,7 @@ def get_game_model_map():
     from black_jack_quiz.models import BlackJackQuiz
     from clue_rush.models import ClueRushGame
     from sorting_ladder.models import SortingLadderGame
+    from wer_weiss_mehr.models import WerWeissMehrGame
 
     return {
         'quiz': QuizGameModel,
@@ -29,6 +30,7 @@ def get_game_model_map():
         'blackjack': BlackJackQuiz,
         'clue_rush': ClueRushGame,
         'sorting_ladder': SortingLadderGame,
+        'wer_weiss_mehr': WerWeissMehrGame,
     }
 
 
@@ -70,6 +72,13 @@ def _set_game_status(game, status: str):
         game.ended_at = timezone.now()
         update_fields.append('ended_at')
     game.save(update_fields=update_fields)
+
+
+def _activate_target_game(game_key: str, game):
+    if game_key == 'wer_weiss_mehr' and hasattr(game, 'start_quiz'):
+        game.start_quiz()
+        return
+    _set_game_status(game, 'active')
 
 
 def _end_game_cleanly(game):
@@ -155,8 +164,18 @@ def resolve_session_game_activation(
                 'active_game': _serialize_game(target_step, target_game) if target_game else None,
             }
 
-        if target_game and getattr(target_game, 'status', None) != 'active':
-            _set_game_status(target_game, 'active')
+        target_needs_activation = (
+            target_game
+            and (
+                getattr(target_game, 'status', None) != 'active'
+                or (
+                    target_game_key == 'wer_weiss_mehr'
+                    and getattr(target_game, 'started_at', None) is None
+                )
+            )
+        )
+        if target_needs_activation:
+            _activate_target_game(target_game_key, target_game)
 
         return {
             'success': True,

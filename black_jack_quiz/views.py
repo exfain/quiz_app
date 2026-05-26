@@ -383,11 +383,14 @@ def blackjack_play(request, room_code, participant_name):
             participant,
             session_code,
         )
+        quiz_session = getattr(quiz, 'session', None)
+        current_question_end_time = quiz_session.question_end_time if quiz_session else None
         
         context = {
             'quiz': quiz,
             'participant': participant,
             'hub_session': session_code,
+            'current_question_end_time': current_question_end_time,
             'participant_count': quiz.get_participant_count(session_code),
             'current_question_in_set': quiz.get_current_question_position_in_set() or 1,
             'current_set_question_count': quiz.get_set_question_count(
@@ -630,10 +633,12 @@ def get_quiz_status(request, room_code, participant_name):
         # Include current question if active
         if quiz.current_question and quiz.status == 'active':
             question = quiz.current_question
+            quiz_session = getattr(quiz, 'session', None)
             status_data['current_question'] = {
                 'id': question.id,
                 'question_text': question.question_text,
                 'time_limit': question.time_limit,
+                'question_end_time': quiz_session.question_end_time.isoformat() if quiz_session and quiz_session.question_end_time else None,
                 'question_number': quiz.current_question_number,
                 'question_in_set': quiz.get_current_question_position_in_set(),
                 'set_question_count': quiz.get_set_question_count(question_id=question.id),

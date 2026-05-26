@@ -42,6 +42,7 @@ INSTALLED_APPS = [
     'channels',
     'clue_rush.apps.ClueRushConfig',
     'sorting_ladder.apps.SortingLadderConfig',
+    'wer_weiss_mehr.apps.WerWeissMehrConfig',
 ]
 
 MIDDLEWARE = [

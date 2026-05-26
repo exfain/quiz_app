@@ -537,7 +537,7 @@ class BlackJackQuiz(SyncBase):
 
         if self.has_configured_question_pool() and session:
             if selected_set_number is None and question_id is not None:
-                selected_set_number = self.get_set_number_for_question_id(question_id, active_only=True)
+                selected_set_number = session.get_normalized_selected_set_number(active_only=True)
             remaining_question_ids = self.get_remaining_question_ids_for_next_turn(
                 set_number=selected_set_number,
                 active_only=True,
@@ -721,9 +721,20 @@ class BlackJackParticipant(SyncBase):
 
         current_set_number = self.quiz.get_set_number_for_question_id(latest_answer.question_id, active_only=False)
         current_set_question_ids = self.quiz.get_set_question_ids(current_set_number, active_only=False)
-        current_set_answers = self.blackjack_answers.filter(
-            question_id__in=current_set_question_ids,
-        )
+        if current_set_question_ids:
+            current_set_answers = self.blackjack_answers.filter(
+                question_id__in=current_set_question_ids,
+            )
+        else:
+            question_number = latest_answer.question_number or self.quiz.current_question_number
+            current_set_number = self.quiz.get_set_number_for_question(question_number)
+            questions_per_set = self.quiz.get_questions_per_set()
+            first_question_number = ((current_set_number - 1) * questions_per_set) + 1
+            last_question_number = current_set_number * questions_per_set
+            current_set_answers = self.blackjack_answers.filter(
+                question_number__gte=first_question_number,
+                question_number__lte=last_question_number,
+            )
         raw_total_points = sum(answer.points_earned for answer in current_set_answers)
         self.questions_answered = current_set_answers.count()
         
@@ -1071,18 +1082,25 @@ class BlackJackSession(SyncBase):
         asked_ids = set(self.get_asked_question_ids())
         return all(question_id in asked_ids for question_id in configured_question_ids)
 
-    def send_question(self, question):
+    def send_question(self, question, time_limit=None):
         """Send a question to all participants"""
+        try:
+            effective_time_limit = int(time_limit) if time_limit is not None else question.time_limit
+            if effective_time_limit <= 0:
+                effective_time_limit = question.time_limit
+        except (TypeError, ValueError):
+            effective_time_limit = question.time_limit
+        now = timezone.now()
         set_number = self.quiz.get_set_number_for_question_id(question.id, active_only=False)
         self.set_selected_set_number(set_number)
         self.mark_question_sent(question.id)
         self.quiz.current_question = question
-        self.quiz.question_start_time = timezone.now()
+        self.quiz.question_start_time = now
         self.current_question_number += 1
         self.quiz.current_question_number = self.current_question_number
         self.total_questions_sent += 1
         self.is_question_active = True
-        self.question_end_time = timezone.now() + timezone.timedelta(seconds=question.time_limit)
+        self.question_end_time = now + timezone.timedelta(seconds=effective_time_limit)
         self.total_responses_current_question = 0
         self.average_points_current_question = 0
         
@@ -1179,6 +1197,7 @@ class BlackJackSession(SyncBase):
         no_answer_bust_participants = self.mark_unanswered_current_question_participants_busted()
         set_result = self.finalize_completed_set()
         self.is_question_active = False
+        self.question_end_time = None
         self.quiz.current_question = None
         self.quiz.question_start_time = None
         

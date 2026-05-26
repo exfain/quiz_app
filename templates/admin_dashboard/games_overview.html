@@ -41,6 +41,7 @@
             <option value="black jack">Black Jack Quiz</option>
             <option value="clue rush">Clue Rush</option>
             <option value="sorting ladder">Sorting Ladder</option>
+            <option value="wer weiß mehr">Wer weiß mehr?</option>
         </select>
         <span class="align-self-center text-muted small ms-1" id="gameFilterCount"></span>
     </div>
@@ -122,6 +123,7 @@
                     <option value="blackjack">Black Jack Quiz</option>
                     <option value="clue_rush">Clue Rush</option>
                     <option value="sorting_ladder">Sorting Ladder</option>
+                    <option value="wer_weiss_mehr">Wer weiß mehr?</option>
                 </select>
                 <input type="text" class="form-control form-control-sm" id="qbSearch"
                        placeholder="Search…" style="width:180px;" disabled>
@@ -158,6 +160,7 @@ const QB_CONFIG = {
     blackjack:      { url: '/admin-dashboard/black-jack/questions/',     dataKey: 'questions', columns: [{key:'question_text',label:'Question'},{key:'correct_answer',label:'Answer'},{key:'time_limit',label:'Time (s)'}] },
     clue_rush:      { url: '/admin-dashboard/clue-rush/questions/',      dataKey: 'questions', columns: [{key:'question_text',label:'Question'},{key:'answer',label:'Answer'},{key:'points',label:'Points'}] },
     sorting_ladder: { url: '/admin-dashboard/sorting-ladder/topics/',    dataKey: 'topics',    columns: [{key:'title',label:'Topic'},{key:'description',label:'Description'},{key:'item_count',label:'Items'}] },
+    wer_weiss_mehr: { url: '/admin-dashboard/wer-weiss-mehr/questions/', dataKey: 'questions', columns: [{key:'question_text',label:'Question'},{key:'answer_count',label:'Answers'},{key:'round_time_limit',label:'Time (s)'}] },
 };
 
 // Detail + update URL config per game type
@@ -171,6 +174,7 @@ const QB_EDIT_CFG = {
     blackjack:      { detail: id => `/admin-dashboard/blackjack/question/${id}/`,     update: '/admin-dashboard/blackjack/update-question/',    json: true },
     clue_rush:      { detail: id => `/admin-dashboard/clue-rush/question/${id}/`,     update: '/admin-dashboard/clue-rush/update-question/',    json: true },
     sorting_ladder: { detail: id => `/admin-dashboard/sorting-ladder/topic/${id}/`,   update: '/admin-dashboard/sorting-ladder/topics/update/', json: false },
+    wer_weiss_mehr: { detail: id => `/admin-dashboard/wer-weiss-mehr/question/${id}/`, update: '/admin-dashboard/wer-weiss-mehr/update-question/', json: true },
 };
 
 let qbCurrentEditId = null;
@@ -348,7 +352,8 @@ function openQBEdit(id) {
     if (section) section.classList.remove('d-none');
 
     const titles = { quiz:'Quick Quiz', estimation:'Estimation', assign:'Assign', where:'Where Is This?',
-                     who:'Who Is Lying?', who_that:'Who Is That?', blackjack:'Black Jack', clue_rush:'Clue Rush', sorting_ladder:'Sorting Ladder' };
+                     who:'Who Is Lying?', who_that:'Who Is That?', blackjack:'Black Jack', clue_rush:'Clue Rush',
+                     sorting_ladder:'Sorting Ladder', wer_weiss_mehr:'Wer weiß mehr?' };
     document.getElementById('qbEditModalTitle').textContent = 'Edit – ' + (titles[qbType] || qbType);
 
     fetch(cfg.detail(id), { headers: { 'X-CSRFToken': getCookie('csrftoken') } })
@@ -584,6 +589,15 @@ const qbPopulate = {
         (q.items || []).forEach(item => qbAddItemRow(container, item.text, item.order));
         if (!container.children.length) qbAddItemRow(container, '', 1);
     },
+    wer_weiss_mehr(q) {
+        document.getElementById('qbwwm-id').value = q.id;
+        document.getElementById('qbwwm-text').value = q.question_text || '';
+        document.getElementById('qbwwm-time').value = q.round_time_limit || 30;
+        document.getElementById('qbwwm-answers').value = (q.answers || []).map(answer => {
+            const aliases = Array.isArray(answer.aliases) && answer.aliases.length ? ` | ${answer.aliases.join('; ')}` : '';
+            return `${answer.canonical_text || ''}${aliases}`;
+        }).join('\n');
+    },
 };
 
 // ── Collect functions (read form → payload object) ────────────────────────────
@@ -709,6 +723,21 @@ const qbCollect = {
             upper_label: document.getElementById('qbsl-upper').value.trim(),
             lower_label: document.getElementById('qbsl-lower').value.trim(),
             items_json: JSON.stringify(items),
+        };
+    },
+    wer_weiss_mehr() {
+        const answers = document.getElementById('qbwwm-answers').value.split('\n').map(line => {
+            const [canonical, aliasText] = line.split('|');
+            return {
+                canonical_text: (canonical || '').trim(),
+                aliases: aliasText ? aliasText.split(';').map(alias => alias.trim()).filter(Boolean) : [],
+            };
+        }).filter(answer => answer.canonical_text);
+        return {
+            question_id: document.getElementById('qbwwm-id').value,
+            question_text: document.getElementById('qbwwm-text').value.trim(),
+            round_time_limit: parseInt(document.getElementById('qbwwm-time').value) || 30,
+            answers,
         };
     },
 };
@@ -980,6 +1009,20 @@ function qbAddClueRow(container, text = '', order = '', duration = 10) {
                     <label class="form-label">Items (in correct order)</label>
                     <div id="qbsl-items"></div>
                     <button type="button" class="btn btn-sm btn-outline-secondary mt-1" onclick="qbAddItemRow(document.getElementById('qbsl-items'))">+ Add Item</button>
+                </div>
+
+                <!-- Wer weiß mehr -->
+                <div id="qbEdit-wer_weiss_mehr" class="qb-edit-section d-none">
+                    <input type="hidden" id="qbwwm-id">
+                    <div class="mb-3"><label class="form-label">Frage *</label>
+                        <textarea class="form-control" id="qbwwm-text" rows="3"></textarea></div>
+                    <div class="row g-3 mb-3">
+                        <div class="col-md-4"><label class="form-label">Rundenzeit (s)</label><input type="number" class="form-control" id="qbwwm-time"></div>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Korrekte Antworten</label>
+                        <textarea class="form-control" id="qbwwm-answers" rows="8" placeholder="Antwort | Alias 1; Alias 2"></textarea>
+                    </div>
                 </div>
 
             </div>

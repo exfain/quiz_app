@@ -1,0 +1,443 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Wer weiß mehr? - {{ quiz.room_code }}</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+</head>
+<body>
+<main class="wwm-page">
+    <header class="wwm-header">
+        <div>
+            <div class="text-muted small">Wer weiß mehr?</div>
+            <h1>{{ quiz.title }}</h1>
+        </div>
+        <div class="player-pill">{{ participant.name }}</div>
+    </header>
+
+    <section class="wwm-card">
+        <div id="statusText" class="status-text">Verbinde...</div>
+        <div id="timerBox" class="timer-box d-none"><span id="timerValue">0</span>s</div>
+        <h2 id="questionText" class="question-text"></h2>
+        <div id="tiles" class="tiles"></div>
+        <div id="answerArea" class="answer-area d-none">
+            <label class="form-label fw-semibold">Deine Antwort für diese Runde</label>
+            <input class="form-control form-control-lg" id="answerInput" autocomplete="off">
+            <button class="btn btn-primary btn-lg mt-3 w-100" id="submitBtn">Antwort einloggen</button>
+        </div>
+        <div id="messageBox" class="alert mt-4 d-none"></div>
+        <div id="quizEndedState" class="end-screen d-none">
+            <div class="ended-card">
+                <h2 id="endScreenTitle">Spiel beendet</h2>
+                <p id="endScreenText">Das Spiel wurde beendet.</p>
+            </div>
+        </div>
+        <div id="lobbyActions" class="lobby-actions d-none">
+            <button type="button" class="btn btn-outline-secondary btn-lg w-100" id="wwmReturnToLobbyBtn">
+                Zur Lobby zurückkehren
+            </button>
+        </div>
+    </section>
+
+    <aside class="scorebox">
+        <div class="fw-bold mb-2">Scorebox</div>
+        <div id="scoreRows" class="small text-muted">Noch keine Punkte.</div>
+    </aside>
+</main>
+
+<style>
+body { margin: 0; min-height: 100vh; background: radial-gradient(circle at top left, #e8f2ff, #f7efe3 45%, #ffffff); color: #172033; }
+.wwm-page { min-height: 100vh; padding: 28px; font-family: Georgia, 'Times New Roman', serif; }
+.wwm-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; max-width: 980px; margin: 0 auto 28px; }
+.wwm-header h1 { margin: 0; font-size: clamp(1.8rem, 4vw, 3.3rem); font-weight: 800; }
+.player-pill { background: #172033; color: #fff; border-radius: 999px; padding: 10px 18px; font-weight: 700; }
+.wwm-card { position: relative; max-width: 980px; margin: 0 auto; background: rgba(255,255,255,.86); border: 1px solid rgba(23,32,51,.12); box-shadow: 0 24px 70px rgba(23,32,51,.14); border-radius: 28px; padding: clamp(22px, 5vw, 46px); }
+.status-text { text-transform: uppercase; letter-spacing: .14em; font-size: .78rem; color: #6f7787; font-weight: 800; margin-bottom: 16px; }
+.timer-box { position: absolute; top: 24px; right: 24px; width: 74px; height: 74px; border-radius: 50%; background: #ffcf5a; display: grid; place-items: center; font-weight: 900; box-shadow: inset 0 0 0 5px rgba(255,255,255,.55); }
+.question-text { font-size: clamp(1.8rem, 4vw, 3rem); line-height: 1.1; margin-bottom: 28px; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 12px; margin-bottom: 28px; }
+.tile { min-height: 72px; display: grid; place-items: center; text-align: center; border-radius: 18px; border: 2px solid #d7dbe5; background: #f4f6fa; font-weight: 800; padding: 10px; }
+.tile.hidden { color: #9aa3b5; font-size: 1.8rem; }
+.tile.revealed { background: #173f35; color: #fff; border-color: #173f35; font-size: 1rem; }
+.answer-area { border-top: 1px solid #e2e6ee; padding-top: 24px; }
+.end-screen { margin-top: 24px; border-top: 1px solid #e2e6ee; padding-top: 24px; }
+.ended-card { background: #f4f6fa; border: 1px solid #d7dbe5; border-radius: 20px; padding: 20px; }
+.ended-card h2 { margin: 0 0 8px; font-weight: 900; }
+.ended-card p { margin: 0; color: #566174; }
+.lobby-actions { margin-top: 18px; }
+.scorebox { position: fixed; right: 18px; bottom: 18px; width: 210px; background: rgba(255,255,255,.92); border: 1px solid #e2e6ee; border-radius: 18px; padding: 14px; box-shadow: 0 14px 40px rgba(23,32,51,.12); }
+@media (max-width: 900px) { .scorebox { position: static; margin: 18px auto 0; max-width: 980px; width: auto; } .wwm-page { padding: 16px; } }
+</style>
+
+{% include 'includes/_hub_return_to_lobby_player.html' %}
+
+<script>
+const ROOM_CODE = '{{ quiz.room_code }}';
+const PARTICIPANT_NAME = '{{ participant.name|escapejs }}';
+const HUB_SESSION = '{{ hub_session|escapejs }}';
+const CSRF_TOKEN = '{{ csrf_token }}';
+let ws = null;
+let timerInterval = null;
+let latestState = null;
+let pendingInputTimer = null;
+let reconnectTimer = null;
+let pollTimer = null;
+let hubWs = null;
+let lobbyReturnController = null;
+
+function socketUrl() {
+    const scheme = window.location.protocol === 'https:' ? 'wss' : 'ws';
+    return `${scheme}://${window.location.host}/ws/wer-weiss-mehr/${ROOM_CODE}/`;
+}
+
+function currentHubSessionCode() {
+    if (HUB_SESSION) return HUB_SESSION;
+    try {
+        const stored = localStorage.getItem('hub_session_code');
+        if (stored) return stored;
+    } catch (_) {}
+    return new URLSearchParams(window.location.search).get('hub_session') || '';
+}
+
+function hubSocketUrl(hubCode) {
+    const scheme = window.location.protocol === 'https:' ? 'wss' : 'ws';
+    return `${scheme}://${window.location.host}/ws/hub/${hubCode}/`;
+}
+
+function connectSocket() {
+    if (ws && [WebSocket.OPEN, WebSocket.CONNECTING].includes(ws.readyState)) return;
+    ws = new WebSocket(socketUrl());
+    ws.onopen = () => {
+        if (reconnectTimer) clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+        sendWs({type: 'participant_join', name: PARTICIPANT_NAME, hub_session_code: HUB_SESSION});
+        fetchState();
+    };
+    ws.onmessage = event => {
+        const data = JSON.parse(event.data);
+        if (['state_updated', 'quiz_started', 'quiz_ended'].includes(data.type)) fetchState();
+        if (data.type === 'state') renderState(data);
+        if (data.type === 'error') showMessage(data.message || 'Verbindungsfehler.', 'danger');
+    };
+    ws.onerror = () => {
+        fetchState();
+        if (!latestState) setStatus('Live-Verbindung unterbrochen. Lade aktuellen Stand...');
+    };
+    ws.onclose = () => {
+        fetchState();
+        if (!latestState) setStatus('Live-Verbindung unterbrochen. Lade aktuellen Stand...');
+        if (reconnectTimer) clearTimeout(reconnectTimer);
+        reconnectTimer = setTimeout(connectSocket, 1500);
+    };
+}
+
+function connectHubSocket() {
+    const hubCode = currentHubSessionCode();
+    if (!hubCode || (hubWs && [WebSocket.OPEN, WebSocket.CONNECTING].includes(hubWs.readyState))) return;
+    hubWs = new WebSocket(hubSocketUrl(hubCode));
+    hubWs.onmessage = event => {
+        let data;
+        try {
+            data = JSON.parse(event.data);
+        } catch (error) {
+            console.error('Invalid hub message', event.data, error);
+            return;
+        }
+
+        if (data.type === 'lobby_return_countdown_started') {
+            lobbyReturnController?.startRecallCountdown(data);
+        } else if (data.type === 'players_recalled_to_lobby') {
+            lobbyReturnController?.returnToLobby({ markInactive: false });
+        } else if (data.type === 'session_ended') {
+            stopTimer();
+            disableAnswerControls();
+            showEndScreen('Session beendet', 'Diese Spielabend-Session wurde beendet.', {showLobby: true});
+            const url = new URL(`/hub/lobby/${hubCode}/`, window.location.origin);
+            url.searchParams.set('ended', '1');
+            window.location.href = url.toString();
+        }
+    };
+    hubWs.onclose = () => {
+        hubWs = null;
+        setTimeout(connectHubSocket, 1500);
+    };
+}
+
+function sendWs(payload) {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify(payload));
+        return true;
+    }
+    return false;
+}
+
+function startPollingFallback() {
+    if (pollTimer) clearInterval(pollTimer);
+    pollTimer = setInterval(fetchState, 5000);
+}
+
+function fetchState() {
+    const params = new URLSearchParams({participant_name: PARTICIPANT_NAME});
+    if (HUB_SESSION) params.set('hub_session', HUB_SESSION);
+    fetch(`/wer-weiss-mehr/state/${ROOM_CODE}/?${params}`)
+        .then(response => parseJsonResponse(response, 'State konnte nicht geladen werden.'))
+        .then(({payload}) => renderState(payload))
+        .catch(() => {
+            if (!latestState) setStatus('Verbindung unterbrochen. Bitte Seite neu laden.');
+        });
+}
+
+async function parseJsonResponse(response, fallbackMessage) {
+    const contentType = response.headers.get('content-type') || '';
+    if (contentType.includes('application/json')) {
+        const payload = await response.json();
+        if (!response.ok || payload.success === false) {
+            throw new Error(payload.error || payload.message || fallbackMessage);
+        }
+        return {response, payload};
+    }
+    const text = await response.text();
+    console.error('Unexpected non-JSON response', {
+        url: response.url,
+        status: response.status,
+        redirected: response.redirected,
+        contentType,
+        body: text.slice(0, 1200),
+    });
+    throw new Error(`${fallbackMessage} Der Server hat keine JSON-Antwort geliefert.`);
+}
+
+function postParticipantJson(path, payload, fallbackMessage) {
+    return fetch(path, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-CSRFToken': CSRF_TOKEN,
+        },
+        credentials: 'same-origin',
+        body: JSON.stringify({
+            participant_name: PARTICIPANT_NAME,
+            hub_session: HUB_SESSION,
+            ...payload,
+        }),
+    }).then(response => parseJsonResponse(response, fallbackMessage));
+}
+
+function savePendingInput(answerText) {
+    return postParticipantJson(
+        `/wer-weiss-mehr/pending/${ROOM_CODE}/`,
+        {answer_text: answerText},
+        'Zwischeneingabe konnte nicht gespeichert werden.'
+    ).catch(error => {
+        console.warn(error.message || 'Zwischeneingabe konnte nicht gespeichert werden.');
+        if (String(error.message || '').includes('nicht aktiv')) fetchState();
+    });
+}
+
+function submitAnswer(answerText) {
+    return postParticipantJson(
+        `/wer-weiss-mehr/submit/${ROOM_CODE}/`,
+        {answer_text: answerText},
+        'Antwort konnte nicht eingeloggt werden.'
+    );
+}
+
+function renderState(state) {
+    latestState = state;
+    const question = state.question;
+    const own = state.participant_state || {};
+    const answerArea = document.getElementById('answerArea');
+    const messageBox = document.getElementById('messageBox');
+    const gameEnded = ['completed', 'cancelled', 'ended'].includes(state.game_status);
+    const gameInactive = state.game_status !== 'active' && !gameEnded;
+    messageBox.className = 'alert mt-4 d-none';
+    hideEndScreen();
+    updateLobbyActionVisibility(state);
+
+    renderScorebox(state.scorebox || []);
+
+    if (!question) {
+        setStatus(gameEnded ? 'Spiel beendet' : (state.game_status === 'active' ? 'Warte auf das naechste Set' : 'Warte auf Spielstart'));
+        document.getElementById('questionText').textContent = '';
+        document.getElementById('tiles').innerHTML = '';
+        answerArea.classList.add('d-none');
+        disableAnswerControls();
+        stopTimer();
+        if (gameEnded) showEndScreen('Spiel beendet', `Dein Punktestand: ${own.total_score || 0}`, {showLobby: true});
+        else if (gameInactive) showMessage('Das Spiel ist aktuell nicht aktiv.', 'secondary');
+        return;
+    }
+
+    document.getElementById('questionText').textContent = question.question_text;
+    document.getElementById('tiles').innerHTML = question.tiles.map(tile => `
+        <div class="tile ${tile.revealed ? 'revealed' : 'hidden'}">${tile.revealed ? escapeHtml(tile.text) : '?'}</div>
+    `).join('');
+
+    if (gameEnded) {
+        setStatus('Spiel beendet');
+        stopTimer();
+        answerArea.classList.add('d-none');
+        document.getElementById('answerInput').disabled = true;
+        document.getElementById('submitBtn').disabled = true;
+        showMessage(`Spiel beendet. Deine Punkte in diesem Set: ${own.survived_rounds || 0}`, 'info');
+        showEndScreen('Spiel beendet', `Dein Punktestand: ${own.total_score || 0}`, {showLobby: true});
+        return;
+    }
+
+    if (gameInactive) {
+        setStatus('Spiel inaktiv');
+        stopTimer();
+        answerArea.classList.add('d-none');
+        disableAnswerControls();
+        showMessage('Das Spiel ist aktuell nicht aktiv. Es können keine Antworten mehr abgegeben werden.', 'secondary');
+        return;
+    }
+
+    if (state.phase === 'round_active') {
+        setStatus(`Runde ${state.current_round}`);
+        startTimer(state.timer);
+        if (own.can_answer) {
+            answerArea.classList.remove('d-none');
+            document.getElementById('answerInput').disabled = false;
+            document.getElementById('submitBtn').disabled = false;
+        } else {
+            answerArea.classList.add('d-none');
+            if (own.has_submitted) showMessage(`Antwort eingeloggt${own.submitted_answer ? `: ${own.submitted_answer}` : ''}. Warte auf die Auswertung.`, 'secondary');
+            else if (own.is_eliminated) showMessage('Du bist für dieses Set ausgeschieden. Du siehst die weiteren Runden weiter mit.', 'warning');
+        }
+    } else if (state.phase === 'review') {
+        setStatus('Runde beendet');
+        stopTimer();
+        answerArea.classList.add('d-none');
+        const response = own.response;
+        if (response && response.is_correct) showMessage('Richtig, du bist weiter.', 'success');
+        else if (own.is_eliminated || (response && !response.is_correct)) showMessage('Du bist ausgeschieden.', 'warning');
+        else showMessage('Warte auf die Auswertung.', 'secondary');
+    } else if (state.phase === 'set_completed') {
+        setStatus('Set beendet');
+        stopTimer();
+        answerArea.classList.add('d-none');
+        showMessage(`Set beendet. Deine Punkte in diesem Set: ${own.survived_rounds || 0}`, 'info');
+    } else {
+        setStatus('Warte auf die naechste Runde');
+        stopTimer();
+        answerArea.classList.add('d-none');
+    }
+}
+
+function startTimer(timer) {
+    stopTimer();
+    const box = document.getElementById('timerBox');
+    const value = document.getElementById('timerValue');
+    box.classList.remove('d-none');
+    function tick() {
+        const endsAt = timer?.ends_at ? new Date(timer.ends_at).getTime() : 0;
+        const remaining = endsAt ? Math.max(0, Math.ceil((endsAt - Date.now()) / 1000)) : 0;
+        value.textContent = remaining;
+        if (remaining <= 0) {
+            document.getElementById('answerInput').disabled = true;
+            document.getElementById('submitBtn').disabled = true;
+            stopTimer();
+            fetchState();
+        }
+    }
+    tick();
+    timerInterval = setInterval(tick, 500);
+}
+
+function stopTimer() {
+    if (timerInterval) clearInterval(timerInterval);
+    timerInterval = null;
+    document.getElementById('timerBox').classList.add('d-none');
+}
+
+function disableAnswerControls() {
+    document.getElementById('answerInput').disabled = true;
+    document.getElementById('submitBtn').disabled = true;
+}
+
+function showLobbyAction(visible) {
+    document.getElementById('lobbyActions').classList.toggle('d-none', !visible);
+}
+
+function updateLobbyActionVisibility(state) {
+    const endedStatuses = ['completed', 'cancelled', 'ended'];
+    showLobbyAction(Boolean(currentHubSessionCode()) && endedStatuses.includes(state?.game_status));
+}
+
+function showEndScreen(title, text, options = {}) {
+    document.getElementById('endScreenTitle').textContent = title;
+    document.getElementById('endScreenText').textContent = text;
+    document.getElementById('quizEndedState').classList.remove('d-none');
+    if (options.showLobby) showLobbyAction(Boolean(currentHubSessionCode()));
+}
+
+function hideEndScreen() {
+    document.getElementById('quizEndedState').classList.add('d-none');
+}
+
+document.getElementById('answerInput').addEventListener('input', function () {
+    if (!latestState?.participant_state?.can_answer) return;
+    clearTimeout(pendingInputTimer);
+    const value = this.value;
+    pendingInputTimer = setTimeout(() => {
+        const sent = sendWs({type: 'participant_input_changed', name: PARTICIPANT_NAME, hub_session_code: HUB_SESSION, answer_text: value});
+        if (!sent) savePendingInput(value);
+    }, 180);
+});
+
+document.getElementById('submitBtn').addEventListener('click', async () => {
+    const value = document.getElementById('answerInput').value;
+    document.getElementById('answerInput').disabled = true;
+    document.getElementById('submitBtn').disabled = true;
+    try {
+        const {payload} = await submitAnswer(value);
+        renderState(payload);
+        if (!ws || ws.readyState !== WebSocket.OPEN) connectSocket();
+    } catch (error) {
+        const canRetry = latestState?.game_status === 'active'
+            && latestState?.participant_state?.can_answer
+            && !String(error.message || '').includes('nicht aktiv');
+        document.getElementById('answerInput').disabled = !canRetry;
+        document.getElementById('submitBtn').disabled = !canRetry;
+        showMessage(error.message || 'Antwort konnte nicht eingeloggt werden.', 'danger');
+        fetchState();
+        connectSocket();
+    }
+});
+
+function setStatus(text) { document.getElementById('statusText').textContent = text; }
+function showMessage(text, type) {
+    const box = document.getElementById('messageBox');
+    box.textContent = text;
+    box.className = `alert alert-${type} mt-4`;
+}
+function renderScorebox(rows) {
+    const ownRows = rows.map(row => {
+        const score = (row.scores || []).find(item => item.participant_name === PARTICIPANT_NAME);
+        const maxPoints = score?.max_points ?? row.max_points ?? row.answer_count ?? '-';
+        return `<div class="d-flex justify-content-between gap-2"><span>${escapeHtml(row.question_text).slice(0, 32)}</span><strong>${score && score.points !== null ? `${score.points}/${maxPoints}` : '-'}</strong></div>`;
+    }).join('');
+    document.getElementById('scoreRows').innerHTML = ownRows || 'Noch keine Punkte.';
+}
+function escapeHtml(value) {
+    return String(value ?? '').replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[char]));
+}
+
+lobbyReturnController = createHubLobbyReturnController({
+    sessionCode: currentHubSessionCode(),
+    gameKey: 'wer_weiss_mehr',
+    roomCode: ROOM_CODE,
+    participantName: PARTICIPANT_NAME,
+    csrfToken: CSRF_TOKEN,
+    buttonId: 'wwmReturnToLobbyBtn',
+});
+showLobbyAction(false);
+fetchState();
+connectSocket();
+connectHubSocket();
+startPollingFallback();
+</script>
+</body>
+</html>

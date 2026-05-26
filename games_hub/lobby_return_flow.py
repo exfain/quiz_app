@@ -96,6 +96,7 @@ def get_game_participant_model_map():
     from black_jack_quiz.models import BlackJackParticipant
     from clue_rush.models import ClueRushParticipant
     from sorting_ladder.models import SortingLadderParticipant
+    from wer_weiss_mehr.models import WerWeissMehrParticipant
     from where_is_this.models import WhereParticipant
     from who_is_lying.models import WhoParticipant
     from who_is_that.models import WhoThatParticipant
@@ -110,6 +111,7 @@ def get_game_participant_model_map():
         'blackjack': BlackJackParticipant,
         'clue_rush': ClueRushParticipant,
         'sorting_ladder': SortingLadderParticipant,
+        'wer_weiss_mehr': WerWeissMehrParticipant,
     }
 
 

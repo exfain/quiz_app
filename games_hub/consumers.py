@@ -14,6 +14,7 @@ from who_is_that.models import WhoThatQuiz
 from black_jack_quiz.models import BlackJackQuiz
 from clue_rush.models import ClueRushGame
 from sorting_ladder.models import SortingLadderGame
+from wer_weiss_mehr.models import WerWeissMehrGame
 
 
 class HubConsumer(AsyncWebsocketConsumer):
@@ -467,6 +468,7 @@ class HubConsumer(AsyncWebsocketConsumer):
             'blackjack': BlackJackQuiz,
             'clue_rush': ClueRushGame,
             'sorting_ladder': SortingLadderGame,
+            'wer_weiss_mehr': WerWeissMehrGame,
         }
         model = model_map.get(game_key)
         if not model:
@@ -490,6 +492,7 @@ class HubConsumer(AsyncWebsocketConsumer):
             'blackjack': BlackJackQuiz,
             'clue_rush': ClueRushGame,
             'sorting_ladder': SortingLadderGame,
+            'wer_weiss_mehr': WerWeissMehrGame,
         }
         try:
             session = HubSession.objects.get(code=self.session_code)
@@ -528,6 +531,7 @@ class HubConsumer(AsyncWebsocketConsumer):
         BlackJackQuiz.objects.update(status='waiting')
         ClueRushGame.objects.update(status='waiting')
         SortingLadderGame.objects.update(status='waiting')
+        WerWeissMehrGame.objects.update(status='waiting')
 
     def get_game_model_map(self):
         return {
@@ -540,4 +544,5 @@ class HubConsumer(AsyncWebsocketConsumer):
             'blackjack': BlackJackQuiz,
             'clue_rush': ClueRushGame,
             'sorting_ladder': SortingLadderGame,
+            'wer_weiss_mehr': WerWeissMehrGame,
         }

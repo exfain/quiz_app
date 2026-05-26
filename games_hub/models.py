@@ -25,6 +25,7 @@ class HubSession(SyncBase):
         from black_jack_quiz.models import BlackJackQuiz
         from clue_rush.models import ClueRushGame
         from sorting_ladder.models import SortingLadderGame
+        from wer_weiss_mehr.models import WerWeissMehrGame
 
         return {
             'quiz': QuizGameModel,
@@ -36,6 +37,7 @@ class HubSession(SyncBase):
             'blackjack': BlackJackQuiz,
             'clue_rush': ClueRushGame,
             'sorting_ladder': SortingLadderGame,
+            'wer_weiss_mehr': WerWeissMehrGame,
         }
 
     @classmethod
@@ -112,6 +114,7 @@ class HubGameStep(SyncBase):
         ('blackjack', 'Black Jack Quiz'),
         ('sorting_ladder', 'Sorting Ladder'),
         ('clue_rush', 'Clue Rush'),
+        ('wer_weiss_mehr', 'Wer weiß mehr?'),
     ]
     session = models.ForeignKey(HubSession, related_name='steps', on_delete=models.CASCADE)
     order = models.PositiveIntegerField()

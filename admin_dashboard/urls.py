@@ -1,5 +1,6 @@
 from django.urls import path
 from . import views
+from wer_weiss_mehr import views as wer_weiss_mehr_views
 
 app_name = 'admin_dashboard'
 
@@ -30,6 +31,7 @@ urlpatterns = [
     path('where/questions/', views.get_where_questions, name='get_where_questions'),
     path('black-jack/questions/', views.get_black_jack_questions, name='get_black_jack_questions'),
     path('who-that/questions/', views.get_who_that_questions, name='get_who_that_questions'),
+    path('wer-weiss-mehr/questions/', views.get_wer_weiss_mehr_questions, name='get_wer_weiss_mehr_questions'),
 
     # Quiz Game Management
     path('quiz/', views.quiz_game_management, name='quiz_management'),
@@ -73,6 +75,25 @@ urlpatterns = [
     path('sorting-ladder/<str:room_code>/end/', views.end_sorting_ladder_game_by_room_code, name='end_sorting_ladder_game_by_room_code'),
     path('sorting-ladder/<str:room_code>/send-topic/', views.send_sorting_ladder_topic, name='send_sorting_ladder_topic'),
     path('sorting-ladder/<str:room_code>/end-round/', views.end_sorting_ladder_round, name='end_sorting_ladder_round'),
+
+    # Wer weiß mehr Game Management
+    path('wer-weiss-mehr/create/', views.create_wer_weiss_mehr_game, name='create_wer_weiss_mehr_game'),
+    path('wer-weiss-mehr/create-custom/', views.create_wer_weiss_mehr_custom_game, name='create_wer_weiss_mehr_custom_game'),
+    path('wer-weiss-mehr/update-custom/', views.update_wer_weiss_mehr_custom_game, name='update_wer_weiss_mehr_custom_game'),
+    path('wer-weiss-mehr/add-question/', views.add_wer_weiss_mehr_question, name='add_wer_weiss_mehr_question'),
+    path('wer-weiss-mehr/update-question/', views.update_wer_weiss_mehr_question, name='update_wer_weiss_mehr_question'),
+    path('wer-weiss-mehr/question/<int:question_id>/', views.get_wer_weiss_mehr_question_detail, name='get_wer_weiss_mehr_question_detail'),
+    path('wer-weiss-mehr/delete-question/', views.delete_wer_weiss_mehr_question, name='delete_wer_weiss_mehr_question'),
+    path('wer-weiss-mehr/<int:quiz_id>/selected-questions/', views.get_wer_weiss_mehr_selected_questions, name='get_wer_weiss_mehr_selected_questions'),
+    path('wer-weiss-mehr/delete/', views.delete_wer_weiss_mehr_game, name='delete_wer_weiss_mehr_game'),
+    path('wer-weiss-mehr/<str:room_code>/monitor/', views.wer_weiss_mehr_monitor, name='wer_weiss_mehr_monitor'),
+    path('wer-weiss-mehr/<str:room_code>/end-round/', wer_weiss_mehr_views.end_round, name='end_wer_weiss_mehr_round'),
+    path('wer-weiss-mehr/<str:room_code>/next-round/', wer_weiss_mehr_views.next_round, name='next_wer_weiss_mehr_round'),
+    path('wer-weiss-mehr/<str:room_code>/finish-set/', wer_weiss_mehr_views.finish_current_set, name='finish_wer_weiss_mehr_set'),
+    path('wer-weiss-mehr/<str:room_code>/clear-set/', wer_weiss_mehr_views.clear_set_selection, name='clear_wer_weiss_mehr_set'),
+    path('wer-weiss-mehr/<str:room_code>/apply-correction/', wer_weiss_mehr_views.apply_correction, name='apply_wer_weiss_mehr_correction'),
+    path('wer-weiss-mehr/<str:room_code>/end/', views.end_wer_weiss_mehr_game_by_room_code, name='end_wer_weiss_mehr_game_by_room_code'),
+    path('api/wer-weiss-mehr/<str:room_code>/state/', views.api_wer_weiss_mehr_state, name='api_wer_weiss_mehr_state'),
 
     # Estimation Game Management
     path('estimation/bundles/', views.get_estimation_bundles, name='get_estimation_bundles'),

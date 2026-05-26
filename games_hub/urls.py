@@ -12,6 +12,7 @@ urlpatterns = [
     path('session/<str:session_code>/leaderboard/', views.session_leaderboard, name='session_leaderboard'),
     # API endpoints
     path('api/session/<str:session_code>/leaderboard/', views.session_leaderboard_api, name='session_leaderboard_api'),
+    path('api/spectate/<str:session_code>/state/', views.spectate_session_state, name='spectate_session_state'),
     path('api/session/<str:session_code>/add-step/', views.add_step_to_session, name='add_step_to_session'),
     path('api/session/<str:session_code>/activate-game/', views.activate_session_game, name='activate_session_game'),
     path('api/session/<str:session_code>/lobby-presence/', views.session_lobby_presence_api, name='session_lobby_presence_api'),

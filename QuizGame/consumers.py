@@ -3,7 +3,7 @@ from channels.generic.websocket import AsyncWebsocketConsumer
 from channels.db import database_sync_to_async
 from django.utils import timezone
 from django.core.cache import cache
-from .models import Quiz, QuizParticipant, QuizQuestion, QuizAnswer
+from .models import Quiz, QuizParticipant, QuizQuestion, QuizAnswer, QuizSession
 from games_hub.active_game_guard import resolve_session_game_activation_for_room
 from games_hub.lobby_return_flow import ensure_session_players_ready_for_game_start_for_room
 from games_hub.models import HubGameStep, HubSession
@@ -103,12 +103,13 @@ class QuizConsumer(AsyncWebsocketConsumer):
                 await self.send(text_data=json.dumps(payload))
                 return
             show_tutorial = bool(data.get('show_tutorial', True))
-            await self.start_quiz_db(quiz.id)
+            hub_session_code = await self._get_hub_session_code_for_room()
+            await self.start_quiz_db(quiz.id, hub_session_code)
             tutorial_payload = None
             if quiz.tutorial_enabled and show_tutorial:
                 await self.set_tutorial_active_db(quiz.id, True)
                 tutorial_payload = await self.get_tutorial_payload(quiz.id)
-                await self.reset_tutorial_completed(quiz.id)
+                await self.reset_tutorial_completed(quiz.id, hub_session_code)
             else:
                 await self.set_tutorial_active_db(quiz.id, False)
 
@@ -188,16 +189,16 @@ class QuizConsumer(AsyncWebsocketConsumer):
         except Exception:
             pass
 
-        # Update quiz with new question
+        # Determine the effective time limit for this send (do NOT persist on the question)
+        effective_time_limit = custom_time_limit if custom_time_limit is not None else question.time_limit
+
+        # Update quiz/session runtime with new question
         await self.set_tutorial_active_db(quiz.id, False)
-        await self.update_quiz_question(quiz, question)
+        await self.update_quiz_question(quiz.id, question.id, effective_time_limit)
         
         # Get question options
         options = await self.get_question_options(question)
         short_answer_fields = await self.get_short_answer_fields(question)
-        
-        # Determine the effective time limit for this send (do NOT persist on the question)
-        effective_time_limit = custom_time_limit if custom_time_limit is not None else question.time_limit
 
         # Broadcast new question to all participants
         await self.channel_layer.group_send(
@@ -330,8 +331,10 @@ class QuizConsumer(AsyncWebsocketConsumer):
                         'is_manual_override': False,
                         'can_mark_correct': answer['can_mark_correct'],
                         'question_type': answer['question_type'],
+                        'field_results': answer['field_results'],
                         'points_earned': answer['points_earned'],
-                        'time_taken': time_taken
+                        'time_taken': time_taken,
+                        'submitted_at': answer['submitted_at'],
                     }
                 }
             )
@@ -368,11 +371,17 @@ class QuizConsumer(AsyncWebsocketConsumer):
                 {
                     'type': 'participant_answered',
                     'answer': {
+                        'answer_id': answer['answer_id'],
                         'participant_name': participant_name,
                         'answer_text': answer['display_answer'],
                         'is_correct': answer['is_correct'],
+                        'is_manual_override': answer['is_manual_override'],
+                        'can_mark_correct': answer['can_mark_correct'],
+                        'question_type': answer['question_type'],
+                        'field_results': answer['field_results'],
                         'points_earned': answer['points_earned'],
-                        'time_taken': time_taken
+                        'time_taken': time_taken,
+                        'submitted_at': answer['submitted_at'],
                     }
                 }
             )
@@ -499,11 +508,21 @@ class QuizConsumer(AsyncWebsocketConsumer):
     async def answer_corrected(self, event):
         await self.send(text_data=json.dumps({
             'type': 'answer_corrected',
+            'success': True,
+            'answer_id': event.get('answer_id'),
             'participant_id': event.get('participant_id'),
             'participant_name': event.get('participant_name'),
             'question_id': event.get('question_id'),
+            'answer_text': event.get('answer_text'),
             'is_correct': event.get('is_correct', True),
+            'is_manual_override': event.get('is_manual_override', True),
+            'can_mark_correct': event.get('can_mark_correct', False),
+            'question_type': event.get('question_type'),
+            'field_results': event.get('field_results', []),
+            'points_earned': event.get('points_earned'),
             'total_score': event.get('total_score'),
+            'time_taken': event.get('time_taken'),
+            'submitted_at': event.get('submitted_at'),
         }))
 
     async def tutorial_start(self, event):
@@ -528,8 +547,9 @@ class QuizConsumer(AsyncWebsocketConsumer):
         """Return serialised question data for the currently active question, or None."""
         try:
             quiz = Quiz.objects.select_related('current_question').get(room_code=self.room_code)
+            session = getattr(quiz, 'session', None)
             q = quiz.current_question
-            if not q:
+            if not q or quiz.status != 'active' or not session or not session.is_question_active:
                 return None
             if q.question_type == 'multiple_choice':
                 options = [{'key': k, 'text': t} for k, t in q.get_options()]
@@ -593,8 +613,11 @@ class QuizConsumer(AsyncWebsocketConsumer):
             return None
 
     @database_sync_to_async
-    def reset_tutorial_completed(self, quiz_id):
-        QuizParticipant.objects.filter(quiz_id=quiz_id).update(tutorial_completed=False)
+    def reset_tutorial_completed(self, quiz_id, hub_session_code=None):
+        participants = QuizParticipant.objects.filter(quiz_id=quiz_id)
+        if hub_session_code is not None:
+            participants = participants.filter(hub_session_code=hub_session_code)
+        participants.update(tutorial_completed=False)
 
     @database_sync_to_async
     def mark_tutorial_completed(self, participant_name, hub_session_code):
@@ -639,12 +662,10 @@ class QuizConsumer(AsyncWebsocketConsumer):
             return None
 
     @database_sync_to_async
-    def start_quiz_db(self, quiz_id):
+    def start_quiz_db(self, quiz_id, hub_session_code=None):
         try:
             quiz = Quiz.objects.get(id=quiz_id)
-            quiz.status = 'active'
-            quiz.started_at = timezone.now()
-            quiz.save()
+            quiz.start_quiz(session_code=hub_session_code)
         except Quiz.DoesNotExist:
             pass
 
@@ -652,10 +673,7 @@ class QuizConsumer(AsyncWebsocketConsumer):
     def end_quiz_db(self, quiz_id):
         try:
             quiz = Quiz.objects.get(id=quiz_id)
-            quiz.status = 'completed'
-            quiz.ended_at = timezone.now()
-            quiz.current_question = None
-            quiz.save()
+            quiz.end_quiz('completed')
         except Quiz.DoesNotExist:
             pass
 
@@ -669,18 +687,23 @@ class QuizConsumer(AsyncWebsocketConsumer):
             pass
 
     @database_sync_to_async
-    def update_quiz_question(self, quiz, question):
-        quiz.current_question = question
-        quiz.question_start_time = timezone.now()
-        quiz.save()
+    def update_quiz_question(self, quiz_id, question_id, effective_time_limit=None):
+        quiz = Quiz.objects.get(id=quiz_id)
+        question = QuizQuestion.objects.get(id=question_id)
+        session, _ = QuizSession.objects.get_or_create(quiz=quiz)
+        session.send_question(question, time_limit=effective_time_limit)
 
     @database_sync_to_async
     def clear_current_question(self, quiz_id):
         try:
             quiz = Quiz.objects.get(id=quiz_id)
-            quiz.current_question = None
-            quiz.question_start_time = None
-            quiz.save()
+            session = getattr(quiz, 'session', None)
+            if session:
+                session.end_current_question()
+            else:
+                quiz.current_question = None
+                quiz.question_start_time = None
+                quiz.save(update_fields=['current_question', 'question_start_time', 'updated_at'])
         except Quiz.DoesNotExist:
             pass
 
@@ -850,16 +873,25 @@ class QuizConsumer(AsyncWebsocketConsumer):
                 option_map = dict(target_question.get_options())
                 display_answer = option_map.get(answer_text.upper(), answer_text)
 
+            field_results = answer.get_short_answer_field_results()
+            is_manual_override = (
+                target_question.get_effective_question_type() == 'short_answer'
+                and answer.is_correct
+                and not target_question.is_correct_answer(answer.answer_text)
+            )
             participant.refresh_from_db(fields=['total_score'])
             return {
                 'answer_id': answer.id,
                 'question_id': target_question.id,
                 'is_correct': answer.is_correct,
+                'is_manual_override': is_manual_override,
                 'points_earned': answer.points_earned,
                 'display_answer': display_answer,
                 'question_type': target_question.get_effective_question_type(),
+                'field_results': field_results,
                 'can_mark_correct': target_question.get_effective_question_type() == 'short_answer' and not answer.is_correct,
                 'total_score': participant.total_score,
+                'submitted_at': answer.submitted_at.isoformat(),
             }
 
         except (Quiz.DoesNotExist, QuizParticipant.DoesNotExist):

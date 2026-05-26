@@ -12,6 +12,7 @@ from django.contrib import messages
 from django.urls import NoReverseMatch, reverse
 import json
 import math
+import re
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
 from QuizGame.models import Quiz, QuizQuestion, QuizParticipant, QuizAnswer, QuizSession, QuizBundle
@@ -23,6 +24,15 @@ from black_jack_quiz.models import BlackJackQuiz, BlackJackQuestion, BlackJackPa
 from clue_rush.models import ClueRushGame, ClueRushParticipant, ClueQuestion, Clue, ClueAnswer, ClueRushSession
 from who_is_that.models import WhoThatQuiz, WhoThatQuestion, WhoThatParticipant, WhoThatBundle
 from who_is_lying.models import WhoQuiz, WhoQuestion, WhoParticipant, WhoBundle
+from wer_weiss_mehr.models import (
+    WerWeissMehrAnswerOption,
+    WerWeissMehrGame,
+    WerWeissMehrParticipant,
+    WerWeissMehrQuestion,
+    WerWeissMehrSession,
+    normalize_answer_text,
+)
+from wer_weiss_mehr.services import build_game_state
 from games_hub.active_game_guard import (
     _end_game_cleanly,
     get_game_model_map,
@@ -246,6 +256,7 @@ def duplicate_session(request):
             'blackjack':      (BlackJackQuiz,     None),
             'sorting_ladder': (SortingLadderGame, None),
             'clue_rush':      (ClueRushGame,      None),
+            'wer_weiss_mehr': (WerWeissMehrGame,  None),
         }
 
         for step in original.steps.order_by('order'):
@@ -1628,6 +1639,371 @@ def get_sorting_topic_detail(request, topic_id):
     }
     return JsonResponse({'success': True, 'topic': data})
 
+
+# =====================
+# Wer weiß mehr Admin Views
+# =====================
+
+def _parse_wer_weiss_mehr_answers(raw_answers):
+    answers = []
+    if isinstance(raw_answers, str):
+        raw_answers = [
+            line
+            for line in raw_answers.splitlines()
+            if line.strip()
+        ]
+
+    for item in raw_answers or []:
+        if isinstance(item, dict):
+            canonical = (item.get('canonical_text') or item.get('text') or '').strip()
+            aliases = item.get('aliases') or []
+            if isinstance(aliases, str):
+                aliases = [part.strip() for part in re.split(r'[;,]', aliases) if part.strip()]
+        else:
+            parts = [part.strip() for part in str(item).split('|', 1)]
+            canonical = parts[0]
+            aliases = [part.strip() for part in re.split(r'[;,]', parts[1])] if len(parts) > 1 else []
+            aliases = [alias for alias in aliases if alias]
+        if canonical:
+            answers.append({'canonical_text': canonical, 'aliases': aliases})
+    return answers
+
+
+def _replace_wer_weiss_mehr_answers(question, answers):
+    parsed_answers = _parse_wer_weiss_mehr_answers(answers)
+    if not parsed_answers:
+        raise ValueError('Mindestens eine korrekte Antwort ist erforderlich.')
+
+    question.answers.all().delete()
+    seen = set()
+    for answer in parsed_answers:
+        normalized_answer = normalize_answer_text(answer['canonical_text'])
+        if normalized_answer in seen:
+            continue
+        seen.add(normalized_answer)
+        WerWeissMehrAnswerOption.objects.create(
+            question=question,
+            canonical_text=answer['canonical_text'],
+            aliases=answer.get('aliases') or [],
+        )
+    question.recalculate_answer_sort_order()
+
+
+def _create_wer_weiss_mehr_inline_question_if_present(data, user):
+    prompt = (data.get('question_text') or data.get('prompt') or '').strip()
+    answers = data.get('answers') or data.get('answers_text') or []
+    if not prompt and not answers:
+        return None
+    if not prompt:
+        raise ValueError('Frage ist erforderlich.')
+
+    parsed_answers = _parse_wer_weiss_mehr_answers(answers)
+    if not parsed_answers:
+        raise ValueError('Mindestens eine korrekte Antwort ist erforderlich.')
+
+    question = WerWeissMehrQuestion.objects.create(
+        question_text=prompt,
+        round_time_limit=int(data.get('round_time_limit') or data.get('time_limit') or 30),
+        created_by=user,
+    )
+    _replace_wer_weiss_mehr_answers(question, parsed_answers)
+    return question
+
+
+def _serialize_wer_weiss_mehr_question(question):
+    answers = list(question.answers.order_by('sort_order', 'canonical_text', 'id'))
+    return {
+        'id': question.id,
+        'question_text': question.question_text,
+        'round_time_limit': question.round_time_limit,
+        'answer_count': len(answers),
+        'answers_preview': ', '.join(answer.canonical_text for answer in answers[:6]),
+        'answers': [
+            {
+                'id': answer.id,
+                'canonical_text': answer.canonical_text,
+                'aliases': answer.aliases if isinstance(answer.aliases, list) else [],
+                'sort_order': answer.sort_order,
+            }
+            for answer in answers
+        ],
+        'created_at': question.created_at.strftime('%Y-%m-%d %H:%M:%S'),
+        'is_active': question.is_active,
+    }
+
+
+@admin_required
+def wer_weiss_mehr_monitor(request, room_code):
+    hub_session = request.GET.get('hub_session') or ''
+    quiz = get_object_or_404(WerWeissMehrGame, room_code=room_code)
+    if not request.user.is_superuser and quiz.creator != request.user:
+        return redirect('admin_dashboard:manage_games')
+
+    participants = quiz.participants.all()
+    if hub_session:
+        participants = participants.filter(hub_session_code=hub_session)
+
+    available_questions = quiz.selected_questions.filter(is_active=True).prefetch_related('answers')
+    if not available_questions.exists():
+        available_questions = WerWeissMehrQuestion.objects.filter(
+            created_by=request.user,
+            is_active=True,
+        ).prefetch_related('answers')
+
+    WerWeissMehrSession.objects.get_or_create(quiz=quiz)
+    return render(request, 'admin_dashboard/wer_weiss_mehr_monitor.html', {
+        'quiz': quiz,
+        'participants': participants.order_by('-total_score', 'name'),
+        'participant_count': participants.count(),
+        'available_questions': available_questions,
+        'lobby_url': _get_lobby_url(request, room_code),
+        'hub_session': hub_session,
+    })
+
+
+@admin_required
+@require_POST
+def end_wer_weiss_mehr_game_by_room_code(request, room_code):
+    """End a Wer weiss mehr game by room code."""
+    try:
+        quiz = get_object_or_404(WerWeissMehrGame, room_code=room_code)
+        if not request.user.is_superuser and quiz.creator != request.user:
+            return JsonResponse({
+                'success': False,
+                'error': 'You are not authorized to end this game.',
+            }, status=403)
+
+        hub_session = (
+            _extract_hub_session_code(request)
+            or _get_active_hub_session_code_for_room('wer_weiss_mehr', room_code)
+        )
+        quiz.end_quiz('completed')
+        quiz.refresh_from_db()
+
+        final_scores_qs = quiz.participants.all()
+        if hub_session is not None:
+            final_scores_qs = final_scores_qs.filter(hub_session_code=hub_session)
+        final_scores = list(final_scores_qs.order_by('-total_score', 'name').values('name', 'total_score'))
+        _broadcast_wer_weiss_mehr_game_ended(quiz, hub_session, final_scores)
+
+        return JsonResponse({
+            'success': True,
+            'game_status': quiz.status,
+            'final_scores': final_scores,
+        })
+    except Exception as exc:
+        return JsonResponse({'success': False, 'error': str(exc)}, status=400)
+
+
+def _broadcast_wer_weiss_mehr_game_ended(quiz, hub_session, final_scores):
+    channel_layer = get_channel_layer()
+    if not channel_layer:
+        return
+
+    room_group = f'werweissmehr_{quiz.room_code}'
+    async_to_sync(channel_layer.group_send)(room_group, {
+        'type': 'quiz_ended',
+        'message': 'Wer weiss mehr wurde beendet.',
+        'final_scores': final_scores,
+    })
+    async_to_sync(channel_layer.group_send)(room_group, {
+        'type': 'state_updated',
+        'payload': {'hub_session_code': hub_session},
+    })
+    if hub_session:
+        async_to_sync(channel_layer.group_send)(f'hub_{hub_session}', {
+            'type': 'hub_event',
+            'event': {
+                'type': 'quiz_ended',
+                'game_key': 'wer_weiss_mehr',
+                'room_code': quiz.room_code,
+                'title': quiz.title,
+                'final_scores': final_scores,
+            },
+        })
+
+
+@admin_required
+@require_POST
+def create_wer_weiss_mehr_game(request):
+    data = json.loads(request.body or '{}')
+    title = (data.get('title') or '').strip() or 'Wer weiß mehr?'
+    quiz = WerWeissMehrGame.objects.create(
+        title=title,
+        creator=request.user,
+        status='waiting',
+    )
+    WerWeissMehrSession.objects.create(quiz=quiz)
+    return JsonResponse({'success': True, 'room_code': quiz.room_code, 'quiz_id': quiz.id})
+
+
+@admin_required
+@require_POST
+def create_wer_weiss_mehr_custom_game(request):
+    try:
+        data = json.loads(request.body or '{}')
+        question_ids = [int(item) for item in (data.get('question_ids') or [])]
+        inline_question = _create_wer_weiss_mehr_inline_question_if_present(data, request.user)
+        if inline_question and inline_question.id not in question_ids:
+            question_ids.append(inline_question.id)
+        tutorial_enabled, tutorial_title, tutorial_text = _normalize_tutorial_payload(data)
+        quiz = WerWeissMehrGame.objects.create(
+            title=(data.get('title') or '').strip() or 'Wer weiß mehr?',
+            internal_description=(data.get('internal_description') or '').strip(),
+            tutorial_enabled=tutorial_enabled,
+            tutorial_title=tutorial_title,
+            tutorial_text=tutorial_text,
+            question_order=question_ids,
+            creator=request.user,
+            status='waiting',
+        )
+        if question_ids:
+            quiz.selected_questions.set(WerWeissMehrQuestion.objects.filter(id__in=question_ids, is_active=True))
+        WerWeissMehrSession.objects.create(quiz=quiz)
+        return JsonResponse({'success': True, 'room_code': quiz.room_code, 'quiz_id': quiz.id})
+    except Exception as e:
+        return JsonResponse({'success': False, 'error': str(e)}, status=400)
+
+
+@admin_required
+@require_POST
+def update_wer_weiss_mehr_custom_game(request):
+    try:
+        data = json.loads(request.body or '{}')
+        quiz = get_object_or_404(WerWeissMehrGame, id=data.get('quiz_id'))
+        if not request.user.is_superuser and quiz.creator != request.user:
+            return JsonResponse({'success': False, 'error': 'Unauthorized'}, status=403)
+
+        fields_to_update = []
+        title = (data.get('title') or '').strip()
+        if title:
+            quiz.title = title
+            fields_to_update.append('title')
+        if 'internal_description' in data:
+            quiz.internal_description = (data.get('internal_description') or '').strip()
+            fields_to_update.append('internal_description')
+        _apply_tutorial_fields(quiz, data, fields_to_update)
+        if isinstance(data.get('question_ids'), list):
+            question_ids = [int(item) for item in data['question_ids']]
+            inline_question = _create_wer_weiss_mehr_inline_question_if_present(data, request.user)
+            if inline_question and inline_question.id not in question_ids:
+                question_ids.append(inline_question.id)
+            quiz.selected_questions.set(WerWeissMehrQuestion.objects.filter(id__in=question_ids, is_active=True))
+            quiz.question_order = question_ids
+            fields_to_update.append('question_order')
+        if fields_to_update:
+            quiz.save(update_fields=list(dict.fromkeys(fields_to_update)))
+        return JsonResponse({'success': True})
+    except Exception as e:
+        return JsonResponse({'success': False, 'error': str(e)}, status=400)
+
+
+@admin_required
+def get_wer_weiss_mehr_questions(request):
+    page = int(request.GET.get('page', 1) or 1)
+    search = (request.GET.get('search') or '').strip()
+    qs = WerWeissMehrQuestion.objects.filter(is_active=True).prefetch_related('answers').order_by('-created_at')
+    if search:
+        qs = qs.filter(Q(question_text__icontains=search) | Q(answers__canonical_text__icontains=search)).distinct()
+    paginator = Paginator(qs, 10)
+    page_obj = paginator.get_page(page)
+    return JsonResponse({
+        'success': True,
+        'questions': [_serialize_wer_weiss_mehr_question(question) for question in page_obj.object_list],
+        'count': qs.count(),
+        'pages': paginator.num_pages,
+        'current_page': page_obj.number,
+    })
+
+
+@admin_required
+def get_wer_weiss_mehr_selected_questions(request, quiz_id):
+    quiz = get_object_or_404(WerWeissMehrGame, id=quiz_id)
+    if not request.user.is_superuser and quiz.creator != request.user:
+        return JsonResponse({'success': False, 'error': 'Unauthorized'}, status=403)
+    questions = list(quiz.selected_questions.prefetch_related('answers'))
+    order = quiz.question_order or []
+    if order:
+        order_map = {int(item): index for index, item in enumerate(order)}
+        questions.sort(key=lambda question: order_map.get(question.id, len(order_map)))
+    return JsonResponse({
+        'success': True,
+        'questions': [_serialize_wer_weiss_mehr_question(question) for question in questions],
+        'count': len(questions),
+    })
+
+
+@admin_required
+@require_POST
+def add_wer_weiss_mehr_question(request):
+    try:
+        data = json.loads(request.body or '{}')
+        prompt = (data.get('question_text') or '').strip()
+        if not prompt:
+            return JsonResponse({'success': False, 'error': 'Frage ist erforderlich.'}, status=400)
+        question = WerWeissMehrQuestion.objects.create(
+            question_text=prompt,
+            round_time_limit=int(data.get('round_time_limit') or data.get('time_limit') or 30),
+            created_by=request.user,
+        )
+        _replace_wer_weiss_mehr_answers(question, data.get('answers') or data.get('answers_text') or [])
+        return JsonResponse({'success': True, 'question_id': question.id})
+    except Exception as e:
+        return JsonResponse({'success': False, 'error': str(e)}, status=400)
+
+
+@admin_required
+@require_POST
+def update_wer_weiss_mehr_question(request):
+    try:
+        data = json.loads(request.body or '{}')
+        question = get_object_or_404(WerWeissMehrQuestion, id=data.get('question_id'))
+        if not request.user.is_superuser and question.created_by != request.user:
+            return JsonResponse({'success': False, 'error': 'Unauthorized'}, status=403)
+        question.question_text = (data.get('question_text') or question.question_text).strip()
+        question.round_time_limit = int(data.get('round_time_limit') or data.get('time_limit') or question.round_time_limit)
+        question.save(update_fields=['question_text', 'round_time_limit'])
+        if 'answers' in data or 'answers_text' in data:
+            _replace_wer_weiss_mehr_answers(question, data.get('answers') or data.get('answers_text') or [])
+        return JsonResponse({'success': True})
+    except Exception as e:
+        return JsonResponse({'success': False, 'error': str(e)}, status=400)
+
+
+@admin_required
+def get_wer_weiss_mehr_question_detail(request, question_id):
+    question = get_object_or_404(WerWeissMehrQuestion.objects.prefetch_related('answers'), id=question_id)
+    if not request.user.is_superuser and question.created_by != request.user:
+        return JsonResponse({'success': False, 'error': 'Unauthorized'}, status=403)
+    return JsonResponse({'success': True, 'question': _serialize_wer_weiss_mehr_question(question)})
+
+
+@admin_required
+@require_POST
+def delete_wer_weiss_mehr_question(request):
+    data = json.loads(request.body or '{}')
+    question = get_object_or_404(WerWeissMehrQuestion, id=data.get('question_id'), created_by=request.user)
+    question.is_active = False
+    question.save(update_fields=['is_active'])
+    return JsonResponse({'success': True})
+
+
+@admin_required
+@require_POST
+def delete_wer_weiss_mehr_game(request):
+    data = json.loads(request.body or '{}')
+    quiz = get_object_or_404(WerWeissMehrGame, id=data.get('quiz_id'))
+    if not request.user.is_superuser and quiz.creator != request.user:
+        return JsonResponse({'success': False, 'error': 'Unauthorized'}, status=403)
+    quiz.delete()
+    return JsonResponse({'success': True})
+
+
+@admin_required
+def api_wer_weiss_mehr_state(request, room_code):
+    quiz = get_object_or_404(WerWeissMehrGame, room_code=room_code)
+    return JsonResponse(build_game_state(quiz, hub_session_code=request.GET.get('hub_session') or None))
+
     
 @admin_required
 def admin_home(request):
@@ -1713,6 +2089,7 @@ def sessions_overview(request):
     _add_games(BlackJackQuiz.objects.filter(status='active'), 'blackjack', 'Black Jack Quiz', 'admin_dashboard:blackjack_monitor', 'admin_dashboard:end_blackjack_quiz_by_room_code')
     _add_games(ClueRushGame.objects.filter(status='active'), 'clue_rush', 'Clue Rush', 'admin_dashboard:clue_rush_monitor', 'admin_dashboard:end_clue_rush_game_by_room_code')
     _add_games(SortingLadderGame.objects.filter(status='active'), 'sorting_ladder', 'Sorting Ladder', 'admin_dashboard:sorting_ladder_monitor', 'admin_dashboard:end_sorting_ladder_game_by_room_code')
+    _add_games(WerWeissMehrGame.objects.filter(status='active'), 'wer_weiss_mehr', 'Wer weiß mehr?', 'admin_dashboard:wer_weiss_mehr_monitor', 'admin_dashboard:end_wer_weiss_mehr_game_by_room_code')
 
     # Session codes that have at least one active game running
     active_game_session_codes = {g['hub_session_code'] for g in active_games if g['hub_session_code']}
@@ -1808,6 +2185,7 @@ def manage_games(request):
     _add(BlackJackQuiz.objects.all().order_by('-created_at'), 'blackjack', 'Black Jack Quiz', 'admin_dashboard:blackjack_monitor')
     _add(SortingLadderGame.objects.all().order_by('-created_at'), 'sorting_ladder', 'Sorting Ladder', 'admin_dashboard:sorting_ladder_monitor')
     _add(ClueRushGame.objects.all().order_by('-created_at'), 'clue_rush', 'Clue Rush', 'admin_dashboard:clue_rush_monitor')
+    _add(WerWeissMehrGame.objects.all().order_by('-created_at'), 'wer_weiss_mehr', 'Wer weiß mehr?', 'admin_dashboard:wer_weiss_mehr_monitor')
 
     all_games.sort(key=lambda g: g['created_at'], reverse=True)
     return render(request, 'admin_dashboard/games_overview.html', {'all_games': all_games})
@@ -1840,6 +2218,7 @@ def delete_game_instance(request):
             'blackjack':      BlackJackQuiz,
             'clue_rush':      ClueRushGame,
             'sorting_ladder': SortingLadderGame,
+            'wer_weiss_mehr': WerWeissMehrGame,
         }
         model = MODEL_MAP.get(game_type)
         if not model:
@@ -1870,6 +2249,7 @@ def delete_all_game_instances(request):
         'blackjack':      BlackJackQuiz,
         'clue_rush':      ClueRushGame,
         'sorting_ladder': SortingLadderGame,
+        'wer_weiss_mehr': WerWeissMehrGame,
     }
     for model in MODEL_MAP.values():
         model.objects.all().delete()
@@ -1890,6 +2270,7 @@ def edit_game(request, game_type, game_id):
         'blackjack': BlackJackQuiz,
         'sorting_ladder': SortingLadderGame,
         'clue_rush': ClueRushGame,
+        'wer_weiss_mehr': WerWeissMehrGame,
     }
     model = type_to_model.get(game_type)
     if not model:
@@ -2686,6 +3067,8 @@ def quiz_monitor(request, room_code):
     # Ensure the logged-in user is the creator or is admin
     if not request.user.is_superuser and quiz.creator != request.user:
         return redirect('admin_dashboard:quiz_management')
+
+    quiz.ensure_clean_prestart_state(session_code=hub_session)
     
     participants = quiz.participants.all().filter(hub_session_code=hub_session).order_by('-total_score', 'name')
     # If the quiz has a predefined set of selected questions, show only those
@@ -2734,6 +3117,41 @@ def create_quiz(request):
         }, status=400)
 
 
+def _serialize_quiz_live_response(response):
+    question = response.question
+    display_answer = response.answer_text
+    effective_question_type = question.get_effective_question_type()
+    field_results = []
+    if effective_question_type == 'multiple_choice':
+        option_map = dict(question.get_options())
+        display_answer = option_map.get(str(response.answer_text).upper(), response.answer_text)
+    elif effective_question_type == 'short_answer':
+        display_answer = question.format_short_answer_submission(response.answer_text)
+        field_results = response.get_short_answer_field_results()
+
+    is_manual_override = (
+        effective_question_type == 'short_answer'
+        and response.is_correct
+        and not question.is_correct_answer(response.answer_text)
+    )
+    return {
+        'answer_id': response.id,
+        'participant_id': response.participant_id,
+        'participant_name': response.participant.name,
+        'answer_text': display_answer,
+        'is_correct': response.is_correct,
+        'is_manual_override': is_manual_override,
+        'can_mark_correct': effective_question_type == 'short_answer' and not response.is_correct,
+        'question_type': effective_question_type,
+        'field_results': field_results,
+        'time_taken': response.time_taken,
+        'points_earned': response.points_earned,
+        'total_score': response.participant.total_score,
+        'question_id': response.question_id,
+        'submitted_at': response.submitted_at.isoformat(),
+    }
+
+
 @admin_required
 @require_POST
 def promote_quiz_answer_correct(request, room_code):
@@ -2748,6 +3166,8 @@ def promote_quiz_answer_correct(request, room_code):
         answer_id = data.get('answer_id')
         if not answer_id:
             return JsonResponse({'success': False, 'error': 'answer_id is required'}, status=400)
+        field_key = (data.get('field_key') or '').strip()
+        field_is_correct = bool(data.get('is_correct', True))
 
         with transaction.atomic():
             answer = get_object_or_404(
@@ -2762,44 +3182,28 @@ def promote_quiz_answer_correct(request, room_code):
                     'error': 'Only short-answer responses can be promoted manually.',
                 }, status=400)
 
-            if answer.is_correct:
+            if answer.is_correct and not field_key:
                 return JsonResponse({
                     'success': False,
                     'error': 'This answer is already marked correct.',
                 }, status=400)
 
-            answer.is_correct = True
-            answer.points_earned = 1
-            answer.save()
+            if field_key:
+                answer.set_short_answer_field_correctness(field_key, field_is_correct)
+            else:
+                answer.promote_short_answer_to_correct()
             answer.participant.refresh_from_db(fields=['total_score'])
 
-        payload = {
-            'success': True,
-            'answer_id': answer.id,
-            'question_id': answer.question_id,
-            'participant_id': answer.participant_id,
-            'participant_name': answer.participant.name,
-            'answer_text': answer.question.format_short_answer_submission(answer.answer_text),
-            'is_correct': True,
-            'is_manual_override': True,
-            'can_mark_correct': False,
-            'points_earned': answer.points_earned,
-            'total_score': answer.participant.total_score,
-            'time_taken': answer.time_taken,
-            'submitted_at': answer.submitted_at.isoformat(),
-        }
+        payload = {'success': True, **_serialize_quiz_live_response(answer)}
 
         channel_layer = get_channel_layer()
         if channel_layer is not None:
+            event_payload = {key: value for key, value in payload.items() if key != 'success'}
             async_to_sync(channel_layer.group_send)(
                 f'quiz_{quiz.room_code}',
                 {
                     'type': 'answer_corrected',
-                    'participant_id': answer.participant_id,
-                    'participant_name': answer.participant.name,
-                    'question_id': answer.question_id,
-                    'is_correct': True,
-                    'total_score': answer.participant.total_score,
+                    **event_payload,
                 }
             )
 
@@ -3258,7 +3662,7 @@ def start_quiz(request, room_code):
         if guard_response:
             return guard_response
         
-        quiz.start_quiz()
+        quiz.start_quiz(session_code=_extract_hub_session_code(request))
         
         return JsonResponse({'success': True})
     except Exception as e:
@@ -3474,12 +3878,18 @@ def api_quiz_stats(request, room_code):
         if not request.user.is_superuser and quiz.creator != request.user:
             return JsonResponse({'error': 'Unauthorized'}, status=403)
 
+        hub_session = _extract_hub_session_code(request)
         participants = quiz.participants.all()
+        if hub_session is not None:
+            participants = participants.filter(hub_session_code=hub_session)
+        answers = QuizAnswer.objects.filter(quiz=quiz)
+        if hub_session is not None:
+            answers = answers.filter(participant__hub_session_code=hub_session)
         
         stats = {
             'participant_count': participants.count(),
             'active_participants': participants.filter(is_active=True).count(),
-            'total_answers': QuizAnswer.objects.filter(quiz=quiz).count(),
+            'total_answers': answers.count(),
             'current_question_responses': 0,
             'average_score': 0,
         }
@@ -3489,10 +3899,7 @@ def api_quiz_stats(request, room_code):
         
         # Current question stats
         if quiz.current_question:
-            current_answers = QuizAnswer.objects.filter(
-                quiz=quiz, 
-                question=quiz.current_question
-            )
+            current_answers = answers.filter(question=quiz.current_question)
             stats['current_question_responses'] = current_answers.count()
             stats['correct_current_responses'] = current_answers.filter(is_correct=True).count()
         
@@ -3517,7 +3924,11 @@ def api_participants(request, room_code):
         if not request.user.is_superuser and quiz.creator != request.user:
             return JsonResponse({'error': 'Unauthorized'}, status=403)
         
-        participants = quiz.participants.all().order_by('-total_score', 'name')
+        hub_session = _extract_hub_session_code(request)
+        participants = quiz.participants.all()
+        if hub_session is not None:
+            participants = participants.filter(hub_session_code=hub_session)
+        participants = participants.order_by('-total_score', 'name')
         
         participants_data = []
         for participant in participants:
@@ -3552,30 +3963,10 @@ def api_live_responses(request, room_code):
         if not request.user.is_superuser and quiz.creator != request.user:
             return JsonResponse({'error': 'Unauthorized'}, status=403)
 
-        def serialize_quiz_response(response):
-            question = response.question
-            display_answer = response.answer_text
-            effective_question_type = question.get_effective_question_type()
-            if effective_question_type == 'multiple_choice':
-                option_map = dict(question.get_options())
-                display_answer = option_map.get(response.answer_text.upper(), response.answer_text)
-            elif effective_question_type == 'short_answer':
-                display_answer = question.format_short_answer_submission(response.answer_text)
-
-            is_manual_override = response.is_correct and not question.is_correct_answer(response.answer_text)
-            return {
-                'answer_id': response.id,
-                'participant_id': response.participant_id,
-                'participant_name': response.participant.name,
-                'answer_text': display_answer,
-                'is_correct': response.is_correct,
-                'is_manual_override': is_manual_override,
-                'can_mark_correct': effective_question_type == 'short_answer' and not response.is_correct,
-                'question_type': effective_question_type,
-                'time_taken': response.time_taken,
-                'points_earned': response.points_earned,
-                'submitted_at': response.submitted_at.isoformat(),
-            }
+        hub_session = _extract_hub_session_code(request)
+        answers = QuizAnswer.objects.filter(quiz=quiz)
+        if hub_session is not None:
+            answers = answers.filter(participant__hub_session_code=hub_session)
 
         if not quiz.current_question:
             # Auto-end race condition: question may have been cleared before the
@@ -3583,17 +3974,11 @@ def api_live_responses(request, room_code):
             # this session so responses are still visible after the page reload.
             if not quiz.started_at:
                 return JsonResponse({'success': True, 'responses': []})
-            recent_qs = QuizAnswer.objects.filter(
-                quiz=quiz,
-                submitted_at__gte=quiz.started_at
-            ).select_related('participant', 'question').order_by('-submitted_at')[:20]
-            responses_data = [serialize_quiz_response(response) for response in recent_qs]
+            recent_qs = answers.filter(submitted_at__gte=quiz.started_at).select_related('participant', 'question').order_by('-submitted_at')[:20]
+            responses_data = [_serialize_quiz_live_response(response) for response in recent_qs]
             return JsonResponse({'success': True, 'responses': responses_data})
 
-        qs = QuizAnswer.objects.filter(
-            quiz=quiz,
-            question=quiz.current_question,
-        )
+        qs = answers.filter(question=quiz.current_question)
         # Filter to only answers submitted after the question was last sent (handles replayed questions)
         if quiz.question_start_time:
             qs = qs.filter(submitted_at__gte=quiz.question_start_time)
@@ -3606,7 +3991,7 @@ def api_live_responses(request, room_code):
         if quiz.current_question.question_type == 'multiple_choice':
             option_map = dict(quiz.current_question.get_options())
 
-        responses_data = [serialize_quiz_response(response) for response in responses]
+        responses_data = [_serialize_quiz_live_response(response) for response in responses]
         
         return JsonResponse({
             'success': True,

@@ -63,6 +63,7 @@
                         <option value="blackjack" {% if game_type == 'blackjack' %}selected{% endif %}>Black Jack Quiz</option>
                         <option value="clue_rush" {% if game_type == 'clue_rush' %}selected{% endif %}>Clue Rush</option>
                         <option value="sorting_ladder" {% if game_type == 'sorting_ladder' %}selected{% endif %}>Sorting Ladder</option>
+                        <option value="wer_weiss_mehr" {% if game_type == 'wer_weiss_mehr' %}selected{% endif %}>Wer weiß mehr?</option>
                     </select>
                 </div>
                 <div class="col-md-3 d-none" id="estimationGameModeWrap">
@@ -598,6 +599,31 @@
                         </div>
                     </div>
 
+                    <!-- WER WEISS MEHR -->
+                    <div id="generic-form-wer_weiss_mehr" class="generic-type-form d-none">
+                        <input type="hidden" id="wwm-id">
+                        <div class="mb-3">
+                            <label class="form-label">Frage / Prompt *</label>
+                            <textarea class="form-control" id="wwm-question" rows="2" placeholder="z.B. Wie heissen die Bundeslaender von Deutschland?"></textarea>
+                        </div>
+                        <div class="row g-3 mb-3">
+                            <div class="col-md-3">
+                                <label class="form-label">Rundenzeit (Sek)</label>
+                                <input type="number" class="form-control" id="wwm-time" value="30" min="5">
+                            </div>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label fw-semibold">Korrekte Antworten *</label>
+                            <textarea class="form-control" id="wwm-answers" rows="8" placeholder="Eine Antwort pro Zeile. Aliases optional nach |, z.B. Nordrhein-Westfalen | NRW; Nordrhein Westfalen"></textarea>
+                            <small class="text-muted">Die Anzeige im Spiel wird alphabetisch nach der kanonischen Antwort sortiert.</small>
+                        </div>
+                        <div class="d-flex justify-content-end">
+                            <button type="button" class="btn btn-primary generic-submit-btn" id="wwm-submit">
+                                <i data-lucide="plus" style="width:15px;height:15px;" class="me-1"></i>Add Set
+                            </button>
+                        </div>
+                    </div>
+
                 </div>
             </div>
 
@@ -709,6 +735,9 @@ const GAME_CONFIG = {
     sorting_ladder: { questionsUrl: '/admin-dashboard/sorting-ladder/topics/',       createUrl: '/admin-dashboard/sorting-ladder/create-custom/', updateUrl: '/admin-dashboard/sorting-ladder/update-custom/', gameIdKey: 'quiz_id',  idKey: 'topic_ids', dataKey: 'topics',
                       selectedUrl: id => `/admin-dashboard/sorting-ladder/${id}/selected-topics/`,
                       columns: [{key:'title',label:'Topic'},{key:'description',label:'Description'},{key:'item_count',label:'Items'}] },
+    wer_weiss_mehr: { questionsUrl: '/admin-dashboard/wer-weiss-mehr/questions/',     createUrl: '/admin-dashboard/wer-weiss-mehr/create-custom/', updateUrl: '/admin-dashboard/wer-weiss-mehr/update-custom/', gameIdKey: 'quiz_id',  idKey: 'question_ids',
+                      selectedUrl: id => `/admin-dashboard/wer-weiss-mehr/${id}/selected-questions/`,
+                      columns: [{key:'question_text',label:'Question'},{key:'answer_count',label:'Answers'},{key:'round_time_limit',label:'Time (s)'}] },
 };
 
 let currentType = null;
@@ -938,6 +967,7 @@ const GENERIC_DETAIL_URL = {
     blackjack:      id => `/admin-dashboard/blackjack/question/${id}/`,
     clue_rush:      id => `/admin-dashboard/clue-rush/question/${id}/`,
     sorting_ladder: id => `/admin-dashboard/sorting-ladder/topic/${id}/`,
+    wer_weiss_mehr: id => `/admin-dashboard/wer-weiss-mehr/question/${id}/`,
 };
 
 const GENERIC_UPDATE_URL = {
@@ -949,6 +979,7 @@ const GENERIC_UPDATE_URL = {
     blackjack:      '/admin-dashboard/blackjack/update-question/',
     clue_rush:      '/admin-dashboard/clue-rush/update-question/',
     sorting_ladder: '/admin-dashboard/sorting-ladder/topics/update/',
+    wer_weiss_mehr: '/admin-dashboard/wer-weiss-mehr/update-question/',
 };
 
 // Fetch item details and populate form for editing
@@ -1081,6 +1112,14 @@ function setGenericFormForEdit(type, q) {
             if (q.starting_item_order !== null && parseFloat(q.starting_item_order) === parseFloat(it.order)) opt.selected = true;
             startSel.appendChild(opt);
         });
+    } else if (type === 'wer_weiss_mehr') {
+        document.getElementById('wwm-id').value = q.id;
+        document.getElementById('wwm-question').value = q.question_text || '';
+        document.getElementById('wwm-time').value = q.round_time_limit ?? 30;
+        document.getElementById('wwm-answers').value = (q.answers || []).map(answer => {
+            const aliases = Array.isArray(answer.aliases) && answer.aliases.length ? ` | ${answer.aliases.join('; ')}` : '';
+            return `${answer.canonical_text || ''}${aliases}`;
+        }).join('\n');
     }
 
     document.getElementById('genericQuestionFormCard').scrollIntoView({ behavior: 'smooth' });
@@ -1189,6 +1228,23 @@ document.getElementById('createGameBtn').addEventListener('click', function () {
         payload.scoring_mode = normalizeEstimationScoringMode(document.getElementById('estimationScoringMode').value);
     } else if (currentType === 'blackjack') {
         payload.scoring_mode = document.getElementById('blackjackScoringMode').value === 'rank' ? 'rank' : 'simple';
+    } else if (currentType === 'wer_weiss_mehr' && genericSelectedIds.size === 0) {
+        const questionText = document.getElementById('wwm-question').value.trim();
+        const answerLines = document.getElementById('wwm-answers').value
+            .split('\n')
+            .map(line => line.trim())
+            .filter(Boolean);
+        if (questionText && answerLines.length) {
+            payload.question_text = questionText;
+            payload.round_time_limit = parseInt(document.getElementById('wwm-time').value) || 30;
+            payload.answers = answerLines.map(line => {
+                const [canonical, aliasText] = line.split('|');
+                return {
+                    canonical_text: (canonical || '').trim(),
+                    aliases: aliasText ? aliasText.split(';').map(alias => alias.trim()).filter(Boolean) : [],
+                };
+            }).filter(answer => answer.canonical_text);
+        }
     }
 
     const isEdit = EDIT_MODE && EDIT_GAME_ID;
@@ -2322,6 +2378,11 @@ function resetGenericForm() {
     document.getElementById('sl-starting-item').innerHTML = '<option value="">— Zufällig —</option>';
     addSlItem(); addSlItem();
 
+    document.getElementById('wwm-id').value = '';
+    document.getElementById('wwm-question').value = '';
+    document.getElementById('wwm-time').value = 30;
+    document.getElementById('wwm-answers').value = '';
+
     document.getElementById('genericFormTitle').innerHTML =
         '<i data-lucide="help-circle" style="width:18px;height:18px;" class="me-2"></i>Add New Question';
     document.querySelectorAll('.generic-submit-btn').forEach(b => {
@@ -2641,6 +2702,34 @@ document.getElementById('sl-submit').addEventListener('click', function () {
     genericPost('/admin-dashboard/sorting-ladder/topics/add/', payload, false, this,
         p => ({ title: p.title, description: p.description, item_count: items.length }),
         'topic_id');
+});
+
+// Wer weiß mehr
+document.getElementById('wwm-submit').addEventListener('click', function () {
+    const questionText = document.getElementById('wwm-question').value.trim();
+    const answerLines = document.getElementById('wwm-answers').value
+        .split('\n')
+        .map(line => line.trim())
+        .filter(Boolean);
+    if (!questionText) { alert('Frage ist ein Pflichtfeld.'); return; }
+    if (!answerLines.length) { alert('Mindestens eine korrekte Antwort ist erforderlich.'); return; }
+    const answers = answerLines.map(line => {
+        const [canonical, aliasText] = line.split('|');
+        return {
+            canonical_text: (canonical || '').trim(),
+            aliases: aliasText ? aliasText.split(';').map(alias => alias.trim()).filter(Boolean) : [],
+        };
+    }).filter(answer => answer.canonical_text);
+    const wwmId = parseInt(document.getElementById('wwm-id').value);
+    const payload = {
+        question_text: questionText,
+        round_time_limit: parseInt(document.getElementById('wwm-time').value) || 30,
+        answers,
+        ...(wwmId ? { question_id: wwmId } : {}),
+    };
+    genericPost('/admin-dashboard/wer-weiss-mehr/add-question/', payload, true, this,
+        p => ({ question_text: p.question_text, answer_count: p.answers.length, round_time_limit: p.round_time_limit }),
+        'question_id');
 });
 </script>
 {% endblock %}

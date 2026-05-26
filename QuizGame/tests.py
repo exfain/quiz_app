@@ -1,14 +1,15 @@
 import json
+from datetime import timedelta
 from unittest.mock import patch
 
 from asgiref.sync import async_to_sync
 from django.contrib.auth import get_user_model
-from django.test import TestCase
+from django.test import TestCase, TransactionTestCase
 from django.urls import reverse
 from django.utils import timezone
 
 from .consumers import QuizConsumer
-from .models import Quiz, QuizAnswer, QuizParticipant, QuizQuestion
+from .models import Quiz, QuizAnswer, QuizParticipant, QuizQuestion, QuizSession
 
 
 User = get_user_model()
@@ -213,7 +214,7 @@ class QuizShortAnswerViewIntegrationTest(TestCase):
         self.assertNotContains(response, '<option value="double_answer">', html=False)
 
 
-class QuizTutorialRuntimeTests(TestCase):
+class QuizTutorialRuntimeTests(TransactionTestCase):
     def setUp(self):
         self.user = User.objects.create_user(username='quiz-tutorial-user', password='pass')
         self.quiz = Quiz.objects.create(
@@ -312,7 +313,7 @@ class QuizTutorialRuntimeTests(TestCase):
         self.assertContains(response, "case 'tutorial_start':")
 
 
-class QuizPlayScoreBoxTests(TestCase):
+class QuizPlayScoreBoxTests(TransactionTestCase):
     def setUp(self):
         self.user = User.objects.create_user(username='quiz-score-user', password='pass')
         self.quiz = Quiz.objects.create(
@@ -343,7 +344,8 @@ class QuizPlayScoreBoxTests(TestCase):
         self.quiz.selected_questions.set([question_one, question_two, question_three])
         self.quiz.question_order = [question_one.id, question_two.id, question_three.id]
         self.quiz.current_question = question_two
-        self.quiz.save(update_fields=['question_order', 'current_question'])
+        self.quiz.status = 'active'
+        self.quiz.save(update_fields=['question_order', 'current_question', 'status'])
 
         QuizAnswer.objects.create(
             quiz=self.quiz,
@@ -371,7 +373,7 @@ class QuizPlayScoreBoxTests(TestCase):
         self.assertEqual(response.context['score_total_questions'], 3)
         self.assertContains(response, 'class="quiz-score-box score-box"')
         self.assertContains(response, 'id="quizScoreTotal"')
-        self.assertContains(response, '>1/3<', html=True)
+        self.assertContains(response, 'id="quizScoreTotal">1/3</div>')
 
     def test_quiz_play_uses_actual_current_send_order_not_config_order(self):
         question_one = self._create_question('Question one', 'True')
@@ -380,7 +382,8 @@ class QuizPlayScoreBoxTests(TestCase):
         self.quiz.selected_questions.set([question_one, question_two, question_three])
         self.quiz.question_order = [question_one.id, question_two.id, question_three.id]
         self.quiz.current_question = question_three
-        self.quiz.save(update_fields=['question_order', 'current_question'])
+        self.quiz.status = 'active'
+        self.quiz.save(update_fields=['question_order', 'current_question', 'status'])
 
         response = self.client.get(
             reverse('quiz:play', args=[self.quiz.room_code, self.participant.name]),
@@ -404,7 +407,8 @@ class QuizPlayScoreBoxTests(TestCase):
         self.quiz.selected_questions.set([question_one, question_two, question_three])
         self.quiz.question_order = [question_one.id, question_two.id, question_three.id]
         self.quiz.current_question = question_two
-        self.quiz.save(update_fields=['question_order', 'current_question'])
+        self.quiz.status = 'active'
+        self.quiz.save(update_fields=['question_order', 'current_question', 'status'])
 
         QuizAnswer.objects.create(
             quiz=self.quiz,
@@ -435,7 +439,8 @@ class QuizPlayScoreBoxTests(TestCase):
         self.quiz.selected_questions.set([question_one, question_two])
         self.quiz.question_order = [question_one.id, question_two.id]
         self.quiz.current_question = question_one
-        self.quiz.save(update_fields=['question_order', 'current_question'])
+        self.quiz.status = 'active'
+        self.quiz.save(update_fields=['question_order', 'current_question', 'status'])
 
         response = self.client.get(
             reverse('quiz:play', args=[self.quiz.room_code, self.participant.name]),
@@ -450,11 +455,11 @@ class QuizPlayScoreBoxTests(TestCase):
         self.assertContains(response, 'this.applyPendingProgressEvaluationIfEnded(data.question_id);')
         self.assertContains(response, "case 'answer_corrected':")
         self.assertContains(response, 'this.applyManualAnswerCorrection(data);')
-        self.assertContains(response, 'this.pushProgressEntry(true, data.question_id);')
+        self.assertContains(response, 'this.pushProgressEntry(!!data.is_correct, data.question_id);')
         self.assertContains(response, 'if (!awaitingFinalizedAnswer) {')
         self.assertContains(response, 'this.reorderScoreboardForQuestionStart(question.id);')
         self.assertContains(response, '<span class="quiz-score-empty score-box__empty">__</span>', html=True)
-        self.assertContains(response, '>0/2<', html=True)
+        self.assertContains(response, 'id="quizScoreTotal">0/2</div>')
         self.assertNotContains(response, 'id="myScoreHeader"')
 
     def test_quiz_answer_scoring_uses_one_point_per_correct_answer(self):
@@ -482,7 +487,8 @@ class QuizPlayScoreBoxTests(TestCase):
     def test_quiz_play_keeps_legacy_quiz_without_selected_questions_loadable(self):
         question = self._create_question('Legacy question', 'True')
         self.quiz.current_question = question
-        self.quiz.save(update_fields=['current_question'])
+        self.quiz.status = 'active'
+        self.quiz.save(update_fields=['current_question', 'status'])
 
         response = self.client.get(
             reverse('quiz:play', args=[self.quiz.room_code, self.participant.name]),
@@ -581,6 +587,10 @@ class QuizHostManualCorrectTests(TestCase):
         self.assertEqual(live_response['answer_text'], 'First: Grace | Last: Hopper')
         self.assertFalse(live_response['is_correct'])
         self.assertTrue(live_response['can_mark_correct'])
+        self.assertEqual(
+            [(field['key'], field['is_correct']) for field in live_response['field_results']],
+            [('answer_1', False), ('answer_2', False)],
+        )
 
     def test_host_can_promote_short_answer_to_correct_without_double_scoring(self):
         question = QuizQuestion.objects.create(
@@ -639,6 +649,62 @@ class QuizHostManualCorrectTests(TestCase):
         self.assertEqual(answer.points_earned, 1)
         self.assertEqual(participant.total_score, 1)
 
+    def test_host_can_correct_one_short_answer_field(self):
+        question = QuizQuestion.objects.create(
+            question_text='Song and artist?',
+            question_type='short_answer',
+            correct_answer='Imagine',
+            correct_answer_2='John Lennon',
+            answer_label_1='Titel',
+            answer_label_2='Sänger',
+            created_by=self.user,
+        )
+        quiz = Quiz.objects.create(
+            title='Quick Quiz',
+            creator=self.user,
+            status='active',
+            started_at=timezone.now(),
+            current_question=question,
+            question_start_time=timezone.now(),
+        )
+        participant = QuizParticipant.objects.create(quiz=quiz, name='Alice', is_active=True)
+        answer = QuizAnswer.objects.create(
+            quiz=quiz,
+            participant=participant,
+            question=question,
+            answer_text=question.serialize_short_answer_submission({
+                'answer_1': 'Imagine',
+                'answer_2': 'John Lenon',
+            }),
+            time_taken=4.2,
+        )
+
+        self.assertFalse(answer.is_correct)
+        self.assertEqual(
+            [(field['key'], field['is_correct']) for field in answer.get_short_answer_field_results()],
+            [('answer_1', True), ('answer_2', False)],
+        )
+
+        response = self.client.post(
+            reverse('admin_dashboard:promote_quiz_answer_correct', args=[quiz.room_code]),
+            data=json.dumps({'answer_id': answer.id, 'field_key': 'answer_2'}),
+            content_type='application/json',
+        )
+
+        self.assertEqual(response.status_code, 200, response.content)
+        answer.refresh_from_db()
+        participant.refresh_from_db()
+        payload = response.json()
+
+        self.assertTrue(answer.is_correct)
+        self.assertEqual(answer.points_earned, 1)
+        self.assertEqual(participant.total_score, 1)
+        self.assertFalse(payload['can_mark_correct'])
+        self.assertEqual(
+            [(field['key'], field['is_correct']) for field in payload['field_results']],
+            [('answer_1', True), ('answer_2', True)],
+        )
+
     @patch('admin_dashboard.views.get_channel_layer')
     def test_host_promote_broadcasts_participant_scorebox_update(self, channel_layer_mock):
         question = QuizQuestion.objects.create(
@@ -691,7 +757,59 @@ class QuizHostManualCorrectTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, 'promote-correct-btn')
+        self.assertContains(response, 'promote-field-correct-btn')
         self.assertContains(response, reverse('admin_dashboard:promote_quiz_answer_correct', args=[quiz.room_code]))
+
+    def test_waiting_quiz_monitor_clears_stale_runtime_state(self):
+        question = QuizQuestion.objects.create(
+            question_text='Old running question',
+            question_type='true_false',
+            correct_answer='True',
+            created_by=self.user,
+        )
+        quiz = Quiz.objects.create(
+            title='Quick Quiz',
+            creator=self.user,
+            status='waiting',
+            started_at=timezone.now() - timedelta(days=5),
+            current_question=question,
+            question_start_time=timezone.now() - timedelta(days=5),
+        )
+        session = QuizSession.objects.create(
+            quiz=quiz,
+            current_question_number=3,
+            total_questions_sent=3,
+            is_question_active=True,
+            question_end_time=timezone.now() - timedelta(days=5),
+        )
+        participant = QuizParticipant.objects.create(
+            quiz=quiz,
+            name='Alice',
+            total_score=1,
+            questions_answered=1,
+            is_active=True,
+        )
+        QuizAnswer.objects.create(
+            quiz=quiz,
+            participant=participant,
+            question=question,
+            answer_text='True',
+            time_taken=1.0,
+        )
+
+        response = self.client.get(reverse('admin_dashboard:quiz_monitor', args=[quiz.room_code]))
+
+        self.assertEqual(response.status_code, 200)
+        quiz.refresh_from_db()
+        session.refresh_from_db()
+        participant.refresh_from_db()
+        self.assertIsNone(quiz.started_at)
+        self.assertIsNone(quiz.current_question)
+        self.assertIsNone(quiz.question_start_time)
+        self.assertFalse(session.is_question_active)
+        self.assertIsNone(session.question_end_time)
+        self.assertEqual(QuizAnswer.objects.filter(quiz=quiz).count(), 0)
+        self.assertEqual(participant.total_score, 0)
 
     def test_quiz_monitor_keeps_host_on_question_review_after_question_end(self):
         question = QuizQuestion.objects.create(
