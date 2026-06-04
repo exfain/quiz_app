@@ -37,3 +37,25 @@ This project is a web application designed to facilitate various games and quizz
 9. **Assign**
    - A drag-and-drop game where users match items from one set to another (e.g., matching countries with capitals).
    - Tracks progress and scores across multiple rounds.
+
+## Local Browser/E2E Tests
+
+Some Hub and admin-dashboard tests use Playwright with Django LiveServer/Channels
+to simulate host and participant browser flows.
+
+Install the Python dependencies and Chromium browser locally:
+
+```powershell
+pip install -r requirements.txt
+python -m playwright install chromium
+```
+
+Run the focused Hub check-in E2E test:
+
+```powershell
+python manage.py test games_hub.test_check_in_e2e
+```
+
+If Playwright or Chromium is missing, the browser tests skip themselves instead
+of failing the full Django test suite. They run actively as soon as both are
+installed.

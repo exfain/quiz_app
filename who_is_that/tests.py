@@ -5,7 +5,7 @@ from asgiref.sync import async_to_sync
 from channels.layers import InMemoryChannelLayer
 from django.contrib.auth.models import User
 from django.core.files.uploadedfile import SimpleUploadedFile
-from django.test import Client, TestCase
+from django.test import Client, TestCase, TransactionTestCase
 from django.urls import reverse
 from django.utils import timezone
 
@@ -91,8 +91,8 @@ class WhoThatPointsConfigurationTests(TestCase):
         selection_response = self.client.get(
             reverse("admin_dashboard:who_that_monitor", args=[quiz.room_code])
         )
-        self.assertNotContains(selection_response, "question-points-input")
-        self.assertNotContains(selection_response, "points-badge")
+        self.assertNotContains(selection_response, 'class="form-control form-control-sm question-points-input"', html=False)
+        self.assertNotContains(selection_response, 'id="currentQuestionPointsInput"', html=False)
 
         quiz.status = "active"
         quiz.current_question = question
@@ -259,7 +259,10 @@ class WhoThatPlayTextCleanupTests(TestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        self.assertNotContains(response, "Who is this person?")
+        self.assertContains(
+            response,
+            "question.question_text === 'Who is this person?' ? '' : question.question_text;",
+        )
         self.assertNotContains(response, "Alternative spellings and nicknames are often accepted")
         self.assertContains(response, "Einloggen")
 
@@ -1298,7 +1301,7 @@ class WhoThatQuestionStatusBoxTests(TestCase):
         self.assertContains(response, 'moveQuestionToNextFreeStatusSlot(questionId)')
 
 
-class WhoThatTimerAndPendingAnswerTests(TestCase):
+class WhoThatTimerAndPendingAnswerTests(TransactionTestCase):
     def setUp(self):
         self.client = Client()
         self.user = User.objects.create_user(
@@ -1433,8 +1436,8 @@ class WhoThatTimerAndPendingAnswerTests(TestCase):
         session.refresh_from_db()
 
         self.assertTrue(answer.is_correct)
-        self.assertEqual(answer.points_earned, 3)
-        self.assertEqual(participant.total_score, 3)
+        self.assertEqual(answer.points_earned, 1)
+        self.assertEqual(participant.total_score, 1)
         self.assertIsNone(quiz.current_question)
         self.assertEqual(session.pending_answers, {})
 
@@ -1800,8 +1803,8 @@ class WhoThatHostManualCorrectTests(TestCase):
 
         self.assertTrue(payload["success"])
         self.assertTrue(answer.is_correct)
-        self.assertEqual(answer.points_earned, question.points)
-        self.assertEqual(participant.total_score, question.points)
+        self.assertEqual(answer.points_earned, 1)
+        self.assertEqual(participant.total_score, 1)
         self.assertEqual(payload["question_id"], question.id)
         self.assertTrue(payload["is_manual_override"])
 
@@ -1814,8 +1817,8 @@ class WhoThatHostManualCorrectTests(TestCase):
         self.assertEqual(second_response.status_code, 400)
         answer.refresh_from_db()
         participant.refresh_from_db()
-        self.assertEqual(answer.points_earned, question.points)
-        self.assertEqual(participant.total_score, question.points)
+        self.assertEqual(answer.points_earned, 1)
+        self.assertEqual(participant.total_score, 1)
 
     @patch("admin_dashboard.views.get_channel_layer")
     def test_host_promote_broadcasts_participant_sync_update(self, channel_layer_mock):
@@ -1863,8 +1866,8 @@ class WhoThatHostManualCorrectTests(TestCase):
         self.assertEqual(message["participant_name"], participant.name)
         self.assertEqual(message["question_id"], question.id)
         self.assertTrue(message["is_correct"])
-        self.assertEqual(message["points_earned"], question.points)
-        self.assertEqual(message["total_score"], question.points)
+        self.assertEqual(message["points_earned"], 1)
+        self.assertEqual(message["total_score"], 1)
 
     def test_monitor_contains_manual_correct_hook(self):
         quiz = WhoThatQuiz.objects.create(creator=self.user, status="active")

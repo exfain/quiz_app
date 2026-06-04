@@ -64,6 +64,42 @@
         </div>
     </div>
 
+    <div class="card mb-4">
+        <div class="card-header d-flex flex-wrap justify-content-between align-items-center gap-2">
+            <div>
+                <h5 class="mb-0"><i data-lucide="user-check" class="me-2"></i>Teilnehmer-Check-in</h5>
+                <small class="text-muted" id="checkInStatusText">Check-in-Status wird geladen.</small>
+            </div>
+            <div class="d-flex flex-wrap gap-2">
+                <button id="startCheckInBtn" class="btn btn-sm btn-outline-primary">Check-in starten</button>
+                <button id="completeCheckInBtn" class="btn btn-sm btn-success">Check-in abschlieÃŸen</button>
+                <button id="resetCheckInBtn" class="btn btn-sm btn-outline-secondary">ZurÃ¼cksetzen</button>
+            </div>
+        </div>
+        <div class="card-body">
+            <div id="checkInError" class="alert alert-danger d-none mb-3"></div>
+            <div class="d-flex flex-wrap gap-2 mb-3">
+                <span class="badge bg-light text-dark border" id="checkInTotalBadge">Teilnehmer: 0</span>
+                <span class="badge bg-light text-dark border" id="checkInReadyBadge">Bereit: 0</span>
+                <span class="badge bg-light text-dark border" id="checkInLockedBadge">Locked: -</span>
+            </div>
+            <div class="table-responsive">
+                <table class="table table-sm align-middle mb-0">
+                    <thead>
+                        <tr>
+                            <th>Teilnehmer</th>
+                            <th>Status</th>
+                            <th>Scoring</th>
+                        </tr>
+                    </thead>
+                    <tbody id="checkInParticipantRows">
+                        <tr><td colspan="3" class="text-muted">Noch keine Teilnehmer.</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
     <div class="row g-4">
         <!-- Left: Game Steps -->
         <div class="col-12 col-lg-7">
@@ -163,6 +199,73 @@
                 <li class="player-row" data-nickname="{{ p.nickname }}"></li>
                 {% endfor %}
             </ul>
+        </div>
+    </div>
+
+    <!-- Overall Scoring Settings -->
+    <div class="row g-4 mt-0">
+        <div class="col-12">
+            <div class="card">
+                <div class="card-header d-flex flex-wrap justify-content-between align-items-center gap-2">
+                    <div>
+                        <h5 class="mb-0"><i data-lucide="calculator" class="me-2"></i>Gesamtwertung</h5>
+                        {% if scoring_settings_locked %}
+                        <small class="text-muted">Gesperrt, weil bereits ein Spiel gestartet wurde.</small>
+                        {% else %}
+                        <small class="text-muted">Bis zum Start des ersten Spiels Ã¤nderbar.</small>
+                        {% endif %}
+                    </div>
+                    <button id="saveScoringSettingsBtn" class="btn btn-sm btn-outline-primary" {% if scoring_settings_locked %}disabled{% endif %}>
+                        Speichern
+                    </button>
+                </div>
+                <div class="card-body">
+                    <div id="scoringSettingsAlert" class="alert d-none mb-3" role="alert"></div>
+                    <div class="row g-3">
+                        <div class="col-md-3">
+                            <label class="form-label fw-semibold">Modus</label>
+                            <select id="overallScoringMode" class="form-select" {% if scoring_settings_locked %}disabled{% endif %}>
+                                <option value="simple" {% if session.overall_scoring_mode == 'simple' %}selected{% endif %}>Einfach</option>
+                                <option value="ranking" {% if session.overall_scoring_mode == 'ranking' %}selected{% endif %}>Ranking</option>
+                            </select>
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label fw-semibold">Gewichtung</label>
+                            <select id="overallWeightingMode" class="form-select" {% if scoring_settings_locked %}disabled{% endif %}>
+                                <option value="none" {% if session.overall_weighting_mode == 'none' %}selected{% endif %}>Keine</option>
+                                <option value="linear_cap" {% if session.overall_weighting_mode == 'linear_cap' %}selected{% endif %}>Linear mit Cap</option>
+                            </select>
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label fw-semibold">Schritt</label>
+                            <input id="weightingStep" type="number" class="form-control" value="{{ session.weighting_step }}" step="0.01" min="0" {% if scoring_settings_locked %}disabled{% endif %}>
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label fw-semibold">Cap</label>
+                            <input id="weightingCap" type="number" class="form-control" value="{{ session.weighting_cap }}" step="0.1" min="1" {% if scoring_settings_locked %}disabled{% endif %}>
+                        </div>
+                    </div>
+                    <div id="scoreRangePreviewControls" class="border-top mt-3 pt-3 {% if session.check_in_completed %}d-none{% endif %}">
+                        <div class="form-check mb-2">
+                            <input id="scoreRangePreviewEnabled" class="form-check-input" type="checkbox">
+                            <label class="form-check-label fw-semibold" for="scoreRangePreviewEnabled">
+                                Punkte mit theoretischer Teilnehmerzahl berechnen
+                            </label>
+                        </div>
+                        <div class="row g-2 align-items-end">
+                            <div class="col-sm-4 col-lg-3">
+                                <label class="form-label small text-muted mb-1" for="scoreRangePreviewCount">Teilnehmerzahl</label>
+                                <input id="scoreRangePreviewCount" type="number" class="form-control form-control-sm" min="1" max="200" step="1" value="8" disabled>
+                            </div>
+                            <div class="col-sm-8 col-lg-9">
+                                <div id="scoreRangePreviewHint" class="small text-muted">
+                                    Nur Vorschau: erzeugt keine Teilnehmer und setzt keinen Check-in-Lock.
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
         </div>
     </div>
 
@@ -559,7 +662,9 @@ const NEXT_PLANNED_STEP_ID = {% if next_planned_step_id %}{{ next_planned_step_i
 const SESSION_CODE = '{{ session.code }}';
 let sessionStarted = {{ session.started_at|yesno:"true,false" }} && {{ session.is_active|yesno:"true,false" }};
 let scoreboardVisible = {{ session.scoreboard_visible|yesno:"true,false" }};
+const SCORING_SETTINGS_LOCKED = {{ scoring_settings_locked|yesno:"true,false" }};
 const NEXT_PLANNED_STEP_ID = {% if next_planned_step_id %}{{ next_planned_step_id }}{% else %}null{% endif %};
+const SCORE_RANGE_PREVIEW_STORAGE_KEY = `hub:${SESSION_CODE}:scoreRangePreview`;
 const GAME_MONITOR_ROUTES = {
     quiz: '/admin-dashboard/quiz/{room_code}/monitor/',
     assign: '/admin-dashboard/assign/{room_code}/monitor/',
@@ -579,6 +684,7 @@ let draggedStepRow = null;
 let outOfOrderAction = null;
 let selectedGameInstanceIds = new Set();
 let reactivationConflictState = null;
+let currentCheckInStatus = '{{ session.check_in_status }}';
 
 document.addEventListener('DOMContentLoaded', function() {
     const startSessionBtn = document.getElementById('startSessionBtn');
@@ -606,6 +712,25 @@ document.addEventListener('DOMContentLoaded', function() {
     const conflictModal = conflictModalEl ? bootstrap.Modal.getOrCreateInstance(conflictModalEl) : null;
     const stepCount = document.getElementById('stepCount');
     const rankLabels = ['gold', 'silver', 'bronze'];
+    const overallScoringMode = document.getElementById('overallScoringMode');
+    const overallWeightingMode = document.getElementById('overallWeightingMode');
+    const weightingStep = document.getElementById('weightingStep');
+    const weightingCap = document.getElementById('weightingCap');
+    const saveScoringSettingsBtn = document.getElementById('saveScoringSettingsBtn');
+    const scoringSettingsAlert = document.getElementById('scoringSettingsAlert');
+    const scoreRangePreviewControls = document.getElementById('scoreRangePreviewControls');
+    const scoreRangePreviewEnabled = document.getElementById('scoreRangePreviewEnabled');
+    const scoreRangePreviewCount = document.getElementById('scoreRangePreviewCount');
+    const scoreRangePreviewHint = document.getElementById('scoreRangePreviewHint');
+    const startCheckInBtn = document.getElementById('startCheckInBtn');
+    const completeCheckInBtn = document.getElementById('completeCheckInBtn');
+    const resetCheckInBtn = document.getElementById('resetCheckInBtn');
+    const checkInStatusText = document.getElementById('checkInStatusText');
+    const checkInError = document.getElementById('checkInError');
+    const checkInTotalBadge = document.getElementById('checkInTotalBadge');
+    const checkInReadyBadge = document.getElementById('checkInReadyBadge');
+    const checkInLockedBadge = document.getElementById('checkInLockedBadge');
+    const checkInParticipantRows = document.getElementById('checkInParticipantRows');
 
     function setStatus(kind, text) {
         const wrap = document.getElementById('wsStatus');
@@ -835,10 +960,397 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 
     function fetchSessionScoreboard() {
-        fetch(`/hub/api/session/${SESSION_CODE}/leaderboard/`)
+        const url = buildLeaderboardUrl();
+        if (!url) return;
+        fetch(url)
             .then((response) => response.json())
-            .then((data) => renderSessionScoreboard(data))
+            .then((data) => {
+                if (data.error) {
+                    setScoreRangePreviewHint(data.error, 'danger');
+                    return;
+                }
+                renderSessionScoreboard(data);
+            })
             .catch(() => {});
+    }
+
+    function escapeHtml(value) {
+        return String(value ?? '').replace(/[&<>"']/g, (char) => ({
+            '&': '&amp;',
+            '<': '&lt;',
+            '>': '&gt;',
+            '"': '&quot;',
+            "'": '&#39;',
+        }[char]));
+    }
+
+    function formatScore(value) {
+        const number = Number(value || 0);
+        if (Number.isInteger(number)) return String(number);
+        return number.toFixed(2).replace(/0+$/, '').replace(/\.$/, '');
+    }
+
+    function setScoreRangePreviewHint(message, kind = 'muted') {
+        if (!scoreRangePreviewHint) return;
+        scoreRangePreviewHint.className = `small text-${kind}`;
+        scoreRangePreviewHint.textContent = message || '';
+    }
+
+    function loadScoreRangePreviewSettings() {
+        if (!scoreRangePreviewEnabled || !scoreRangePreviewCount) return;
+        try {
+            const stored = JSON.parse(localStorage.getItem(SCORE_RANGE_PREVIEW_STORAGE_KEY) || '{}');
+            scoreRangePreviewEnabled.checked = !!stored.enabled;
+            if (stored.count) {
+                scoreRangePreviewCount.value = stored.count;
+            }
+        } catch (_) {}
+    }
+
+    function saveScoreRangePreviewSettings() {
+        if (!scoreRangePreviewEnabled || !scoreRangePreviewCount) return;
+        try {
+            localStorage.setItem(SCORE_RANGE_PREVIEW_STORAGE_KEY, JSON.stringify({
+                enabled: !!scoreRangePreviewEnabled.checked,
+                count: scoreRangePreviewCount.value || '',
+            }));
+        } catch (_) {}
+    }
+
+    function updateScoreRangePreviewControls(checkInStatus = currentCheckInStatus) {
+        if (!scoreRangePreviewControls || !scoreRangePreviewEnabled || !scoreRangePreviewCount) return;
+        const rankingModeSelected = overallScoringMode?.value === 'ranking';
+        const checkInCompleted = checkInStatus === 'completed';
+        const hidden = checkInCompleted || !rankingModeSelected;
+        scoreRangePreviewControls.classList.toggle('d-none', hidden);
+        scoreRangePreviewEnabled.disabled = checkInCompleted || !rankingModeSelected;
+        scoreRangePreviewCount.disabled = hidden || !scoreRangePreviewEnabled.checked;
+        if (checkInCompleted) {
+            setScoreRangePreviewHint('Check-in abgeschlossen: es wird die feste eingecheckte Teilnehmerzahl verwendet.');
+        } else if (!rankingModeSelected) {
+            setScoreRangePreviewHint('Preview ist nur im Ranking-Modus relevant.');
+        } else if (scoreRangePreviewEnabled.checked) {
+            setScoreRangePreviewHint('Preview aktiv: erzeugt keine Teilnehmer und setzt keinen Check-in-Lock.');
+        } else {
+            setScoreRangePreviewHint('Ohne Preview wird die aktuelle echte Teilnehmerzahl verwendet, falls vorhanden.');
+        }
+    }
+
+    function getScoreRangePreviewOverride() {
+        if (!scoreRangePreviewEnabled || !scoreRangePreviewCount) return null;
+        if (currentCheckInStatus === 'completed') return null;
+        if (overallScoringMode?.value !== 'ranking') return null;
+        if (!scoreRangePreviewEnabled.checked) return null;
+        const rawValue = String(scoreRangePreviewCount.value || '').trim();
+        const value = Number(rawValue);
+        if (!Number.isInteger(value) || value < 1 || value > 200) {
+            setScoreRangePreviewHint('Bitte eine ganze Teilnehmerzahl zwischen 1 und 200 eingeben.', 'danger');
+            return 'invalid';
+        }
+        setScoreRangePreviewHint(`Preview mit ${value} Teilnehmern.`, 'muted');
+        return value;
+    }
+
+    function buildLeaderboardUrl() {
+        const url = new URL(`/hub/api/session/${SESSION_CODE}/leaderboard/`, window.location.origin);
+        const override = getScoreRangePreviewOverride();
+        if (override === 'invalid') return null;
+        if (override !== null) {
+            url.searchParams.set('participant_count_override', String(override));
+        }
+        return url.toString();
+    }
+
+    function renderSessionScoreboard(data) {
+        const wrap = document.getElementById('sessionScoreboardWrap');
+        const players = data.participants || [];
+        const instances = data.instances || {};
+        const settings = data.settings || {};
+        const rankingMode = settings.overall_scoring_mode === 'ranking';
+        const rankingPool = settings.ranking_pool || {};
+        const rankingSummary = rankingMode
+            ? `<div class="alert alert-light border py-2 mb-3 small">
+                <strong>Teilnehmerzahl fÃ¼r Rankingwertung:</strong>
+                ${rankingPool.available ? escapeHtml(rankingPool.participant_count) : '-'}
+                <span class="text-muted ms-2">Basis: ${escapeHtml(rankingPool.basis_label || '-')}</span>
+                <div class="text-muted">${escapeHtml(rankingPool.message || '')}</div>
+            </div>`
+            : '';
+
+        if (players.length === 0) {
+            wrap.innerHTML = `${rankingSummary}<p class="text-muted text-center py-4 mb-0">Noch keine Teilnehmer im Scoreboard.</p>`;
+            return;
+        }
+
+        const instanceKeys = Object.keys(instances).sort((a, b) => {
+            return (instances[a].game_number || 0) - (instances[b].game_number || 0);
+        });
+        const weighted = settings.overall_weighting_mode === 'linear_cap';
+
+        const headerCols = instanceKeys.map((key) => {
+            const meta = instances[key] || {};
+            const range = meta.score_range || {};
+            const title = meta.title || meta.name || meta.type || key;
+            const typeLine = meta.type && meta.type !== title
+                ? `<div class="small text-muted">${escapeHtml(meta.type)}</div>`
+                : '';
+            const weightLine = weighted
+                ? `<div class="small text-muted">x${formatScore(meta.weight || 1)}</div>`
+                : '';
+            const rangeLine = rankingMode
+                ? (range.available
+                    ? `<div class="small text-muted">Range ${formatScore(range.weighted_min)}-${formatScore(range.weighted_max)}</div>`
+                    : '<div class="small text-muted">Range nicht berechenbar</div>')
+                : '';
+            return `<th class="center sb-game">
+                <div>#${escapeHtml(meta.game_number || '')} ${escapeHtml(title)}</div>
+                ${typeLine}
+                ${weightLine}
+                ${rangeLine}
+            </th>`;
+        }).join('');
+
+        const rows = players.map((player, index) => {
+            const rankClass = rankLabels[index] || '';
+            const gameCols = instanceKeys.map((key) => {
+                const rawScore = player.game_scores ? player.game_scores[key] : undefined;
+                if (rawScore === undefined) return '<td class="sb-game">&mdash;</td>';
+                const overallScore = player.game_overall_scores ? player.game_overall_scores[key] : rawScore;
+                const baseScore = player.game_base_scores ? player.game_base_scores[key] : rawScore;
+                const rank = player.game_ranks ? player.game_ranks[key] : null;
+                const detail = rankingMode
+                    ? `<div class="small text-muted">Rang ${rank || '-'}: ${formatScore(baseScore)} Pkt.</div>`
+                    : '';
+                const weightedDetail = (weighted || rankingMode)
+                    ? `<div class="small text-muted">+${formatScore(overallScore)} gesamt</div>`
+                    : '';
+                return `<td class="sb-game">
+                    <div class="fw-semibold">${formatScore(rawScore)}</div>
+                    ${detail}
+                    ${weightedDetail}
+                </td>`;
+            }).join('');
+
+            const adjustment = Number(player.score_adjustment || 0);
+            const sessionPoints = Number(player.weighted_score || 0);
+            const total = Number(player.total_with_adjustment ?? (sessionPoints + adjustment));
+            const participantId = player.hub_participant_id;
+            const adjustmentControls = participantId
+                ? `<div class="d-flex align-items-center justify-content-center gap-1">
+                    <button class="btn btn-sm btn-outline-secondary sb-adj-btn" data-pid="${participantId}" data-delta="-1" style="padding:0.1rem 0.4rem;font-size:0.8rem;">-</button>
+                    <span class="sb-adj-val" data-pid="${participantId}">${formatScore(adjustment)}</span>
+                    <button class="btn btn-sm btn-outline-secondary sb-adj-btn" data-pid="${participantId}" data-delta="1" style="padding:0.1rem 0.4rem;font-size:0.8rem;">+</button>
+                </div>`
+                : '&mdash;';
+
+            return `<tr data-pid="${participantId || ''}">
+                <td class="sb-rank ${rankClass}">${index + 1}</td>
+                <td>${escapeHtml(player.name)}</td>
+                ${gameCols}
+                <td class="sb-total sb-session-points">${formatScore(sessionPoints)}</td>
+                <td class="sb-adj">${adjustmentControls}</td>
+                <td class="sb-total sb-sum" data-pid="${participantId || ''}">${formatScore(total)}</td>
+            </tr>`;
+        }).join('');
+
+        wrap.innerHTML = `${rankingSummary}
+            <table class="sb-table">
+                <thead>
+                    <tr>
+                        <th class="sb-rank">#</th>
+                        <th>Teilnehmer</th>
+                        ${headerCols}
+                        <th class="center sb-total">Gesamtwertung</th>
+                        <th class="center sb-adj">Korrektur</th>
+                        <th class="center sb-total">Total</th>
+                    </tr>
+                </thead>
+                <tbody>${rows}</tbody>
+            </table>`;
+
+        wrap.querySelectorAll('.sb-adj-btn').forEach((btn) => {
+            btn.addEventListener('click', function() {
+                const participantId = this.dataset.pid;
+                const delta = Number(this.dataset.delta || 0);
+                const valueEl = wrap.querySelector(`.sb-adj-val[data-pid="${participantId}"]`);
+                const sumEl = wrap.querySelector(`.sb-sum[data-pid="${participantId}"]`);
+                const row = wrap.querySelector(`tr[data-pid="${participantId}"]`);
+                const currentAdjustment = Number(valueEl.textContent) || 0;
+                const newAdjustment = currentAdjustment + delta;
+                const sessionPoints = Number(row.querySelector('.sb-session-points').textContent) || 0;
+
+                valueEl.textContent = formatScore(newAdjustment);
+                sumEl.textContent = formatScore(sessionPoints + newAdjustment);
+
+                fetch('{% url "games_hub:set_hub_participant_score" %}', {
+                    method: 'POST',
+                    headers: {
+                        'X-CSRFToken': '{{ csrf_token }}',
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ participant_id: participantId, score: newAdjustment }),
+                }).catch(() => {
+                    valueEl.textContent = formatScore(currentAdjustment);
+                    sumEl.textContent = formatScore(sessionPoints + currentAdjustment);
+                });
+            });
+        });
+    }
+
+    function showScoringSettingsAlert(kind, message) {
+        if (!scoringSettingsAlert) return;
+        scoringSettingsAlert.className = `alert alert-${kind} mb-3`;
+        scoringSettingsAlert.textContent = message;
+        setTimeout(() => {
+            scoringSettingsAlert.classList.add('d-none');
+        }, 3500);
+    }
+
+    async function saveScoringSettings() {
+        if (SCORING_SETTINGS_LOCKED || !saveScoringSettingsBtn) return;
+        saveScoringSettingsBtn.disabled = true;
+        try {
+            const response = await fetch(`/hub/api/session/${SESSION_CODE}/scoring-settings/`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRFToken': '{{ csrf_token }}',
+                },
+                body: JSON.stringify({
+                    overall_scoring_mode: overallScoringMode?.value || 'simple',
+                    overall_weighting_mode: overallWeightingMode?.value || 'none',
+                    weighting_step: weightingStep?.value || 0.15,
+                    weighting_cap: weightingCap?.value || 2.0,
+                }),
+            });
+            const payload = await response.json().catch(() => ({
+                success: false,
+                error: `Der Server hat keine JSON-Antwort geliefert (HTTP ${response.status}).`,
+            }));
+            if (!response.ok || !payload.success) {
+                throw new Error(payload.error || 'Die Gesamtwertung konnte nicht gespeichert werden.');
+            }
+            showScoringSettingsAlert('success', 'Gesamtwertung gespeichert.');
+            fetchSessionScoreboard();
+        } catch (error) {
+            showScoringSettingsAlert('danger', error.message || 'Die Gesamtwertung konnte nicht gespeichert werden.');
+        } finally {
+            saveScoringSettingsBtn.disabled = false;
+        }
+    }
+
+    function showCheckInError(message) {
+        if (!checkInError) return;
+        checkInError.textContent = message || '';
+        checkInError.classList.toggle('d-none', !message);
+    }
+
+    function renderCheckInState(payload) {
+        if (!payload || !payload.check_in) return;
+        const checkIn = payload.check_in;
+        const counts = payload.counts || {};
+        const participants = payload.participants || [];
+        const locked = !!checkIn.locked || checkIn.status === 'completed';
+        currentCheckInStatus = checkIn.status || currentCheckInStatus;
+
+        if (checkInStatusText) {
+            const labels = {
+                not_started: 'Nicht gestartet',
+                open: 'Offen',
+                completed: 'Abgeschlossen',
+            };
+            checkInStatusText.textContent = `Status: ${labels[checkIn.status] || checkIn.status}`;
+        }
+        if (checkInTotalBadge) checkInTotalBadge.textContent = `Teilnehmer: ${counts.total_participants || 0}`;
+        if (checkInReadyBadge) checkInReadyBadge.textContent = `Bereit: ${counts.checked_in || 0}`;
+        if (checkInLockedBadge) {
+            checkInLockedBadge.textContent = checkIn.locked_participant_count === null || checkIn.locked_participant_count === undefined
+                ? 'Locked: -'
+                : `Locked: ${checkIn.locked_participant_count}`;
+        }
+        if (startCheckInBtn) startCheckInBtn.disabled = locked || checkIn.status === 'open';
+        if (completeCheckInBtn) completeCheckInBtn.disabled = locked || checkIn.status !== 'open';
+        if (resetCheckInBtn) resetCheckInBtn.disabled = locked || checkIn.status === 'not_started';
+        updateScoreRangePreviewControls(currentCheckInStatus);
+
+        if (checkInParticipantRows) {
+            if (!participants.length) {
+                checkInParticipantRows.innerHTML = '<tr><td colspan="3" class="text-muted">Noch keine Teilnehmer.</td></tr>';
+            } else {
+                checkInParticipantRows.innerHTML = participants.map((participant) => {
+                    const statusLabels = {
+                        official: 'Bereit',
+                        checked_in: 'Bereit',
+                        pending: 'Offen',
+                        excluded: 'Ausgeschlossen',
+                        late: 'Nach Check-in beigetreten',
+                        not_official: 'Nicht eingecheckt',
+                    };
+                    const scoringLabels = {
+                        official: 'Offiziell',
+                        checked_in: 'Bereit',
+                        pending: '-',
+                        excluded: 'Ausgeschlossen',
+                        late: 'Nicht in offizieller Wertung',
+                        not_official: 'Nicht in offizieller Wertung',
+                    };
+                    const officialStatus = participant.official_status || 'pending';
+                    const status = statusLabels[officialStatus] || (participant.checked_in ? 'Bereit' : 'Offen');
+                    const scoring = scoringLabels[officialStatus] || (participant.scoring_eligible ? 'Offiziell' : '-');
+                    return `<tr>
+                        <td>${escapeHtml(participant.nickname || '')}</td>
+                        <td>${escapeHtml(status)}</td>
+                        <td>${escapeHtml(scoring)}</td>
+                    </tr>`;
+                }).join('');
+            }
+        }
+    }
+
+    async function fetchCheckInState() {
+        try {
+            const response = await fetch(`/hub/api/session/${SESSION_CODE}/check-in/`);
+            const payload = await response.json();
+            if (response.ok && payload.success) {
+                renderCheckInState(payload);
+            }
+        } catch (_) {}
+    }
+
+    async function postCheckInAction(path, body = {}) {
+        showCheckInError('');
+        try {
+            const response = await fetch(`/hub/api/session/${SESSION_CODE}/check-in/${path}/`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRFToken': '{{ csrf_token }}',
+                },
+                body: JSON.stringify(body),
+            });
+            const payload = await response.json().catch(() => ({
+                success: false,
+                error: `Der Server hat keine JSON-Antwort geliefert (HTTP ${response.status}).`,
+            }));
+            if (!response.ok || !payload.success) {
+                throw new Error(payload.error || 'Check-in-Aktion fehlgeschlagen.');
+            }
+            renderCheckInState(payload);
+        } catch (error) {
+            showCheckInError(error.message || 'Check-in-Aktion fehlgeschlagen.');
+        }
+    }
+
+    function showCheckInRequired(result) {
+        const message = result?.error || result?.message || 'Bitte schließe zuerst den Teilnehmer-Check-in ab.';
+        showCheckInError(message);
+        const checkInCard = checkInError?.closest('.card');
+        if (checkInCard) {
+            checkInCard.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+        if (startCheckInBtn && !startCheckInBtn.disabled) {
+            startCheckInBtn.focus();
+        }
     }
 
     function updateScoreboardToggle() {
@@ -880,6 +1392,8 @@ document.addEventListener('DOMContentLoaded', function() {
             requestActivation(context, 'inactive').then((result) => {
                 if (result.success) {
                     onSuccess();
+                } else if (result.check_in_required) {
+                    showCheckInRequired(result);
                 } else {
                     alert(result.error || result.message || 'Das Spiel konnte nicht aktiviert werden.');
                 }
@@ -903,6 +1417,10 @@ document.addEventListener('DOMContentLoaded', function() {
         if (conflictDeactivateBtn) conflictDeactivateBtn.disabled = false;
 
         if (!result.success) {
+            if (result.check_in_required) {
+                showCheckInRequired(result);
+                return;
+            }
             if (result.conflict && conflictMessage) {
                 const activeName = result.active_game?.display_name || result.active_game?.title || 'Unbekanntes Spiel';
                 reactivationConflictState.context.activeGameName = activeName;
@@ -1090,6 +1608,30 @@ document.addEventListener('DOMContentLoaded', function() {
         sendWhenSocketOpen({ type: 'toggle_scoreboard' });
     });
 
+    loadScoreRangePreviewSettings();
+    updateScoreRangePreviewControls();
+    overallScoringMode?.addEventListener('change', () => {
+        updateScoreRangePreviewControls();
+        fetchSessionScoreboard();
+    });
+    scoreRangePreviewEnabled?.addEventListener('change', () => {
+        saveScoreRangePreviewSettings();
+        updateScoreRangePreviewControls();
+        fetchSessionScoreboard();
+    });
+    scoreRangePreviewCount?.addEventListener('input', () => {
+        saveScoreRangePreviewSettings();
+        fetchSessionScoreboard();
+    });
+    saveScoringSettingsBtn?.addEventListener('click', saveScoringSettings);
+    startCheckInBtn?.addEventListener('click', () => postCheckInAction('start'));
+    completeCheckInBtn?.addEventListener('click', () => postCheckInAction('complete'));
+    resetCheckInBtn?.addEventListener('click', () => {
+        if (confirm('Check-in wirklich zurÃ¼cksetzen?')) {
+            postCheckInAction('reset');
+        }
+    });
+
     gameTypeSelect?.addEventListener('change', () => {
         if (gameTypeSelect.value) {
             loadGameInstances(gameTypeSelect.value);
@@ -1206,6 +1748,8 @@ document.addEventListener('DOMContentLoaded', function() {
                 if (result.conflict) {
                     context.activeGameName = result.active_game?.display_name || result.active_game?.title || 'Unbekanntes Spiel';
                     openConflictModal(context, () => window.location.reload());
+                } else if (result.check_in_required) {
+                    showCheckInRequired(result);
                 } else {
                     alert(result.error || result.message || 'Das Spiel konnte nicht reaktiviert werden.');
                 }
@@ -1251,6 +1795,7 @@ document.addEventListener('DOMContentLoaded', function() {
         case 'state':
             scoreboardVisible = !!message.scoreboard_visible;
             updateScoreboardToggle();
+            renderCheckInState(message);
             break;
         case 'vote_update':
             renderVoteBadges(message.votes || []);
@@ -1258,6 +1803,16 @@ document.addEventListener('DOMContentLoaded', function() {
         case 'scoreboard_visibility':
             scoreboardVisible = !!message.visible;
             updateScoreboardToggle();
+            break;
+        case 'check_in_started':
+        case 'participant_checked_in':
+        case 'check_in_completed':
+        case 'check_in_reset':
+            renderCheckInState(message);
+            fetchSessionScoreboard();
+            break;
+        case 'check_in_error':
+            showCheckInError(message.error || 'Check-in fehlgeschlagen.');
             break;
         case 'session_started':
             window.location.reload();
@@ -1278,6 +1833,7 @@ document.addEventListener('DOMContentLoaded', function() {
     function connectHubSocket() {
         const wsScheme = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
         ws = new WebSocket(`${wsScheme}//${window.location.host}/ws/hub/${SESSION_CODE}/`);
+        window.hubMonitorSocket = ws;
         setStatus('connecting', 'Connecting…');
 
         ws.onopen = () => {
@@ -1309,6 +1865,7 @@ document.addEventListener('DOMContentLoaded', function() {
     updateStepNumbers();
     updateScoreboardToggle();
     fetchVotes();
+    fetchCheckInState();
     fetchSessionScoreboard();
     setInterval(fetchSessionScoreboard, 10000);
     connectHubSocket();

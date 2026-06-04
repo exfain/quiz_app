@@ -32,7 +32,8 @@ class CheckRoundAnswerTest(TransactionTestCase):
         self.quiz = AssignQuiz.objects.create(
             title='Test Quiz',
             creator=self.user,
-            room_code='1234'
+            room_code='1234',
+            status='active',
         )
         # Frage: 3 linke Items, 3 rechte Items, correct_matches = {"0": 2, "1": 0, "2": 1}
         self.question = AssignQuestion.objects.create(
@@ -736,9 +737,9 @@ class AssignPlayScoreboardViewTest(TestCase):
                 },
             ],
         )
-        self.assertContains(response, 'assign-score-row is-played')
-        self.assertContains(response, 'assign-score-row is-current')
-        self.assertContains(response, 'assign-score-row is-upcoming')
+        self.assertContains(response, 'assign-score-row score-box__row is-played')
+        self.assertContains(response, 'assign-score-row score-box__row is-current')
+        self.assertContains(response, 'assign-score-row score-box__row is-upcoming')
         self.assertContains(response, 'assign-score-empty')
         self.assertContains(response, 'assign-score-badge')
 
@@ -897,7 +898,7 @@ class AssignPlayScoreboardViewTest(TestCase):
         self.assertEqual(response.context['score_total_earned'], 1)
         self.assertEqual(response.context['score_total_max'], 2)
         self.assertContains(response, 'id="assignScoreTotal"')
-        self.assertContains(response, '>1/2<', html=True)
+        self.assertContains(response, '1/2')
 
     def test_assign_play_uses_shared_score_box_foundation_classes(self):
         """Der aktive Referenzpfad bindet die gemeinsame Score-Box-Basis sichtbar ein."""

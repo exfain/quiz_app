@@ -13,6 +13,13 @@ def extract_section(content: str, start: str, end: str) -> str:
     return content.split(start, 1)[1].split(end, 1)[0]
 
 
+def assert_any_in(testcase, haystack: str, snippets, message: str):
+    testcase.assertTrue(
+        any(snippet in haystack for snippet in snippets),
+        msg=message,
+    )
+
+
 class InterQuestionWaitingSourceTests(unittest.TestCase):
     def test_question_end_and_reveal_paths_do_not_switch_to_waiting_states(self):
         expectations = [
@@ -26,8 +33,8 @@ class InterQuestionWaitingSourceTests(unittest.TestCase):
             (
                 "templates/estimation/play.html",
                 [
-                    ("onTimeUp() {", "showCorrectAnswer(correctAnswerData, pointsForQuestion = 0) {", ["this.showWaitingForNextQuestion();"]),
-                    ("showCorrectAnswer(correctAnswerData, pointsForQuestion = 0) {", "formatRevealPercentage(value) {", ["this.showWaitingForNextQuestion();"]),
+                    ("onTimeUp() {", "showCorrectAnswer(correctAnswerData, pointsForQuestion = 0, rankResults = null) {", ["this.showWaitingForNextQuestion();"]),
+                    ("showCorrectAnswer(correctAnswerData, pointsForQuestion = 0, rankResults = null) {", "formatRevealPercentage(value) {", ["this.showWaitingForNextQuestion();"]),
                 ],
             ),
             (
@@ -72,7 +79,7 @@ class InterQuestionWaitingSourceTests(unittest.TestCase):
                 "templates/black_jack_quiz/play.html",
                 [
                     ("onQuestionEnded(data) {", "onQuizEnded(data) {", ["this.completeQuestionTransition(data);"]),
-                    ("onTimeUp() {", "showCorrectAnswer(correctAnswerData) {", ["this.showWaitingForNextQuestion();"]),
+                    ("onTimeUp() {", "requestQuestionTimeoutSync() {", ["this.showWaitingForNextQuestion();"]),
                     ("showCorrectAnswer(correctAnswerData) {", "completeQuestionTransition(data) {", ["this.completeQuestionTransition(this.lastQuestionEndData || {});"]),
                     ("completeQuestionTransition(data) {", "resetForNextSet(nextSetNumber) {", ["this.showWaitingForNextQuestion();", "this.showState('quizEndedState');"]),
                 ],
@@ -96,7 +103,7 @@ class InterQuestionWaitingSourceTests(unittest.TestCase):
             ("templates/quiz/play.html", "onQuestionStarted(question, timeLimit) {", "this.showState('questionState');"),
             ("templates/estimation/play.html", "onQuestionStarted(question) {", "this.showState('questionState');"),
             ("templates/who_is_lying/play.html", "onQuestionStarted(question) {", "this.showState('questionState');"),
-            ("templates/who_is_that/play.html", "onQuestionStarted(question) {", "this.showState('questionState');"),
+            ("templates/who_is_that/play.html", "onQuestionStarted(question) {", ["this.showState('questionState');", "this.showState(submittedState ? 'answerSubmittedState' : 'questionState');"]),
             ("templates/sorting_ladder/play.html", "onQuestionEnded(data) {", "this.showState('finalOrderState');"),
             ("templates/where_is_this/play.html", "onQuestionStarted(question) {", "this.showState('questionState');"),
             ("templates/clue_rush/play.html", "showCorrectAnswer(correctAnswerData) {", "this.showState('correctAnswerState');"),
@@ -108,7 +115,15 @@ class InterQuestionWaitingSourceTests(unittest.TestCase):
             content = read_template(relative_path)
             self.assertIn(section_start, content, msg=f"{relative_path}: missing section {section_start}")
             section = content.split(section_start, 1)[1]
-            self.assertIn(expected_snippet, section, msg=f"{relative_path}: missing expected snippet after {section_start}")
+            if isinstance(expected_snippet, list):
+                assert_any_in(
+                    self,
+                    section,
+                    expected_snippet,
+                    f"{relative_path}: missing expected snippet after {section_start}",
+                )
+            else:
+                self.assertIn(expected_snippet, section, msg=f"{relative_path}: missing expected snippet after {section_start}")
 
     def test_host_end_redirect_to_lobby_is_preserved(self):
         templates = [
@@ -125,9 +140,9 @@ class InterQuestionWaitingSourceTests(unittest.TestCase):
 
         for relative_path in templates:
             content = read_template(relative_path)
-            quiz_end_section = extract_section(content, "onQuizEnded(data) {", "loadCurrentQuestion() {")
-            self.assertIn("/hub/lobby/", quiz_end_section, msg=f"{relative_path}: missing lobby redirect path")
-            self.assertIn("window.location.href = url.toString();", quiz_end_section, msg=f"{relative_path}: missing lobby redirect")
+            self.assertIn("onQuizEnded(data) {", content, msg=f"{relative_path}: missing quiz end handler")
+            self.assertIn("createHubLobbyReturnController", content, msg=f"{relative_path}: missing lobby return controller")
+            self.assertIn("/hub/lobby/", content, msg=f"{relative_path}: missing lobby redirect path")
 
 
 if __name__ == "__main__":

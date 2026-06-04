@@ -10,12 +10,15 @@ from games_hub.active_game_guard import (
     is_game_routable_for_hub_auto_redirect,
     resolve_session_game_activation,
 )
-from games_hub.models import HubGameStep, HubSession
+from games_hub.check_in import complete_session_check_in, participant_check_in, start_session_check_in
+from games_hub.models import HubGameParticipantSnapshot, HubGameStep, HubParticipant, HubSession
+from games_hub.views import get_leaderboard_data
 from .consumers import WerWeissMehrConsumer
 from .models import (
     WerWeissMehrAnswerOption,
     WerWeissMehrGame,
     WerWeissMehrParticipant,
+    WerWeissMehrParticipantState,
     WerWeissMehrPendingInput,
     WerWeissMehrQuestion,
     WerWeissMehrRound,
@@ -279,6 +282,10 @@ class WerWeissMehrConsumerTests(TransactionTestCase):
             room_code=self.game.room_code,
             title=self.game.title,
         )
+        HubParticipant.objects.create(session=self.hub_session, nickname='Lisa')
+        start_session_check_in(self.hub_session)
+        participant_check_in(self.hub_session, 'Lisa')
+        complete_session_check_in(self.hub_session)
 
     def test_admin_start_quiz_sends_current_server_state_to_host(self):
         consumer = WerWeissMehrConsumer()
@@ -343,6 +350,12 @@ class WerWeissMehrAdminIntegrationTests(TestCase):
     def setUp(self):
         self.user = User.objects.create_superuser(username='admin', password='testpass123', email='')
         self.client.force_login(self.user)
+
+    def _complete_check_in(self, session, nickname='Lisa'):
+        HubParticipant.objects.create(session=session, nickname=nickname)
+        start_session_check_in(session)
+        participant_check_in(session, nickname)
+        complete_session_check_in(session)
 
     def test_create_custom_game_can_create_and_select_inline_set(self):
         response = self.client.post(
@@ -413,6 +426,7 @@ class WerWeissMehrAdminIntegrationTests(TestCase):
             room_code=game.room_code,
             title=game.title,
         )
+        self._complete_check_in(session)
 
         response = self.client.post(
             f'/wer-weiss-mehr/start/{game.room_code}/',
@@ -1210,3 +1224,271 @@ class WerWeissMehrAdminIntegrationTests(TestCase):
         )
         self.assertEqual(round_response.answer_text, 'Bayern')
         self.assertTrue(round_response.is_correct)
+
+    def test_full_hub_session_flow_live_responses_manual_correction_and_overall_scoreboard(self):
+        session = HubSession.objects.create(
+            code='WWMFLOW',
+            name='WWM Flow',
+            overall_scoring_mode=HubSession.OVERALL_SCORING_RANKING,
+        )
+        for nickname in ['Anna', 'Ben', 'Carla']:
+            HubParticipant.objects.create(session=session, nickname=nickname)
+        start_session_check_in(session)
+        for nickname in ['Anna', 'Ben', 'Carla']:
+            participant_check_in(session, nickname)
+        complete_session_check_in(session)
+        session.refresh_from_db()
+        self.assertEqual(session.locked_participant_count, 3)
+
+        game = WerWeissMehrGame.objects.create(title='Bundeslaender Duel', creator=self.user, status='waiting')
+        WerWeissMehrSession.objects.create(quiz=game)
+        question = WerWeissMehrQuestion.objects.create(
+            question_text='Nenne Bundeslaender',
+            round_time_limit=30,
+            created_by=self.user,
+        )
+        answers = {
+            canonical: WerWeissMehrAnswerOption.objects.create(question=question, canonical_text=canonical)
+            for canonical in ['Bayern', 'Hamburg', 'Hessen', 'Saarland', 'Thueringen']
+        }
+        question.recalculate_answer_sort_order()
+        game.selected_questions.add(question)
+        game.question_order = [question.id]
+        game.save(update_fields=['question_order'])
+        step = HubGameStep.objects.create(
+            session=session,
+            order=0,
+            game_key='wer_weiss_mehr',
+            room_code=game.room_code,
+            title=game.title,
+        )
+
+        response = self.client.post(
+            reverse('wer_weiss_mehr:start_game', args=[game.room_code]),
+            data=json.dumps({'hub_session': session.code}),
+            content_type='application/json',
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()['success'])
+        game.refresh_from_db()
+        self.assertEqual(game.status, 'active')
+        self.assertIsNotNone(game.started_at)
+        self.assertEqual(HubGameParticipantSnapshot.objects.filter(game_step=step, included_in_scoring=True).count(), 3)
+
+        for nickname in ['Anna', 'Ben', 'Carla']:
+            response = self.client.post(
+                reverse('wer_weiss_mehr:join'),
+                data=json.dumps({
+                    'participant_name': nickname,
+                    'room_code': game.room_code,
+                    'hub_session': session.code,
+                }),
+                content_type='application/json',
+            )
+            self.assertEqual(response.status_code, 200)
+            self.assertTrue(response.json()['success'])
+        participants = {
+            participant.name: participant
+            for participant in WerWeissMehrParticipant.objects.filter(quiz=game, hub_session_code=session.code)
+        }
+
+        response = self.client.post(
+            reverse('wer_weiss_mehr:start_game_set', args=[game.room_code]),
+            data=json.dumps({'hub_session': session.code, 'question_id': question.id}),
+            content_type='application/json',
+        )
+        self.assertEqual(response.status_code, 200)
+        set_payload = response.json()
+        self.assertEqual(set_payload['phase'], WerWeissMehrSession.PHASE_ROUND_ACTIVE)
+        self.assertEqual(set_payload['current_round'], 1)
+        self.assertEqual([tile['text'] for tile in set_payload['question']['tiles']], ['Bayern', 'Hamburg', 'Hessen', 'Saarland', 'Thueringen'])
+        game.refresh_from_db()
+        anna_state = build_game_state(game, hub_session_code=session.code, participant_name='Anna')
+        self.assertEqual([tile['text'] for tile in anna_state['question']['tiles']], ['', '', '', '', ''])
+        self.assertFalse(any(tile['revealed'] for tile in anna_state['question']['tiles']))
+
+        submissions = {
+            'Anna': 'Bayern',
+            'Ben': 'Atlantis',
+            'Carla': 'Thuringn',
+        }
+        for nickname, answer_text in submissions.items():
+            response = self.client.post(
+                reverse('wer_weiss_mehr:participant_submit_answer', args=[game.room_code]),
+                data=json.dumps({
+                    'participant_name': nickname,
+                    'hub_session': session.code,
+                    'answer_text': answer_text,
+                }),
+                content_type='application/json',
+            )
+            self.assertEqual(response.status_code, 200)
+            self.assertTrue(response.json()['success'])
+
+        game.refresh_from_db()
+        live_state = build_game_state(game, hub_session_code=session.code)
+        live_responses = {item['participant_name']: item for item in live_state['responses']}
+        self.assertEqual(set(live_responses), {'Anna', 'Ben', 'Carla'})
+        self.assertEqual(live_responses['Anna']['auto_status'], WerWeissMehrRoundResponse.STATUS_CORRECT)
+        self.assertEqual(live_responses['Ben']['auto_status'], WerWeissMehrRoundResponse.STATUS_WRONG)
+        self.assertEqual(live_responses['Carla']['auto_status'], WerWeissMehrRoundResponse.STATUS_WRONG)
+        self.assertFalse(any(
+            item['auto_status'] == 'unclear' or item['final_status'] == 'unclear'
+            for item in live_state['responses']
+        ))
+
+        correction_response = self.client.post(
+            reverse('admin_dashboard:apply_wer_weiss_mehr_correction', args=[game.room_code]),
+            data=json.dumps({
+                'hub_session': session.code,
+                'response_id': live_responses['Carla']['id'],
+                'target_answer_id': answers['Thueringen'].id,
+            }),
+            content_type='application/json',
+        )
+        self.assertEqual(correction_response.status_code, 200)
+        correction_payload = correction_response.json()
+        self.assertTrue(correction_payload['success'])
+        corrected = next(item for item in correction_payload['responses'] if item['participant_name'] == 'Carla')
+        carla_score = next(
+            score for score in correction_payload['scorebox'][0]['scores']
+            if score['participant_name'] == 'Carla'
+        )
+        self.assertEqual(corrected['final_status'], WerWeissMehrRoundResponse.STATUS_MANUAL_CORRECTED)
+        self.assertEqual(corrected['matched_answer_id'], answers['Thueringen'].id)
+        self.assertEqual(carla_score['points'], 1)
+        self.assertEqual(carla_score['max_points'], 5)
+        game.refresh_from_db()
+        carla_participant_state = build_game_state(game, hub_session_code=session.code, participant_name='Carla')
+        hidden_texts = [
+            tile['text']
+            for tile in carla_participant_state['question']['tiles']
+            if not tile['revealed']
+        ]
+        self.assertEqual(hidden_texts, ['', '', '', ''])
+        self.assertEqual(
+            [tile['text'] for tile in carla_participant_state['question']['tiles'] if tile['revealed']],
+            ['Thueringen'],
+        )
+
+        response = self.client.post(
+            reverse('admin_dashboard:end_wer_weiss_mehr_round', args=[game.room_code]),
+            data=json.dumps({'hub_session': session.code}),
+            content_type='application/json',
+        )
+        self.assertEqual(response.status_code, 200)
+        review_payload = response.json()
+        self.assertEqual(review_payload['phase'], WerWeissMehrSession.PHASE_REVIEW)
+        states = {
+            state.participant.name: state
+            for state in WerWeissMehrParticipantState.objects.filter(quiz=game, question=question).select_related('participant')
+        }
+        self.assertFalse(states['Anna'].is_eliminated)
+        self.assertTrue(states['Ben'].is_eliminated)
+        self.assertFalse(states['Carla'].is_eliminated)
+        score_by_name = {
+            score['participant_name']: score
+            for score in review_payload['scorebox'][0]['scores']
+        }
+        self.assertEqual(score_by_name['Anna']['points'], 1)
+        self.assertEqual(score_by_name['Anna']['max_points'], 5)
+        self.assertEqual(score_by_name['Ben']['points'], 0)
+        self.assertEqual(score_by_name['Ben']['max_points'], 5)
+        self.assertEqual(score_by_name['Carla']['points'], 1)
+        self.assertEqual(score_by_name['Carla']['max_points'], 5)
+
+        response = self.client.post(
+            reverse('admin_dashboard:next_wer_weiss_mehr_round', args=[game.room_code]),
+            data=json.dumps({'hub_session': session.code}),
+            content_type='application/json',
+        )
+        self.assertEqual(response.status_code, 200)
+        round_two_payload = response.json()
+        self.assertEqual(round_two_payload['phase'], WerWeissMehrSession.PHASE_ROUND_ACTIVE)
+        self.assertEqual(round_two_payload['current_round'], 2)
+        game.refresh_from_db()
+        self.assertTrue(build_game_state(game, hub_session_code=session.code, participant_name='Anna')['participant_state']['can_answer'])
+        self.assertFalse(build_game_state(game, hub_session_code=session.code, participant_name='Ben')['participant_state']['can_answer'])
+        self.assertTrue(build_game_state(game, hub_session_code=session.code, participant_name='Carla')['participant_state']['can_answer'])
+
+        response = self.client.post(
+            reverse('wer_weiss_mehr:participant_submit_answer', args=[game.room_code]),
+            data=json.dumps({
+                'participant_name': 'Ben',
+                'hub_session': session.code,
+                'answer_text': 'Hamburg',
+            }),
+            content_type='application/json',
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('nicht mehr antworten', response.json()['error'])
+
+        response = self.client.post(
+            reverse('admin_dashboard:finish_wer_weiss_mehr_set', args=[game.room_code]),
+            data=json.dumps({'hub_session': session.code}),
+            content_type='application/json',
+        )
+        self.assertEqual(response.status_code, 200)
+        set_done_payload = response.json()
+        self.assertEqual(set_done_payload['phase'], WerWeissMehrSession.PHASE_SET_COMPLETED)
+        score_by_name = {
+            score['participant_name']: score
+            for score in set_done_payload['scorebox'][0]['scores']
+        }
+        self.assertEqual(score_by_name['Anna']['points'], 1)
+        self.assertEqual(score_by_name['Carla']['points'], 1)
+        self.assertEqual(score_by_name['Ben']['points'], 0)
+        self.assertEqual(score_by_name['Anna']['max_points'], 5)
+
+        response = self.client.post(
+            reverse('admin_dashboard:clear_wer_weiss_mehr_set', args=[game.room_code]),
+            data=json.dumps({'hub_session': session.code}),
+            content_type='application/json',
+        )
+        self.assertEqual(response.status_code, 200)
+        clear_payload = response.json()
+        self.assertEqual(clear_payload['phase'], WerWeissMehrSession.PHASE_IDLE)
+        self.assertIsNone(clear_payload['question'])
+        self.assertTrue(clear_payload['available_questions'][0]['is_completed'])
+        cleared_scores = {
+            score['participant_name']: score
+            for score in clear_payload['scorebox'][0]['scores']
+        }
+        self.assertEqual(cleared_scores['Anna']['points'], 1)
+        self.assertEqual(cleared_scores['Carla']['points'], 1)
+        self.assertEqual(cleared_scores['Ben']['points'], 0)
+
+        response = self.client.post(
+            reverse('wer_weiss_mehr:end_game', args=[game.room_code]),
+            data=json.dumps({'hub_session': session.code}),
+            content_type='application/json',
+        )
+        self.assertEqual(response.status_code, 200)
+        end_payload = response.json()
+        self.assertEqual(end_payload['game_status'], 'completed')
+        self.assertFalse(end_payload['participant_state']['can_answer'] if end_payload.get('participant_state') else False)
+        game.refresh_from_db()
+        self.assertEqual(game.status, 'completed')
+
+        leaderboard = get_leaderboard_data(session)
+        game_key = f'step:{step.id}'
+        self.assertEqual(leaderboard['instances'][game_key]['score_range']['basis'], 'snapshot')
+        self.assertEqual(leaderboard['instances'][game_key]['score_range']['max'], 3)
+        overall_by_name = {item['name']: item for item in leaderboard['participants']}
+        self.assertEqual(overall_by_name['Anna']['game_scores'][game_key], 1)
+        self.assertEqual(overall_by_name['Carla']['game_scores'][game_key], 1)
+        self.assertEqual(overall_by_name['Ben']['game_scores'][game_key], 0)
+        self.assertEqual(overall_by_name['Anna']['game_base_scores'][game_key], 3)
+        self.assertEqual(overall_by_name['Carla']['game_base_scores'][game_key], 3)
+        self.assertEqual(overall_by_name['Ben']['game_base_scores'][game_key], 1)
+        self.assertEqual(overall_by_name['Anna']['weighted_score'], 3)
+        self.assertEqual(overall_by_name['Carla']['weighted_score'], 3)
+        self.assertEqual(overall_by_name['Ben']['weighted_score'], 1)
+
+        play_response = self.client.get(
+            reverse('wer_weiss_mehr:play', args=[game.room_code, 'Anna']),
+            {'hub_session': session.code},
+        )
+        self.assertEqual(play_response.status_code, 200)
+        self.assertContains(play_response, 'id="lobbyActions"', html=False)
+        self.assertContains(play_response, "endedStatuses.includes(state?.game_status)", html=False)

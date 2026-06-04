@@ -4,6 +4,28 @@ from django.utils import timezone
 
 
 class HubSession(SyncBase):
+    CHECK_IN_NOT_STARTED = 'not_started'
+    CHECK_IN_OPEN = 'open'
+    CHECK_IN_COMPLETED = 'completed'
+    CHECK_IN_STATUS_CHOICES = [
+        (CHECK_IN_NOT_STARTED, 'Nicht gestartet'),
+        (CHECK_IN_OPEN, 'Offen'),
+        (CHECK_IN_COMPLETED, 'Abgeschlossen'),
+    ]
+
+    OVERALL_SCORING_SIMPLE = 'simple'
+    OVERALL_SCORING_RANKING = 'ranking'
+    OVERALL_SCORING_CHOICES = [
+        (OVERALL_SCORING_SIMPLE, 'Einfach'),
+        (OVERALL_SCORING_RANKING, 'Ranking'),
+    ]
+    OVERALL_WEIGHTING_NONE = 'none'
+    OVERALL_WEIGHTING_LINEAR_CAP = 'linear_cap'
+    OVERALL_WEIGHTING_CHOICES = [
+        (OVERALL_WEIGHTING_NONE, 'Keine Gewichtung'),
+        (OVERALL_WEIGHTING_LINEAR_CAP, 'Lineare Gewichtung mit Cap'),
+    ]
+
     code = models.CharField(max_length=16, unique=True)
     name = models.CharField(max_length=100, blank=True)
     created_at = models.DateTimeField(default=timezone.now)
@@ -13,6 +35,26 @@ class HubSession(SyncBase):
     current_step_index = models.IntegerField(default=0)
     games_weight = models.FloatField(default=2.0)
     scoreboard_visible = models.BooleanField(default=False)
+    overall_scoring_mode = models.CharField(
+        max_length=20,
+        choices=OVERALL_SCORING_CHOICES,
+        default=OVERALL_SCORING_SIMPLE,
+    )
+    overall_weighting_mode = models.CharField(
+        max_length=20,
+        choices=OVERALL_WEIGHTING_CHOICES,
+        default=OVERALL_WEIGHTING_NONE,
+    )
+    weighting_step = models.FloatField(default=0.15)
+    weighting_cap = models.FloatField(default=2.0)
+    check_in_status = models.CharField(
+        max_length=20,
+        choices=CHECK_IN_STATUS_CHOICES,
+        default=CHECK_IN_NOT_STARTED,
+    )
+    check_in_started_at = models.DateTimeField(null=True, blank=True)
+    check_in_completed_at = models.DateTimeField(null=True, blank=True)
+    locked_participant_count = models.PositiveIntegerField(null=True, blank=True)
 
     @staticmethod
     def _get_game_model_map():
@@ -84,6 +126,51 @@ class HubSession(SyncBase):
             session.save(update_fields=['started_at', 'is_active'])
             return session
 
+    def get_game_weight(self, game_number):
+        if self.overall_weighting_mode != self.OVERALL_WEIGHTING_LINEAR_CAP:
+            return 1.0
+        number = max(int(game_number or 1), 1)
+        weight = 1 + (float(self.weighting_step) * (number - 1))
+        return min(weight, float(self.weighting_cap))
+
+    def has_started_game(self):
+        model_map = self._get_game_model_map()
+        for step in self.steps.exclude(room_code='').order_by('order'):
+            model = model_map.get(step.game_key)
+            if not model:
+                continue
+            game = model.objects.filter(room_code=step.room_code).first()
+            if not game:
+                continue
+            if getattr(game, 'status', 'waiting') != 'waiting':
+                return True
+        return False
+
+    @property
+    def scoring_settings_locked(self):
+        return self.has_started_game()
+
+    @property
+    def check_in_locked(self):
+        return self.has_started_game()
+
+    @property
+    def check_in_completed(self):
+        return self.check_in_status == self.CHECK_IN_COMPLETED
+
+    def get_official_participants(self):
+        if self.check_in_completed:
+            return self.participants.filter(
+                scoring_eligible=True,
+                check_in_excluded_by_host=False,
+            )
+        return self.participants.all()
+
+    def get_locked_participant_count(self):
+        if self.locked_participant_count is not None:
+            return self.locked_participant_count
+        return self.get_official_participants().count()
+
     def __str__(self):
         return f"HubSession {self.code}"
 
@@ -95,12 +182,71 @@ class HubParticipant(SyncBase):
     is_active = models.BooleanField(default=True)
     last_seen = models.DateTimeField(default=timezone.now)
     score_adjustment = models.IntegerField(default=0)
+    checked_in_at = models.DateTimeField(null=True, blank=True)
+    scoring_eligible = models.BooleanField(default=False)
+    check_in_excluded_by_host = models.BooleanField(default=False)
+    left_permanently_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         unique_together = ('session', 'nickname')
 
     def __str__(self):
         return f"{self.nickname} ({self.session.code})"
+
+
+class HubGameParticipantSnapshot(SyncBase):
+    REASON_ACTIVE = 'active'
+    REASON_LEFT_PERMANENTLY = 'left_permanently'
+    REASON_LATE_NOT_YET_ELIGIBLE = 'late_not_yet_eligible'
+    REASON_EXCLUDED = 'excluded'
+    REASON_CHOICES = [
+        (REASON_ACTIVE, 'Aktiv'),
+        (REASON_LEFT_PERMANENTLY, 'Dauerhaft verlassen'),
+        (REASON_LATE_NOT_YET_ELIGIBLE, 'Late Join noch nicht zugelassen'),
+        (REASON_EXCLUDED, 'Ausgeschlossen'),
+    ]
+
+    session = models.ForeignKey(HubSession, related_name='participant_snapshots', on_delete=models.CASCADE)
+    game_step = models.ForeignKey('HubGameStep', related_name='participant_snapshots', on_delete=models.CASCADE)
+    participant = models.ForeignKey(HubParticipant, related_name='game_snapshots', on_delete=models.CASCADE)
+    included_in_scoring = models.BooleanField(default=True)
+    active_player = models.BooleanField(default=True)
+    auto_zero = models.BooleanField(default=False)
+    reason = models.CharField(max_length=40, choices=REASON_CHOICES, default=REASON_ACTIVE)
+    created_at = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        unique_together = ('game_step', 'participant')
+        ordering = ['game_step__order', 'participant__joined_at', 'participant__nickname']
+
+    def __str__(self):
+        return f"{self.session.code} step {self.game_step_id}: {self.participant.nickname}"
+
+    @classmethod
+    @transaction.atomic
+    def create_for_step(cls, step):
+        locked_step = HubGameStep.objects.select_related('session').select_for_update().get(pk=step.pk)
+        if cls.objects.filter(game_step=locked_step).exists():
+            return list(cls.objects.filter(game_step=locked_step).select_related('participant'))
+
+        participants = locked_step.session.get_official_participants().select_for_update().order_by('joined_at', 'nickname')
+        rows = []
+        for participant in participants:
+            if participant.check_in_excluded_by_host:
+                continue
+            left_permanently = participant.left_permanently_at is not None
+            rows.append(cls(
+                session=locked_step.session,
+                game_step=locked_step,
+                participant=participant,
+                included_in_scoring=True,
+                active_player=not left_permanently,
+                auto_zero=left_permanently,
+                reason=cls.REASON_LEFT_PERMANENTLY if left_permanently else cls.REASON_ACTIVE,
+            ))
+        if rows:
+            cls.objects.bulk_create(rows)
+        return list(cls.objects.filter(game_step=locked_step).select_related('participant'))
 
 
 class HubGameStep(SyncBase):

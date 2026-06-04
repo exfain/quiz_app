@@ -747,7 +747,7 @@ class SortingLadderRoundAnswerStatusScopeTest(TransactionTestCase):
         }])
 
 
-class SortingLadderScoreBoxTests(TestCase):
+class SortingLadderScoreBoxTests(TransactionTestCase):
     def setUp(self):
         self.user = User.objects.create_user(username='sorting-score-user', password='pass')
         self.quiz = SortingLadderGame.objects.create(
@@ -825,7 +825,7 @@ class SortingLadderScoreBoxTests(TestCase):
         }])
 
 
-class SortingLadderTutorialRuntimeTests(TestCase):
+class SortingLadderTutorialRuntimeTests(TransactionTestCase):
     def setUp(self):
         SortingLadderGameConsumer._pending_round_orders = {}
         self.user = User.objects.create_user(username='sorting-tutorial-user', password='pass')

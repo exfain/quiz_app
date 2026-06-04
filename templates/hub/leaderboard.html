@@ -401,7 +401,7 @@
                                         <tr>
                                             <th width="10%">Rank</th>
                                             <th width="40%">Player</th>
-                                            <th width="25%" class="text-end">Weighted Score</th>
+                                            <th width="25%" class="text-end">Gesamtwertung</th>
                                             <!-- <th width="25%" class="text-end">Total Score</th> -->
                                             <th width="25%" class="text-end">Games Played</th>
                                         </tr>
@@ -428,7 +428,7 @@
                                                     <span class="player-name">{{ player.name }}</span>
                                                 </div>
                                             </td>
-                                            <td class="text-end fw-bold">{{ player.weighted_score|default:0 }}</td>
+                                            <td class="text-end fw-bold">{{ player.total_with_adjustment|default:0 }}</td>
                                             <!-- <td class="text-end fw-bold">{{ player.total_score|default:0 }}</td> -->
                                             <td class="text-end">{{ player.games_played|default:0 }}</td>
                                         </tr>
@@ -474,7 +474,7 @@
                         <div class="d-flex justify-content-center gap-4 my-3">
                             <div class="text-center">
                                 <div class="fs-4 fw-bold badge bg-success" id="playerWeightedScore">0</div>
-                                <div class="text-muted small">Weighted Score</div>
+                                <div class="text-muted small">Gesamtwertung</div>
                             </div>
                             <div class="text-center">
                                 <div class="fs-4 fw-bold" id="playerGameScore">0</div>
@@ -497,7 +497,8 @@
                             <thead>
                                 <tr>
                                     <th>Game</th>
-                                    <th class="text-end">Score</th>
+                                    <th class="text-end">Spielpunkte</th>
+                                    <th class="text-end">Gesamtwertung</th>
                                     <th class="text-end">Rank</th>
                                 </tr>
                             </thead>
@@ -580,7 +581,7 @@
             // Update modal content
             document.getElementById('playerInitial').textContent = player.name.charAt(0).toUpperCase();
             document.getElementById('playerName').textContent = player.name;
-            document.getElementById('playerWeightedScore').textContent = player.weighted_score || 0;
+            document.getElementById('playerWeightedScore').textContent = player.total_with_adjustment ?? player.weighted_score ?? 0;
             document.getElementById('playerGameScore').textContent = player.total_score || 0;
             document.getElementById('playerGamesPlayed').textContent = player.games_played || 0;
             document.getElementById('playerRank').textContent = '#' + (parseInt(playerIndex) + 1);
@@ -590,20 +591,24 @@
             gameScoresBody.innerHTML = '';
             
             if (player.game_scores) {
-                // Sort games by score (highest first)
+                // Sort games by concrete session order.
                 const sortedGames = Object.entries(player.game_scores)
-                    .sort((a, b) => (b[1] || 0) - (a[1] || 0));
+                    .sort((a, b) => ((instanceMeta[a[0]] || {}).game_number || 0) - ((instanceMeta[b[0]] || {}).game_number || 0));
                 
                 sortedGames.forEach(([gameKey, score]) => {
                     if (score === null || score === undefined) return;
                     
                     const gameName = getGameName(gameKey);
-                    const rank = getGameRank(gameKey, player.name);
+                    const overallScore = player.game_overall_scores?.[gameKey] ?? score;
+                    const rank = player.game_ranks?.[gameKey]
+                        ? `#${player.game_ranks[gameKey]}`
+                        : getGameRank(gameKey, player.name);
                     
                     const row = document.createElement('tr');
                     row.innerHTML = `
                         <td>${gameName}</td>
                         <td class="text-end fw-bold">${score}</td>
+                        <td class="text-end fw-bold">${overallScore}</td>
                         <td class="text-end">${rank}</td>
                     `;
                     gameScoresBody.appendChild(row);

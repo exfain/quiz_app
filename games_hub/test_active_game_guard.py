@@ -12,8 +12,9 @@ from Estimation.models import EstimationQuiz
 from black_jack_quiz.models import BlackJackQuiz
 from QuizGame.consumers import QuizConsumer
 from QuizGame.models import Quiz, QuizAnswer, QuizParticipant, QuizQuestion, QuizSession
+from games_hub.check_in import complete_session_check_in, participant_check_in, start_session_check_in
 from games_hub.consumers import HubConsumer
-from games_hub.models import HubGameStep, HubSession
+from games_hub.models import HubGameStep, HubParticipant, HubSession
 
 
 class ActiveGameGuardTests(TransactionTestCase):
@@ -474,6 +475,158 @@ class ActiveGameGuardTests(TransactionTestCase):
 
         self.target_estimation.refresh_from_db()
         self.assertEqual(self.target_estimation.status, 'inactive')
+
+    def test_first_game_activation_requires_completed_check_in(self):
+        fresh_session = HubSession.objects.create(
+            code='CHECK1',
+            name='Check-in Guard',
+            is_active=True,
+            started_at=timezone.now(),
+        )
+        first_game = EstimationQuiz.objects.create(
+            creator=self.user,
+            title='Erstes Spiel',
+            status='waiting',
+        )
+        HubGameStep.objects.create(
+            session=fresh_session,
+            order=0,
+            game_key='estimation',
+            room_code=first_game.room_code,
+            title=first_game.title,
+        )
+
+        response = self.client.post(
+            reverse('games_hub:activate_session_game', args=[fresh_session.code]),
+            data=json.dumps({
+                'game_key': 'estimation',
+                'room_code': first_game.room_code,
+            }),
+            content_type='application/json',
+        )
+
+        self.assertEqual(response.status_code, 428)
+        payload = response.json()
+        self.assertFalse(payload['success'])
+        self.assertTrue(payload['check_in_required'])
+        self.assertIn('Check-in', payload['error'])
+        first_game.refresh_from_db()
+        self.assertEqual(first_game.status, 'waiting')
+
+    def test_http_start_endpoint_requires_completed_check_in_for_first_game(self):
+        fresh_session = HubSession.objects.create(
+            code='CHECK3',
+            name='HTTP Check-in Guard',
+            is_active=True,
+            started_at=timezone.now(),
+        )
+        first_game = EstimationQuiz.objects.create(
+            creator=self.user,
+            title='HTTP erstes Spiel',
+            status='waiting',
+        )
+        HubGameStep.objects.create(
+            session=fresh_session,
+            order=0,
+            game_key='estimation',
+            room_code=first_game.room_code,
+            title=first_game.title,
+        )
+
+        response = self.client.post(
+            f"{reverse('admin_dashboard:start_estimation_quiz', args=[first_game.room_code])}?hub_session={fresh_session.code}",
+            data=json.dumps({}),
+            content_type='application/json',
+        )
+
+        self.assertEqual(response.status_code, 428)
+        payload = response.json()
+        self.assertFalse(payload['success'])
+        self.assertTrue(payload['check_in_required'])
+        first_game.refresh_from_db()
+        self.assertEqual(first_game.status, 'waiting')
+
+    def test_first_game_activation_succeeds_after_completed_check_in_and_locks_settings(self):
+        fresh_session = HubSession.objects.create(
+            code='CHECK2',
+            name='Check-in Completed',
+            is_active=True,
+            started_at=timezone.now(),
+        )
+        HubParticipant.objects.create(session=fresh_session, nickname='Alice')
+        start_session_check_in(fresh_session)
+        participant_check_in(fresh_session, 'Alice')
+        complete_session_check_in(fresh_session)
+        first_game = EstimationQuiz.objects.create(
+            creator=self.user,
+            title='Erstes Spiel nach Check-in',
+            status='waiting',
+        )
+        HubGameStep.objects.create(
+            session=fresh_session,
+            order=0,
+            game_key='estimation',
+            room_code=first_game.room_code,
+            title=first_game.title,
+        )
+
+        response = self.client.post(
+            reverse('games_hub:activate_session_game', args=[fresh_session.code]),
+            data=json.dumps({
+                'game_key': 'estimation',
+                'room_code': first_game.room_code,
+            }),
+            content_type='application/json',
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()['success'])
+        first_game.refresh_from_db()
+        fresh_session.refresh_from_db()
+        self.assertEqual(first_game.status, 'active')
+        self.assertEqual(fresh_session.locked_participant_count, 1)
+        self.assertTrue(fresh_session.scoring_settings_locked)
+        self.assertTrue(fresh_session.check_in_locked)
+
+    def test_first_game_activation_rejects_empty_completed_check_in(self):
+        fresh_session = HubSession.objects.create(
+            code='CHECK4',
+            name='Empty Check-in',
+            is_active=True,
+            started_at=timezone.now(),
+            check_in_status=HubSession.CHECK_IN_COMPLETED,
+            check_in_completed_at=timezone.now(),
+            locked_participant_count=0,
+        )
+        first_game = EstimationQuiz.objects.create(
+            creator=self.user,
+            title='Spiel ohne Teilnehmer',
+            status='waiting',
+        )
+        HubGameStep.objects.create(
+            session=fresh_session,
+            order=0,
+            game_key='estimation',
+            room_code=first_game.room_code,
+            title=first_game.title,
+        )
+
+        response = self.client.post(
+            reverse('games_hub:activate_session_game', args=[fresh_session.code]),
+            data=json.dumps({
+                'game_key': 'estimation',
+                'room_code': first_game.room_code,
+            }),
+            content_type='application/json',
+        )
+
+        self.assertEqual(response.status_code, 428)
+        payload = response.json()
+        self.assertFalse(payload['success'])
+        self.assertTrue(payload['check_in_required'])
+        self.assertIn('kein offizieller Teilnehmer', payload['error'])
+        first_game.refresh_from_db()
+        self.assertEqual(first_game.status, 'waiting')
 
     def test_hub_monitor_labels_inactive_games_as_inactive(self):
         self.active_quiz.status = 'inactive'

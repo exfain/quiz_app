@@ -63,6 +63,18 @@
         transform: none;
         box-shadow: none;
       }
+      #readyCheckInBtn {
+        background: linear-gradient(135deg, #10b981, #059669);
+        border: none;
+        color: white;
+        padding: 0.65rem 1.2rem;
+        border-radius: 8px;
+        font-weight: 600;
+      }
+      #readyCheckInBtn:disabled {
+        background: #6b7280;
+        cursor: not-allowed;
+      }
       ul { 
         padding-left: 1.5rem; 
         margin-top: 1rem;
@@ -176,6 +188,17 @@
         <div id="statusMessage" class="status-message" style="display: none;"></div>
       </div>
 
+      <div class="card join-card" id="checkInCard" style="display:none;">
+        <div class="lobby-top">
+          <div>
+            <div class="section-title">Check-in</div>
+            <div class="muted" id="checkInStatusText">Warte auf Check-in.</div>
+          </div>
+          <button id="readyCheckInBtn" type="button" disabled>Ich bin bereit</button>
+        </div>
+        <div class="muted" id="checkInCounts" style="margin-top:.75rem;">Bereit: 0</div>
+      </div>
+
       <div class="vote-section" id="voteSection" style="display:none;">
         <div class="card">
           <div class="section-title">Vote for the next game</div>
@@ -204,6 +227,7 @@
     <script>
       const code = '{{ session_code }}';
       const ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws/hub/' + code + '/');
+      window.hubLobbySocket = ws;
       const takenNicknames = new Set();
       let lobbyNicknames = [];
       let nicknameCheckTimeout = null;
@@ -215,6 +239,10 @@
       const joinBtn = document.getElementById('joinBtn');
       const statusMessage = document.getElementById('statusMessage');
       const joinCard = document.getElementById('joinCard');
+      const checkInCard = document.getElementById('checkInCard');
+      const checkInStatusText = document.getElementById('checkInStatusText');
+      const checkInCounts = document.getElementById('checkInCounts');
+      const readyCheckInBtn = document.getElementById('readyCheckInBtn');
 
       // Populate known participants from server-side context
       const dbParticipants = {{ participants|safe }};
@@ -224,10 +252,75 @@
       });
       // Initialize
 
+      function renderCheckInState(payload) {
+        if (!payload || !payload.check_in) return;
+        const checkIn = payload.check_in;
+        const counts = payload.counts || {};
+        const participants = payload.participants || [];
+        const currentName = (currentNickname || nicknameInput.value.trim() || '').toLowerCase();
+        const me = participants.find(p => (p.nickname || '').toLowerCase() === currentName);
+        const labels = {
+          not_started: 'Der Check-in wurde noch nicht gestartet.',
+          open: 'Der Check-in ist geöffnet.',
+          completed: 'Der Check-in ist abgeschlossen.',
+        };
+
+        checkInCard.style.display = currentName ? '' : 'none';
+        if (me?.official_status === 'late') {
+          checkInStatusText.textContent = 'Nach Check-in beigetreten - nicht in offizieller Wertung.';
+        } else if (checkIn.status === 'completed' && me && !me.scoring_eligible) {
+          checkInStatusText.textContent = 'Du bist nicht in der offiziellen Sessionwertung.';
+        } else {
+          checkInStatusText.textContent = me?.checked_in
+            ? 'Du bist eingecheckt.'
+            : labels[checkIn.status] || 'Check-in-Status unbekannt.';
+        }
+        checkInCounts.textContent = `Bereit: ${counts.checked_in || 0} / ${counts.total_participants || 0}`;
+        readyCheckInBtn.disabled = checkIn.status !== 'open' || !!me?.checked_in || !!me?.excluded_by_host;
+        readyCheckInBtn.textContent = me?.checked_in ? 'Bereit' : 'Ich bin bereit';
+      }
+
+      function fetchCheckInState() {
+        fetch(`/hub/api/session/${code}/check-in/`)
+          .then(r => r.json())
+          .then(payload => {
+            if (payload.success) renderCheckInState(payload);
+          })
+          .catch(() => {});
+      }
+
+      function submitCheckIn() {
+        const nickname = currentNickname || nicknameInput.value.trim();
+        if (!nickname) return;
+        readyCheckInBtn.disabled = true;
+        fetch(`/hub/api/session/${code}/check-in/participant/`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-CSRFToken': '{{ csrf_token }}',
+          },
+          body: JSON.stringify({ nickname }),
+        })
+          .then(r => r.json().then(payload => ({ ok: r.ok, payload })))
+          .then(({ ok, payload }) => {
+            if (ok && payload.success) {
+              renderCheckInState(payload);
+            } else {
+              readyCheckInBtn.disabled = false;
+              checkInStatusText.textContent = payload.error || 'Check-in fehlgeschlagen.';
+            }
+          })
+          .catch(() => {
+            readyCheckInBtn.disabled = false;
+            checkInStatusText.textContent = 'Check-in fehlgeschlagen.';
+          });
+      }
+
       // WebSocket event handlers
       ws.onopen = () => {
         // Request current state
         ws.send(JSON.stringify({ type: 'get_state' }));
+        fetchCheckInState();
 
         // If nickname is provided via query, prefill and auto-join
         try {
@@ -353,6 +446,11 @@
             setScoreboardVisible(data.scoreboard_visible);
             if (data.scoreboard_visible) fetchLeaderboard();
           }
+          renderCheckInState(data);
+        }
+
+        if (['check_in_started', 'participant_checked_in', 'check_in_completed', 'check_in_reset'].includes(data.type)) {
+          renderCheckInState(data);
         }
 
         if (data.type === 'join_success') {
@@ -364,6 +462,7 @@
           currentNickname = nicknameInput.value.trim();
           const titleEl = document.getElementById('lobbyTitle');
           if (titleEl) titleEl.textContent = '{{ session_name }} (' + currentNickname + ')';
+          fetchCheckInState();
         }
 
         if (data.type === 'join_error') {
@@ -680,7 +779,7 @@
               tr.innerHTML = `
                 <td class="lb-rank ${rankClass}">${i + 1}</td>
                 <td class="lb-name" ${p.name.toLowerCase() === (currentNickname || nicknameInput.value.trim()).toLowerCase() ? 'style="text-decoration:underline;"' : ''}>${dotHtml}${p.name}</td>
-                <td class="lb-score">${p.weighted_score}</td>
+                <td class="lb-score">${p.total_with_adjustment ?? p.weighted_score}</td>
               `;
               leaderboardBody.appendChild(tr);
             });
@@ -688,6 +787,7 @@
           .catch(() => {});
       }
 
+      readyCheckInBtn.addEventListener('click', submitCheckIn);
       setInterval(fetchLeaderboard, 10000);
     </script>
   {% include 'includes/accessibility_widget.html' %}

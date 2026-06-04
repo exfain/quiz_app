@@ -5,7 +5,13 @@ from typing import Any
 from django.db import transaction
 from django.utils import timezone
 
-from .models import HubGameStep, HubSession
+from .models import HubGameParticipantSnapshot, HubGameStep, HubSession
+
+
+CHECK_IN_REQUIRED_MESSAGE = (
+    'Bitte schließe zuerst den Teilnehmer-Check-in ab, '
+    'damit die Teilnehmerzahl für die Sessionwertung fixiert wird.'
+)
 
 
 def get_game_model_map():
@@ -95,6 +101,32 @@ def _end_game_cleanly(game):
         _set_game_status(game, 'completed')
 
 
+def _validate_first_game_check_in(session: HubSession) -> dict[str, Any] | None:
+    """Before the first game starts, the official scoring pool must be fixed."""
+    if session.has_started_game():
+        return None
+
+    if session.check_in_status != HubSession.CHECK_IN_COMPLETED:
+        return {
+            'success': False,
+            'check_in_required': True,
+            'check_in_status': session.check_in_status,
+            'locked_participant_count': session.locked_participant_count,
+            'error': CHECK_IN_REQUIRED_MESSAGE,
+        }
+
+    if not session.locked_participant_count:
+        return {
+            'success': False,
+            'check_in_required': True,
+            'check_in_status': session.check_in_status,
+            'locked_participant_count': session.locked_participant_count,
+            'error': 'Der Check-in ist abgeschlossen, aber es ist kein offizieller Teilnehmer eingecheckt.',
+        }
+
+    return None
+
+
 def _iter_session_games(session: HubSession):
     model_map = get_game_model_map()
     for step in session.steps.exclude(room_code='').order_by('order'):
@@ -127,6 +159,10 @@ def resolve_session_game_activation(
         target_step = session.steps.filter(game_key=target_game_key, room_code=target_room_code).first()
         if not target_step:
             return {'success': True}
+
+        check_in_error = _validate_first_game_check_in(session)
+        if check_in_error:
+            return check_in_error
 
         target_game = None
         conflicts: list[tuple[HubGameStep, Any]] = []
@@ -174,6 +210,8 @@ def resolve_session_game_activation(
                 )
             )
         )
+        if target_game:
+            HubGameParticipantSnapshot.create_for_step(target_step)
         if target_needs_activation:
             _activate_target_game(target_game_key, target_game)
 

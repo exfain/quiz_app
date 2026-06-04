@@ -99,6 +99,11 @@ def _guard_session_game_start(request, game_key, room_code):
         payload['conflict'] = True
     if activation.get('active_game'):
         payload['active_game'] = activation['active_game']
+    if activation.get('check_in_required'):
+        payload['check_in_required'] = True
+        payload['check_in_status'] = activation.get('check_in_status')
+        payload['locked_participant_count'] = activation.get('locked_participant_count')
+        return JsonResponse(payload, status=428)
     return JsonResponse(payload, status=409 if activation.get('conflict') else 400)
 
 

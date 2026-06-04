@@ -111,6 +111,9 @@ class WerWeissMehrConsumer(AsyncWebsocketConsumer):
                 'type': 'active_game_conflict' if activation.get('conflict') else 'error',
                 'message': activation.get('message') or activation.get('error') or 'Unable to start this game.',
                 'active_game': activation.get('active_game'),
+                'check_in_required': activation.get('check_in_required', False),
+                'check_in_status': activation.get('check_in_status'),
+                'locked_participant_count': activation.get('locked_participant_count'),
             })
             return
 

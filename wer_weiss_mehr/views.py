@@ -200,12 +200,16 @@ def start_game(request, room_code):
         session_code=hub_session,
     )
     if not activation.get('success'):
+        status = 428 if activation.get('check_in_required') else (409 if activation.get('conflict') else 400)
         return JsonResponse({
             'success': False,
             'error': activation.get('message') or activation.get('error') or 'Unable to start this game.',
             'active_game': activation.get('active_game'),
             'conflict': activation.get('conflict', False),
-        }, status=409 if activation.get('conflict') else 400)
+            'check_in_required': activation.get('check_in_required', False),
+            'check_in_status': activation.get('check_in_status'),
+            'locked_participant_count': activation.get('locked_participant_count'),
+        }, status=status)
 
     quiz.refresh_from_db()
     quiz.start_quiz()

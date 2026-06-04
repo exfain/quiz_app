@@ -31,6 +31,7 @@ from sorting_ladder.models import SortingLadderGame
 from where_is_this.models import WhereQuiz
 from who_is_lying.models import WhoQuiz
 from who_is_that.models import WhoThatQuiz
+from games_hub.playwright_e2e import install_browser_test_stubs, start_chromium_browser
 
 # ---------------------------------------------------------------------------
 # Hilfsfunktionen
@@ -682,10 +683,10 @@ class SessionsTest(TestCase):
             follow=True,
         )
 
-        # Erfolg: Redirect zum Monitor der neu erstellten Session
+        # Erfolg: Redirect zur Session-Übersicht der neu erstellten Session
         self.assertEqual(resp.status_code, 200)
         final_url = resp.redirect_chain[-1][0] if resp.redirect_chain else ""
-        self.assertIn("/hub/monitor/", final_url, f"Kein Redirect zum Monitor: {resp.redirect_chain}")
+        self.assertIn("/admin-dashboard/sessions/", final_url, f"Kein Redirect zur Session-Übersicht: {resp.redirect_chain}")
 
         # Session wurde in DB angelegt
         from games_hub.models import HubSession, HubGameStep
@@ -765,9 +766,7 @@ class ManageGamesBrowserTest(LiveServerTestCase):
     def setUpClass(cls):
         super().setUpClass()
         try:
-            from playwright.sync_api import sync_playwright
-            cls._pw = sync_playwright().start()
-            cls._browser = cls._pw.chromium.launch(headless=True)
+            cls._pw, cls._browser = start_chromium_browser(headless=True)
             cls._playwright_available = True
         except Exception:
             cls._playwright_available = False
@@ -785,6 +784,7 @@ class ManageGamesBrowserTest(LiveServerTestCase):
         self.password = "testpass123"
         self.admin = make_admin(username=f"btest_{rand_str()}", password=self.password)
         self.context = self._browser.new_context()
+        install_browser_test_stubs(self.context)
         self.page = self.context.new_page()
         self._login()
         self._create_test_games()

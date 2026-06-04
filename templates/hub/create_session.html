@@ -31,6 +31,45 @@
             </div>
         </div>
 
+        <!-- Overall Scoring -->
+        <div class="card mb-4">
+            <div class="card-body">
+                <div class="d-flex flex-wrap justify-content-between align-items-start gap-2 mb-3">
+                    <div>
+                        <h5 class="mb-1">Gesamtwertung</h5>
+                        <p class="text-muted small mb-0">Diese Einstellungen gelten fÃ¼r das sessionweite Scoreboard.</p>
+                    </div>
+                    <span class="badge bg-light text-dark border">Bis zum ersten Spiel Ã¤nderbar</span>
+                </div>
+                <div class="row g-3">
+                    <div class="col-md-6">
+                        <label class="form-label fw-semibold">Gesamtwertungsmodus</label>
+                        <select name="overall_scoring_mode" class="form-select">
+                            <option value="simple" selected>Einfach: Spielpunkte addieren</option>
+                            <option value="ranking">Ranking: Rangpunkte pro Spiel</option>
+                        </select>
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label fw-semibold">Gewichtung</label>
+                        <select name="overall_weighting_mode" class="form-select">
+                            <option value="none" selected>Keine Gewichtung</option>
+                            <option value="linear_cap">Linear mit Cap</option>
+                        </select>
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label fw-semibold">Gewichtungsschritt</label>
+                        <input type="number" name="weighting_step" class="form-control" value="0.15" step="0.01" min="0">
+                        <div class="form-text">Standard: 0.15 pro Spielnummer.</div>
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label fw-semibold">Gewichtungs-Cap</label>
+                        <input type="number" name="weighting_cap" class="form-control" value="2.0" step="0.1" min="1">
+                        <div class="form-text">Standard: maximal 2.0.</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
         <!-- Game Plan (selected games in order) -->
         <div class="card mb-4">
             <div class="card-header d-flex justify-content-between align-items-center">

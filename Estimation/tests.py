@@ -5,7 +5,7 @@ from django.contrib.auth.models import User
 from django.test import TestCase, TransactionTestCase
 from django.urls import reverse
 from django.utils import timezone
-from games_hub.models import HubGameStep, HubSession
+from games_hub.models import HubGameStep, HubParticipant, HubSession
 
 from .consumers import EstimationConsumer
 from .models import EstimationAnswer, EstimationParticipant, EstimationQuestion, EstimationQuiz, EstimationSession
@@ -42,6 +42,16 @@ class EstimationStartSyncTests(TransactionTestCase):
             status='waiting',
         )
         session = HubSession.objects.create(code='HUBSTART', name='Hub Start')
+        session.check_in_status = HubSession.CHECK_IN_COMPLETED
+        session.check_in_completed_at = timezone.now()
+        session.locked_participant_count = 1
+        session.save(update_fields=['check_in_status', 'check_in_completed_at', 'locked_participant_count'])
+        HubParticipant.objects.create(
+            session=session,
+            nickname='Alice',
+            checked_in_at=timezone.now(),
+            scoring_eligible=True,
+        )
         HubGameStep.objects.create(
             session=session,
             order=0,

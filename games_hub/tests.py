@@ -27,6 +27,7 @@ from django.contrib.auth.models import User
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import Client as DjangoClient
 from django.urls import reverse
+from games_hub.playwright_e2e import install_browser_test_stubs, start_chromium_browser
 
 # ── Minimales 1×1-PNG für who_that (Image-Pflichtfeld) ──────────────────────
 MINIMAL_PNG = base64.b64decode(
@@ -65,7 +66,7 @@ GAME_MONITOR_URL_NAMES = {
     "estimation":     "admin_dashboard:estimation_monitor",
     "assign":         "admin_dashboard:assign_monitor",
     "where":          "admin_dashboard:where_monitor",
-    "who":            "admin_dashboard:who_lying_monitor",
+    "who":            "admin_dashboard:who_monitor",
     "who_that":       "admin_dashboard:who_that_monitor",
     "blackjack":      "admin_dashboard:blackjack_monitor",
     "clue_rush":      "admin_dashboard:clue_rush_monitor",
@@ -125,9 +126,7 @@ class ParticipantFlowBrowserTest(_Base):
     def setUpClass(cls):
         super().setUpClass()
         try:
-            from playwright.sync_api import sync_playwright
-            cls._pw = sync_playwright().start()
-            cls._browser = cls._pw.chromium.launch(headless=True)
+            cls._pw, cls._browser = start_chromium_browser(headless=True)
             cls._playwright_available = True
         except Exception:
             cls._playwright_available = False
@@ -157,6 +156,8 @@ class ParticipantFlowBrowserTest(_Base):
         # Browser-Kontexte öffnen
         self.admin_ctx = self._browser.new_context()
         self.part_ctx  = self._browser.new_context()
+        install_browser_test_stubs(self.admin_ctx)
+        install_browser_test_stubs(self.part_ctx)
         self.admin_page = self.admin_ctx.new_page()
         self.part_page  = self.part_ctx.new_page()
 
@@ -367,6 +368,37 @@ class ParticipantFlowBrowserTest(_Base):
         """Wartet auf einen Seitenreload (Navigation + DOMContentLoaded)."""
         page.wait_for_load_state("domcontentloaded", timeout=timeout or self.TIMEOUT)
 
+    def _goto_admin(self, url):
+        """Navigate the admin page, retrying only monitor reload races."""
+        try:
+            self.admin_page.goto(url, wait_until="domcontentloaded")
+        except Exception as exc:
+            if "ERR_ABORTED" not in str(exc):
+                raise
+            self.admin_page.wait_for_load_state("domcontentloaded", timeout=self.TIMEOUT)
+            self.admin_page.goto(url, wait_until="domcontentloaded")
+
+    def _wait_admin_game_ws_open(self):
+        """Wait until the current game monitor can send WebSocket actions."""
+        self.admin_page.wait_for_function(
+            "() => window.adminGameMonitor?.websocket?.readyState === WebSocket.OPEN",
+            timeout=self.TIMEOUT,
+        )
+
+    def _wait_admin_hub_ws_open(self):
+        """Wait until the Hub monitor can send WebSocket actions."""
+        self.admin_page.wait_for_function(
+            "() => window.hubMonitorSocket?.readyState === WebSocket.OPEN",
+            timeout=self.TIMEOUT,
+        )
+
+    def _wait_participant_hub_ws_open(self):
+        """Wait until the participant lobby can receive Hub WebSocket events."""
+        self.part_page.wait_for_function(
+            "() => window.hubLobbySocket?.readyState === WebSocket.OPEN",
+            timeout=self.TIMEOUT,
+        )
+
     def _start_game(self):
         """
         Klickt 'Spiel starten' und wartet auf den aktiven Monitor-Zustand.
@@ -379,7 +411,7 @@ class ParticipantFlowBrowserTest(_Base):
           3. Falls noch 'waiting': erneut laden und prüfen.
         """
         # 1) Warte auf WS-Verbindung
-        self.admin_page.wait_for_timeout(2000)
+        self._wait_admin_game_ws_open()
         self.admin_page.wait_for_selector("#startQuizBtn:not([disabled])", timeout=self.TIMEOUT)
 
         # 2) Klicken (löst location.reload() aus, falls WS offen)
@@ -395,6 +427,25 @@ class ParticipantFlowBrowserTest(_Base):
         self.admin_page.wait_for_selector("#endQuizBtn", timeout=self.TIMEOUT)
 
     # ── Haupt-Test ───────────────────────────────────────────────────────────
+
+    def _complete_check_in_for_joined_participant(self):
+        """Complete the required Hub check-in for the already joined participant."""
+        self.admin_page.wait_for_selector("#startCheckInBtn:not([disabled])", timeout=self.TIMEOUT)
+        self.admin_page.click("#startCheckInBtn")
+
+        self.part_page.wait_for_selector("#readyCheckInBtn:not([disabled])", timeout=self.TIMEOUT)
+        self.part_page.click("#readyCheckInBtn")
+
+        self.admin_page.wait_for_function(
+            "() => document.querySelector('#checkInReadyBadge')?.textContent.includes('Bereit: 1')",
+            timeout=self.TIMEOUT,
+        )
+        self.admin_page.wait_for_selector("#completeCheckInBtn:not([disabled])", timeout=self.TIMEOUT)
+        self.admin_page.click("#completeCheckInBtn")
+        self.admin_page.wait_for_function(
+            "() => document.querySelector('#checkInLockedBadge')?.textContent.includes('Locked: 1')",
+            timeout=self.TIMEOUT,
+        )
 
     def test_full_participant_flow(self):
         """
@@ -419,10 +470,11 @@ class ParticipantFlowBrowserTest(_Base):
         )
 
         # ── 3. Admin öffnet Hub-Monitor und startet die Session ─────────────
-        self.admin_page.goto(
+        self._goto_admin(
             f"{self.live_server_url}/hub/monitor/{self.session_code}/"
         )
         self.admin_page.wait_for_selector("#startSessionBtn", timeout=self.TIMEOUT)
+        self._wait_admin_hub_ws_open()
         self.admin_page.click("#startSessionBtn")
         # Button verschwindet nach dem Start
         self.admin_page.wait_for_selector(
@@ -430,6 +482,8 @@ class ParticipantFlowBrowserTest(_Base):
         )
 
         # ── 4. Alle Spiele durchspielen ─────────────────────────────────────
+        self._complete_check_in_for_joined_participant()
+
         for game_key, room_code in self.game_data.items():
             with self.subTest(spiel=game_key):
                 self._play_game_cycle(game_key, room_code)
@@ -439,6 +493,8 @@ class ParticipantFlowBrowserTest(_Base):
         self.admin_page.wait_for_url(
             f"**/hub/monitor/{self.session_code}/**", timeout=self.TIMEOUT
         )
+        self._wait_admin_hub_ws_open()
+        self._wait_participant_hub_ws_open()
         self.admin_page.once("dialog", lambda d: d.accept())
         self.admin_page.click("#endSessionBtn")
 
@@ -469,21 +525,18 @@ class ParticipantFlowBrowserTest(_Base):
         )
 
         # ── a. Admin: Spiel-Monitor öffnen ──────────────────────────────────
-        self.admin_page.goto(monitor_url)
+        self._goto_admin(monitor_url)
         self.admin_page.wait_for_selector("#startQuizBtn", timeout=self.TIMEOUT)
 
         # ── b. Admin: Spiel starten ──────────────────────────────────────────
         self._start_game()
 
         # ── c. Admin: Frage senden ──────────────────────────────────────────
-        if game_key == "clue_rush":
-            self.admin_page.wait_for_selector("#sendClueBtn", timeout=self.TIMEOUT)
-            self.admin_page.click("#sendClueBtn")
-        else:
-            self.admin_page.wait_for_selector(
-                ".send-question-btn:not([disabled])", timeout=self.TIMEOUT
-            )
-            self.admin_page.locator(".send-question-btn").first.click()
+        self._wait_admin_game_ws_open()
+        self.admin_page.wait_for_selector(
+            ".send-question-btn:not([disabled])", timeout=self.TIMEOUT
+        )
+        self.admin_page.locator(".send-question-btn").first.click()
         # Spielmonitor lädt nach question_started neu
         self._wait_for_reload(self.admin_page)
         # Nach Reload: Frage aktiv – Assign: Runden-Button oder endQuestionBtn (je nach Rundenanzahl)
@@ -493,6 +546,10 @@ class ParticipantFlowBrowserTest(_Base):
             )
         else:
             self.admin_page.wait_for_selector("#endQuestionBtn", timeout=self.TIMEOUT)
+            if game_key == "clue_rush":
+                self._wait_admin_game_ws_open()
+                self.admin_page.wait_for_selector("#sendClueBtn", timeout=self.TIMEOUT)
+                self.admin_page.click("#sendClueBtn")
 
         # ── d. Teilnehmer: Wird zur Spielseite navigiert ───────────────────
         play_pattern = f"**{PARTICIPANT_PLAY_PREFIX[game_key]}{room_code}/**"
@@ -504,23 +561,25 @@ class ParticipantFlowBrowserTest(_Base):
         # ── f. Admin: Frage/Runde beenden ───────────────────────────────────
         if game_key == "assign":
             # Runden-Button oder endQuestionBtn (bei 1 Runde)
+            self._wait_admin_game_ws_open()
             self.admin_page.locator(
                 "#endRoundEarlyBtn, #nextRoundBtn, #endQuestionBtn"
             ).first.click()
             self._wait_for_reload(self.admin_page)
         else:
+            self._wait_admin_game_ws_open()
             self.admin_page.click("#endQuestionBtn")
             self._wait_for_reload(self.admin_page)
 
         # ── g. Admin: Spiel beenden ─────────────────────────────────────────
         self.admin_page.wait_for_selector("#endQuizBtn", timeout=self.TIMEOUT)
+        self._wait_admin_game_ws_open()
         self.admin_page.once("dialog", lambda d: d.accept())
         self.admin_page.click("#endQuizBtn")
-        self._wait_for_reload(self.admin_page)
+        self.part_page.wait_for_selector("#returnToLobbyBtn", timeout=self.LONG)
 
         # ── h. Admin: Zurück zur Übersicht ──────────────────────────────────
-        self.admin_page.wait_for_selector("#backToHubBtn", timeout=self.TIMEOUT)
-        self.admin_page.click("#backToHubBtn")
+        self._goto_admin(f"{self.live_server_url}/hub/monitor/{self.session_code}/")
         self.admin_page.wait_for_url(
             f"**/hub/monitor/{self.session_code}/**", timeout=self.TIMEOUT
         )
@@ -533,6 +592,7 @@ class ParticipantFlowBrowserTest(_Base):
         )
         # Lobby-Titel ist immer sichtbar (Join-Card kann ausgeblendet sein)
         self.part_page.wait_for_selector("#lobbyTitle", timeout=self.TIMEOUT)
+        self._wait_participant_hub_ws_open()
 
     # ── Antwort-Logik pro Spieltyp ───────────────────────────────────────────
 
@@ -543,7 +603,8 @@ class ParticipantFlowBrowserTest(_Base):
         der Submit-Button per JavaScript freigeschaltet.
         """
         # Warte darauf, dass der Submit-Button überhaupt im DOM ist
-        self.part_page.wait_for_selector("#submitAnswerBtn", timeout=self.LONG)
+        if game_key not in ("assign", "who", "sorting_ladder"):
+            self.part_page.wait_for_selector("#submitAnswerBtn", timeout=self.LONG)
 
         if game_key == "quiz":
             # Erste Antwort-Option anklicken
@@ -569,25 +630,24 @@ class ParticipantFlowBrowserTest(_Base):
             target = self.part_page.locator(".drop-zone").first
             source.drag_to(target)
             self.part_page.wait_for_selector(
-                "#submitAnswerBtn:not([disabled])", timeout=self.TIMEOUT
+                "#logRoundBtn:not(.d-none)", timeout=self.TIMEOUT
             )
-            self.part_page.click("#submitAnswerBtn")
+            self.part_page.click("#logRoundBtn")
 
         elif game_key == "where":
-            # Karte-Klick überspringen: Button per JS freischalten
-            self.part_page.evaluate(
-                "document.getElementById('submitAnswerBtn').disabled = false;"
-            )
-            self.part_page.click("#submitAnswerBtn")
-
-        elif game_key == "who":
-            # Erste Personen-Karte anklicken
-            self.part_page.wait_for_selector(".person-card", timeout=self.LONG)
-            self.part_page.locator(".person-card").first.click()
+            # Use a real map click so the participant answer state is populated.
+            self.part_page.wait_for_selector("#gameMap", timeout=self.LONG)
+            self.part_page.click("#gameMap")
             self.part_page.wait_for_selector(
                 "#submitAnswerBtn:not([disabled])", timeout=self.TIMEOUT
             )
             self.part_page.click("#submitAnswerBtn")
+
+        elif game_key == "who":
+            self.part_page.wait_for_selector(
+                "#accuseLiarBtn:not([disabled])", timeout=self.LONG
+            )
+            self.part_page.click("#accuseLiarBtn")
 
         elif game_key == "who_that":
             # Namen eintippen
@@ -616,14 +676,32 @@ class ParticipantFlowBrowserTest(_Base):
             self.part_page.click("#submitAnswerBtn")
 
         elif game_key == "sorting_ladder":
-            # Drag-to-sort überspringen: Button per JS freischalten
-            self.part_page.evaluate(
-                "document.getElementById('submitAnswerBtn').disabled = false;"
+            # Use the current ladder UI: drag one item into a slot, then lock it in.
+            self.part_page.wait_for_selector(".answer-card", timeout=self.LONG)
+            source = self.part_page.locator(".answer-card").first
+            target = self.part_page.locator(".triangle-container").first
+            source.drag_to(target)
+            self.part_page.wait_for_selector(
+                "#submitRoundBtn:not([disabled])", timeout=self.TIMEOUT
             )
-            self.part_page.click("#submitAnswerBtn")
+            self.part_page.click("#submitRoundBtn")
 
         # Warte auf Bestätigungsanzeige (where/sorting_ladder ohne Selektor)
-        if game_key not in ("where", "sorting_ladder"):
+        if game_key == "estimation":
+            self.part_page.wait_for_selector(
+                "#answerSubmittedState:not(.d-none), #zoneSubmitFeedback:not(.d-none)",
+                timeout=self.TIMEOUT,
+            )
+        elif game_key == "assign":
+            self.part_page.wait_for_selector(
+                "#roundSubmittedMessage:not(.d-none), #answerSubmittedState:not(.d-none)",
+                timeout=self.TIMEOUT,
+            )
+        elif game_key == "blackjack":
+            self.part_page.wait_for_selector(
+                "#questionSubmitFeedback:not(.d-none)", timeout=self.TIMEOUT
+            )
+        elif game_key not in ("where", "who", "sorting_ladder"):
             self.part_page.wait_for_selector(
                 "#answerSubmittedState:not(.d-none)", timeout=self.TIMEOUT
             )

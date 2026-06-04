@@ -8,8 +8,18 @@ from django.contrib.auth.decorators import login_required
 from django.http import JsonResponse, Http404
 from django.db.models import Sum, F, Case, When, Value, IntegerField, Q
 from django.db import connection, transaction
-from .models import HubSession, HubParticipant, HubGameStep, GameVote
+from asgiref.sync import async_to_sync
+from channels.layers import get_channel_layer
+from .models import HubGameParticipantSnapshot, HubSession, HubParticipant, HubGameStep, GameVote
 from .active_game_guard import resolve_session_game_activation
+from .check_in import (
+    complete_session_check_in,
+    get_check_in_state,
+    participant_check_in,
+    reset_session_check_in,
+    set_participant_check_in_state,
+    start_session_check_in,
+)
 from .lobby_return_flow import (
     LOBBY_RETURN_COUNTDOWN_SECONDS,
     broadcast_lobby_return_countdown_started,
@@ -68,6 +78,7 @@ def create_session(request):
     if request.method == 'POST':
         name = request.POST.get('name') or ''
         code = request.POST.get('code') or gen_code()
+        scoring_settings = _parse_scoring_settings(request.POST)
 
         if HubSession.objects.filter(code=code).exists():
             return render(request, 'hub/create_session.html', {
@@ -83,7 +94,12 @@ def create_session(request):
         except json.JSONDecodeError:
             games_ordered = []
 
-        session = HubSession.objects.create(code=code, name=name, is_active=False)
+        session = HubSession.objects.create(
+            code=code,
+            name=name,
+            is_active=False,
+            **scoring_settings,
+        )
 
         GAME_MODEL_MAP = {
             'quiz':           QuizGameModel,
@@ -158,6 +174,42 @@ def _get_game_instances():
     return {'all_game_instances': games}
 
 
+def _parse_scoring_settings(data):
+    scoring_mode = data.get('overall_scoring_mode') or HubSession.OVERALL_SCORING_SIMPLE
+    weighting_mode = data.get('overall_weighting_mode') or HubSession.OVERALL_WEIGHTING_NONE
+    if scoring_mode not in {HubSession.OVERALL_SCORING_SIMPLE, HubSession.OVERALL_SCORING_RANKING}:
+        scoring_mode = HubSession.OVERALL_SCORING_SIMPLE
+    if weighting_mode not in {HubSession.OVERALL_WEIGHTING_NONE, HubSession.OVERALL_WEIGHTING_LINEAR_CAP}:
+        weighting_mode = HubSession.OVERALL_WEIGHTING_NONE
+    try:
+        weighting_step = float(data.get('weighting_step', 0.15))
+    except (TypeError, ValueError):
+        weighting_step = 0.15
+    try:
+        weighting_cap = float(data.get('weighting_cap', 2.0))
+    except (TypeError, ValueError):
+        weighting_cap = 2.0
+    return {
+        'overall_scoring_mode': scoring_mode,
+        'overall_weighting_mode': weighting_mode,
+        'weighting_step': max(weighting_step, 0.0),
+        'weighting_cap': max(weighting_cap, 1.0),
+    }
+
+
+def _score_value_for_participant(participant):
+    for attr in ('total_score', 'overall_points', 'total_points', 'final_score'):
+        value = getattr(participant, attr, None)
+        if value is not None:
+            return value
+    return 0
+
+
+def _display_score(value):
+    value = round(float(value or 0), 2)
+    return int(value) if value.is_integer() else value
+
+
 def get_game_participant_data(session, game_model, participant_model, room_code, game_key):
     """Helper function to get participant data for a specific game"""
     try:
@@ -172,10 +224,7 @@ def get_game_participant_data(session, game_model, participant_model, room_code,
         
         data = {}
         for p in participants:
-            # Some games (e.g., BlackJack) track total_points instead of total_score
-            score_value = getattr(p, 'total_score', None)
-            if score_value is None:
-                score_value = getattr(p, 'total_points', 0)
+            score_value = _score_value_for_participant(p)
             accuracy_fn = getattr(p, 'get_average_accuracy', None)
             accuracy_value = accuracy_fn() if callable(accuracy_fn) else 0
             data[p.name] = {
@@ -186,7 +235,7 @@ def get_game_participant_data(session, game_model, participant_model, room_code,
     except game_model.DoesNotExist:
         return {}
 
-def get_leaderboard_data(session):
+def _legacy_get_leaderboard_data(session):
     """Generate leaderboard data for a session"""
 
     try:
@@ -295,6 +344,330 @@ def get_leaderboard_data(session):
         'instances': instance_meta,
     }
 
+
+def _ranking_points_for_scores(score_by_name, total_players=None):
+    total_players = int(total_players or len(score_by_name))
+    total_players = max(total_players, len(score_by_name))
+    ordered = sorted(score_by_name.items(), key=lambda item: (-item[1], item[0].lower()))
+    points_by_name = {}
+    ranks_by_name = {}
+    previous_score = None
+    current_rank = 0
+
+    for index, (name, score) in enumerate(ordered, start=1):
+        if previous_score is None or score != previous_score:
+            current_rank = index
+            previous_score = score
+        ranks_by_name[name] = current_rank
+        points_by_name[name] = total_players - current_rank + 1
+
+    return points_by_name, ranks_by_name
+
+
+def _ranking_pool_meta(session, participant_count=None, participant_count_override=None, basis_override=None):
+    if basis_override == 'snapshot':
+        count = int(participant_count or 0)
+        basis = 'snapshot'
+        label = 'Spiel-Snapshot'
+    elif session.check_in_completed:
+        count = int(session.get_locked_participant_count() or 0)
+        basis = 'check_in'
+        label = 'Check-in'
+    elif participant_count_override is not None:
+        count = int(participant_count_override)
+        basis = 'preview'
+        label = 'Theoretische Teilnehmerzahl'
+    else:
+        count = int(participant_count or 0)
+        basis = 'current_participants' if count > 0 else 'unavailable'
+        label = 'Aktuelle Teilnehmer' if count > 0 else 'Nicht berechenbar'
+
+    available = count > 0
+    if basis == 'snapshot':
+        message = f'Berechnet mit {count} Teilnehmern im Spiel-Snapshot.'
+    elif session.check_in_completed:
+        message = f'Berechnet mit {count} eingecheckten Teilnehmern.'
+    elif basis == 'preview':
+        message = f'Preview mit {count} Teilnehmern.'
+    elif available:
+        message = f'Preview mit {count} aktuellen Teilnehmern.'
+    else:
+        message = 'Ranking-Range nicht berechenbar, da noch keine Teilnehmerzahl vorliegt.'
+
+    return {
+        'participant_count': count,
+        'basis': basis,
+        'basis_label': label,
+        'available': available,
+        'message': message,
+    }
+
+
+def _ranking_score_range(session, weight, participant_count=None, participant_count_override=None, basis_override=None):
+    pool = _ranking_pool_meta(
+        session,
+        participant_count=participant_count,
+        participant_count_override=participant_count_override,
+        basis_override=basis_override,
+    )
+    if session.overall_scoring_mode != HubSession.OVERALL_SCORING_RANKING:
+        return {
+            **pool,
+            'min': None,
+            'max': None,
+            'weighted_min': None,
+            'weighted_max': None,
+        }
+    if not pool['available']:
+        return {
+            **pool,
+            'min': None,
+            'max': None,
+            'weighted_min': None,
+            'weighted_max': None,
+        }
+    return {
+        **pool,
+        'min': 1,
+        'max': pool['participant_count'],
+        'weighted_min': _display_score(1 * weight),
+        'weighted_max': _display_score(pool['participant_count'] * weight),
+    }
+
+
+def _empty_leaderboard_participant(name, hub_participant=None):
+    return {
+        'name': name,
+        'total_score': 0,
+        'weighted_score': 0,
+        'overall_score': 0,
+        'games_played': 0,
+        'game_scores': {},
+        'game_base_scores': {},
+        'game_overall_scores': {},
+        'game_ranks': {},
+        'game_accuracies': {},
+        'hub_participant_id': hub_participant.id if hub_participant else None,
+        'score_adjustment': hub_participant.score_adjustment if hub_participant else 0,
+    }
+
+
+def _get_step_snapshot_pool(step):
+    snapshots = list(
+        HubGameParticipantSnapshot.objects
+        .filter(game_step=step)
+        .select_related('participant')
+        .order_by('participant__joined_at', 'participant__nickname')
+    )
+    if not snapshots:
+        return None
+    included = [snapshot for snapshot in snapshots if snapshot.included_in_scoring]
+    return {
+        'has_snapshot': True,
+        'participant_count': len(included),
+        'snapshots': included,
+        'participants_by_name': {
+            snapshot.participant.nickname: snapshot
+            for snapshot in included
+        },
+        'names': [snapshot.participant.nickname for snapshot in included],
+    }
+
+
+def get_leaderboard_data(session, participant_count_override=None):
+    """Generate session-wide leaderboard data from concrete session game steps."""
+    games = []
+    participants = []
+    instance_meta = {}
+
+    try:
+        steps = session.steps.all().order_by('order')
+        participants_data = {}
+
+        GAME_MODELS = {
+            'quiz': (QuizGameModel, QuizParticipant, 'Quick Quiz'),
+            'clue_rush': (ClueRushGame, ClueRushParticipant, 'Clue Rush'),
+            'estimation': (EstimationQuiz, EstimationParticipant, 'Estimation'),
+            'assign': (AssignQuiz, AssignParticipant, 'Assign'),
+            'who': (WhoQuiz, WhoParticipant, 'Who is Lying?'),
+            'who_that': (WhoThatQuiz, WhoThatParticipant, 'Who is That?'),
+            'where': (WhereQuiz, WhereParticipant, 'Where is This?'),
+            'blackjack': (BlackJackQuiz, BlackJackParticipant, 'Black Jack'),
+            'sorting_ladder': (SortingLadderGame, SortingLadderParticipant, 'Sorting Ladder'),
+            'wer_weiss_mehr': (WerWeissMehrGame, WerWeissMehrParticipant, 'Wer weiss mehr?'),
+        }
+
+        official_check_in_completed = session.check_in_completed
+        official_participant_qs = session.get_official_participants()
+        hub_participants = {
+            hp.nickname: hp
+            for hp in official_participant_qs.order_by('joined_at', 'nickname')
+        }
+        for name, hub_participant in hub_participants.items():
+            participants_data[name] = _empty_leaderboard_participant(name, hub_participant)
+
+        ranking_pool = _ranking_pool_meta(session, participant_count=len(participants_data))
+        range_pool = _ranking_pool_meta(
+            session,
+            participant_count=len(participants_data),
+            participant_count_override=participant_count_override,
+        )
+
+        for step in steps:
+            game_key = step.game_key
+            if game_key not in GAME_MODELS:
+                continue
+
+            game_model, participant_model, type_name = GAME_MODELS[game_key]
+            game_obj = game_model.objects.filter(room_code=step.room_code).first()
+            game_status = getattr(game_obj, 'status', '') if game_obj else ''
+            game_number = step.order + 1
+            weight = session.get_game_weight(game_number)
+            snapshot_pool = _get_step_snapshot_pool(step)
+            range_participant_count = (
+                snapshot_pool['participant_count']
+                if snapshot_pool
+                else range_pool['participant_count']
+            )
+            range_basis_override = 'snapshot' if snapshot_pool else None
+            game_title = (
+                getattr(game_obj, 'title', None)
+                or getattr(step, 'title', '')
+                or type_name
+            )
+            instance_key = f"step:{step.id}"
+            meta = {
+                'key': instance_key,
+                'game_key': game_key,
+                'room_code': step.room_code,
+                'title': game_title,
+                'name': game_title,
+                'type': type_name,
+                'game_number': game_number,
+                'weight': _display_score(weight),
+                'status': game_status,
+                'score_range': _ranking_score_range(
+                    session,
+                    weight,
+                    participant_count=range_participant_count,
+                    participant_count_override=None if snapshot_pool else participant_count_override,
+                    basis_override=range_basis_override,
+                ),
+            }
+            games.append(meta)
+            instance_meta[instance_key] = meta
+
+            if game_status != 'completed':
+                continue
+
+            game_data = get_game_participant_data(
+                session,
+                game_model,
+                participant_model,
+                step.room_code,
+                game_key,
+            )
+            if snapshot_pool:
+                game_pool_names = snapshot_pool['names']
+                for name, snapshot in snapshot_pool['participants_by_name'].items():
+                    if name not in participants_data:
+                        participants_data[name] = _empty_leaderboard_participant(name, snapshot.participant)
+                game_participant_count = snapshot_pool['participant_count']
+                score_by_name = {}
+                for name, snapshot in snapshot_pool['participants_by_name'].items():
+                    score_by_name[name] = 0 if snapshot.auto_zero else _display_score(game_data.get(name, {}).get('score', 0))
+                ranking_pool = _ranking_pool_meta(
+                    session,
+                    participant_count=game_participant_count,
+                    basis_override='snapshot',
+                )
+                range_pool = ranking_pool
+                range_override = None
+                range_basis_override = 'snapshot'
+            else:
+                for name in game_data:
+                    if not official_check_in_completed and name not in participants_data:
+                        participants_data[name] = _empty_leaderboard_participant(name)
+                game_pool_names = list(participants_data.keys())
+                ranking_pool = _ranking_pool_meta(session, participant_count=len(participants_data))
+                range_pool = _ranking_pool_meta(
+                    session,
+                    participant_count=len(participants_data),
+                    participant_count_override=participant_count_override,
+                )
+                score_by_name = {
+                    name: _display_score(game_data.get(name, {}).get('score', 0))
+                    for name in game_pool_names
+                }
+                range_override = participant_count_override
+                range_basis_override = None
+
+            meta['score_range'] = _ranking_score_range(
+                session,
+                weight,
+                participant_count=range_pool['participant_count'],
+                participant_count_override=range_override,
+                basis_override=range_basis_override,
+            )
+            instance_meta[instance_key] = meta
+            ranking_points, ranks = _ranking_points_for_scores(
+                score_by_name,
+                total_players=ranking_pool['participant_count'] if ranking_pool['available'] else None,
+            )
+
+            for name in game_pool_names:
+                pdata = participants_data[name]
+                raw_score = score_by_name.get(name, 0)
+                accuracy = game_data.get(name, {}).get('accuracy', 0)
+                if session.overall_scoring_mode == HubSession.OVERALL_SCORING_RANKING:
+                    base_score = ranking_points.get(name, 0)
+                    rank = ranks.get(name)
+                else:
+                    base_score = raw_score
+                    rank = None
+
+                overall_points = _display_score(base_score * weight)
+                pdata['games_played'] += 1
+                pdata['game_scores'][instance_key] = raw_score
+                pdata['game_base_scores'][instance_key] = base_score
+                pdata['game_overall_scores'][instance_key] = overall_points
+                pdata['game_ranks'][instance_key] = rank
+                pdata['game_accuracies'][instance_key] = accuracy
+                pdata['total_score'] = _display_score(pdata['total_score'] + raw_score)
+                pdata['weighted_score'] = _display_score(pdata['weighted_score'] + overall_points)
+                pdata['overall_score'] = pdata['weighted_score']
+
+        for pdata in participants_data.values():
+            pdata['total_with_adjustment'] = _display_score(
+                pdata['weighted_score'] + (pdata.get('score_adjustment') or 0)
+            )
+
+        participants = sorted(
+            participants_data.values(),
+            key=lambda pdata: (-float(pdata.get('total_with_adjustment') or 0), pdata['name'].lower()),
+        )
+    except Exception as e:
+        print("Error getting leaderboard data:", e)
+
+    return {
+        'games': games,
+        'participants': participants,
+        'instances': instance_meta,
+        'settings': {
+            'overall_scoring_mode': session.overall_scoring_mode,
+            'overall_weighting_mode': session.overall_weighting_mode,
+            'weighting_step': session.weighting_step,
+            'weighting_cap': session.weighting_cap,
+            'check_in_status': session.check_in_status,
+            'locked_participant_count': session.locked_participant_count,
+            'ranking_pool': _ranking_pool_meta(
+                session,
+                participant_count=len(participants),
+                participant_count_override=participant_count_override,
+            ),
+        },
+    }
+
 @login_required
 @require_POST
 def set_hub_participant_score(request):
@@ -309,6 +682,150 @@ def set_hub_participant_score(request):
         return JsonResponse({'success': False, 'error': str(e)}, status=400)
 
 
+@login_required
+@require_POST
+def update_session_scoring_settings(request, session_code):
+    session = get_object_or_404(HubSession, code=session_code)
+    if session.scoring_settings_locked:
+        return JsonResponse({
+            'success': False,
+            'error': 'Die Gesamtwertung kann nach Start des ersten Spiels nicht mehr geändert werden.',
+        }, status=409)
+
+    try:
+        data = json.loads(request.body or '{}')
+    except json.JSONDecodeError:
+        return JsonResponse({'success': False, 'error': 'Invalid JSON'}, status=400)
+
+    settings = _parse_scoring_settings(data)
+    for field, value in settings.items():
+        setattr(session, field, value)
+    session.save(update_fields=[
+        'overall_scoring_mode',
+        'overall_weighting_mode',
+        'weighting_step',
+        'weighting_cap',
+        'updated_at',
+    ])
+
+    return JsonResponse({
+        'success': True,
+        'locked': session.scoring_settings_locked,
+        **settings,
+    })
+
+
+def _broadcast_check_in_update(session, event_type):
+    channel_layer = get_channel_layer()
+    if not channel_layer:
+        return
+    async_to_sync(channel_layer.group_send)(
+        f"hub_{session.code}",
+        {
+            'type': 'check_in_update',
+            'event_type': event_type,
+            'state': get_check_in_state(session),
+        },
+    )
+
+
+def session_check_in_state_api(request, session_code):
+    if request.method != 'GET':
+        return JsonResponse({'success': False, 'error': 'Method not allowed'}, status=405)
+    session = get_object_or_404(HubSession, code=session_code)
+    return JsonResponse({'success': True, **get_check_in_state(session)})
+
+
+@login_required
+@require_POST
+def start_check_in(request, session_code):
+    session = get_object_or_404(HubSession, code=session_code)
+    result = start_session_check_in(session)
+    if result.get('success'):
+        session.refresh_from_db()
+        _broadcast_check_in_update(session, 'check_in_started')
+    return JsonResponse(result, status=200 if result.get('success') else 400)
+
+
+@login_required
+@require_POST
+def complete_check_in(request, session_code):
+    session = get_object_or_404(HubSession, code=session_code)
+    try:
+        data = json.loads(request.body or '{}')
+    except json.JSONDecodeError:
+        data = {}
+    result = complete_session_check_in(session, allow_empty=bool(data.get('allow_empty')))
+    if result.get('success'):
+        session.refresh_from_db()
+        _broadcast_check_in_update(session, 'check_in_completed')
+    return JsonResponse(result, status=200 if result.get('success') else 400)
+
+
+@login_required
+@require_POST
+def reset_check_in(request, session_code):
+    session = get_object_or_404(HubSession, code=session_code)
+    result = reset_session_check_in(session)
+    if result.get('success'):
+        session.refresh_from_db()
+        _broadcast_check_in_update(session, 'check_in_reset')
+    return JsonResponse(result, status=200 if result.get('success') else 400)
+
+
+@require_POST
+def participant_check_in_api(request, session_code):
+    session = get_object_or_404(HubSession, code=session_code)
+    try:
+        data = json.loads(request.body or '{}')
+    except json.JSONDecodeError:
+        return JsonResponse({'success': False, 'error': 'Invalid JSON'}, status=400)
+    nickname = data.get('nickname') or data.get('participant_name')
+    result = participant_check_in(session, nickname)
+    if result.get('success'):
+        session.refresh_from_db()
+        _broadcast_check_in_update(session, 'participant_checked_in')
+    return JsonResponse(result, status=200 if result.get('success') else 400)
+
+
+@login_required
+@require_POST
+def set_check_in_participant(request, session_code):
+    session = get_object_or_404(HubSession, code=session_code)
+    try:
+        data = json.loads(request.body or '{}')
+    except json.JSONDecodeError:
+        return JsonResponse({'success': False, 'error': 'Invalid JSON'}, status=400)
+    result = set_participant_check_in_state(
+        session,
+        participant_id=data.get('participant_id'),
+        nickname=data.get('nickname'),
+        checked_in=data.get('checked_in') if 'checked_in' in data else None,
+        excluded_by_host=data.get('excluded_by_host') if 'excluded_by_host' in data else None,
+    )
+    if result.get('success'):
+        session.refresh_from_db()
+        _broadcast_check_in_update(session, 'participant_checked_in')
+    return JsonResponse(result, status=200 if result.get('success') else 400)
+
+
+def _get_participant_count_override(request):
+    raw_value = (
+        request.GET.get('participant_count_override')
+        or request.GET.get('score_range_participant_count')
+        or ''
+    ).strip()
+    if not raw_value:
+        return None, None
+    try:
+        value = int(raw_value)
+    except (TypeError, ValueError):
+        return None, 'Die theoretische Teilnehmerzahl muss eine ganze Zahl sein.'
+    if value < 1 or value > 200:
+        return None, 'Die theoretische Teilnehmerzahl muss zwischen 1 und 200 liegen.'
+    return value, None
+
+
 def session_leaderboard_api(request, session_code):
     """API endpoint to get leaderboard data for a session"""
     if request.method != 'GET':
@@ -316,7 +833,13 @@ def session_leaderboard_api(request, session_code):
     
     try:
         session = HubSession.objects.get(code=session_code)
-        data = get_leaderboard_data(session)
+        participant_count_override, override_error = _get_participant_count_override(request)
+        if override_error:
+            return JsonResponse({'error': override_error}, status=400)
+        data = get_leaderboard_data(
+            session,
+            participant_count_override=participant_count_override,
+        )
         return JsonResponse(data)
     except HubSession.DoesNotExist:
         return JsonResponse({'error': 'Session not found'}, status=404)
@@ -413,6 +936,7 @@ def monitor(request, session_code: str):
         'ip': ip,
         'waiting_games': waiting_games,
         'session_players': session_players,
+        'scoring_settings_locked': session.scoring_settings_locked,
     })
 
 
@@ -730,7 +1254,10 @@ def activate_session_game(request, session_code):
         action=action,
         check_only=check_only,
     )
-    status = 409 if result.get('conflict') else 200
+    if result.get('check_in_required'):
+        status = 428
+    else:
+        status = 409 if result.get('conflict') else 200
     return JsonResponse(result, status=status)
 
 

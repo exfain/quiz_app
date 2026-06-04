@@ -12,6 +12,13 @@ urlpatterns = [
     path('session/<str:session_code>/leaderboard/', views.session_leaderboard, name='session_leaderboard'),
     # API endpoints
     path('api/session/<str:session_code>/leaderboard/', views.session_leaderboard_api, name='session_leaderboard_api'),
+    path('api/session/<str:session_code>/scoring-settings/', views.update_session_scoring_settings, name='update_session_scoring_settings'),
+    path('api/session/<str:session_code>/check-in/', views.session_check_in_state_api, name='session_check_in_state_api'),
+    path('api/session/<str:session_code>/check-in/start/', views.start_check_in, name='start_check_in'),
+    path('api/session/<str:session_code>/check-in/complete/', views.complete_check_in, name='complete_check_in'),
+    path('api/session/<str:session_code>/check-in/reset/', views.reset_check_in, name='reset_check_in'),
+    path('api/session/<str:session_code>/check-in/participant/', views.participant_check_in_api, name='participant_check_in_api'),
+    path('api/session/<str:session_code>/check-in/set-participant/', views.set_check_in_participant, name='set_check_in_participant'),
     path('api/spectate/<str:session_code>/state/', views.spectate_session_state, name='spectate_session_state'),
     path('api/session/<str:session_code>/add-step/', views.add_step_to_session, name='add_step_to_session'),
     path('api/session/<str:session_code>/activate-game/', views.activate_session_game, name='activate_session_game'),

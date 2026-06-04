@@ -5,6 +5,13 @@ from django.utils import timezone
 from django.core.cache import cache
 from .models import HubSession, HubParticipant, HubGameStep, GameVote
 from .active_game_guard import is_game_routable_for_hub_auto_redirect, resolve_session_game_activation
+from .check_in import (
+    complete_session_check_in,
+    get_check_in_state,
+    participant_check_in,
+    reset_session_check_in,
+    start_session_check_in,
+)
 from QuizGame.models import Quiz as QuizGameModel
 from Assign.models import AssignQuiz
 from Estimation.models import EstimationQuiz
@@ -56,6 +63,14 @@ class HubConsumer(AsyncWebsocketConsumer):
             await self.handle_toggle_scoreboard()
         elif msg_type == 'vote':
             await self.handle_vote(data)
+        elif msg_type == 'start_check_in':
+            await self.handle_start_check_in()
+        elif msg_type == 'participant_check_in':
+            await self.handle_participant_check_in(data)
+        elif msg_type == 'complete_check_in':
+            await self.handle_complete_check_in(data)
+        elif msg_type == 'reset_check_in':
+            await self.handle_reset_check_in()
         elif msg_type == 'get_state':
             await self.send_state()
         elif msg_type == 'ping':
@@ -123,6 +138,10 @@ class HubConsumer(AsyncWebsocketConsumer):
                 'type': 'active_game_conflict' if activation.get('conflict') else 'error',
                 'message': activation.get('message') or activation.get('error') or 'Unable to activate game.',
             }
+            if activation.get('check_in_required'):
+                payload['check_in_required'] = True
+                payload['check_in_status'] = activation.get('check_in_status')
+                payload['locked_participant_count'] = activation.get('locked_participant_count')
             if activation.get('active_game'):
                 payload['active_game'] = activation['active_game']
             await self.send_json(payload)
@@ -385,6 +404,12 @@ class HubConsumer(AsyncWebsocketConsumer):
     async def scoreboard_visibility(self, event):
         await self.send_json({'type': 'scoreboard_visibility', 'visible': event['visible']})
 
+    async def check_in_update(self, event):
+        await self.send_json({
+            'type': event.get('event_type', 'check_in_update'),
+            **(event.get('state') or {}),
+        })
+
     @database_sync_to_async
     def toggle_scoreboard_db(self):
         try:
@@ -399,6 +424,43 @@ class HubConsumer(AsyncWebsocketConsumer):
         await self.complete_games_for_session()
         await self.end_session_db()
         await self.channel_layer.group_send(self.group_name, {'type': 'session_ended'})
+
+    async def _broadcast_check_in_result(self, result, event_type):
+        if result.get('success'):
+            await self.channel_layer.group_send(
+                self.group_name,
+                {
+                    'type': 'check_in_update',
+                    'event_type': event_type,
+                    'state': {
+                        'check_in': result.get('check_in', {}),
+                        'participants': result.get('participants', []),
+                        'counts': result.get('counts', {}),
+                    },
+                },
+            )
+            return
+        await self.send_json({
+            'type': 'check_in_error',
+            'error': result.get('error') or 'Check-in fehlgeschlagen.',
+        })
+
+    async def handle_start_check_in(self):
+        result = await self.start_check_in_db()
+        await self._broadcast_check_in_result(result, 'check_in_started')
+
+    async def handle_participant_check_in(self, data):
+        nickname = data.get('nickname') or data.get('participant_name')
+        result = await self.participant_check_in_db(nickname)
+        await self._broadcast_check_in_result(result, 'participant_checked_in')
+
+    async def handle_complete_check_in(self, data):
+        result = await self.complete_check_in_db(bool(data.get('allow_empty')))
+        await self._broadcast_check_in_result(result, 'check_in_completed')
+
+    async def handle_reset_check_in(self):
+        result = await self.reset_check_in_db()
+        await self._broadcast_check_in_result(result, 'check_in_reset')
 
     @database_sync_to_async
     def get_current_step(self):
@@ -440,17 +502,51 @@ class HubConsumer(AsyncWebsocketConsumer):
             ).update(status='completed', ended_at=timezone.now())
 
     @database_sync_to_async
+    def start_check_in_db(self):
+        try:
+            session = HubSession.objects.get(code=self.session_code)
+        except HubSession.DoesNotExist:
+            return {'success': False, 'error': 'Session nicht gefunden.'}
+        return start_session_check_in(session)
+
+    @database_sync_to_async
+    def participant_check_in_db(self, nickname):
+        try:
+            session = HubSession.objects.get(code=self.session_code)
+        except HubSession.DoesNotExist:
+            return {'success': False, 'error': 'Session nicht gefunden.'}
+        return participant_check_in(session, nickname)
+
+    @database_sync_to_async
+    def complete_check_in_db(self, allow_empty=False):
+        try:
+            session = HubSession.objects.get(code=self.session_code)
+        except HubSession.DoesNotExist:
+            return {'success': False, 'error': 'Session nicht gefunden.'}
+        return complete_session_check_in(session, allow_empty=allow_empty)
+
+    @database_sync_to_async
+    def reset_check_in_db(self):
+        try:
+            session = HubSession.objects.get(code=self.session_code)
+        except HubSession.DoesNotExist:
+            return {'success': False, 'error': 'Session nicht gefunden.'}
+        return reset_session_check_in(session)
+
+    @database_sync_to_async
     def get_state(self):
         try:
             session = HubSession.objects.get(code=self.session_code)
             participants = list(session.participants.values('nickname'))
             steps = list(session.steps.values('order', 'game_key', 'room_code', 'title'))
+            check_in_state = get_check_in_state(session)
             return {
                 'session': {'code': session.code, 'name': session.name, 'started_at': session.started_at is not None},
                 'participants': participants,
                 'steps': steps,
                 'current_step_index': session.current_step_index,
                 'scoreboard_visible': session.scoreboard_visible,
+                **check_in_state,
             }
         except HubSession.DoesNotExist:
             return {'error': 'session_not_found'}
