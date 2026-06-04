@@ -4,6 +4,7 @@ from channels.generic.websocket import AsyncWebsocketConsumer
 from channels.db import database_sync_to_async
 from django.utils import timezone
 from .models import AssignQuiz, AssignParticipant, AssignQuestion, AssignAnswer
+from .scoreboard import build_participant_progress_history, build_question_scoreboard
 from games_hub.active_game_guard import resolve_session_game_activation_for_room
 from games_hub.lobby_return_flow import ensure_session_players_ready_for_game_start_for_room
 from games_hub.models import HubGameStep
@@ -554,9 +555,11 @@ class AssignConsumer(AsyncWebsocketConsumer):
             # If quiz is already active, send quiz_started directly to this participant
             quiz = await self.get_quiz()
             progress_history = await self.get_participant_progress_history(participant_name, hub_session)
+            scoreboard_questions = await self.get_scoreboard_questions(hub_session)
             await self.send(text_data=json.dumps({
                 'type': 'progress_history',
                 'history': progress_history,
+                'scoreboard_questions': scoreboard_questions,
             }))
             if quiz and quiz.status == 'active':
                 await self.send(text_data=json.dumps({
@@ -602,6 +605,12 @@ class AssignConsumer(AsyncWebsocketConsumer):
 
     async def hide_leaderboard(self, event):
         await self.send(text_data=json.dumps({'type': 'hide_leaderboard'}))
+
+    async def scoreboard_questions_updated(self, event):
+        await self.send(text_data=json.dumps({
+            'type': 'scoreboard_questions_updated',
+            'scoreboard_questions': event.get('scoreboard_questions', []),
+        }))
 
     async def handle_admin_show_solution(self, data):
         """Admin zeigt die richtige Zuordnung für alle Teilnehmer an."""
@@ -1218,67 +1227,14 @@ class AssignConsumer(AsyncWebsocketConsumer):
                 'total_matches': answer.get_total_matches_count(),
                 'accuracy': answer.get_accuracy_percentage(),
                 'progress_history': self._build_progress_history(quiz, participant),
+                'scoreboard_questions': build_question_scoreboard(quiz, None, participant.hub_session_code),
             }
 
         except (AssignQuiz.DoesNotExist, AssignParticipant.DoesNotExist):
             return None
 
     def _build_progress_history(self, quiz, participant):
-        question_number_by_id = {}
-        answer_qs = (
-            AssignAnswer.objects
-            .filter(quiz=quiz)
-            .select_related('question')
-            .order_by('submitted_at', 'id')
-        )
-        if participant.hub_session_code:
-            answer_qs = answer_qs.filter(participant__hub_session_code=participant.hub_session_code)
-        answers = list(answer_qs)
-        seen_question_ids = []
-        for answer in answers:
-            if answer.question_id not in seen_question_ids:
-                seen_question_ids.append(answer.question_id)
-        if quiz.current_question_id and quiz.current_question_id not in seen_question_ids:
-            seen_question_ids.append(quiz.current_question_id)
-        if quiz.selected_questions.exists():
-            configured_questions = list(quiz.selected_questions.all())
-            order = [int(question_id) for question_id in (quiz.question_order or [])]
-            if order:
-                order_map = {question_id: index for index, question_id in enumerate(order)}
-                configured_questions.sort(key=lambda question: order_map.get(question.id, len(order)))
-            for question in configured_questions:
-                if question.id not in seen_question_ids:
-                    seen_question_ids.append(question.id)
-        question_number_by_id = {
-            question_id: index
-            for index, question_id in enumerate(seen_question_ids, start=1)
-        }
-
-        answers = list(
-            AssignAnswer.objects
-            .filter(quiz=quiz, participant=participant)
-            .select_related('question')
-            .order_by('submitted_at', 'id')
-        )
-        history = []
-        seen_participant_question_ids = set()
-        for answer in answers:
-            if answer.question_id in seen_participant_question_ids:
-                continue
-            question_number = question_number_by_id.get(answer.question_id)
-            if question_number is None:
-                continue
-            seen_participant_question_ids.add(answer.question_id)
-            max_rounds = len(answer.question.correct_matches or {})
-            survived_rounds = answer.get_correct_matches_count()
-            history.append({
-                'question_id': answer.question_id,
-                'question_number': question_number,
-                'survived_rounds': survived_rounds,
-                'max_rounds': max_rounds,
-            })
-        history.sort(key=lambda entry: entry['question_number'])
-        return history
+        return build_participant_progress_history(quiz, participant)
 
     @database_sync_to_async
     def get_participant_progress_history(self, participant_name, hub_session):
@@ -1287,4 +1243,12 @@ class AssignConsumer(AsyncWebsocketConsumer):
             participant = quiz.participants.get(name=participant_name, hub_session_code=hub_session)
             return self._build_progress_history(quiz, participant)
         except (AssignQuiz.DoesNotExist, AssignParticipant.DoesNotExist):
+            return []
+
+    @database_sync_to_async
+    def get_scoreboard_questions(self, hub_session):
+        try:
+            quiz = AssignQuiz.objects.get(room_code=self.room_code)
+            return build_question_scoreboard(quiz, None, hub_session)
+        except AssignQuiz.DoesNotExist:
             return []

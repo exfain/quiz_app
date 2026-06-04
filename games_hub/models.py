@@ -13,6 +13,17 @@ class HubSession(SyncBase):
         (CHECK_IN_COMPLETED, 'Abgeschlossen'),
     ]
 
+    VOTING_OFF = 'off'
+    VOTING_NORMAL = 'normal'
+    VOTING_LOSER = 'loser'
+    VOTING_WINNER = 'winner'
+    VOTING_MODE_CHOICES = [
+        (VOTING_OFF, 'Aus'),
+        (VOTING_NORMAL, 'Normales Voting'),
+        (VOTING_LOSER, 'Verlierer-Voting'),
+        (VOTING_WINNER, 'Sieger-Voting'),
+    ]
+
     OVERALL_SCORING_SIMPLE = 'simple'
     OVERALL_SCORING_RANKING = 'ranking'
     OVERALL_SCORING_CHOICES = [
@@ -55,6 +66,15 @@ class HubSession(SyncBase):
     check_in_started_at = models.DateTimeField(null=True, blank=True)
     check_in_completed_at = models.DateTimeField(null=True, blank=True)
     locked_participant_count = models.PositiveIntegerField(null=True, blank=True)
+    voting_mode = models.CharField(
+        max_length=20,
+        choices=VOTING_MODE_CHOICES,
+        default=VOTING_OFF,
+    )
+    voting_open = models.BooleanField(default=False)
+    current_voting_round = models.PositiveIntegerField(default=0)
+    voting_started_at = models.DateTimeField(null=True, blank=True)
+    voting_closed_at = models.DateTimeField(null=True, blank=True)
 
     @staticmethod
     def _get_game_model_map():
@@ -278,12 +298,13 @@ class HubGameStep(SyncBase):
 
 class GameVote(models.Model):
     session = models.ForeignKey(HubSession, related_name='votes', on_delete=models.CASCADE)
+    voting_round = models.PositiveIntegerField(default=0)
     participant_nickname = models.CharField(max_length=50)
     step = models.ForeignKey(HubGameStep, related_name='votes', on_delete=models.CASCADE)
     created_at = models.DateTimeField(default=timezone.now)
 
     class Meta:
-        unique_together = ('session', 'participant_nickname')
+        unique_together = ('session', 'voting_round', 'participant_nickname')
 
     def __str__(self):
         return f"{self.participant_nickname} → {self.step} ({self.session.code})"

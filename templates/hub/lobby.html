@@ -205,6 +205,12 @@
           <div class="vote-grid" id="voteGrid"></div>
         </div>
       </div>
+      <div class="vote-section" id="voteWaitingSection" style="display:none;">
+        <div class="card">
+          <div class="section-title">Spielauswahl</div>
+          <div class="muted" id="voteWaitingText">Warte auf die Spielauswahl.</div>
+        </div>
+      </div>
 
       <div class="leaderboard-section" id="leaderboardSection" style="display:none;">
         <div class="card">
@@ -232,6 +238,7 @@
       let lobbyNicknames = [];
       let nicknameCheckTimeout = null;
       let currentNickname = '';
+      let sessionEndedReceived = false;
 
       // DOM elements
       const nicknameInput = document.getElementById('nickname');
@@ -420,7 +427,13 @@
         }
 
         if (data.type === 'vote_update') {
-          renderVotes(data.votes);
+          refreshVotes();
+          return;
+        }
+
+        if (data.type === 'voting_error') {
+          showStatus(data.error || 'Voting fehlgeschlagen.', 'error');
+          refreshVotes();
           return;
         }
 
@@ -534,6 +547,9 @@
 
       ws.onclose = () => {
         console.log('WebSocket disconnected');
+        if (sessionEndedReceived) {
+          return;
+        }
 
         //Retrieve the nickname from the nicknameInput
         const nickname = nicknameInput.value.trim();
@@ -671,6 +687,7 @@
 
 
       function renderSessionEnded() {
+        sessionEndedReceived = true;
         try { localStorage.removeItem('hub_session_code'); } catch (_) {}
 
         window.location.href = `/hub/session/${code}/leaderboard/`;
@@ -690,6 +707,8 @@
 
       // Voting
       const voteSection = document.getElementById('voteSection');
+      const voteWaitingSection = document.getElementById('voteWaitingSection');
+      const voteWaitingText = document.getElementById('voteWaitingText');
       const voteGrid = document.getElementById('voteGrid');
       let myVotedOrder = null;
       let currentSteps = [];
@@ -701,8 +720,31 @@
         wer_weiss_mehr: 'Wer weiß mehr?',
       };
 
-      function renderVotes(votes) {
-        if (!votes || votes.length === 0) return;
+      function hideVoting() {
+        voteSection.style.display = 'none';
+        voteWaitingSection.style.display = 'none';
+        voteGrid.innerHTML = '';
+      }
+
+      function renderVotingPayload(payload) {
+        const voting = payload?.voting || {};
+        const votes = payload?.votes || [];
+        myVotedOrder = voting.my_vote_step_order || myVotedOrder;
+        if (!voting.enabled || !voting.open) {
+          hideVoting();
+          return;
+        }
+        if (!voting.can_vote) {
+          voteSection.style.display = 'none';
+          voteWaitingText.textContent = voting.message || 'Der berechtigte Teilnehmer wÃ¤hlt das nÃ¤chste Spiel aus.';
+          voteWaitingSection.style.display = '';
+          return;
+        }
+        if (!votes || votes.length === 0) {
+          hideVoting();
+          return;
+        }
+        voteWaitingSection.style.display = 'none';
         voteSection.style.display = '';
         const maxCount = Math.max(...votes.map(v => v.count), 1);
         voteGrid.innerHTML = '';
@@ -710,7 +752,7 @@
           const pct = Math.round((v.count / maxCount) * 100);
           const isVoted = myVotedOrder === v.step_order;
           const typeLabel = gameNames[v.game_key] || v.game_key;
-          const displayName = v.title ? `${v.title} (${typeLabel})` : typeLabel;
+          const displayName = v.display_name || v.title || typeLabel;
           const card = document.createElement('div');
           card.className = 'vote-card' + (isVoted ? ' voted' : '');
           card.dataset.order = v.step_order;
@@ -729,15 +771,20 @@
         const nickname = currentNickname || nicknameInput.value.trim();
         if (!nickname) return;
         myVotedOrder = stepOrder;
-        ws.send(JSON.stringify({ type: 'vote', nickname, step_order: stepOrder }));
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: 'vote', nickname, step_order: stepOrder }));
+        } else {
+          showStatus('Live-Verbindung unterbrochen.', 'error');
+        }
       }
 
       function refreshVotes() {
-        if (currentSteps.length === 0) return;
-        fetch(`/hub/api/session/${code}/votes/`)
+        const nickname = currentNickname || nicknameInput.value.trim();
+        const suffix = nickname ? `?nickname=${encodeURIComponent(nickname)}` : '';
+        fetch(`/hub/api/session/${code}/votes/${suffix}`)
           .then(r => r.json())
-          .then(data => renderVotes(data.votes))
-          .catch(() => {});
+          .then(data => renderVotingPayload(data))
+          .catch(() => hideVoting());
       }
 
       // Leaderboard

@@ -42,6 +42,7 @@ Required context variables:
   const CSRF       = '{{ csrf_token }}';
   const ADD_URL    = '{% url "admin_dashboard:add_question_from_bank" %}';
   const FETCH_URL  = `/hub/api/games/${GAME_KEY}/questions/`;
+  const HUB_SESSION = new URLSearchParams(window.location.search).get('hub_session') || '';
 
   // IDs already assigned to this quiz
   const assignedIds = new Set([{% for q in qb_quiz.selected_questions.all %}{{ q.id }}{% if not forloop.last %},{% endif %}{% endfor %}]);
@@ -113,7 +114,7 @@ Required context variables:
     fetch(ADD_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-CSRFToken': CSRF },
-      body: JSON.stringify({ game_key: GAME_KEY, room_code: ROOM_CODE, question_id: qid }),
+      body: JSON.stringify({ game_key: GAME_KEY, room_code: ROOM_CODE, question_id: qid, hub_session: HUB_SESSION }),
     })
     .then(r => r.json())
     .then(data => {

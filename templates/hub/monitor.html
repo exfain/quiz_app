@@ -100,6 +100,35 @@
         </div>
     </div>
 
+    <div class="card mb-4">
+        <div class="card-header d-flex flex-wrap justify-content-between align-items-center gap-2">
+            <div>
+                <h5 class="mb-0"><i data-lucide="vote" class="me-2"></i>Voting</h5>
+                <small class="text-muted" id="votingStatusText">Voting-Status wird geladen.</small>
+            </div>
+            <div class="d-flex flex-wrap gap-2 align-items-center">
+                <select id="votingModeSelect" class="form-select form-select-sm" style="width:auto; min-width: 180px;">
+                    <option value="off" {% if session.voting_mode == 'off' %}selected{% endif %}>Aus</option>
+                    <option value="normal" {% if session.voting_mode == 'normal' %}selected{% endif %}>Normales Voting</option>
+                    <option value="loser" {% if session.voting_mode == 'loser' %}selected{% endif %}>Verlierer-Voting</option>
+                    <option value="winner" {% if session.voting_mode == 'winner' %}selected{% endif %}>Sieger-Voting</option>
+                </select>
+                <button id="openVotingBtn" class="btn btn-sm btn-outline-primary">Voting freischalten</button>
+                <button id="closeVotingBtn" class="btn btn-sm btn-outline-secondary">Voting schlieÃŸen</button>
+            </div>
+        </div>
+        <div class="card-body">
+            <div id="votingError" class="alert alert-danger d-none mb-3"></div>
+            <div class="d-flex flex-wrap gap-2 mb-2">
+                <span class="badge bg-light text-dark border" id="votingModeBadge">Modus: Aus</span>
+                <span class="badge bg-light text-dark border" id="votingRoundBadge">Runde: -</span>
+                <span class="badge bg-light text-dark border" id="votingVotedBadge">Abgestimmt: 0</span>
+            </div>
+            <div class="small text-muted" id="votingEligibleText">Stimmberechtigte: -</div>
+            <div class="small text-muted" id="votingVotedText">Bereits abgestimmt: -</div>
+        </div>
+    </div>
+
     <div class="row g-4">
         <!-- Left: Game Steps -->
         <div class="col-12 col-lg-7">
@@ -512,11 +541,29 @@
 .player-name { flex: 1; font-weight: 500; }
 
 /* Session Scoreboard */
-.sb-table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+#sessionScoreboardWrap {
+    max-width: 100%;
+    overflow-x: auto;
+    overflow-y: visible;
+    -webkit-overflow-scrolling: touch;
+}
+#sessionScoreboardWrap > .alert,
+#sessionScoreboardWrap > p {
+    margin-left: 1rem;
+    margin-right: 1rem;
+}
+.sb-table {
+    width: max-content;
+    min-width: 100%;
+    border-collapse: collapse;
+    font-size: 0.9rem;
+}
 .sb-table th { font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase;
     letter-spacing: 0.5px; padding: 0.5rem 1rem; text-align: left;
     border-bottom: 2px solid var(--border-color); background: var(--bg-secondary); }
 .sb-table th.center { text-align: center; }
+.sb-table th,
+.sb-table td { white-space: nowrap; }
 .sb-table td { padding: 0.6rem 1rem; border-bottom: 1px solid var(--border-color); vertical-align: middle; }
 .sb-table tr:last-child td { border-bottom: none; }
 .sb-table tr:hover td { background: var(--bg-secondary); }
@@ -525,7 +572,7 @@
 .sb-rank.silver { color: #94a3b8; }
 .sb-rank.bronze { color: #c07b3a; }
 .sb-total { font-weight: 700; font-size: 1rem; text-align: center; color: var(--color-primary); }
-.sb-game { text-align: center; color: var(--text-muted); font-size: 0.8rem; }
+.sb-game { min-width: 8.5rem; text-align: center; color: var(--text-muted); font-size: 0.8rem; }
 .sb-game.winner { color: #22c55e; font-weight: 700; }
 .sb-adj { text-align: center; font-size: 0.8rem; color: var(--text-muted); }
 .sb-edit { text-align: center; }
@@ -731,6 +778,16 @@ document.addEventListener('DOMContentLoaded', function() {
     const checkInReadyBadge = document.getElementById('checkInReadyBadge');
     const checkInLockedBadge = document.getElementById('checkInLockedBadge');
     const checkInParticipantRows = document.getElementById('checkInParticipantRows');
+    const votingModeSelect = document.getElementById('votingModeSelect');
+    const openVotingBtn = document.getElementById('openVotingBtn');
+    const closeVotingBtn = document.getElementById('closeVotingBtn');
+    const votingStatusText = document.getElementById('votingStatusText');
+    const votingError = document.getElementById('votingError');
+    const votingModeBadge = document.getElementById('votingModeBadge');
+    const votingRoundBadge = document.getElementById('votingRoundBadge');
+    const votingVotedBadge = document.getElementById('votingVotedBadge');
+    const votingEligibleText = document.getElementById('votingEligibleText');
+    const votingVotedText = document.getElementById('votingVotedText');
 
     function setStatus(kind, text) {
         const wrap = document.getElementById('wsStatus');
@@ -864,7 +921,10 @@ document.addEventListener('DOMContentLoaded', function() {
     function fetchVotes() {
         fetch(`/hub/api/session/${SESSION_CODE}/votes/`)
             .then((response) => response.json())
-            .then((payload) => renderVoteBadges(payload.votes || []))
+            .then((payload) => {
+                renderVoteBadges(payload.votes || []);
+                renderVotingState(payload);
+            })
             .catch(() => {});
     }
 
@@ -1341,6 +1401,73 @@ document.addEventListener('DOMContentLoaded', function() {
         }
     }
 
+    function showVotingError(message) {
+        if (!votingError) return;
+        votingError.textContent = message || '';
+        votingError.classList.toggle('d-none', !message);
+    }
+
+    function renderVotingState(payload) {
+        if (!payload || !payload.voting) return;
+        const voting = payload.voting;
+        const eligible = payload.eligible_participants || [];
+        const voted = payload.voted_participants || [];
+        const modeLabel = voting.mode_label || voting.mode || 'Aus';
+        const statusLabel = voting.enabled
+            ? (voting.open ? 'Offen' : 'Geschlossen')
+            : 'Aus';
+
+        if (votingModeSelect && voting.mode) {
+            votingModeSelect.value = voting.mode;
+        }
+        if (votingStatusText) {
+            votingStatusText.textContent = `Status: ${statusLabel} Â· Modus: ${modeLabel}`;
+        }
+        if (votingModeBadge) votingModeBadge.textContent = `Modus: ${modeLabel}`;
+        if (votingRoundBadge) votingRoundBadge.textContent = `Runde: ${voting.round || '-'}`;
+        if (votingVotedBadge) votingVotedBadge.textContent = `Abgestimmt: ${voted.length}`;
+        if (votingEligibleText) {
+            votingEligibleText.textContent = eligible.length
+                ? `Stimmberechtigte: ${eligible.join(', ')}`
+                : (voting.eligibility_error || 'Stimmberechtigte: -');
+        }
+        if (votingVotedText) {
+            votingVotedText.textContent = voted.length
+                ? `Bereits abgestimmt: ${voted.join(', ')}`
+                : 'Bereits abgestimmt: -';
+        }
+        if (closeVotingBtn) closeVotingBtn.disabled = !voting.enabled || !voting.open;
+    }
+
+    async function configureVoting(action) {
+        if (!votingModeSelect) return;
+        showVotingError('');
+        const body = action === 'close'
+            ? { action: 'close' }
+            : { action: 'open', mode: votingModeSelect.value || 'off' };
+        try {
+            const response = await fetch(`/hub/api/session/${SESSION_CODE}/voting/`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRFToken': '{{ csrf_token }}',
+                },
+                body: JSON.stringify(body),
+            });
+            const payload = await response.json().catch(() => ({
+                success: false,
+                error: `Der Server hat keine JSON-Antwort geliefert (HTTP ${response.status}).`,
+            }));
+            if (!response.ok || !payload.success) {
+                throw new Error(payload.error || 'Voting konnte nicht aktualisiert werden.');
+            }
+            renderVotingState(payload);
+            renderVoteBadges(payload.votes || []);
+        } catch (error) {
+            showVotingError(error.message || 'Voting konnte nicht aktualisiert werden.');
+        }
+    }
+
     function showCheckInRequired(result) {
         const message = result?.error || result?.message || 'Bitte schließe zuerst den Teilnehmer-Check-in ab.';
         showCheckInError(message);
@@ -1626,6 +1753,8 @@ document.addEventListener('DOMContentLoaded', function() {
     saveScoringSettingsBtn?.addEventListener('click', saveScoringSettings);
     startCheckInBtn?.addEventListener('click', () => postCheckInAction('start'));
     completeCheckInBtn?.addEventListener('click', () => postCheckInAction('complete'));
+    openVotingBtn?.addEventListener('click', () => configureVoting('open'));
+    closeVotingBtn?.addEventListener('click', () => configureVoting('close'));
     resetCheckInBtn?.addEventListener('click', () => {
         if (confirm('Check-in wirklich zurÃ¼cksetzen?')) {
             postCheckInAction('reset');
@@ -1796,9 +1925,12 @@ document.addEventListener('DOMContentLoaded', function() {
             scoreboardVisible = !!message.scoreboard_visible;
             updateScoreboardToggle();
             renderCheckInState(message);
+            renderVotingState(message);
+            renderVoteBadges(message.votes || []);
             break;
         case 'vote_update':
             renderVoteBadges(message.votes || []);
+            renderVotingState(message);
             break;
         case 'scoreboard_visibility':
             scoreboardVisible = !!message.visible;

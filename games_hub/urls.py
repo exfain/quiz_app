@@ -34,4 +34,5 @@ urlpatterns = [
     path('api/session/<str:session_code>/delete-step/<int:step_id>/', views.delete_step, name='delete_step'),
     path('api/session/<str:session_code>/vote/', views.submit_vote, name='submit_vote'),
     path('api/session/<str:session_code>/votes/', views.get_votes, name='get_votes'),
+    path('api/session/<str:session_code>/voting/', views.configure_voting, name='configure_voting'),
 ]

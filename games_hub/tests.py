@@ -368,6 +368,15 @@ class ParticipantFlowBrowserTest(_Base):
         """Wartet auf einen Seitenreload (Navigation + DOMContentLoaded)."""
         page.wait_for_load_state("domcontentloaded", timeout=timeout or self.TIMEOUT)
 
+    def _safe_reload(self, page):
+        """Reloads a page while tolerating Playwright's ERR_ABORTED reload race."""
+        try:
+            page.reload(wait_until="domcontentloaded")
+        except Exception as exc:
+            if "ERR_ABORTED" not in str(exc):
+                raise
+            page.wait_for_load_state("domcontentloaded", timeout=self.TIMEOUT)
+
     def _goto_admin(self, url):
         """Navigate the admin page, retrying only monitor reload races."""
         try:
@@ -421,8 +430,7 @@ class ParticipantFlowBrowserTest(_Base):
         # 3) Race Condition: Falls noch 'waiting', kurz warten und neu laden
         if not self.admin_page.is_visible("#endQuizBtn"):
             self.admin_page.wait_for_timeout(2000)
-            self.admin_page.reload()
-            self._wait_for_reload(self.admin_page)
+            self._safe_reload(self.admin_page)
 
         self.admin_page.wait_for_selector("#endQuizBtn", timeout=self.TIMEOUT)
 

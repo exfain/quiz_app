@@ -18,6 +18,7 @@ from channels.layers import get_channel_layer
 from QuizGame.models import Quiz, QuizQuestion, QuizParticipant, QuizAnswer, QuizSession, QuizBundle
 from sorting_ladder.models import SortingLadderGame, SortingLadderParticipant, SortingQuestion, SortingItem, SortingLadderSession, SortingBundle
 from Assign.models import AssignQuiz, AssignQuestion, AssignParticipant, AssignBundle
+from Assign.scoreboard import build_question_scoreboard
 from Estimation.models import EstimationQuiz, EstimationQuestion, EstimationParticipant, EstimationBundle
 from where_is_this.models import WhereQuiz, WhereQuestion, WhereParticipant, WhereBundle
 from black_jack_quiz.models import BlackJackQuiz, BlackJackQuestion, BlackJackParticipant, BlackJackBundle
@@ -9381,6 +9382,7 @@ def add_question_to_quiz_from_bank(request):
         game_key = data.get('game_key')
         room_code = data.get('room_code')
         question_id = data.get('question_id')
+        hub_session = (data.get('hub_session') or '').strip() or None
 
         if not game_key or not room_code or not question_id:
             return JsonResponse({'success': False, 'error': 'Missing parameters'}, status=400)
@@ -9403,7 +9405,27 @@ def add_question_to_quiz_from_bank(request):
         quiz = get_object_or_404(quiz_model, room_code=room_code)
         question = get_object_or_404(question_model, id=question_id)
         quiz.selected_questions.add(question)
+        response_payload = {'success': True, 'question_id': question.id}
 
-        return JsonResponse({'success': True, 'question_id': question.id})
+        if game_key == 'assign':
+            question_order = [int(item) for item in (quiz.question_order or [])]
+            if int(question.id) not in question_order:
+                question_order.append(int(question.id))
+                quiz.question_order = question_order
+                quiz.save(update_fields=['question_order', 'updated_at'])
+
+            scoreboard_questions = build_question_scoreboard(quiz, None, hub_session)
+            response_payload['scoreboard_questions'] = scoreboard_questions
+            channel_layer = get_channel_layer()
+            if channel_layer is not None:
+                async_to_sync(channel_layer.group_send)(
+                    f'assign_{room_code}',
+                    {
+                        'type': 'scoreboard_questions_updated',
+                        'scoreboard_questions': scoreboard_questions,
+                    },
+                )
+
+        return JsonResponse(response_payload)
     except Exception as e:
         return JsonResponse({'success': False, 'error': str(e)}, status=500)

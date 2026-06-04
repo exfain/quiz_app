@@ -10,7 +10,7 @@ from django.db.models import Sum, F, Case, When, Value, IntegerField, Q
 from django.db import connection, transaction
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
-from .models import HubGameParticipantSnapshot, HubSession, HubParticipant, HubGameStep, GameVote
+from .models import HubGameParticipantSnapshot, HubSession, HubParticipant, HubGameStep
 from .active_game_guard import resolve_session_game_activation
 from .check_in import (
     complete_session_check_in,
@@ -30,6 +30,13 @@ from .lobby_return_flow import (
     mark_single_participant_inactive_for_lobby_return,
 )
 from .spectator import build_spectator_state
+from .voting import (
+    close_session_voting,
+    disable_session_voting,
+    get_voting_state,
+    open_session_voting,
+    submit_session_vote,
+)
 from QuizGame.models import Quiz as QuizGameModel, QuizParticipant, QuizQuestion
 from sorting_ladder.models import SortingLadderGame, SortingLadderParticipant, SortingQuestion
 from clue_rush.models import ClueRushGame, ClueRushParticipant
@@ -937,6 +944,7 @@ def monitor(request, session_code: str):
         'waiting_games': waiting_games,
         'session_players': session_players,
         'scoring_settings_locked': session.scoring_settings_locked,
+        'voting_state': get_voting_state(session),
     })
 
 
@@ -1287,16 +1295,11 @@ def submit_vote(request, session_code):
             return JsonResponse({'success': False, 'error': 'Missing nickname or step_order'}, status=400)
 
         session = get_object_or_404(HubSession, code=session_code)
-        step = get_object_or_404(HubGameStep, session=session, order=step_order)
-
-        vote, created = GameVote.objects.update_or_create(
-            session=session,
-            participant_nickname=nickname,
-            defaults={'step': step},
-        )
-
-        votes = _get_vote_counts(session)
-        return JsonResponse({'success': True, 'created': created, 'votes': votes})
+        result = submit_session_vote(session, nickname, step_order)
+        status = 200 if result.get('success') else 403
+        if result.get('success'):
+            _broadcast_voting_update(session)
+        return JsonResponse(result, status=status)
     except Exception as e:
         return JsonResponse({'success': False, 'error': str(e)}, status=400)
 
@@ -1304,8 +1307,33 @@ def submit_vote(request, session_code):
 def get_votes(request, session_code):
     """Return current vote counts for a session."""
     session = get_object_or_404(HubSession, code=session_code)
-    votes = _get_vote_counts(session)
-    return JsonResponse({'votes': votes})
+    nickname = request.GET.get('nickname', '')
+    return JsonResponse(get_voting_state(session, participant_nickname=nickname))
+
+
+@login_required
+@require_POST
+def configure_voting(request, session_code):
+    session = get_object_or_404(HubSession, code=session_code)
+    try:
+        data = json.loads(request.body or '{}')
+    except json.JSONDecodeError:
+        return JsonResponse({'success': False, 'error': 'Invalid JSON'}, status=400)
+
+    action = (data.get('action') or 'open').strip()
+    mode = (data.get('mode') or HubSession.VOTING_OFF).strip()
+
+    if action == 'close':
+        result = close_session_voting(session)
+    elif mode == HubSession.VOTING_OFF or action == 'disable':
+        result = disable_session_voting(session)
+    else:
+        result = open_session_voting(session, mode)
+
+    status = 200 if result.get('success') else 400
+    if result.get('success'):
+        _broadcast_voting_update(session)
+    return JsonResponse(result, status=status)
 
 
 @login_required
@@ -1379,19 +1407,14 @@ def participant_return_to_lobby(request, session_code):
     return JsonResponse(result, status=status)
 
 
-def _get_vote_counts(session):
-    """Helper: return list of {step_order, game_key, title, count} sorted by count desc."""
-    from django.db.models import Count
-    steps = session.steps.all()
-    vote_qs = GameVote.objects.filter(session=session).values('step_id').annotate(count=Count('id'))
-    vote_map = {v['step_id']: v['count'] for v in vote_qs}
-    result = []
-    for step in steps:
-        result.append({
-            'step_order': step.order,
-            'game_key': step.game_key,
-            'title': step.title,
-            'count': vote_map.get(step.id, 0),
-        })
-    result.sort(key=lambda x: x['step_order'])
-    return result
+def _broadcast_voting_update(session):
+    channel_layer = get_channel_layer()
+    if not channel_layer:
+        return
+    async_to_sync(channel_layer.group_send)(
+        f"hub_{session.code}",
+        {
+            'type': 'voting_update',
+            'state': get_voting_state(session),
+        },
+    )

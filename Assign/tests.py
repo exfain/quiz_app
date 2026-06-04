@@ -1,3 +1,6 @@
+from pathlib import Path
+from unittest.mock import patch
+
 from django.test import TestCase, TransactionTestCase
 from django.contrib.auth.models import User
 from django.urls import reverse
@@ -862,6 +865,8 @@ class AssignPlayScoreboardViewTest(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, 'getProgressEntryForScoreRow(question, questionNumber')
         self.assertContains(response, 'return byQuestionId.get(normalizedQuestionId) || null;')
+        self.assertContains(response, 'scoreboard_questions_updated')
+        self.assertContains(response, 'setProgressHistory(data.history, data.scoreboard_questions);')
 
     def test_assign_play_renders_cumulative_score_total_for_played_sets(self):
         question_one = self._create_question(
@@ -926,3 +931,79 @@ class AssignPlayScoreboardViewTest(TestCase):
         self.assertContains(response, 'assign-score-value score-box__value')
         self.assertContains(response, 'assign-score-empty score-box__empty')
         self.assertContains(response, 'assign-score-total')
+
+    def test_question_bank_add_extends_live_scoreboard_schema(self):
+        self.user.is_staff = True
+        self.user.save(update_fields=['is_staff'])
+        self.client.force_login(self.user)
+
+        question_one = self._create_question(
+            'Question one',
+            ['A', 'B'],
+            ['X', 'Y'],
+            {'0': 0, '1': 1},
+        )
+        question_two = self._create_question(
+            'Question two',
+            ['C', 'D', 'E'],
+            ['U', 'V', 'W'],
+            {'0': 0, '1': 1, '2': 2},
+        )
+        self.quiz.selected_questions.set([question_one])
+        self.quiz.question_order = [question_one.id]
+        self.quiz.save(update_fields=['question_order'])
+        AssignAnswer.objects.create(
+            quiz=self.quiz,
+            participant=self.participant,
+            question=question_one,
+            user_matches={'0': 0},
+            time_taken=5.0,
+        )
+        channel_layer = DummyChannelLayer()
+
+        with patch('admin_dashboard.views.get_channel_layer', return_value=channel_layer):
+            response = self.client.post(
+                reverse('admin_dashboard:add_question_from_bank'),
+                data={
+                    'game_key': 'assign',
+                    'room_code': self.quiz.room_code,
+                    'question_id': question_two.id,
+                    'hub_session': self.participant.hub_session_code,
+                },
+                content_type='application/json',
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload['success'])
+        self.quiz.refresh_from_db()
+        self.assertEqual(self.quiz.question_order, [question_one.id, question_two.id])
+        self.assertEqual(
+            [entry['id'] for entry in payload['scoreboard_questions']],
+            [question_one.id, question_two.id],
+        )
+        self.assertEqual(payload['scoreboard_questions'][1]['status'], 'upcoming')
+        self.assertEqual(channel_layer.sent[-1][0], f'assign_{self.quiz.room_code}')
+        self.assertEqual(channel_layer.sent[-1][1]['type'], 'scoreboard_questions_updated')
+        self.assertEqual(
+            [entry['id'] for entry in channel_layer.sent[-1][1]['scoreboard_questions']],
+            [question_one.id, question_two.id],
+        )
+
+
+class AssignTouchDragTemplateTests(TestCase):
+    def test_player_template_supports_pointer_drag_for_touch_devices(self):
+        template_path = Path(__file__).resolve().parent.parent / 'templates' / 'assign' / 'play.html'
+        template_source = template_path.read_text(encoding='utf-8')
+
+        self.assertIn('touch-action: none;', template_source)
+        self.assertIn("item.addEventListener('pointerdown'", template_source)
+        self.assertIn("window.addEventListener('pointermove'", template_source)
+        self.assertIn("window.addEventListener('pointerup'", template_source)
+        self.assertIn("window.addEventListener('pointercancel'", template_source)
+        self.assertIn('requestAnimationFrame(() => this.renderAssignPointerDrag())', template_source)
+        self.assertIn('translate3d(${deltaX}px, ${deltaY}px, 0)', template_source)
+        self.assertIn('releasePointerCapture(drag.pointerId)', template_source)
+        self.assertIn('transition: none;', template_source)
+        self.assertIn('this.handleRoundDrop(drag.leftIndex, rightIndex, dropZone, draggedText);', template_source)
+        self.assertIn("if (event.pointerType === 'mouse') return;", template_source)

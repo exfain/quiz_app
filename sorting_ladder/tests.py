@@ -540,6 +540,23 @@ class SortingLadderRoundInteractionScopeTemplateTests(TestCase):
         self.assertNotIn("this.roundTimerEnded = true;", body)
         self.assertNotIn("clearInterval(this.roundTimer);", body)
 
+    def test_player_template_supports_pointer_drag_for_touch_devices(self):
+        template_path = Path(__file__).resolve().parent.parent / 'templates' / 'sorting_ladder' / 'play.html'
+        template_source = template_path.read_text(encoding='utf-8')
+
+        self.assertIn('touch-action: none;', template_source)
+        self.assertIn("card.addEventListener('pointerdown'", template_source)
+        self.assertIn("window.addEventListener('pointermove'", template_source)
+        self.assertIn("window.addEventListener('pointerup'", template_source)
+        self.assertIn("window.addEventListener('pointercancel'", template_source)
+        self.assertIn('requestAnimationFrame(() => this.renderSortingPointerDrag())', template_source)
+        self.assertIn('translate3d(${deltaX}px, ${deltaY}px, 0)', template_source)
+        self.assertIn('releasePointerCapture(drag.pointerId)', template_source)
+        self.assertIn('transition: none;', template_source)
+        self.assertIn('this.placeSortingItemAtPosition(drag.itemId, position);', template_source)
+        self.assertIn('this.placeSortingItemAtPosition(droppedId, position);', template_source)
+        self.assertIn("if (event.pointerType === 'mouse') return;", template_source)
+
 
 class SortingLadderConsumerEventPayloadTests(TestCase):
     def test_live_round_result_event_includes_question_id_for_client_side_stale_event_guards(self):

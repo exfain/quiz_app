@@ -98,6 +98,15 @@
       transition: opacity .2s, transform .15s;
     }
     button:active { transform: translateY(0); }
+    .admin-link {
+      display: block;
+      margin-top: 1rem;
+      text-align: center;
+      color: var(--muted);
+      font-size: .9rem;
+      text-decoration: none;
+    }
+    .admin-link:hover { color: var(--primary); }
   </style>
 </head>
 <body>
@@ -125,6 +134,7 @@
       </div>
       <button type="submit">Beitreten →</button>
     </form>
+    <a class="admin-link" href="{% url 'admin_dashboard:home' %}">Host-/Admin-Dashboard</a>
   </div>
 </body>
 </html>

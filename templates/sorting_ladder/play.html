@@ -685,6 +685,7 @@
             border: 2px solid var(--border-color);
             border-radius: var(--border-radius-lg);
             cursor: pointer;
+            touch-action: none;
             transition: all var(--transition-fast);
             user-select: none;
         }
@@ -698,6 +699,8 @@
         .answer-card.dragging {
             opacity: 0.7;
             box-shadow: var(--shadow-lg);
+            transition: none;
+            will-change: transform;
         }
 
         .answer-card.disabled {
@@ -1150,6 +1153,7 @@
                     this.lastSubmitWasTimeout = false;
                     this.roundTimerEnded = false;
                     this.isInputLocked = false;
+                    this.pointerDrag = null;
                     this.progressHistory = [];
                     
                     this.init();
@@ -1562,6 +1566,7 @@
 
                         card.addEventListener('dragstart', (e) => this.onCardDragStart(e, card));
                         card.addEventListener('dragend', () => this.onCardDragEnd(card));
+                        this.bindSortingPointerDrag(card);
 
                         pool.appendChild(card);
                     });
@@ -1612,6 +1617,106 @@
                     card.classList.remove('dragging');
                 }
 
+                bindSortingPointerDrag(card) {
+                    card.addEventListener('pointerdown', (event) => this.startSortingPointerDrag(event, card));
+                }
+
+                startSortingPointerDrag(event, card) {
+                    if (event.pointerType === 'mouse') return;
+                    if (this.pointerDrag) return;
+                    if (this.isEliminated || this.isInputLocked || card.classList.contains('disabled')) return;
+                    const id = parseInt(card.dataset.itemId || '0', 10);
+                    if (Number.isNaN(id)) return;
+                    if (this.currentRoundItemId && this.currentRoundItemId !== id) return;
+
+                    event.preventDefault();
+                    this.currentRoundItemId = id;
+                    this.pointerDrag = {
+                        element: card,
+                        itemId: id,
+                        pointerId: event.pointerId,
+                        startX: event.clientX,
+                        startY: event.clientY,
+                        currentX: event.clientX,
+                        currentY: event.clientY,
+                        rafId: null,
+                        currentTarget: null,
+                        moveHandler: (moveEvent) => this.moveSortingPointerDrag(moveEvent),
+                        endHandler: (endEvent) => this.finishSortingPointerDrag(endEvent, true),
+                        cancelHandler: (cancelEvent) => this.finishSortingPointerDrag(cancelEvent, false),
+                    };
+
+                    card.classList.add('dragging');
+                    try { card.setPointerCapture(event.pointerId); } catch (_) {}
+                    window.addEventListener('pointermove', this.pointerDrag.moveHandler, { passive: false });
+                    window.addEventListener('pointerup', this.pointerDrag.endHandler, { passive: false });
+                    window.addEventListener('pointercancel', this.pointerDrag.cancelHandler, { passive: false });
+                }
+
+                moveSortingPointerDrag(event) {
+                    if (!this.pointerDrag) return;
+                    event.preventDefault();
+                    this.pointerDrag.currentX = event.clientX;
+                    this.pointerDrag.currentY = event.clientY;
+                    if (this.pointerDrag.rafId !== null) return;
+                    this.pointerDrag.rafId = requestAnimationFrame(() => this.renderSortingPointerDrag());
+                }
+
+                renderSortingPointerDrag() {
+                    if (!this.pointerDrag) return;
+                    const drag = this.pointerDrag;
+                    drag.rafId = null;
+                    const deltaX = drag.currentX - drag.startX;
+                    const deltaY = drag.currentY - drag.startY;
+                    drag.element.style.transform = `translate3d(${deltaX}px, ${deltaY}px, 0)`;
+
+                    const target = this.getSortingPointerTarget(drag.currentX, drag.currentY);
+                    if (target === drag.currentTarget) return;
+                    if (drag.currentTarget) drag.currentTarget.classList.remove('over');
+                    if (target) target.classList.add('over');
+                    drag.currentTarget = target;
+                }
+
+                getSortingPointerTarget(clientX, clientY) {
+                    if (!this.pointerDrag?.element) return null;
+                    const dragged = this.pointerDrag.element;
+                    const previousPointerEvents = dragged.style.pointerEvents;
+                    dragged.style.pointerEvents = 'none';
+                    const hit = document.elementFromPoint(clientX, clientY);
+                    dragged.style.pointerEvents = previousPointerEvents;
+                    return hit?.closest?.('.triangle-container') || null;
+                }
+
+                finishSortingPointerDrag(event, shouldDrop) {
+                    if (!this.pointerDrag) return;
+                    event.preventDefault();
+                    const drag = this.pointerDrag;
+                    const target = shouldDrop ? this.getSortingPointerTarget(event.clientX, event.clientY) : null;
+
+                    if (drag.rafId !== null) {
+                        cancelAnimationFrame(drag.rafId);
+                    }
+                    window.removeEventListener('pointermove', drag.moveHandler);
+                    window.removeEventListener('pointerup', drag.endHandler);
+                    window.removeEventListener('pointercancel', drag.cancelHandler);
+                    if (drag.currentTarget) drag.currentTarget.classList.remove('over');
+
+                    drag.element.classList.remove('dragging');
+                    drag.element.style.transform = '';
+                    try { drag.element.releasePointerCapture(drag.pointerId); } catch (_) {}
+                    this.pointerDrag = null;
+
+                    if (!target) {
+                        if (!this.ladderItems.some((item) => Number(item.id) === Number(drag.itemId))) {
+                            this.currentRoundItemId = null;
+                        }
+                        return;
+                    }
+                    const position = parseInt(target.dataset.position || '', 10);
+                    if (Number.isNaN(position)) return;
+                    this.placeSortingItemAtPosition(drag.itemId, position);
+                }
+
                 clearLadderPreviews() {
                     document.querySelectorAll('.ladder-row').forEach(r => {
                         r.classList.remove('preview-before', 'preview-after', 'draggable-over');
@@ -1648,6 +1753,10 @@
                     }
                     if (isNaN(droppedId)) return;
 
+                    this.placeSortingItemAtPosition(droppedId, position);
+                }
+
+                placeSortingItemAtPosition(droppedId, position) {
                     const itemObj = this.shuffledItems.find(it => Number(it.id) === droppedId);
                     if (!itemObj) {
                         // Keep state unchanged if the dropped card cannot be

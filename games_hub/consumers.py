@@ -3,7 +3,7 @@ from channels.generic.websocket import AsyncWebsocketConsumer
 from channels.db import database_sync_to_async
 from django.utils import timezone
 from django.core.cache import cache
-from .models import HubSession, HubParticipant, HubGameStep, GameVote
+from .models import HubSession, HubParticipant, HubGameStep
 from .active_game_guard import is_game_routable_for_hub_auto_redirect, resolve_session_game_activation
 from .check_in import (
     complete_session_check_in,
@@ -22,6 +22,7 @@ from black_jack_quiz.models import BlackJackQuiz
 from clue_rush.models import ClueRushGame
 from sorting_ladder.models import SortingLadderGame
 from wer_weiss_mehr.models import WerWeissMehrGame
+from .voting import get_voting_state, submit_session_vote
 
 
 class HubConsumer(AsyncWebsocketConsumer):
@@ -354,45 +355,38 @@ class HubConsumer(AsyncWebsocketConsumer):
         step_order = data.get('step_order')
         if not nickname or step_order is None:
             return
-        await self.save_vote(nickname, step_order)
-        votes = await self.get_vote_counts()
-        await self.channel_layer.group_send(self.group_name, {'type': 'vote_update', 'votes': votes})
+        result = await self.save_vote(nickname, step_order)
+        if not result.get('success'):
+            await self.send_json({
+                'type': 'voting_error',
+                'error': result.get('error') or 'Voting fehlgeschlagen.',
+            })
+            return
+        state = await self.get_vote_state()
+        await self.channel_layer.group_send(self.group_name, {'type': 'voting_update', 'state': state})
 
     async def vote_update(self, event):
         await self.send_json({'type': 'vote_update', 'votes': event['votes']})
+
+    async def voting_update(self, event):
+        state = event.get('state') or {}
+        await self.send_json({'type': 'vote_update', **state})
 
     @database_sync_to_async
     def save_vote(self, nickname, step_order):
         try:
             session = HubSession.objects.get(code=self.session_code)
-            step = HubGameStep.objects.get(session=session, order=step_order)
-            GameVote.objects.update_or_create(
-                session=session,
-                participant_nickname=nickname,
-                defaults={'step': step},
-            )
-        except (HubSession.DoesNotExist, HubGameStep.DoesNotExist):
-            pass
+            return submit_session_vote(session, nickname, step_order)
+        except HubSession.DoesNotExist:
+            return {'success': False, 'error': 'Session nicht gefunden.'}
 
     @database_sync_to_async
-    def get_vote_counts(self):
-        from django.db.models import Count
+    def get_vote_state(self):
         try:
             session = HubSession.objects.get(code=self.session_code)
-            steps = list(session.steps.all())
-            vote_qs = GameVote.objects.filter(session=session).values('step_id').annotate(count=Count('id'))
-            vote_map = {v['step_id']: v['count'] for v in vote_qs}
-            result = []
-            for step in steps:
-                result.append({
-                    'step_order': step.order,
-                    'game_key': step.game_key,
-                    'title': step.title,
-                    'count': vote_map.get(step.id, 0),
-                })
-            return sorted(result, key=lambda x: x['step_order'])
+            return get_voting_state(session)
         except HubSession.DoesNotExist:
-            return []
+            return {'success': False, 'votes': []}
 
     async def handle_toggle_scoreboard(self):
         visible = await self.toggle_scoreboard_db()
@@ -540,12 +534,14 @@ class HubConsumer(AsyncWebsocketConsumer):
             participants = list(session.participants.values('nickname'))
             steps = list(session.steps.values('order', 'game_key', 'room_code', 'title'))
             check_in_state = get_check_in_state(session)
+            voting_state = get_voting_state(session)
             return {
                 'session': {'code': session.code, 'name': session.name, 'started_at': session.started_at is not None},
                 'participants': participants,
                 'steps': steps,
                 'current_step_index': session.current_step_index,
                 'scoreboard_visible': session.scoreboard_visible,
+                **voting_state,
                 **check_in_state,
             }
         except HubSession.DoesNotExist:

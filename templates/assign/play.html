@@ -738,6 +738,7 @@
             border: 2px solid var(--border-color);
             border-radius: var(--border-radius);
             cursor: grab;
+            touch-action: none;
             transition: all var(--transition-fast);
             user-select: none;
             position: relative;
@@ -757,6 +758,8 @@
             opacity: 0.5;
             cursor: grabbing;
             z-index: 1000;
+            transition: none;
+            will-change: transform;
         }
 
         .draggable-item.matched {
@@ -1149,6 +1152,7 @@
                     this.accumulatedMatches = {};  // gesammelte Matches über alle Runden
                     this.solvedPairs = [];
                     this.currentQuestion = null;  // vollständige Frage-Daten
+                    this.pointerDrag = null;
                     this.scoreboardQuestions = this.readJsonScript('assignScoreboardData', []);
                     this.progressHistory = this.readJsonScript('assignInitialProgressData', []);
                     this.currentQuestionId = this.readJsonScript('assignCurrentQuestionId', null);
@@ -1256,7 +1260,11 @@
                             break;
 
                         case 'progress_history':
-                            this.setProgressHistory(data.history);
+                            this.setProgressHistory(data.history, data.scoreboard_questions);
+                            break;
+
+                        case 'scoreboard_questions_updated':
+                            this.setScoreboardQuestions(data.scoreboard_questions);
                             break;
 
                         default:
@@ -1779,6 +1787,7 @@
                         div.addEventListener('dragend', () => {
                             div.classList.remove('dragging');
                         });
+                        this.bindAssignPointerDrag(div);
                         leftItemsList.appendChild(div);
                     });
 
@@ -1831,6 +1840,110 @@
 
                         zonesList.appendChild(dropZone);
                     });
+                }
+
+                bindAssignPointerDrag(item) {
+                    item.addEventListener('pointerdown', (event) => this.startAssignPointerDrag(event, item));
+                }
+
+                startAssignPointerDrag(event, item) {
+                    if (event.pointerType === 'mouse') return;
+                    if (this.pointerDrag) return;
+                    if (this.dropLocked || !item.draggable) return;
+                    if (
+                        item.classList.contains('inactive-item') ||
+                        item.classList.contains('matched') ||
+                        item.classList.contains('matched-done') ||
+                        item.classList.contains('upcoming')
+                    ) {
+                        return;
+                    }
+
+                    const leftIndex = parseInt(item.dataset.leftIndex || '', 10);
+                    if (Number.isNaN(leftIndex)) return;
+
+                    event.preventDefault();
+                    this.pointerDrag = {
+                        element: item,
+                        leftIndex,
+                        pointerId: event.pointerId,
+                        startX: event.clientX,
+                        startY: event.clientY,
+                        currentX: event.clientX,
+                        currentY: event.clientY,
+                        rafId: null,
+                        currentTarget: null,
+                        moveHandler: (moveEvent) => this.moveAssignPointerDrag(moveEvent),
+                        endHandler: (endEvent) => this.finishAssignPointerDrag(endEvent, true),
+                        cancelHandler: (cancelEvent) => this.finishAssignPointerDrag(cancelEvent, false),
+                    };
+
+                    item.classList.add('dragging');
+                    try { item.setPointerCapture(event.pointerId); } catch (_) {}
+                    window.addEventListener('pointermove', this.pointerDrag.moveHandler, { passive: false });
+                    window.addEventListener('pointerup', this.pointerDrag.endHandler, { passive: false });
+                    window.addEventListener('pointercancel', this.pointerDrag.cancelHandler, { passive: false });
+                }
+
+                moveAssignPointerDrag(event) {
+                    if (!this.pointerDrag) return;
+                    event.preventDefault();
+                    this.pointerDrag.currentX = event.clientX;
+                    this.pointerDrag.currentY = event.clientY;
+                    if (this.pointerDrag.rafId !== null) return;
+                    this.pointerDrag.rafId = requestAnimationFrame(() => this.renderAssignPointerDrag());
+                }
+
+                renderAssignPointerDrag() {
+                    if (!this.pointerDrag) return;
+                    const drag = this.pointerDrag;
+                    drag.rafId = null;
+                    const deltaX = drag.currentX - drag.startX;
+                    const deltaY = drag.currentY - drag.startY;
+                    drag.element.style.transform = `translate3d(${deltaX}px, ${deltaY}px, 0)`;
+
+                    const target = this.getAssignPointerDropZone(drag.currentX, drag.currentY);
+                    if (target === drag.currentTarget) return;
+                    if (drag.currentTarget) drag.currentTarget.classList.remove('drag-over');
+                    if (target) target.classList.add('drag-over');
+                    drag.currentTarget = target;
+                }
+
+                getAssignPointerDropZone(clientX, clientY) {
+                    if (!this.pointerDrag?.element) return null;
+                    const dragged = this.pointerDrag.element;
+                    const previousPointerEvents = dragged.style.pointerEvents;
+                    dragged.style.pointerEvents = 'none';
+                    const hit = document.elementFromPoint(clientX, clientY);
+                    dragged.style.pointerEvents = previousPointerEvents;
+                    const zone = hit?.closest?.('.drop-zone:not(.completed-round)');
+                    return zone && !this.dropLocked ? zone : null;
+                }
+
+                finishAssignPointerDrag(event, shouldDrop) {
+                    if (!this.pointerDrag) return;
+                    event.preventDefault();
+                    const drag = this.pointerDrag;
+                    const dropZone = shouldDrop ? this.getAssignPointerDropZone(event.clientX, event.clientY) : null;
+
+                    if (drag.rafId !== null) {
+                        cancelAnimationFrame(drag.rafId);
+                    }
+                    window.removeEventListener('pointermove', drag.moveHandler);
+                    window.removeEventListener('pointerup', drag.endHandler);
+                    window.removeEventListener('pointercancel', drag.cancelHandler);
+                    if (drag.currentTarget) drag.currentTarget.classList.remove('drag-over');
+
+                    drag.element.classList.remove('dragging');
+                    drag.element.style.transform = '';
+                    try { drag.element.releasePointerCapture(drag.pointerId); } catch (_) {}
+                    this.pointerDrag = null;
+
+                    if (!dropZone || this.dropLocked) return;
+                    const rightIndex = parseInt(dropZone.dataset.rightIndex || '', 10);
+                    if (Number.isNaN(rightIndex)) return;
+                    const draggedText = drag.element.textContent?.trim() || '';
+                    this.handleRoundDrop(drag.leftIndex, rightIndex, dropZone, draggedText);
                 }
 
                 handleRoundDrop(leftIndex, rightIndex, dropZone, itemText) {
@@ -2098,7 +2211,34 @@
                     document.getElementById('connectionStatus').classList.add('d-none');
                 }
 
-                setProgressHistory(history) {
+                normalizeScoreboardQuestions(questions) {
+                    return (Array.isArray(questions) ? questions : [])
+                        .map((question, index) => {
+                            const normalizedId = Number(question?.id);
+                            return {
+                                ...question,
+                                id: Number.isNaN(normalizedId) ? question?.id : normalizedId,
+                                number: index + 1,
+                            };
+                        })
+                        .filter((question) => question.id !== undefined && question.id !== null && question.id !== '');
+                }
+
+                setScoreboardQuestions(questions, render = true) {
+                    const normalizedQuestions = this.normalizeScoreboardQuestions(questions);
+                    if (!normalizedQuestions.length) {
+                        return;
+                    }
+                    this.scoreboardQuestions = normalizedQuestions;
+                    if (render) {
+                        this.renderProgressHistory();
+                    }
+                }
+
+                setProgressHistory(history, scoreboardQuestions = null) {
+                    if (scoreboardQuestions) {
+                        this.setScoreboardQuestions(scoreboardQuestions, false);
+                    }
                     this.progressHistory = Array.isArray(history) ? history : [];
                     this.renderProgressHistory();
                 }
@@ -2192,7 +2332,7 @@
                         document.getElementById('correctMatches').textContent = data.correct_matches;
                         document.getElementById('pointsEarned').textContent = data.points_earned;
                         document.getElementById('accuracyPercent').textContent = data.accuracy + '%';
-                        player.setProgressHistory(data.progress_history);
+                        player.setProgressHistory(data.progress_history, data.scoreboard_questions);
                         player.setCurrentQuestion(null);
                     }
                     
