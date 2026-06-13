@@ -6,6 +6,7 @@
 
 {% block content %}
 <div class="container-fluid py-3">
+    {% include 'includes/_unit_tutorial_notice.html' %}
     <div class="d-flex justify-content-between align-items-start gap-3 mb-4">
         <div>
             <h2 class="mb-1">{{ quiz.title }}</h2>
@@ -16,6 +17,18 @@
         </div>
         <div class="d-flex flex-wrap gap-2 justify-content-end">
             <span class="badge bg-secondary align-self-center" id="statusBadge">{{ quiz.get_status_display }}</span>
+            {% if quiz.status == 'waiting' and quiz.tutorial_enabled %}
+                <div class="form-check form-switch align-self-center mb-0">
+                    <input class="form-check-input" type="checkbox" id="showTutorialToggle">
+                    <label class="form-check-label" for="showTutorialToggle">Spielerläuterung anzeigen</label>
+                </div>
+            {% endif %}
+            {% if quiz.status == 'waiting' %}
+                <div class="form-check form-switch align-self-center mb-0">
+                    <input class="form-check-input" type="checkbox" id="playTutorialToggle">
+                    <label class="form-check-label" for="playTutorialToggle">Tutorial spielen</label>
+                </div>
+            {% endif %}
             <button class="btn btn-success {% if quiz.status != 'waiting' and quiz.status != 'inactive' %}d-none{% endif %}" id="startQuizBtn">
                 {% if quiz.status == 'inactive' %}Spiel reaktivieren{% else %}Spiel starten{% endif %}
             </button>
@@ -51,6 +64,19 @@
             <div class="card border-0 shadow-sm mb-4">
                 <div class="card-header bg-white"><h6 class="mb-0">Teilnehmer</h6></div>
                 <div class="card-body" id="participantsBox"></div>
+            </div>
+            <div class="card border-0 shadow-sm mb-4" id="tutorialProgressCard" {% if quiz.status != 'active' %}style="display:none"{% endif %}>
+                <div class="card-header bg-white"><h6 class="mb-0">Spielerläuterung</h6></div>
+                <div class="card-body">
+                    <div class="d-flex justify-content-between align-items-center">
+                        <span>Bestätigt</span>
+                        <strong id="tutProgressText">0 / 0</strong>
+                    </div>
+                    <div class="progress mt-2" style="height: 8px;">
+                        <div class="progress-bar" id="tutProgressBar" style="width:0%" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100"></div>
+                    </div>
+                    <span class="badge bg-success mt-3" id="tutAllDoneBadge" style="display:none">Alle bestätigt</span>
+                </div>
             </div>
             <div class="card border-0 shadow-sm">
                 <div class="card-header bg-white"><h6 class="mb-0">Scorebox</h6></div>
@@ -106,6 +132,10 @@ function connectSocket() {
         const data = JSON.parse(event.data);
         if (data.type === 'state') renderState(data);
         if (['state_updated', 'quiz_started', 'quiz_ended'].includes(data.type)) fetchState();
+        if (data.type === 'tutorial_start') updateTutorialProgress(0, 0, false, data.participants || []);
+        if (data.type === 'tutorial_progress') updateTutorialProgress(data.completed, data.total, data.all_done, data.participants || []);
+        if (data.type === 'tutorial_ack_warning') handleTutorialAckWarning(data);
+        if (data.type === 'tutorial_question_missing') window.showTutorialQuestionMissing?.(data);
         if (data.type === 'participants_not_in_lobby') alert(data.message || 'Noch nicht alle Teilnehmer sind in der Lobby.');
         if (data.type === 'active_game_conflict') alert(data.message || 'Ein anderes Spiel ist noch aktiv.');
         if (data.type === 'error') {
@@ -158,6 +188,46 @@ function flushPendingWsMessages() {
     pendingWsMessages = [];
     messages.forEach(message => ws.send(JSON.stringify(message)));
 }
+function updateTutorialProgress(completed, total, allDone, participants = []) {
+    const card = document.getElementById('tutorialProgressCard');
+    if (card) card.style.display = '';
+    const text = document.getElementById('tutProgressText');
+    const bar = document.getElementById('tutProgressBar');
+    const badge = document.getElementById('tutAllDoneBadge');
+    let list = document.getElementById('tutParticipantStatusList');
+    if (!list && card) {
+        list = document.createElement('div');
+        list.id = 'tutParticipantStatusList';
+        list.className = 'small mt-3';
+        card.querySelector('.card-body')?.appendChild(list);
+    }
+    if (text) text.textContent = completed + ' / ' + total;
+    const pct = total > 0 ? Math.round((completed / total) * 100) : 0;
+    if (bar) {
+        bar.style.width = pct + '%';
+        bar.setAttribute('aria-valuenow', pct);
+    }
+    if (list) {
+        list.innerHTML = (participants || []).map(participant => `
+            <div class="d-flex justify-content-between border-top py-1">
+                <span>${participant.name || ''}</span>
+                <span class="badge ${participant.completed ? 'bg-success' : 'bg-warning text-dark'}">
+                    ${participant.completed ? 'bestätigt' : 'offen'}
+                </span>
+            </div>
+        `).join('');
+    }
+    if (badge) badge.style.display = allDone ? '' : 'none';
+}
+function handleTutorialAckWarning(data) {
+    const originalMessage = data.original_message || {};
+    window.showTutorialAckWarning?.(data, () => {
+        sendWs({
+            ...originalMessage,
+            force_tutorial_continue: true,
+        });
+    }, fetchState);
+}
 function fetchState() {
     const params = new URLSearchParams();
     if (HUB_SESSION) params.set('hub_session', HUB_SESSION);
@@ -195,17 +265,31 @@ async function parseJsonResponse(response, fallbackMessage) {
 function startQuiz() {
     const startBtn = document.getElementById('startQuizBtn');
     if (startBtn) startBtn.disabled = true;
+    const playTutorial = document.getElementById('playTutorialToggle')?.checked ?? false;
+    if (playTutorial && !{{ quiz.tutorial_question_id|yesno:"true,false" }}) {
+        if (startBtn) startBtn.disabled = false;
+        window.showTutorialQuestionMissing?.();
+        return;
+    }
     fetch(`/wer-weiss-mehr/start/${ROOM_CODE}/`, {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json',
             'X-CSRFToken': CSRF_TOKEN,
         },
-        body: JSON.stringify({hub_session: HUB_SESSION}),
+        body: JSON.stringify({
+            hub_session: HUB_SESSION,
+            show_tutorial: document.getElementById('showTutorialToggle')?.checked ?? false,
+            play_tutorial: playTutorial,
+        }),
         credentials: 'same-origin',
     })
         .then(response => parseJsonResponse(response, 'Das Spiel konnte nicht gestartet werden.'))
         .then(({response, payload}) => {
+            if (payload.type === 'tutorial_question_missing') {
+                window.showTutorialQuestionMissing?.(payload);
+                return;
+            }
             if (!response.ok || !payload.success) {
                 throw new Error(payload.error || payload.message || 'Das Spiel konnte nicht gestartet werden.');
             }
@@ -219,7 +303,7 @@ function startQuiz() {
             if (startBtn && state?.game_status !== 'active') startBtn.disabled = false;
         });
 }
-function startSet(questionId, timeLimitSeconds) {
+function startSet(questionId, timeLimitSeconds, forceTutorialContinue = false) {
     const buttons = document.querySelectorAll('.start-set-btn');
     buttons.forEach(btn => btn.disabled = true);
     fetch(`/wer-weiss-mehr/start-set/${ROOM_CODE}/`, {
@@ -232,11 +316,18 @@ function startSet(questionId, timeLimitSeconds) {
             hub_session: HUB_SESSION,
             question_id: questionId,
             time_limit_seconds: timeLimitSeconds,
+            force_tutorial_continue: forceTutorialContinue,
         }),
         credentials: 'same-origin',
     })
         .then(response => parseJsonResponse(response, 'Das Set konnte nicht gestartet werden.'))
         .then(({response, payload}) => {
+            if (payload.type === 'tutorial_ack_warning') {
+                window.showTutorialAckWarning?.(payload, () => {
+                    startSet(questionId, timeLimitSeconds, true);
+                }, fetchState);
+                return;
+            }
             if (!response.ok || !payload.success) {
                 throw new Error(payload.error || payload.message || 'Das Set konnte nicht gestartet werden.');
             }
@@ -422,6 +513,7 @@ function endQuiz() {
 }
 function renderState(nextState) {
     state = nextState;
+    window.unitTutorialNotice?.setFromPayload(nextState);
     document.getElementById('statusBadge').textContent = nextState.game_status;
     document.getElementById('participantCount').textContent = (nextState.participants || []).length;
     renderControls(nextState);

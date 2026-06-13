@@ -8,6 +8,18 @@ from django.test import TestCase, TransactionTestCase
 from django.urls import reverse
 from django.utils import timezone
 
+from games_hub.check_in import complete_session_check_in, participant_check_in, start_session_check_in
+from games_hub.models import HubGameStep, HubGameTutorialRuntime, HubParticipant, HubSession
+from games_hub.tutorial_runtime import (
+    activate_tutorial_runtime as activate_game_tutorial_runtime,
+    mark_tutorial_completed as mark_game_tutorial_completed,
+)
+from games_hub.unit_tutorial_runtime import (
+    get_unit_tutorial_state,
+    prepare_unit_tutorial_runtime,
+    start_unit_tutorial_if_needed,
+)
+
 from .consumers import QuizConsumer
 from .models import Quiz, QuizAnswer, QuizParticipant, QuizQuestion, QuizSession
 
@@ -149,6 +161,7 @@ class QuizShortAnswerViewIntegrationTest(TestCase):
         self.assertEqual(response.status_code, 200, response.content)
         question = QuizQuestion.objects.get(id=response.json()['question_id'])
         self.assertEqual(question.question_type, 'short_answer')
+        self.assertEqual(question.points, 1)
         self.assertEqual(question.correct_answer_2, 'Lovelace')
         self.assertEqual(question.answer_label_1, 'Vorname')
         self.assertEqual(question.answer_label_2, 'Nachname')
@@ -158,6 +171,7 @@ class QuizShortAnswerViewIntegrationTest(TestCase):
             question_text='Before update',
             question_type='short_answer',
             correct_answer='A',
+            points=42,
             created_by=self.user,
         )
 
@@ -186,6 +200,7 @@ class QuizShortAnswerViewIntegrationTest(TestCase):
         self.assertEqual(question.correct_answer_4, 'D')
         self.assertEqual(question.answer_label_4, '4')
         self.assertEqual(question.get_short_answer_field_count(), 4)
+        self.assertEqual(question.points, 42)
 
     def test_quiz_monitor_loads_for_legacy_double_answer_question(self):
         question = QuizQuestion.objects.create(
@@ -211,6 +226,11 @@ class QuizShortAnswerViewIntegrationTest(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, 'Weiteres Textfeld hinzufügen')
+        self.assertNotContains(response, 'id="quizPoints"', html=False)
+        self.assertNotContains(response, 'id="points"', html=False)
+        self.assertNotContains(response, 'name="points"', html=False)
+        self.assertNotContains(response, '<th>Points</th>', html=False)
+        self.assertNotContains(response, '<th>Punkte</th>', html=False)
         self.assertNotContains(response, '<option value="double_answer">', html=False)
 
 
@@ -241,6 +261,28 @@ class QuizTutorialRuntimeTests(TransactionTestCase):
 
         self.consumer.send = _capture_send
 
+    def _create_hub_step_with_officials(self, names):
+        session = HubSession.objects.create(
+            code='HUB1',
+            name='Tutorial Hub',
+            is_active=True,
+            started_at=timezone.now(),
+        )
+        for name in names:
+            HubParticipant.objects.create(session=session, nickname=name)
+        self.assertTrue(start_session_check_in(session)['success'])
+        for name in names:
+            self.assertTrue(participant_check_in(session, name)['success'])
+        self.assertTrue(complete_session_check_in(session)['success'])
+        HubGameStep.objects.create(
+            session=session,
+            order=0,
+            game_key='quiz',
+            room_code=self.quiz.room_code,
+            title=self.quiz.title,
+        )
+        return session
+
     @patch('QuizGame.consumers.resolve_session_game_activation_for_room', return_value={'success': True})
     @patch('QuizGame.consumers.ensure_session_players_ready_for_game_start_for_room', return_value={'allowed': True})
     def test_admin_start_quiz_with_tutorial_sets_runtime_state_and_broadcasts_tutorial(self, _ready_mock, _activation_mock):
@@ -254,6 +296,170 @@ class QuizTutorialRuntimeTests(TransactionTestCase):
         tutorial_message = next(message for _, message in self.consumer.channel_layer.group_messages if message['type'] == 'tutorial_start')
         self.assertEqual(tutorial_message['tutorial_title'], 'Welcome')
         self.assertEqual(tutorial_message['tutorial_text'], 'Read this first.')
+
+    @patch('QuizGame.consumers.resolve_session_game_activation_for_room', return_value={'success': True})
+    @patch('QuizGame.consumers.ensure_session_players_ready_for_game_start_for_room', return_value={'allowed': True})
+    def test_admin_start_quiz_without_tutorial_flag_keeps_runtime_inactive(self, _ready_mock, _activation_mock):
+        async_to_sync(self.consumer.handle_admin_start_quiz)({})
+
+        self.quiz.refresh_from_db()
+        self.assertFalse(self.quiz.tutorial_active)
+        message_types = [message['type'] for _, message in self.consumer.channel_layer.group_messages]
+        self.assertIn('quiz_started', message_types)
+        self.assertNotIn('tutorial_start', message_types)
+
+    @patch('QuizGame.consumers.resolve_session_game_activation_for_room', return_value={'success': True})
+    @patch('QuizGame.consumers.ensure_session_players_ready_for_game_start_for_room', return_value={'allowed': True})
+    def test_admin_start_quiz_blocks_missing_unit_tutorial_before_activation(self, _ready_mock, activation_mock):
+        async_to_sync(self.consumer.handle_admin_start_quiz)({'play_tutorial': True})
+
+        self.quiz.refresh_from_db()
+        self.assertEqual(self.quiz.status, 'waiting')
+        self.assertFalse(activation_mock.called)
+        self.assertEqual(self.direct_messages[-1]['type'], 'tutorial_question_missing')
+        message_types = [message['type'] for _, message in self.consumer.channel_layer.group_messages]
+        self.assertNotIn('quiz_started', message_types)
+
+    def test_unit_tutorial_round_is_played_before_first_scored_question_without_points(self):
+        session = self._create_hub_step_with_officials(['Alice'])
+        tutorial_question = QuizQuestion.objects.create(
+            question_text='Tutorial question',
+            question_type='multiple_choice',
+            correct_answer='A',
+            option_a='Correct',
+            option_b='Wrong',
+            created_by=self.user,
+        )
+        normal_question = QuizQuestion.objects.create(
+            question_text='Scored question',
+            question_type='multiple_choice',
+            correct_answer='A',
+            option_a='Correct',
+            option_b='Wrong',
+            created_by=self.user,
+        )
+        self.quiz.selected_questions.set([tutorial_question, normal_question])
+        self.quiz.question_order = [tutorial_question.id, normal_question.id]
+        self.quiz.tutorial_question = tutorial_question
+        self.quiz.status = 'active'
+        self.quiz.started_at = timezone.now()
+        self.quiz.save(update_fields=['question_order', 'tutorial_question', 'status', 'started_at'])
+        participant = QuizParticipant.objects.create(
+            quiz=self.quiz,
+            name='Alice',
+            hub_session_code=session.code,
+        )
+        prepare_unit_tutorial_runtime('quiz', self.quiz.room_code, session.code, True)
+
+        async_to_sync(self.consumer.handle_admin_send_question)({
+            'question_id': normal_question.id,
+            'hub_session_code': session.code,
+        })
+
+        question_started = [
+            message for _, message in self.consumer.channel_layer.group_messages
+            if message['type'] == 'question_started'
+        ][-1]
+        self.assertEqual(question_started['question']['id'], tutorial_question.id)
+        self.assertTrue(question_started['question']['is_tutorial_round'])
+        self.assertEqual(question_started['question']['points'], 0)
+        self.assertTrue(get_unit_tutorial_state('quiz', self.quiz.room_code, session.code)['current_unit_is_tutorial'])
+
+        tutorial_answer = async_to_sync(self.consumer.save_participant_answer)(
+            'Alice',
+            session.code,
+            'A',
+            1,
+        )
+        participant.refresh_from_db()
+        self.assertTrue(tutorial_answer['is_correct'])
+        self.assertTrue(tutorial_answer['is_tutorial_round'])
+        self.assertEqual(tutorial_answer['points_earned'], 0)
+        self.assertEqual(participant.total_score, 0)
+
+        async_to_sync(self.consumer.handle_admin_end_question)({'hub_session_code': session.code})
+        tutorial_state = get_unit_tutorial_state('quiz', self.quiz.room_code, session.code)
+        self.assertTrue(tutorial_state['tutorial_has_been_played'])
+        self.assertFalse(tutorial_state['current_unit_is_tutorial'])
+
+        response = self.client.get(
+            reverse('quiz:play', args=[self.quiz.room_code, participant.name]),
+            {'hub_session': session.code},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            [row['id'] for row in response.context['question_scoreboard']],
+            [normal_question.id],
+        )
+
+        async_to_sync(self.consumer.handle_admin_send_question)({
+            'question_id': normal_question.id,
+            'hub_session_code': session.code,
+        })
+        scored_question_started = [
+            message for _, message in self.consumer.channel_layer.group_messages
+            if message['type'] == 'question_started'
+        ][-1]
+        self.assertEqual(scored_question_started['question']['id'], normal_question.id)
+        self.assertFalse(scored_question_started['question']['is_tutorial_round'])
+        self.assertEqual(scored_question_started['question']['points'], 1)
+
+        scored_answer = async_to_sync(self.consumer.save_participant_answer)(
+            'Alice',
+            session.code,
+            'A',
+            1,
+        )
+        participant.refresh_from_db()
+        self.assertFalse(scored_answer['is_tutorial_round'])
+        self.assertEqual(scored_answer['points_earned'], 1)
+        self.assertEqual(participant.total_score, 1)
+
+    def test_active_unit_tutorial_is_not_rendered_as_regular_scorebox_question(self):
+        session = self._create_hub_step_with_officials(['Alice'])
+        tutorial_question = QuizQuestion.objects.create(
+            question_text='Tutorial question',
+            question_type='multiple_choice',
+            correct_answer='A',
+            option_a='Correct',
+            option_b='Wrong',
+            created_by=self.user,
+        )
+        normal_question = QuizQuestion.objects.create(
+            question_text='Scored question',
+            question_type='multiple_choice',
+            correct_answer='A',
+            option_a='Correct',
+            option_b='Wrong',
+            created_by=self.user,
+        )
+        self.quiz.selected_questions.set([tutorial_question, normal_question])
+        self.quiz.question_order = [tutorial_question.id, normal_question.id]
+        self.quiz.tutorial_question = tutorial_question
+        self.quiz.status = 'active'
+        self.quiz.current_question = tutorial_question
+        self.quiz.save(update_fields=['question_order', 'tutorial_question', 'status', 'current_question'])
+        participant = QuizParticipant.objects.create(
+            quiz=self.quiz,
+            name='Alice',
+            hub_session_code=session.code,
+        )
+        prepare_unit_tutorial_runtime('quiz', self.quiz.room_code, session.code, True)
+        start_unit_tutorial_if_needed('quiz', self.quiz.room_code, session.code)
+
+        response = self.client.get(
+            reverse('quiz:play', args=[self.quiz.room_code, participant.name]),
+            {'hub_session': session.code},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.context['current_unit_is_tutorial'])
+        self.assertEqual(
+            [row['id'] for row in response.context['question_scoreboard']],
+            [normal_question.id],
+        )
+        self.assertContains(response, 'Tutorialfrage - keine Wertung')
+        self.assertContains(response, 'class="unit-tutorial-notice"', html=False)
 
     def test_first_question_start_clears_tutorial_active(self):
         question = QuizQuestion.objects.create(
@@ -276,15 +482,16 @@ class QuizTutorialRuntimeTests(TransactionTestCase):
         self.assertFalse(self.quiz.tutorial_active)
 
     def test_participant_rejoin_during_active_tutorial_receives_tutorial_start(self):
+        session = self._create_hub_step_with_officials(['Alice'])
         participant = QuizParticipant.objects.create(
             quiz=self.quiz,
             name='Alice',
-            hub_session_code='HUB1',
+            hub_session_code=session.code,
             is_active=True,
         )
         self.quiz.status = 'active'
-        self.quiz.tutorial_active = True
-        self.quiz.save(update_fields=['status', 'tutorial_active'])
+        self.quiz.save(update_fields=['status'])
+        activate_game_tutorial_runtime('quiz', self.quiz.room_code, session.code, self.quiz, True)
 
         async_to_sync(self.consumer.handle_participant_join)({
             'participant_name': participant.name,
@@ -294,6 +501,77 @@ class QuizTutorialRuntimeTests(TransactionTestCase):
         message_types = [message['type'] for message in self.direct_messages]
         self.assertIn('quiz_started', message_types)
         self.assertIn('tutorial_start', message_types)
+
+    def test_acknowledged_participant_rejoin_does_not_receive_tutorial_again(self):
+        session = self._create_hub_step_with_officials(['Alice'])
+        participant = QuizParticipant.objects.create(
+            quiz=self.quiz,
+            name='Alice',
+            hub_session_code=session.code,
+            is_active=True,
+        )
+        self.quiz.status = 'active'
+        self.quiz.save(update_fields=['status'])
+        activate_game_tutorial_runtime('quiz', self.quiz.room_code, session.code, self.quiz, True)
+        mark_game_tutorial_completed('quiz', self.quiz.room_code, session.code, participant.name)
+
+        async_to_sync(self.consumer.handle_participant_join)({
+            'participant_name': participant.name,
+            'hub_session': participant.hub_session_code,
+        })
+
+        message_types = [message['type'] for message in self.direct_messages]
+        self.assertIn('quiz_started', message_types)
+        self.assertNotIn('tutorial_start', message_types)
+
+    def test_first_question_start_warns_when_tutorial_acknowledgements_are_open(self):
+        session = self._create_hub_step_with_officials(['Alice', 'Bob'])
+        self.quiz.status = 'active'
+        self.quiz.save(update_fields=['status'])
+        activate_game_tutorial_runtime('quiz', self.quiz.room_code, session.code, self.quiz, True)
+        mark_game_tutorial_completed('quiz', self.quiz.room_code, session.code, 'Alice')
+        question = QuizQuestion.objects.create(
+            question_text='Question one',
+            question_type='multiple_choice',
+            correct_answer='A',
+            option_a='A',
+            option_b='B',
+            created_by=self.user,
+        )
+
+        async_to_sync(self.consumer.handle_admin_send_question)({'question_id': question.id})
+
+        warning = next(message for message in self.direct_messages if message['type'] == 'tutorial_ack_warning')
+        self.assertEqual(warning['message'], 'Nicht alle Teilnehmer haben die Erläuterung bestätigt')
+        self.assertEqual(warning['completed'], 1)
+        self.assertEqual(warning['total'], 2)
+        group_types = [message['type'] for _, message in self.consumer.channel_layer.group_messages]
+        self.assertNotIn('question_started', group_types)
+
+    def test_force_continue_starts_first_question_and_closes_tutorial(self):
+        session = self._create_hub_step_with_officials(['Alice', 'Bob'])
+        self.quiz.status = 'active'
+        self.quiz.save(update_fields=['status'])
+        activate_game_tutorial_runtime('quiz', self.quiz.room_code, session.code, self.quiz, True)
+        question = QuizQuestion.objects.create(
+            question_text='Question one',
+            question_type='multiple_choice',
+            correct_answer='A',
+            option_a='A',
+            option_b='B',
+            created_by=self.user,
+        )
+
+        async_to_sync(self.consumer.handle_admin_send_question)({
+            'question_id': question.id,
+            'force_tutorial_continue': True,
+        })
+
+        group_types = [message['type'] for _, message in self.consumer.channel_layer.group_messages]
+        self.assertIn('tutorial_force_close', group_types)
+        self.assertIn('question_started', group_types)
+        runtime = HubGameTutorialRuntime.objects.get(game_step__session=session, game_step__room_code=self.quiz.room_code)
+        self.assertFalse(runtime.active)
 
     def test_quiz_play_template_contains_generic_tutorial_overlay_hook(self):
         participant = QuizParticipant.objects.create(
@@ -364,9 +642,9 @@ class QuizPlayScoreBoxTests(TransactionTestCase):
         self.assertEqual(
             response.context['question_scoreboard'],
             [
-                {'id': question_one.id, 'number': 1, 'is_correct': True, 'status': 'played'},
-                {'id': question_two.id, 'number': 2, 'is_correct': None, 'status': 'current'},
-                {'id': question_three.id, 'number': 3, 'is_correct': None, 'status': 'upcoming'},
+                {'id': question_one.id, 'number': 1, 'is_correct': True, 'status': 'played', 'points_earned': 1, 'max_points': 1},
+                {'id': question_two.id, 'number': 2, 'is_correct': None, 'status': 'current', 'points_earned': None, 'max_points': 1},
+                {'id': question_three.id, 'number': 3, 'is_correct': None, 'status': 'upcoming', 'points_earned': None, 'max_points': 1},
             ],
         )
         self.assertEqual(response.context['score_total_correct'], 1)
@@ -394,9 +672,9 @@ class QuizPlayScoreBoxTests(TransactionTestCase):
         self.assertEqual(
             response.context['question_scoreboard'],
             [
-                {'id': question_three.id, 'number': 1, 'is_correct': None, 'status': 'current'},
-                {'id': question_one.id, 'number': 2, 'is_correct': None, 'status': 'upcoming'},
-                {'id': question_two.id, 'number': 3, 'is_correct': None, 'status': 'upcoming'},
+                {'id': question_three.id, 'number': 1, 'is_correct': None, 'status': 'current', 'points_earned': None, 'max_points': 1},
+                {'id': question_one.id, 'number': 2, 'is_correct': None, 'status': 'upcoming', 'points_earned': None, 'max_points': 1},
+                {'id': question_two.id, 'number': 3, 'is_correct': None, 'status': 'upcoming', 'points_earned': None, 'max_points': 1},
             ],
         )
 
@@ -427,9 +705,9 @@ class QuizPlayScoreBoxTests(TransactionTestCase):
         self.assertEqual(
             response.context['question_scoreboard'],
             [
-                {'id': question_three.id, 'number': 1, 'is_correct': True, 'status': 'played'},
-                {'id': question_two.id, 'number': 2, 'is_correct': None, 'status': 'current'},
-                {'id': question_one.id, 'number': 3, 'is_correct': None, 'status': 'upcoming'},
+                {'id': question_three.id, 'number': 1, 'is_correct': True, 'status': 'played', 'points_earned': 1, 'max_points': 1},
+                {'id': question_two.id, 'number': 2, 'is_correct': None, 'status': 'current', 'points_earned': None, 'max_points': 1},
+                {'id': question_one.id, 'number': 3, 'is_correct': None, 'status': 'upcoming', 'points_earned': None, 'max_points': 1},
             ],
         )
 
@@ -450,12 +728,12 @@ class QuizPlayScoreBoxTests(TransactionTestCase):
         self.assertEqual(response.status_code, 200)
         self.assertNotContains(response, 'this.pushProgressEntry(!!data.is_correct);')
         self.assertNotContains(response, 'this.pushProgressEntry(data.is_correct, data.question_id);')
-        self.assertContains(response, 'this.storePendingProgressEvaluation(data.is_correct, data.question_id);')
+        self.assertContains(response, 'this.storePendingProgressEvaluation(data.is_correct, data.question_id, data.points_earned);')
         self.assertContains(response, 'this.applyPendingProgressEvaluation(endedQuestionId);')
         self.assertContains(response, 'this.applyPendingProgressEvaluationIfEnded(data.question_id);')
         self.assertContains(response, "case 'answer_corrected':")
         self.assertContains(response, 'this.applyManualAnswerCorrection(data);')
-        self.assertContains(response, 'this.pushProgressEntry(!!data.is_correct, data.question_id);')
+        self.assertContains(response, 'this.pushProgressEntry(!!data.is_correct, data.question_id, data.points_earned);')
         self.assertContains(response, 'if (!awaitingFinalizedAnswer) {')
         self.assertContains(response, 'this.reorderScoreboardForQuestionStart(question.id);')
         self.assertContains(response, '<span class="quiz-score-empty score-box__empty">__</span>', html=True)
@@ -484,6 +762,57 @@ class QuizPlayScoreBoxTests(TransactionTestCase):
         self.assertEqual(answer.points_earned, 1)
         self.assertEqual(self.participant.total_score, 1)
 
+    def test_multi_field_short_answer_scores_one_point_per_correct_field(self):
+        question = QuizQuestion.objects.create(
+            question_text='Three-part answer',
+            question_type='short_answer',
+            correct_answer='Mercury',
+            correct_answer_2='Venus',
+            correct_answer_3='Earth',
+            points=50,
+            created_by=self.user,
+        )
+
+        answer = QuizAnswer.objects.create(
+            quiz=self.quiz,
+            participant=self.participant,
+            question=question,
+            answer_text=question.serialize_short_answer_submission({
+                'answer_1': 'Mercury',
+                'answer_2': 'wrong',
+                'answer_3': 'Earth',
+            }),
+            time_taken=2.0,
+        )
+
+        self.participant.refresh_from_db()
+        self.assertFalse(answer.is_correct)
+        self.assertEqual(answer.points_earned, 2)
+        self.assertEqual(self.participant.total_score, 2)
+
+        full_participant = QuizParticipant.objects.create(
+            quiz=self.quiz,
+            name='Full scorer',
+            hub_session_code='sess1',
+            is_active=True,
+        )
+        full_answer = QuizAnswer.objects.create(
+            quiz=self.quiz,
+            participant=full_participant,
+            question=question,
+            answer_text=question.serialize_short_answer_submission({
+                'answer_1': 'Mercury',
+                'answer_2': 'Venus',
+                'answer_3': 'Earth',
+            }),
+            time_taken=1.5,
+        )
+
+        full_participant.refresh_from_db()
+        self.assertTrue(full_answer.is_correct)
+        self.assertEqual(full_answer.points_earned, 3)
+        self.assertEqual(full_participant.total_score, 3)
+
     def test_quiz_play_keeps_legacy_quiz_without_selected_questions_loadable(self):
         question = self._create_question('Legacy question', 'True')
         self.quiz.current_question = question
@@ -498,7 +827,7 @@ class QuizPlayScoreBoxTests(TransactionTestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(
             response.context['question_scoreboard'],
-            [{'id': question.id, 'number': 1, 'is_correct': None, 'status': 'current'}],
+            [{'id': question.id, 'number': 1, 'is_correct': None, 'status': 'current', 'points_earned': None, 'max_points': 1}],
         )
         self.assertContains(response, 'quizScoreList')
 
@@ -680,6 +1009,9 @@ class QuizHostManualCorrectTests(TestCase):
         )
 
         self.assertFalse(answer.is_correct)
+        self.assertEqual(answer.points_earned, 1)
+        participant.refresh_from_db()
+        self.assertEqual(participant.total_score, 1)
         self.assertEqual(
             [(field['key'], field['is_correct']) for field in answer.get_short_answer_field_results()],
             [('answer_1', True), ('answer_2', False)],
@@ -697,8 +1029,8 @@ class QuizHostManualCorrectTests(TestCase):
         payload = response.json()
 
         self.assertTrue(answer.is_correct)
-        self.assertEqual(answer.points_earned, 1)
-        self.assertEqual(participant.total_score, 1)
+        self.assertEqual(answer.points_earned, 2)
+        self.assertEqual(participant.total_score, 2)
         self.assertFalse(payload['can_mark_correct'])
         self.assertEqual(
             [(field['key'], field['is_correct']) for field in payload['field_results']],
@@ -862,4 +1194,8 @@ class QuizHostManualCorrectTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, 'Weiteres Textfeld hinzufügen')
+        self.assertNotContains(response, 'id="points"', html=False)
+        self.assertNotContains(response, 'name="points"', html=False)
+        self.assertNotContains(response, '<th>Points</th>', html=False)
+        self.assertNotContains(response, '<th>Punkte</th>', html=False)
         self.assertNotContains(response, '<option value="double_answer">', html=False)

@@ -6,9 +6,11 @@ from django.utils import timezone
 from django.db.models import Avg, Count, Q
 import json
 from .models import WhereQuiz, WhereQuestion, WhereParticipant, WhereAnswer, WhereSession
+from games_hub.unit_tutorial_runtime import get_scorebox_excluded_tutorial_question_ids, is_current_unit_tutorial_question
 
 
 def _get_ordered_quiz_questions(quiz, session_code=None):
+    tutorial_question_ids = get_scorebox_excluded_tutorial_question_ids('where', quiz.room_code, session_code)
     selected_questions = list(quiz.selected_questions.all())
     configured_order_ids = []
     for raw_question_id in quiz.question_order or []:
@@ -28,13 +30,15 @@ def _get_ordered_quiz_questions(quiz, session_code=None):
     played_questions = []
     seen_played_ids = set()
     for answer in answer_qs:
+        if answer.question_id in tutorial_question_ids:
+            continue
         fallback_questions[answer.question_id] = answer.question
         if answer.question_id in seen_played_ids:
             continue
         played_questions.append(answer.question)
         seen_played_ids.add(answer.question_id)
 
-    if quiz.current_question_id and quiz.current_question_id not in fallback_questions:
+    if quiz.current_question_id and quiz.current_question_id not in fallback_questions and quiz.current_question_id not in tutorial_question_ids:
         fallback_questions[quiz.current_question_id] = quiz.current_question
 
     configured_by_id = {question.id: question for question in selected_questions}
@@ -48,13 +52,15 @@ def _get_ordered_quiz_questions(quiz, session_code=None):
             ordered_questions.append(resolved_question)
             seen_ids.add(resolved_question.id)
 
-    if quiz.current_question_id and quiz.current_question_id not in seen_ids:
+    if quiz.current_question_id and quiz.current_question_id not in seen_ids and quiz.current_question_id not in tutorial_question_ids:
         current_question = configured_by_id.get(quiz.current_question_id, quiz.current_question)
         if current_question:
             ordered_questions.append(current_question)
             seen_ids.add(quiz.current_question_id)
 
     for question in selected_questions:
+        if question.id in tutorial_question_ids:
+            continue
         if question.id not in seen_ids:
             ordered_questions.append(question)
             seen_ids.add(question.id)
@@ -84,19 +90,21 @@ def _get_total_questions_sent(quiz):
 
 def _build_question_scoreboard(quiz, participant, session_code=None):
     ordered_questions = _get_ordered_quiz_questions(quiz, session_code)
+    tutorial_question_ids = get_scorebox_excluded_tutorial_question_ids('where', quiz.room_code, session_code)
     participant_answers = {
         answer.question_id: answer
         for answer in (
             WhereAnswer.objects.filter(quiz=quiz, participant=participant)
             .select_related('question')
         )
+        if answer.question_id not in tutorial_question_ids
     }
     asked_answer_qs = WhereAnswer.objects.filter(quiz=quiz)
     if session_code:
         asked_answer_qs = asked_answer_qs.filter(participant__hub_session_code=session_code)
-    asked_question_ids = set(asked_answer_qs.values_list('question_id', flat=True))
+    asked_question_ids = set(asked_answer_qs.exclude(question_id__in=tutorial_question_ids).values_list('question_id', flat=True))
 
-    current_question_id = quiz.current_question_id if quiz.current_question_id else None
+    current_question_id = quiz.current_question_id if quiz.current_question_id not in tutorial_question_ids else None
     if current_question_id:
         asked_question_ids.add(current_question_id)
 
@@ -320,6 +328,7 @@ def where_play(request, room_code, participant_name):
             'question_scoreboard': question_scoreboard,
             'initial_progress_history': initial_progress_history,
             'current_question_id': current_question_id,
+            'current_unit_is_tutorial': is_current_unit_tutorial_question('where', quiz.room_code, session_code, quiz.current_question_id),
             'score_total_earned': sum(entry['points'] for entry in initial_progress_history),
             'score_total_max': sum(entry['max_points'] for entry in initial_progress_history),
         }

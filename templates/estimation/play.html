@@ -49,6 +49,7 @@
         <!-- Main Content -->
         <main class="quiz-main">
             <div class="container">
+                {% include 'includes/_unit_tutorial_notice.html' %}
                 <div class="row justify-content-center">
                     <div class="col-lg-8">
                         <!-- Waiting State -->
@@ -242,6 +243,9 @@
                                         <span class="score-label">points</span>
                                     </div>
                                 </div>
+                                {% with post_game_game_key="estimation" %}
+                                    {% include 'includes/_post_game_results.html' %}
+                                {% endwith %}
                                 <!-- <div class="quiz-actions">
                                     <a href="/estimation/result/{{ quiz.room_code }}/{{ participant.name }}/" class="btn btn-primary btn-lg">
                                         <i data-lucide="bar-chart-3"></i>
@@ -1320,13 +1324,19 @@
                         case 'tutorial_start':
                             window.gameTutorial?.showFromPayload(data);
                             break;
-                            
+
+                        case 'tutorial_force_close':
+                            window.gameTutorial?.forceClose();
+                            break;
+
                         case 'question_started':
                             window.gameTutorial?.forceClose();
+                            window.unitTutorialNotice?.setFromPayload(data);
                             this.onQuestionStarted(data.question);
                             break;
                             
                         case 'question_ended':
+                            window.unitTutorialNotice?.hide();
                             this.onQuestionEnded(data);
                             break;
                             
@@ -1475,9 +1485,10 @@
                 onQuestionStarted(question) {
                     this.hasAnswered = false;
                     this.questionStartTime = Date.now();
-                    this.currentQuestionId = Number(question.id) || null;
+                    this.currentQuestionIsTutorial = !!question?.is_tutorial_round;
+                    this.currentQuestionId = this.currentQuestionIsTutorial ? null : (Number(question.id) || null);
                     this.currentUnit = question.unit_display || '';
-                    const currentEntry = this.moveQuestionToNextFreeScoreSlot(question.id, question.max_points);
+                    const currentEntry = this.currentQuestionIsTutorial ? null : this.moveQuestionToNextFreeScoreSlot(question.id, question.max_points);
                     const nextQuestionNumber = Number(currentEntry?.number || question.question_number);
                     this.currentQuestionIndex = Number.isNaN(nextQuestionNumber) || nextQuestionNumber <= 0
                         ? this.currentQuestionIndex + 1
@@ -1494,7 +1505,7 @@
                     
                     this.loadQuestion(question);
                     this.startQuestionTimer(question.time_limit || 90);
-                    this.renderScoreHistory();
+                    if (!this.currentQuestionIsTutorial) this.renderScoreHistory();
                     this.showState('questionState');
                     
                     // Focus on input
@@ -1506,7 +1517,7 @@
                 onQuestionEnded(data) {
                     clearInterval(this.questionTimer);
 
-                    if (!this.hasAnswered) {
+                    if (!this.currentQuestionIsTutorial && !this.hasAnswered) {
                         const evaluatedPendingAnswer = this.getOwnEvaluatedPendingAnswer(data.evaluated_pending_answers);
                         this.applyEvaluatedPendingAnswer(evaluatedPendingAnswer);
                     }

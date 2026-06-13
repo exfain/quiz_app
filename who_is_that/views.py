@@ -6,6 +6,7 @@ from django.utils import timezone
 from django.db.models import Avg, Count, Q
 import json
 from .models import WhoThatQuiz, WhoThatQuestion, WhoThatParticipant, WhoThatAnswer, WhoThatSession
+from games_hub.unit_tutorial_runtime import get_scorebox_excluded_tutorial_question_ids, is_current_unit_tutorial_question
 
 
 def _get_current_question_time_context(quiz):
@@ -59,7 +60,8 @@ def _has_current_run_session_progress(quiz, session, has_current_run_answers=Fal
     return session.updated_at > quiz.started_at
 
 
-def _get_ordered_quiz_questions(quiz):
+def _get_ordered_quiz_questions(quiz, session_code=None):
+    tutorial_question_ids = get_scorebox_excluded_tutorial_question_ids('who_that', quiz.room_code, session_code)
     selected_questions = list(quiz.selected_questions.all())
     configured_order_ids = []
     for raw_question_id in getattr(quiz, 'question_order', []) or []:
@@ -75,13 +77,15 @@ def _get_ordered_quiz_questions(quiz):
     played_questions = []
     seen_played_ids = set()
     for answer in _get_current_run_answers_queryset(quiz).select_related('question').order_by('submitted_at', 'id'):
+        if answer.question_id in tutorial_question_ids:
+            continue
         fallback_questions[answer.question_id] = answer.question
         if answer.question_id in seen_played_ids:
             continue
         played_questions.append(answer.question)
         seen_played_ids.add(answer.question_id)
 
-    if quiz.current_question_id and quiz.current_question_id not in fallback_questions and quiz.current_question:
+    if quiz.current_question_id and quiz.current_question_id not in fallback_questions and quiz.current_question and quiz.current_question_id not in tutorial_question_ids:
         fallback_questions[quiz.current_question_id] = quiz.current_question
 
     configured_by_id = {question.id: question for question in selected_questions}
@@ -95,13 +99,15 @@ def _get_ordered_quiz_questions(quiz):
             ordered_questions.append(resolved_question)
             seen_ids.add(resolved_question.id)
 
-    if quiz.current_question_id and quiz.current_question_id not in seen_ids:
+    if quiz.current_question_id and quiz.current_question_id not in seen_ids and quiz.current_question_id not in tutorial_question_ids:
         current_question = configured_by_id.get(quiz.current_question_id, quiz.current_question)
         if current_question:
             ordered_questions.append(current_question)
             seen_ids.add(quiz.current_question_id)
 
     for question in selected_questions:
+        if question.id in tutorial_question_ids:
+            continue
         if question.id not in seen_ids:
             ordered_questions.append(question)
             seen_ids.add(question.id)
@@ -114,8 +120,9 @@ def _get_ordered_quiz_questions(quiz):
     return ordered_questions
 
 
-def _build_question_status_board(quiz, participant):
-    ordered_questions = _get_ordered_quiz_questions(quiz)
+def _build_question_status_board(quiz, participant, session_code=None):
+    ordered_questions = _get_ordered_quiz_questions(quiz, session_code)
+    tutorial_question_ids = get_scorebox_excluded_tutorial_question_ids('who_that', quiz.room_code, session_code)
     session = getattr(quiz, 'session', None)
     has_current_run_answers = _get_current_run_answers_queryset(quiz).exists()
     has_session_progress = _has_current_run_session_progress(
@@ -124,7 +131,7 @@ def _build_question_status_board(quiz, participant):
         has_current_run_answers=has_current_run_answers,
     )
     current_question_number = session.current_question_number if session and has_session_progress else 0
-    current_question_id = quiz.current_question_id
+    current_question_id = quiz.current_question_id if quiz.current_question_id not in tutorial_question_ids else None
     current_question_active = bool(session and session.is_question_active and current_question_id and has_session_progress)
 
     if quiz.status == 'waiting':
@@ -138,6 +145,7 @@ def _build_question_status_board(quiz, participant):
             quiz,
             participant=participant,
         ).select_related('question')
+        if answer.question_id not in tutorial_question_ids
     }
 
     total_questions = len(ordered_questions)
@@ -351,6 +359,7 @@ def who_that_play(request, room_code, participant_name):
             'participant_count': quiz.get_participant_count(session_code),
             'current_question_time_left': current_question_time_left,
             'current_question_end_time': current_question_end_time,
+            'current_unit_is_tutorial': is_current_unit_tutorial_question('who_that', quiz.room_code, session_code, quiz.current_question_id),
         }
         context['current_participant_answer'] = (
             _get_current_run_answers_queryset(
@@ -360,7 +369,7 @@ def who_that_play(request, room_code, participant_name):
             if quiz.current_question_id else
             None
         )
-        question_status_board, current_question_number = _build_question_status_board(quiz, participant)
+        question_status_board, current_question_number = _build_question_status_board(quiz, participant, session_code)
         context['question_status_board'] = question_status_board
         context['current_question_number'] = current_question_number
         return render(request, 'who_is_that/play.html', context)

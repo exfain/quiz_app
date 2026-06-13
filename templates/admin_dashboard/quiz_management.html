@@ -30,7 +30,6 @@
                         <tr>
                             <th>Question</th>
                             <th>Type</th>
-                            <th>Points</th>
                             <th>Time (s)</th>
                             <th>Created</th>
 
@@ -38,7 +37,7 @@
                         </tr>
                     </thead>
                     <tbody id="questionsTableBody">
-                        <tr><td colspan="7" class="text-center py-4">
+                        <tr><td colspan="5" class="text-center py-4">
                             <div class="spinner-border spinner-border-sm text-secondary me-2" role="status"></div>
                             Loading questions...
                         </td></tr>
@@ -120,7 +119,6 @@
                                 <th style="width:40px;"><input type="checkbox" id="selectAllBundleQuestions"></th>
                                 <th>Frage</th>
                                 <th>Typ</th>
-                                <th>Punkte</th>
                                 <th>Zeit (s)</th>
                             </tr>
                         </thead>
@@ -166,7 +164,6 @@
                                 <th style="width:40px;"><input type="checkbox" id="selectAllQuestions"></th>
                                 <th>Question</th>
                                 <th>Type</th>
-                                <th>Points</th>
                                 <th>Time (s)</th>
                                 <th>Created</th>
                             </tr>
@@ -743,7 +740,6 @@
                     row.innerHTML = `
                         <td>${q.question_text}</td>
                         <td>${q.question_type}</td>
-                        <td>${q.points}</td>
                         <td>${q.time_limit}</td>
                         <td>${q.created_at}</td>
 
@@ -784,7 +780,6 @@
                 document.getElementById('questionId').value = question.id;
                 document.getElementById('questionText').value = question.question_text;
                 document.getElementById('questionType').value = question.question_type;
-                document.getElementById('points').value = question.points;
                 document.getElementById('timeLimit').value = question.time_limit;
                 document.getElementById('optionA').value = question.option_a || '';
                 document.getElementById('optionB').value = question.option_b || '';
@@ -893,7 +888,7 @@
                 data.questions.forEach(q => {
                     const tr = document.createElement('tr');
                     const checked = customQuizEditMode && customQuizSelectedIds.has(q.id) ? 'checked' : '';
-                    tr.innerHTML = `<td><input type="checkbox" value="${q.id}" ${checked}></td><td>${q.question_text}</td><td>${q.question_type}</td><td>${q.points}</td><td>${q.time_limit}</td><td>${q.created_at}</td>`;
+                    tr.innerHTML = `<td><input type="checkbox" value="${q.id}" ${checked}></td><td>${q.question_text}</td><td>${q.question_type}</td><td>${q.time_limit}</td><td>${q.created_at}</td>`;
                     body.appendChild(tr);
                 });
                 pager.innerHTML = '';
@@ -967,7 +962,6 @@
                         <td><input type="checkbox" class="bundle-q-check" value="${q.id}"></td>
                         <td>${q.question_text}</td>
                         <td><span class="badge bg-secondary">${q.question_type}</span></td>
-                        <td>${q.points}</td>
                         <td>${q.time_limit}</td>
                     `;
                     tbody.appendChild(tr);
@@ -1103,13 +1097,6 @@
                                     <option value="true_false">True/False</option>
                                     <option value="short_answer">Short Answer</option>
                                 </select>
-                            </div>
-                        </div>
-                        <div class="col-md-3">
-                            <div class="mb-3">
-                                <label for="points" class="form-label">Points</label>
-                                <input type="number" class="form-control" id="points" name="points"
-                                       value="10" min="1" max="100" required>
                             </div>
                         </div>
                         <div class="col-md-3">

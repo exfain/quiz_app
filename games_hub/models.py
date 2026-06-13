@@ -269,6 +269,61 @@ class HubGameParticipantSnapshot(SyncBase):
         return list(cls.objects.filter(game_step=locked_step).select_related('participant'))
 
 
+class HubGameTutorialRuntime(SyncBase):
+    session = models.ForeignKey(HubSession, related_name='game_tutorial_runtimes', on_delete=models.CASCADE)
+    game_step = models.OneToOneField('HubGameStep', related_name='tutorial_runtime', on_delete=models.CASCADE)
+    active = models.BooleanField(default=False)
+    title = models.CharField(max_length=200, blank=True, default='')
+    text = models.TextField(blank=True, default='')
+    started_at = models.DateTimeField(null=True, blank=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ['game_step__order']
+
+    def __str__(self):
+        return f"Tutorial {self.session.code} step {self.game_step_id}"
+
+
+class HubGameTutorialAcknowledgement(SyncBase):
+    runtime = models.ForeignKey(
+        HubGameTutorialRuntime,
+        related_name='acknowledgements',
+        on_delete=models.CASCADE,
+    )
+    snapshot = models.ForeignKey(
+        HubGameParticipantSnapshot,
+        related_name='tutorial_acknowledgements',
+        on_delete=models.CASCADE,
+    )
+    acknowledged_at = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        unique_together = ('runtime', 'snapshot')
+        ordering = ['snapshot__participant__joined_at', 'snapshot__participant__nickname']
+
+    def __str__(self):
+        return f"{self.runtime_id}: {self.snapshot.participant.nickname}"
+
+
+class HubGameUnitTutorialRuntime(SyncBase):
+    session = models.ForeignKey(HubSession, related_name='game_unit_tutorial_runtimes', on_delete=models.CASCADE)
+    game_step = models.OneToOneField('HubGameStep', related_name='unit_tutorial_runtime', on_delete=models.CASCADE)
+    requested = models.BooleanField(default=False)
+    tutorial_question_id = models.PositiveIntegerField(null=True, blank=True)
+    tutorial_has_been_played = models.BooleanField(default=False)
+    current_unit_is_tutorial = models.BooleanField(default=False)
+    requested_at = models.DateTimeField(null=True, blank=True)
+    started_at = models.DateTimeField(null=True, blank=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ['game_step__order']
+
+    def __str__(self):
+        return f"Unit tutorial {self.session.code} step {self.game_step_id}"
+
+
 class HubGameStep(SyncBase):
     GAME_CHOICES = [
         ('quiz', 'QuizGame'),

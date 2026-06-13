@@ -58,6 +58,7 @@ class WerWeissMehrGame(SyncBase):
         related_name='active_in_games',
     )
     selected_questions = models.ManyToManyField('WerWeissMehrQuestion', blank=True, related_name='games')
+    tutorial_question = models.ForeignKey('WerWeissMehrQuestion', on_delete=models.SET_NULL, null=True, blank=True, related_name='tutorial_in_games')
 
     class Meta:
         ordering = ['-created_at']
@@ -181,9 +182,15 @@ class WerWeissMehrParticipant(SyncBase):
         ordering = ['-total_score', 'name']
 
     def recalculate_total_score(self):
+        from games_hub.unit_tutorial_runtime import get_unit_tutorial_state
+
+        tutorial_state = get_unit_tutorial_state('wer_weiss_mehr', self.quiz.room_code, self.hub_session_code)
+        tutorial_question_id = tutorial_state.get('tutorial_question_id') if tutorial_state.get('requested') else None
+        states = WerWeissMehrParticipantState.objects.filter(quiz=self.quiz, participant=self)
+        if tutorial_question_id:
+            states = states.exclude(question_id=tutorial_question_id)
         total = (
-            WerWeissMehrParticipantState.objects
-            .filter(quiz=self.quiz, participant=self)
+            states
             .aggregate(total=models.Sum('survived_rounds'))
             .get('total') or 0
         )

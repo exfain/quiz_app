@@ -5,6 +5,7 @@ from django.views.decorators.csrf import csrf_exempt
 from django.utils import timezone
 import json
 from .models import ClueRushGame, ClueRushParticipant, ClueAnswer
+from games_hub.unit_tutorial_runtime import is_current_unit_tutorial_question, is_unit_tutorial_question
 
 
 def join_view(request):
@@ -120,7 +121,8 @@ def play(request, room_code, participant_name):
             'quiz': quiz,
             'participant': participant,
             'hub_session': session_code,
-            'participant_count': quiz.participants.filter(hub_session_code=session_code, is_active=True).count()
+            'participant_count': quiz.participants.filter(hub_session_code=session_code, is_active=True).count(),
+            'current_unit_is_tutorial': is_current_unit_tutorial_question('clue_rush', quiz.room_code, session_code, quiz.current_question_id),
         }
         return render(request, 'clue_rush/play.html', context)
     except (ClueRushGame.DoesNotExist, ClueRushParticipant.DoesNotExist):
@@ -179,13 +181,23 @@ def submit_guess(request, room_code, participant_name):
             question=quiz.current_question,
             answer_text=guess_text,
         )
+        is_tutorial_answer = is_unit_tutorial_question(
+            'clue_rush',
+            quiz.room_code,
+            session_code,
+            quiz.current_question_id,
+        )
+        if is_tutorial_answer and answer.points_earned:
+            answer.points_earned = 0
+            answer.save()
         participant.last_activity = timezone.now()
         participant.save(update_fields=['last_activity'])
 
         return JsonResponse({
             'success': True,
             'correct': answer.is_correct,
-            'points_earned': answer.points_earned
+            'points_earned': answer.points_earned,
+            'is_tutorial_round': is_tutorial_answer,
         })
 
     except json.JSONDecodeError:

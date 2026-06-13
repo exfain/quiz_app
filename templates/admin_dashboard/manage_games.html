@@ -30,6 +30,13 @@
     font-size: .875rem;
     margin-top: .75rem;
 }
+.tutorial-question-row {
+    --bs-table-bg: #eef6ff;
+}
+.tutorial-set-card-selected {
+    border-color: #0d6efd;
+    background: #eef6ff;
+}
 </style>
 <div class="container-fluid py-4">
 
@@ -90,21 +97,20 @@
         <div class="card border-0 shadow-sm mb-4">
             <div class="card-header bg-white border-0 py-3">
                 <h5 class="mb-0">
-                    <i data-lucide="book-open" style="width:18px;height:18px;" class="me-2"></i>Tutorial
+                    <i data-lucide="book-open" style="width:18px;height:18px;" class="me-2"></i>Spielerläuterung
                 </h5>
             </div>
             <div class="card-body">
-                <div class="form-check form-switch mb-3">
-                    <input class="form-check-input" type="checkbox" id="gameTutorialEnabled">
-                    <label class="form-check-label fw-semibold" for="gameTutorialEnabled">Tutorial for this game aktivieren</label>
-                </div>
-                <div id="gameTutorialFields" class="d-none">
+                <p class="text-muted small mb-3">
+                    Optionaler Erklärungstext, den der Host zu Beginn des Spiels anzeigen kann. Leer lassen, wenn keine Spielerläuterung benötigt wird.
+                </p>
+                <div id="gameTutorialFields">
                     <div class="mb-3">
-                        <label class="form-label fw-semibold" for="gameTutorialTitle">Tutorial-Titel</label>
-                        <input type="text" class="form-control" id="gameTutorialTitle" placeholder="Kurzer Tutorial-Titel">
+                        <label class="form-label fw-semibold" for="gameTutorialTitle">Titel der Spielerläuterung</label>
+                        <input type="text" class="form-control" id="gameTutorialTitle" placeholder="Kurzer Titel der Spielerläuterung">
                     </div>
                     <div class="mb-0">
-                        <label class="form-label fw-semibold" for="gameTutorialText">Tutorial-Text</label>
+                        <label class="form-label fw-semibold" for="gameTutorialText">Text der Spielerläuterung</label>
                         <textarea class="form-control" id="gameTutorialText" rows="5" placeholder="Erklärung, die Teilnehmer vor der ersten echten Frage oder dem ersten echten Set sehen sollen"></textarea>
                     </div>
                 </div>
@@ -128,9 +134,9 @@
                             <thead class="table-light sticky-top">
                                 <tr>
                                     <th style="width:28px;"></th>
+                                    <th style="width:190px;">Tutorial</th>
                                     <th>Question</th>
                                     <th>Type</th>
-                                    <th>Points</th>
                                     <th>Time (s)</th>
                                     <th style="width:50px;"></th>
                                 </tr>
@@ -174,13 +180,6 @@
                                         <option value="true_false">True/False</option>
                                         <option value="short_answer">Short Answer</option>
                                     </select>
-                                </div>
-                            </div>
-                            <div class="col-md-3">
-                                <div class="mb-3">
-                                    <label class="form-label">Points</label>
-                                    <input type="number" class="form-control" id="quizPoints" name="points"
-                                           value="10" min="1" max="100" required>
                                 </div>
                             </div>
                             <div class="col-md-3">
@@ -265,13 +264,12 @@
                                     <th style="width:36px;"><input type="checkbox" id="quizSelectAll"></th>
                                     <th>Question</th>
                                     <th>Type</th>
-                                    <th>Points</th>
                                     <th>Time (s)</th>
                                     <th>Actions</th>
                                 </tr>
                             </thead>
                             <tbody id="quizBankTableBody">
-                                <tr><td colspan="6" class="text-center py-4 text-muted">Loading…</td></tr>
+                                <tr><td colspan="5" class="text-center py-4 text-muted">Loading…</td></tr>
                             </tbody>
                         </table>
                     </div>
@@ -700,9 +698,10 @@ const EDIT_GAME_ID = {{ game_id|default:"null" }};
 const EDIT_GAME_TYPE = "{{ game_type|default:'' }}";
 const EDIT_GAME_TITLE = "{{ game_title|default:''|escapejs }}";
 const EDIT_GAME_INTERNAL_DESCRIPTION = "{{ game_internal_description|default:''|escapejs }}";
-const EDIT_TUTORIAL_ENABLED = {{ game_tutorial_enabled|default:False|yesno:"true,false" }};
 const EDIT_TUTORIAL_TITLE = "{{ game_tutorial_title|default:''|escapejs }}";
 const EDIT_TUTORIAL_TEXT = "{{ game_tutorial_text|default:''|escapejs }}";
+const EDIT_TUTORIAL_QUESTION_ID = {{ game_tutorial_question_id|default:"null" }};
+const EDIT_TUTORIAL_SET_NUMBER = {{ game_tutorial_set_number|default:"null" }};
 const EDIT_ESTIMATION_SCORING_MODE = "{{ game_scoring_mode|default:'zones'|escapejs }}";
 const EDIT_BLACKJACK_SCORING_MODE = "{{ game_scoring_mode|default:'simple'|escapejs }}";
 const EDIT_SELECTED_IDS = new Set({{ selected_ids_json|default:"[]" }});
@@ -742,9 +741,11 @@ const GAME_CONFIG = {
 
 let currentType = null;
 const quizSelectedIds = new Set();
-const quizSelectedQuestions = new Map(); // id → {id, question_text, question_type, points, time_limit}
+const quizSelectedQuestions = new Map(); // id -> {id, question_text, question_type, time_limit}
 const genericSelectedIds = new Set();
 const genericSelectedItems = new Map(); // id → full item data
+let tutorialQuestionId = normalizeTutorialQuestionId(EDIT_TUTORIAL_QUESTION_ID);
+let tutorialSetNumber = normalizeTutorialSetNumber(EDIT_TUTORIAL_SET_NUMBER);
 let itemsRef = []; // reference to last loaded generic bank items
 let blackJackSetCount = 1;
 const blackJackQuestionSetAssignments = new Map();
@@ -753,10 +754,78 @@ function isBlackJackTypeActive() {
     return currentType === 'blackjack';
 }
 
+function normalizeTutorialQuestionId(value) {
+    const parsed = parseInt(value, 10);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+function normalizeTutorialSetNumber(value) {
+    const parsed = parseInt(value, 10);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+function getCurrentSelectedIds() {
+    return currentType === 'quiz' ? quizSelectedIds : genericSelectedIds;
+}
+
+function clearTutorialQuestionIfNotSelected() {
+    if (isBlackJackTypeActive()) {
+        tutorialQuestionId = null;
+        return;
+    }
+    if (tutorialQuestionId && !getCurrentSelectedIds().has(tutorialQuestionId)) {
+        tutorialQuestionId = null;
+    }
+}
+
+function renderTutorialQuestionControl(questionId) {
+    if (isBlackJackTypeActive()) return '';
+    const id = parseInt(questionId, 10);
+    const checked = tutorialQuestionId === id;
+    const disabled = Boolean(tutorialQuestionId && !checked);
+    return `
+        <div class="form-check mb-0">
+            <input class="form-check-input tutorial-question-check" type="checkbox" data-id="${id}" ${checked ? 'checked' : ''} ${disabled ? 'disabled' : ''}>
+            <label class="form-check-label small">als Tutorial verwenden</label>
+        </div>
+    `;
+}
+
+function syncTutorialQuestionControls() {
+    document.querySelectorAll('.tutorial-question-check').forEach(cb => {
+        const id = parseInt(cb.dataset.id, 10);
+        const checked = tutorialQuestionId === id;
+        cb.checked = checked;
+        cb.disabled = Boolean(tutorialQuestionId && !checked);
+        cb.closest('tr')?.classList.toggle('tutorial-question-row', checked);
+    });
+}
+
+function bindTutorialQuestionControls(scope) {
+    scope.querySelectorAll('.tutorial-question-check').forEach(cb => {
+        cb.addEventListener('change', function () {
+            const id = parseInt(this.dataset.id, 10);
+            if (!getCurrentSelectedIds().has(id)) {
+                this.checked = false;
+                return;
+            }
+            tutorialQuestionId = this.checked ? id : (tutorialQuestionId === id ? null : tutorialQuestionId);
+            syncTutorialQuestionControls();
+        });
+    });
+    syncTutorialQuestionControls();
+}
+
 function normalizeBlackJackSetNumber(rawValue) {
     const parsed = parseInt(rawValue, 10);
     if (!Number.isFinite(parsed) || parsed < 1) return 1;
     return Math.min(parsed, Math.max(1, blackJackSetCount));
+}
+
+function clearTutorialSetIfInvalid(configuredSetCount = Math.max(1, blackJackSetCount)) {
+    if (tutorialSetNumber && (configuredSetCount < 1 || tutorialSetNumber > configuredSetCount)) {
+        tutorialSetNumber = null;
+    }
 }
 
 function getOrderedGenericSelectedIds() {
@@ -793,6 +862,7 @@ function syncManageBlackJackSetSummary() {
     if (!isBlackJackTypeActive()) return;
 
     const questionSets = buildManageBlackJackQuestionSets();
+    clearTutorialSetIfInvalid(questionSets.length);
     const questionTextById = new Map(
         Array.from(genericSelectedItems.values()).map(item => [item.id, item.question_text || `Question ${item.id}`])
     );
@@ -801,7 +871,9 @@ function syncManageBlackJackSetSummary() {
     for (let setNumber = 1; setNumber <= Math.max(1, blackJackSetCount); setNumber += 1) {
         const questionSet = questionSets[setNumber - 1] || [];
         const card = document.createElement('div');
-        card.className = 'blackjack-set-card';
+        const checked = tutorialSetNumber === setNumber;
+        const disabled = Boolean(tutorialSetNumber && !checked);
+        card.className = `blackjack-set-card${checked ? ' tutorial-set-card-selected' : ''}`;
         card.innerHTML = `
             <div class="d-flex justify-content-between align-items-center gap-2">
                 <div>
@@ -811,6 +883,10 @@ function syncManageBlackJackSetSummary() {
                 <button type="button" class="btn btn-sm btn-outline-danger remove-manage-blackjack-set-btn" data-set-number="${setNumber}" ${blackJackSetCount <= 1 ? 'disabled' : ''}>
                     <i data-lucide="trash-2" style="width:13px;height:13px;"></i>
                 </button>
+            </div>
+            <div class="form-check mt-2">
+                <input class="form-check-input manage-blackjack-tutorial-set-check" type="checkbox" data-set-number="${setNumber}" ${checked ? 'checked' : ''} ${disabled ? 'disabled' : ''}>
+                <label class="form-check-label small">als Tutorialset verwenden</label>
             </div>
         `;
         if (questionSet.length) {
@@ -837,6 +913,14 @@ function syncManageBlackJackSetSummary() {
         select.disabled = !genericSelectedIds.has(questionId);
     });
 
+    summary.querySelectorAll('.manage-blackjack-tutorial-set-check').forEach(cb => {
+        cb.addEventListener('change', function () {
+            const setNumber = parseInt(this.dataset.setNumber, 10);
+            tutorialSetNumber = this.checked ? setNumber : (tutorialSetNumber === setNumber ? null : tutorialSetNumber);
+            syncManageBlackJackSetSummary();
+        });
+    });
+
     lucide.createIcons({ scope: summary });
 }
 
@@ -861,6 +945,7 @@ function setManageBlackJackQuestionSelection(questionId, isSelected, itemData = 
 function resetManageBlackJackSetBuilder() {
     blackJackSetCount = 1;
     blackJackQuestionSetAssignments.clear();
+    tutorialSetNumber = null;
     syncManageBlackJackSetSummary();
 }
 
@@ -883,6 +968,7 @@ function loadManageBlackJackQuestionSets(questionSets, selectedQuestionIds) {
     });
 
     blackJackSetCount = Math.max(1, derivedSetCount || (normalizedSelectedIds.length ? 1 : 1));
+    clearTutorialSetIfInvalid();
     syncManageBlackJackSetSummary();
 }
 
@@ -897,6 +983,7 @@ function removeManageBlackJackSet(setNumber) {
         }
     });
     blackJackSetCount = Math.max(1, blackJackSetCount - 1);
+    clearTutorialSetIfInvalid();
     syncManageBlackJackSetSummary();
 }
 
@@ -906,9 +993,8 @@ function normalizeEstimationScoringMode(mode) {
 
 function syncTutorialConfigUi() {
     const wrapper = document.getElementById('gameTutorialFields');
-    const enabled = document.getElementById('gameTutorialEnabled')?.checked;
     if (!wrapper) return;
-    wrapper.classList.toggle('d-none', !enabled);
+    wrapper.classList.remove('d-none');
 }
 
 function formatEstimationZoneNumber(value) {
@@ -1166,12 +1252,12 @@ document.getElementById('newGameType').addEventListener('change', function () {
         quizSelectedQuestions.clear();
         genericSelectedIds.clear();
         genericSelectedItems.clear();
+        tutorialQuestionId = null;
         resetManageBlackJackSetBuilder();
     }
     activateType(this.value);
 });
 document.getElementById('estimationScoringMode').addEventListener('change', updateEstimationScoringUi);
-document.getElementById('gameTutorialEnabled').addEventListener('change', syncTutorialConfigUi);
 ['est-answer', 'est-tolerance', 'est-zone-count', 'est-points', 'est-manual-points-enabled'].forEach(id => {
     document.getElementById(id).addEventListener('input', updateEstimationScoringUi);
     document.getElementById(id).addEventListener('change', updateEstimationScoringUi);
@@ -1183,7 +1269,6 @@ document.getElementById('cancelGameBtn').addEventListener('click', () => {
     document.getElementById('newGameType').value = '';
     document.getElementById('estimationScoringMode').value = 'zones';
     document.getElementById('blackjackScoringMode').value = 'simple';
-    document.getElementById('gameTutorialEnabled').checked = false;
     document.getElementById('gameTutorialTitle').value = '';
     document.getElementById('gameTutorialText').value = '';
     document.getElementById('estimationGameModeWrap').classList.add('d-none');
@@ -1193,6 +1278,7 @@ document.getElementById('cancelGameBtn').addEventListener('click', () => {
     quizSelectedQuestions.clear();
     genericSelectedIds.clear();
     genericSelectedItems.clear();
+    tutorialQuestionId = null;
     resetManageBlackJackSetBuilder();
     document.getElementById('gameTypeContent').style.display = 'none';
     document.querySelectorAll('.type-section').forEach(s => s.style.display = 'none');
@@ -1207,12 +1293,14 @@ document.getElementById('createGameBtn').addEventListener('click', function () {
 
     const cfg = GAME_CONFIG[currentType];
     const internalDescription = document.getElementById('newGameInternalDescription').value.trim();
+    const tutorialTitle = document.getElementById('gameTutorialTitle').value.trim();
+    const tutorialText = document.getElementById('gameTutorialText').value.trim();
     const payload = {
         title,
         internal_description: internalDescription,
-        tutorial_enabled: document.getElementById('gameTutorialEnabled').checked,
-        tutorial_title: document.getElementById('gameTutorialTitle').value.trim(),
-        tutorial_text: document.getElementById('gameTutorialText').value.trim(),
+        tutorial_enabled: Boolean(tutorialTitle || tutorialText),
+        tutorial_title: tutorialTitle,
+        tutorial_text: tutorialText,
     };
     if (currentType === 'quiz') {
         payload[cfg.idKey] = Array.from(quizSelectedIds);
@@ -1221,8 +1309,13 @@ document.getElementById('createGameBtn').addEventListener('click', function () {
         payload[cfg.idKey] = questionSets.flat();
         payload.question_sets = questionSets;
         payload.set_sizes = questionSets.map(questionSet => questionSet.length).join(',');
+        payload.tutorial_set_number = tutorialSetNumber;
     } else {
         payload[cfg.idKey] = Array.from(genericSelectedIds);
+        payload.tutorial_question_id = tutorialQuestionId;
+    }
+    if (currentType === 'quiz') {
+        payload.tutorial_question_id = tutorialQuestionId;
     }
     if (currentType === 'estimation') {
         payload.scoring_mode = normalizeEstimationScoringMode(document.getElementById('estimationScoringMode').value);
@@ -1292,13 +1385,15 @@ function initEditMode() {
     // Pre-fill title and internal description
     document.getElementById('newGameTitle').value = EDIT_GAME_TITLE;
     document.getElementById('newGameInternalDescription').value = EDIT_GAME_INTERNAL_DESCRIPTION;
-    document.getElementById('gameTutorialEnabled').checked = EDIT_TUTORIAL_ENABLED;
     document.getElementById('gameTutorialTitle').value = EDIT_TUTORIAL_TITLE;
     document.getElementById('gameTutorialText').value = EDIT_TUTORIAL_TEXT;
     syncTutorialConfigUi();
 
     // Pre-populate selected IDs from server
     EDIT_SELECTED_IDS.forEach(id => quizSelectedIds.add(id));
+    if (EDIT_GAME_TYPE !== 'quiz') {
+        EDIT_SELECTED_IDS.forEach(id => genericSelectedIds.add(id));
+    }
 
     // Update button label
     const btn = document.getElementById('createGameBtn');
@@ -1322,13 +1417,13 @@ function initEditMode() {
         .then(r => r.json())
         .then(data => {
             const questions = data.questions || [];
+            tutorialQuestionId = normalizeTutorialQuestionId(data.tutorial_question_id ?? tutorialQuestionId);
             questions.forEach(q => {
                 if (EDIT_SELECTED_IDS.has(q.id)) {
                     quizSelectedQuestions.set(q.id, {
                         id: q.id,
                         question_text: q.question_text,
                         question_type: q.question_type,
-                        points: q.points,
                         time_limit: q.time_limit,
                     });
                 }
@@ -1337,7 +1432,6 @@ function initEditMode() {
             updateQuizSelectedBadge();
         });
     } else if (EDIT_GAME_TYPE !== 'quiz' && EDIT_SELECTED_IDS.size > 0) {
-        EDIT_SELECTED_IDS.forEach(id => genericSelectedIds.add(id));
         updateGenericSelectedBadge();
         // Load selected item details for Assigned panel
         const cfg = GAME_CONFIG[EDIT_GAME_TYPE];
@@ -1347,6 +1441,12 @@ function initEditMode() {
             .then(data => {
                 const key = cfg.dataKey || 'questions';
                 const items = data[key] || data.questions || data.topics || [];
+                if (EDIT_GAME_TYPE === 'blackjack') {
+                    tutorialQuestionId = null;
+                    tutorialSetNumber = normalizeTutorialSetNumber(data.tutorial_set_number ?? tutorialSetNumber);
+                } else {
+                    tutorialQuestionId = normalizeTutorialQuestionId(data.tutorial_question_id ?? tutorialQuestionId);
+                }
                 items.forEach(item => { if (genericSelectedIds.has(item.id)) genericSelectedItems.set(item.id, item); });
                 if (EDIT_GAME_TYPE === 'blackjack') {
                     loadManageBlackJackQuestionSets(data.question_sets || [], items.map(item => item.id));
@@ -1532,7 +1632,6 @@ function setQuizFormMode(mode, question) {
         document.getElementById('quizQuestionId').value = question.id;
         document.getElementById('quizQuestionText').value = question.question_text;
         quizQType.value = question.question_type;
-        document.getElementById('quizPoints').value = question.points;
         document.getElementById('quizTimeLimit').value = question.time_limit;
         document.getElementById('quizOptA').value = question.option_a || '';
         document.getElementById('quizOptB').value = question.option_b || '';
@@ -1595,6 +1694,7 @@ function initDragDrop(tbody, onReorder) {
 function renderAssignedQuestions() {
     const tbody = document.getElementById('assignedQuestionsBody');
     const badge = document.getElementById('assignedCountBadge');
+    clearTutorialQuestionIfNotSelected();
     badge.textContent = quizSelectedQuestions.size;
 
     if (quizSelectedQuestions.size === 0) {
@@ -1607,9 +1707,9 @@ function renderAssignedQuestions() {
             <td class="drag-handle text-muted" style="width:28px;cursor:grab;">
                 <i data-lucide="grip-vertical" style="width:14px;height:14px;"></i>
             </td>
+            <td>${renderTutorialQuestionControl(q.id)}</td>
             <td>${q.question_text}</td>
             <td><span class="badge bg-light text-dark border">${q.question_type}</span></td>
-            <td>${q.points}</td>
             <td>${q.time_limit}</td>
             <td>
                 <button class="btn btn-sm btn-outline-danger assigned-remove-btn" data-id="${q.id}" title="Remove">
@@ -1624,6 +1724,7 @@ function renderAssignedQuestions() {
             const id = parseInt(this.dataset.id);
             quizSelectedIds.delete(id);
             quizSelectedQuestions.delete(id);
+            clearTutorialQuestionIfNotSelected();
             renderAssignedQuestions();
             updateQuizSelectedBadge();
             const cb = document.querySelector(`.quiz-q-check[data-id="${id}"]`);
@@ -1640,6 +1741,7 @@ function renderAssignedQuestions() {
         newMap.forEach((v, k) => { quizSelectedQuestions.set(k, v); quizSelectedIds.add(k); });
     });
 
+    bindTutorialQuestionControls(tbody);
     lucide.createIcons();
 }
 
@@ -1653,7 +1755,6 @@ document.getElementById('quizAddQuestionForm').addEventListener('submit', functi
     // Capture form data before reset
     const questionText = document.getElementById('quizQuestionText').value.trim();
     const questionType = document.getElementById('quizQuestionType').value;
-    const points = parseInt(document.getElementById('quizPoints').value);
     const timeLimit = parseInt(document.getElementById('quizTimeLimit').value);
 
     btn.disabled = true;
@@ -1670,14 +1771,14 @@ document.getElementById('quizAddQuestionForm').addEventListener('submit', functi
                 // Auto-assign new question to this game
                 const id = data.question_id;
                 quizSelectedIds.add(id);
-                quizSelectedQuestions.set(id, { id, question_text: questionText, question_type: questionType, points, time_limit: timeLimit });
+                quizSelectedQuestions.set(id, { id, question_text: questionText, question_type: questionType, time_limit: timeLimit });
                 renderAssignedQuestions();
                 updateQuizSelectedBadge();
             } else if (isEdit) {
                 // Update data in map if this question is already assigned
                 const id = parseInt(document.getElementById('quizQuestionId').value);
                 if (quizSelectedQuestions.has(id)) {
-                    quizSelectedQuestions.set(id, { id, question_text: questionText, question_type: questionType, points, time_limit: timeLimit });
+                    quizSelectedQuestions.set(id, { id, question_text: questionText, question_type: questionType, time_limit: timeLimit });
                     renderAssignedQuestions();
                 }
             }
@@ -1706,7 +1807,7 @@ function loadQuizBank(page) {
         document.getElementById('quizBankInfo').textContent = `${data.count} questions`;
 
         if (!data.questions.length) {
-            tbody.innerHTML = '<tr><td colspan="6" class="text-center py-4 text-muted">No questions found</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="5" class="text-center py-4 text-muted">No questions found</td></tr>';
             document.getElementById('quizBankPagination').innerHTML = '';
             return;
         }
@@ -1720,7 +1821,6 @@ function loadQuizBank(page) {
                 <td><input type="checkbox" class="quiz-q-check" data-id="${q.id}" ${quizSelectedIds.has(q.id) ? 'checked' : ''}></td>
                 <td>${q.question_text}</td>
                 <td><span class="badge bg-light text-dark border">${q.question_type}</span></td>
-                <td>${q.points}</td>
                 <td>${q.time_limit}</td>
                 <td>
                     <button class="btn btn-sm btn-outline-primary quiz-edit-btn" data-id="${q.id}">
@@ -1740,7 +1840,7 @@ function loadQuizBank(page) {
                 if (this.checked) {
                     quizSelectedIds.add(id);
                     const q = qDataMap[id];
-                    if (q) quizSelectedQuestions.set(id, { id, question_text: q.question_text, question_type: q.question_type, points: q.points, time_limit: q.time_limit });
+                    if (q) quizSelectedQuestions.set(id, { id, question_text: q.question_text, question_type: q.question_type, time_limit: q.time_limit });
                 } else {
                     quizSelectedIds.delete(id);
                     quizSelectedQuestions.delete(id);
@@ -1782,7 +1882,7 @@ function loadQuizBank(page) {
                 if (this.checked) {
                     quizSelectedIds.add(id);
                     const q = qDataMap[id];
-                    if (q) quizSelectedQuestions.set(id, { id, question_text: q.question_text, question_type: q.question_type, points: q.points, time_limit: q.time_limit });
+                    if (q) quizSelectedQuestions.set(id, { id, question_text: q.question_text, question_type: q.question_type, time_limit: q.time_limit });
                 } else {
                     quizSelectedIds.delete(id);
                     quizSelectedQuestions.delete(id);
@@ -1805,7 +1905,7 @@ function loadQuizBank(page) {
 
         lucide.createIcons();
     })
-    .catch(() => { document.getElementById('quizBankTableBody').innerHTML = '<tr><td colspan="6" class="text-center py-4 text-danger">Failed to load</td></tr>'; });
+    .catch(() => { document.getElementById('quizBankTableBody').innerHTML = '<tr><td colspan="5" class="text-center py-4 text-danger">Failed to load</td></tr>'; });
 }
 
 function updateQuizSelectedBadge() {
@@ -2138,10 +2238,15 @@ function renderGenericAssigned() {
     const head = document.getElementById('genericAssignedHead');
     const tbody = document.getElementById('genericAssignedBody');
     const isBlackJack = currentType === 'blackjack';
+    clearTutorialQuestionIfNotSelected();
     badge.textContent = genericSelectedIds.size;
-    head.innerHTML = '<tr><th style="width:28px;"></th>' + cols.map(c => `<th>${c.label}</th>`).join('') + (isBlackJack ? '<th style="width:150px;">Set</th>' : '') + '<th style="width:40px;"></th></tr>';
+    head.innerHTML = '<tr><th style="width:28px;"></th>'
+        + (isBlackJack ? '' : '<th style="width:190px;">Tutorial</th>')
+        + cols.map(c => `<th>${c.label}</th>`).join('')
+        + (isBlackJack ? '<th style="width:150px;">Set</th>' : '')
+        + '<th style="width:40px;"></th></tr>';
     if (genericSelectedIds.size === 0) {
-        tbody.innerHTML = `<tr><td colspan="${cols.length + (isBlackJack ? 3 : 2)}" class="text-center py-3 text-muted">No questions assigned yet</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="${cols.length + 3}" class="text-center py-3 text-muted">No questions assigned yet</td></tr>`;
         syncManageBlackJackSetSummary();
         return;
     }
@@ -2154,6 +2259,7 @@ function renderGenericAssigned() {
                 : '';
             return `<tr draggable="true" data-id="${item.id}" class="generic-assigned-row" style="cursor:grab;">
                 <td class="text-muted" style="width:28px;cursor:grab;"><i data-lucide="grip-vertical" style="width:14px;height:14px;"></i></td>
+                ${isBlackJack ? '' : `<td>${renderTutorialQuestionControl(item.id)}</td>`}
                 ${cells}${setCell}<td>
                 <button class="btn btn-sm btn-outline-danger generic-assigned-remove" data-id="${item.id}">
                     <i data-lucide="x" style="width:13px;height:13px;"></i>
@@ -2165,6 +2271,7 @@ function renderGenericAssigned() {
             genericSelectedIds.delete(id);
             genericSelectedItems.delete(id);
             if (isBlackJack) setManageBlackJackQuestionSelection(id, false);
+            clearTutorialQuestionIfNotSelected();
             renderGenericAssigned();
             updateGenericSelectedBadge();
             const cb = document.querySelector(`.generic-q-check[data-id="${id}"]`);
@@ -2189,6 +2296,7 @@ function renderGenericAssigned() {
         newMap.forEach((v, k) => { genericSelectedItems.set(k, v); genericSelectedIds.add(k); });
         syncManageBlackJackSetSummary();
     });
+    bindTutorialQuestionControls(tbody);
     lucide.createIcons();
     syncManageBlackJackSetSummary();
 }

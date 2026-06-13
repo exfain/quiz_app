@@ -6,9 +6,22 @@ from django.utils import timezone
 from django.db.models import Avg, Count, Q
 import json
 from .models import Quiz, QuizQuestion, QuizParticipant, QuizAnswer, QuizSession
+from games_hub.unit_tutorial_runtime import (
+    get_scorebox_excluded_tutorial_question_ids,
+    get_unit_tutorial_state,
+    is_current_unit_tutorial_question,
+)
+
+
+def _get_run_tutorial_question_id(quiz, session_code=None):
+    state = get_unit_tutorial_state('quiz', quiz.room_code, session_code)
+    if not state.get('requested'):
+        return getattr(quiz, 'tutorial_question_id', None)
+    return state.get('tutorial_question_id')
 
 
 def _get_ordered_quiz_questions(quiz, session_code=None):
+    tutorial_question_ids = get_scorebox_excluded_tutorial_question_ids('quiz', quiz.room_code, session_code)
     configured_questions = []
     configured_by_id = {}
     if quiz.selected_questions.exists():
@@ -33,17 +46,21 @@ def _get_ordered_quiz_questions(quiz, session_code=None):
     if session_code is not None:
         sent_answers = sent_answers.filter(participant__hub_session_code=session_code)
     for answer in sent_answers:
+        if answer.question_id in tutorial_question_ids:
+            continue
         if answer.question_id in seen_ids:
             continue
         questions.append(answer.question)
         seen_ids.add(answer.question_id)
 
-    if quiz.current_question_id and quiz.current_question_id not in seen_ids:
+    if quiz.current_question_id and quiz.current_question_id not in seen_ids and quiz.current_question_id not in tutorial_question_ids:
         current_question = configured_by_id.get(quiz.current_question_id, quiz.current_question)
         questions.append(current_question)
         seen_ids.add(quiz.current_question_id)
 
     for question in configured_questions:
+        if question.id in tutorial_question_ids:
+            continue
         if question.id in seen_ids:
             continue
         questions.append(question)
@@ -54,6 +71,7 @@ def _get_ordered_quiz_questions(quiz, session_code=None):
 
 def _build_participant_progress_history(quiz, participant, session_code=None):
     ordered_questions = _get_ordered_quiz_questions(quiz, session_code=session_code)
+    tutorial_question_ids = get_scorebox_excluded_tutorial_question_ids('quiz', quiz.room_code, session_code)
     question_number_by_id = {
         question.id: index
         for index, question in enumerate(ordered_questions, start=1)
@@ -69,6 +87,8 @@ def _build_participant_progress_history(quiz, participant, session_code=None):
     history = []
     seen_question_ids = set()
     for answer in answers:
+        if answer.question_id in tutorial_question_ids:
+            continue
         if answer.question_id in seen_question_ids:
             continue
         question_number = question_number_by_id.get(answer.question_id)
@@ -79,6 +99,8 @@ def _build_participant_progress_history(quiz, participant, session_code=None):
             'question_id': answer.question_id,
             'question_number': question_number,
             'is_correct': answer.is_correct,
+            'points_earned': answer.points_earned,
+            'max_points': answer.question.get_effective_max_points(),
         })
     history.sort(key=lambda entry: entry['question_number'])
     return history
@@ -380,10 +402,12 @@ def quiz_play(request, room_code, participant_name):
                 'number': index,
                 'is_correct': is_correct,
                 'status': status,
+                'points_earned': history_entry['points_earned'] if history_entry else None,
+                'max_points': question.get_effective_max_points(),
             })
 
-        score_total_correct = sum(1 for entry in initial_progress_history if entry['is_correct'])
-        score_total_questions = len(question_scoreboard)
+        score_total_correct = sum(entry['points_earned'] for entry in initial_progress_history)
+        score_total_questions = sum(question['max_points'] for question in question_scoreboard)
         
         context = {
             'quiz': quiz,
@@ -393,6 +417,7 @@ def quiz_play(request, room_code, participant_name):
             'question_scoreboard': question_scoreboard,
             'initial_progress_history': initial_progress_history,
             'current_question_id': current_question_id,
+            'current_unit_is_tutorial': is_current_unit_tutorial_question('quiz', quiz.room_code, session_code, quiz.current_question_id),
             'score_total_correct': score_total_correct,
             'score_total_questions': score_total_questions,
         }

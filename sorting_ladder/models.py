@@ -33,6 +33,7 @@ class SortingLadderGame(SyncBase):
     # The topic currently being played (e.g., "Countries by Size")
     current_question = models.ForeignKey('SortingQuestion', on_delete=models.SET_NULL, null=True, blank=True, related_name='active_in_games')
     selected_questions = models.ManyToManyField('SortingQuestion', blank=True, related_name='games')
+    tutorial_question = models.ForeignKey('SortingQuestion', on_delete=models.SET_NULL, null=True, blank=True, related_name='tutorial_in_games')
     
     class Meta:
         ordering = ['-created_at']
@@ -99,13 +100,19 @@ class SortingLadderParticipant(SyncBase):
         # Import here to avoid circular imports at module load time if this
         # method is called during migrations.
         from .models import RoundSubmission, SortingQuestion  # type: ignore
+        from games_hub.unit_tutorial_runtime import get_unit_tutorial_state
 
         # All correct submissions for this participant in this quiz
-        qs = (
-            RoundSubmission.objects
-            .filter(quiz=self.quiz, participant=self, is_correct=True)
-            .values_list('question_id', flat=True)
+        qs = RoundSubmission.objects.filter(quiz=self.quiz, participant=self, is_correct=True)
+        tutorial_state = get_unit_tutorial_state(
+            'sorting_ladder',
+            self.quiz.room_code,
+            self.hub_session_code,
         )
+        tutorial_question_id = tutorial_state.get('tutorial_question_id') if tutorial_state.get('requested') else None
+        if tutorial_question_id:
+            qs = qs.exclude(question_id=tutorial_question_id)
+        qs = qs.values_list('question_id', flat=True)
 
         counts = Counter(qs)
         if not counts:

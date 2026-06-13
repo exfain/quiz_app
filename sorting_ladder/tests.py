@@ -9,7 +9,8 @@ from django.test import TestCase, TransactionTestCase
 from django.urls import reverse
 from django.utils import timezone
 
-from games_hub.models import HubGameStep, HubSession
+from games_hub.models import HubGameStep, HubParticipant, HubSession
+from games_hub.tutorial_runtime import activate_tutorial_runtime as activate_game_tutorial_runtime
 
 from .consumers import SortingLadderGameConsumer
 from .models import (
@@ -937,15 +938,29 @@ class SortingLadderTutorialRuntimeTests(TransactionTestCase):
         self.assertTrue(self.quiz.tutorial_active)
 
     def test_participant_rejoin_during_active_tutorial_receives_tutorial_start(self):
+        hub_session = HubSession.objects.create(
+            code='SLHUB1',
+            name='Sorting Tutorial Rejoin',
+            is_active=True,
+            started_at=timezone.now(),
+        )
+        HubParticipant.objects.create(session=hub_session, nickname='Alice')
+        HubGameStep.objects.create(
+            session=hub_session,
+            order=0,
+            game_key='sorting_ladder',
+            room_code=self.quiz.room_code,
+            title=self.quiz.title,
+        )
         participant = SortingLadderParticipant.objects.create(
             quiz=self.quiz,
             name='Alice',
-            hub_session_code='HUB1',
+            hub_session_code=hub_session.code,
             is_active=True,
         )
         self.quiz.status = 'active'
-        self.quiz.tutorial_active = True
-        self.quiz.save(update_fields=['status', 'tutorial_active'])
+        self.quiz.save(update_fields=['status'])
+        activate_game_tutorial_runtime('sorting_ladder', self.quiz.room_code, hub_session.code, self.quiz, True)
 
         async_to_sync(self.consumer.handle_participant_join)({
             'name': participant.name,

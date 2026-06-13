@@ -53,6 +53,7 @@
         <!-- Main Content -->
         <main class="quiz-main">
             <div class="container-fluid">
+                {% include 'includes/_unit_tutorial_notice.html' %}
                 <div class="row g-4 align-items-start">
                     <div class="col-xl-9 col-12">
                         <!-- Waiting State -->
@@ -204,6 +205,9 @@
                                         <span class="score-label">points</span>
                                     </div>
                                 </div>
+                                {% with post_game_game_key="where" %}
+                                    {% include 'includes/_post_game_results.html' %}
+                                {% endwith %}
                                 <!-- <div class="quiz-actions">
                                     <a href="/where/result/{{ quiz.room_code }}/{{ participant.name }}/" class="btn btn-primary btn-lg">
                                         <i data-lucide="map"></i>
@@ -1111,13 +1115,19 @@
                         case 'tutorial_start':
                             window.gameTutorial?.showFromPayload(data);
                             break;
-                            
+
+                        case 'tutorial_force_close':
+                            window.gameTutorial?.forceClose();
+                            break;
+
                         case 'question_started':
                             window.gameTutorial?.forceClose();
+                            window.unitTutorialNotice?.setFromPayload(data);
                             this.onQuestionStarted(data.question);
                             break;
                             
                         case 'question_ended':
+                            window.unitTutorialNotice?.hide();
                             this.onQuestionEnded();
                             break;
                             
@@ -1211,8 +1221,13 @@
                 onQuestionStarted(question) {
                     this.hasAnswered = false;
                     this.clearSelection();
+                    this.currentQuestionIsTutorial = !!question?.is_tutorial_round;
                     this.questionStartTime = Date.now();
-                    this.setCurrentQuestion(question.id, question.points);
+                    if (this.currentQuestionIsTutorial) {
+                        this.currentQuestionId = null;
+                    } else {
+                        this.setCurrentQuestion(question.id, question.points);
+                    }
 
                     // Click-Handler wiederherstellen (wurde beim Absenden entfernt)
                     this.gameMap.off('click');
@@ -1227,7 +1242,7 @@
 
                 onQuestionEnded() {
                     clearInterval(this.questionTimer);
-                    this.markCurrentQuestionUnansweredIfNeeded();
+                    if (!this.currentQuestionIsTutorial) this.markCurrentQuestionUnansweredIfNeeded();
                     this.currentQuestionId = null;
                     this.renderScoreHistory();
                 }
@@ -1251,6 +1266,7 @@
                 }
 
                 onAnswerSubmitted(data) {
+                    if (data.is_tutorial_round) return;
                     // Update submitted details
                     document.getElementById('submittedDistance').textContent = data.formatted_distance;
                     document.getElementById('submittedPoints').textContent = data.points_earned;

@@ -5,6 +5,7 @@ from django.utils import timezone
 import json
 
 from .models import SortingLadderGame, SortingLadderParticipant
+from games_hub.unit_tutorial_runtime import is_current_unit_tutorial_question
 
 
 def join_view(request):
@@ -122,6 +123,7 @@ def play(request, room_code, participant_name):
             'participant': participant,
             'hub_session': session_code,
             'participant_count': quiz.participants.filter(hub_session_code=session_code, is_active=True).count(),
+            'current_unit_is_tutorial': is_current_unit_tutorial_question('sorting_ladder', quiz.room_code, session_code, quiz.current_question_id),
         }
         return render(request, 'sorting_ladder/play.html', context)
     except (SortingLadderGame.DoesNotExist, SortingLadderParticipant.DoesNotExist):

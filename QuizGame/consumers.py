@@ -7,6 +7,22 @@ from .models import Quiz, QuizParticipant, QuizQuestion, QuizAnswer, QuizSession
 from games_hub.active_game_guard import resolve_session_game_activation_for_room
 from games_hub.lobby_return_flow import ensure_session_players_ready_for_game_start_for_room
 from games_hub.models import HubGameStep, HubSession
+from games_hub.tutorial_runtime import (
+    activate_tutorial_runtime,
+    deactivate_tutorial_runtime,
+    force_close_tutorial_runtime,
+    get_tutorial_payload,
+    get_tutorial_progress,
+    get_tutorial_start_warning,
+    mark_tutorial_completed,
+)
+from games_hub.unit_tutorial_runtime import (
+    finish_current_unit_tutorial,
+    is_unit_tutorial_question,
+    prepare_unit_tutorial_runtime,
+    start_unit_tutorial_if_needed,
+    validate_unit_tutorial_request,
+)
 
 
 class QuizConsumer(AsyncWebsocketConsumer):
@@ -89,6 +105,20 @@ class QuizConsumer(AsyncWebsocketConsumer):
             return
         quiz = await self.get_quiz()
         if quiz:
+            show_tutorial = bool(data.get('show_tutorial', False))
+            play_tutorial = bool(data.get('play_tutorial', False))
+            hub_session_code = await self._get_hub_session_code_for_room()
+            unit_tutorial_validation = await database_sync_to_async(validate_unit_tutorial_request)(
+                'quiz',
+                self.room_code,
+                play_tutorial,
+            )
+            if not unit_tutorial_validation.get('success'):
+                await self.send(text_data=json.dumps({
+                    'type': unit_tutorial_validation.get('type', 'error'),
+                    'message': unit_tutorial_validation.get('message') or 'Tutorialfrage fehlt.',
+                }))
+                return
             activation = await database_sync_to_async(resolve_session_game_activation_for_room)(
                 'quiz',
                 self.room_code,
@@ -102,16 +132,19 @@ class QuizConsumer(AsyncWebsocketConsumer):
                     payload['active_game'] = activation['active_game']
                 await self.send(text_data=json.dumps(payload))
                 return
-            show_tutorial = bool(data.get('show_tutorial', True))
-            hub_session_code = await self._get_hub_session_code_for_room()
+            await database_sync_to_async(prepare_unit_tutorial_runtime)(
+                'quiz',
+                self.room_code,
+                hub_session_code,
+                play_tutorial,
+                validate=False,
+            )
             await self.start_quiz_db(quiz.id, hub_session_code)
-            tutorial_payload = None
-            if quiz.tutorial_enabled and show_tutorial:
-                await self.set_tutorial_active_db(quiz.id, True)
-                tutorial_payload = await self.get_tutorial_payload(quiz.id)
-                await self.reset_tutorial_completed(quiz.id, hub_session_code)
-            else:
-                await self.set_tutorial_active_db(quiz.id, False)
+            tutorial_payload = await self.activate_tutorial_runtime(
+                quiz.id,
+                hub_session_code,
+                show_tutorial,
+            )
 
             await self.channel_layer.group_send(
                 self.room_group_name,
@@ -139,20 +172,17 @@ class QuizConsumer(AsyncWebsocketConsumer):
         """Handle participant completing the tutorial"""
         participant_name = data.get('participant_name')
         hub_session = data.get('hub_session')
-        await self.mark_tutorial_completed(participant_name, hub_session)
+        progress = await self.mark_tutorial_completed(participant_name, hub_session)
 
         quiz = await self.get_quiz()
         if not quiz:
             return
 
-        completed, total = await self.get_tutorial_progress(quiz.id, hub_session)
         await self.channel_layer.group_send(
             self.room_group_name,
             {
                 'type': 'tutorial_progress',
-                'completed': completed,
-                'total': total,
-                'all_done': completed >= total and total > 0
+                **progress,
             }
         )
 
@@ -192,6 +222,22 @@ class QuizConsumer(AsyncWebsocketConsumer):
         # Determine the effective time limit for this send (do NOT persist on the question)
         effective_time_limit = custom_time_limit if custom_time_limit is not None else question.time_limit
 
+        if await self.guard_tutorial_before_first_unit(data, quiz.id):
+            return
+
+        hub_session = (
+            data.get('hub_session')
+            or data.get('hub_session_code')
+            or await self._get_hub_session_code_for_room()
+        )
+        unit_tutorial = await self.start_unit_tutorial_if_needed(hub_session)
+        is_tutorial_round = bool(unit_tutorial.get('is_tutorial_round'))
+        if is_tutorial_round and str(unit_tutorial.get('tutorial_question_id') or '') != str(question.id):
+            question = await self.get_question(unit_tutorial.get('tutorial_question_id'))
+            if not question:
+                return
+            effective_time_limit = custom_time_limit if custom_time_limit is not None else question.time_limit
+
         # Update quiz/session runtime with new question
         await self.set_tutorial_active_db(quiz.id, False)
         await self.update_quiz_question(quiz.id, question.id, effective_time_limit)
@@ -212,7 +258,8 @@ class QuizConsumer(AsyncWebsocketConsumer):
                     'options': options,
                     'short_answer_fields': short_answer_fields,
                     'time_limit': effective_time_limit,
-                    'points': question.points,
+                    'points': 0 if is_tutorial_round else question.get_effective_max_points(),
+                    'is_tutorial_round': is_tutorial_round,
                 }
             }
         )
@@ -227,7 +274,8 @@ class QuizConsumer(AsyncWebsocketConsumer):
                     'options': options,
                     'short_answer_fields': short_answer_fields,
                     'time_limit': effective_time_limit,
-                    'points': question.points,
+                    'points': 0 if is_tutorial_round else question.get_effective_max_points(),
+                    'is_tutorial_round': is_tutorial_round,
                 }
         })
 
@@ -239,6 +287,9 @@ class QuizConsumer(AsyncWebsocketConsumer):
             correct_payload = await self.get_current_question_correct_payload()
             if correct_payload and correct_payload.get('question_id'):
                 await self.mark_recently_ended_question(correct_payload['question_id'])
+            hub_session = data.get('hub_session') or data.get('hub_session_code') or await self._get_hub_session_code_for_room()
+            unit_tutorial = await self.finish_current_unit_tutorial(hub_session)
+            is_tutorial_round = bool(unit_tutorial.get('is_tutorial_round'))
             await self.clear_current_question(quiz.id)
             
             await self.channel_layer.group_send(
@@ -246,7 +297,8 @@ class QuizConsumer(AsyncWebsocketConsumer):
                 {
                     'type': 'question_ended',
                     'message': 'Question time is up!',
-                    'correct_answer': correct_payload
+                    'correct_answer': correct_payload,
+                    'is_tutorial_round': is_tutorial_round,
                 }
             )
 
@@ -254,7 +306,8 @@ class QuizConsumer(AsyncWebsocketConsumer):
             await self.hub_mirror_event('question_ended', {
                 'room_code': self.room_code,
                 'message': 'Question time is up!',
-                'correct_answer': correct_payload
+                'correct_answer': correct_payload,
+                'is_tutorial_round': is_tutorial_round,
             })
 
     async def handle_admin_end_quiz(self, data):
@@ -316,6 +369,7 @@ class QuizConsumer(AsyncWebsocketConsumer):
                 'is_correct': answer['is_correct'],
                 'points_earned': answer['points_earned'],
                 'total_score': answer['total_score'],
+                'is_tutorial_round': answer['is_tutorial_round'],
             }))
 
             # Broadcast to admin dashboard (live answers)
@@ -333,6 +387,7 @@ class QuizConsumer(AsyncWebsocketConsumer):
                         'question_type': answer['question_type'],
                         'field_results': answer['field_results'],
                         'points_earned': answer['points_earned'],
+                        'is_tutorial_round': answer['is_tutorial_round'],
                         'time_taken': time_taken,
                         'submitted_at': answer['submitted_at'],
                     }
@@ -364,6 +419,7 @@ class QuizConsumer(AsyncWebsocketConsumer):
                 'is_correct': answer['is_correct'],
                 'points_earned': answer['points_earned'],
                 'total_score': answer['total_score'],
+                'is_tutorial_round': answer['is_tutorial_round'],
             }))
 
             await self.channel_layer.group_send(
@@ -380,6 +436,7 @@ class QuizConsumer(AsyncWebsocketConsumer):
                         'question_type': answer['question_type'],
                         'field_results': answer['field_results'],
                         'points_earned': answer['points_earned'],
+                        'is_tutorial_round': answer['is_tutorial_round'],
                         'time_taken': time_taken,
                         'submitted_at': answer['submitted_at'],
                     }
@@ -415,7 +472,11 @@ class QuizConsumer(AsyncWebsocketConsumer):
                     'type': 'quiz_started',
                     'message': 'Quiz is already in progress'
                 }))
-                tutorial_payload = await self.get_tutorial_payload(quiz.id)
+                tutorial_payload = await self.get_tutorial_payload(
+                    quiz.id,
+                    hub_session,
+                    participant_name=participant_name,
+                )
                 if tutorial_payload:
                     await self.send(text_data=json.dumps({
                         'type': 'tutorial_start',
@@ -531,6 +592,11 @@ class QuizConsumer(AsyncWebsocketConsumer):
             'game_title': event.get('game_title'),
             'tutorial_title': event.get('tutorial_title'),
             'tutorial_text': event.get('tutorial_text'),
+            'official_participants': event.get('official_participants', []),
+            'completed': event.get('completed', 0),
+            'total': event.get('total', 0),
+            'all_done': event.get('all_done', False),
+            'participants': event.get('participants', []),
         }))
 
     async def tutorial_progress(self, event):
@@ -538,8 +604,33 @@ class QuizConsumer(AsyncWebsocketConsumer):
             'type': 'tutorial_progress',
             'completed': event['completed'],
             'total': event['total'],
-            'all_done': event['all_done']
+            'all_done': event['all_done'],
+            'participants': event.get('participants', []),
         }))
+
+    async def tutorial_force_close(self, event):
+        await self.send(text_data=json.dumps({'type': 'tutorial_force_close'}))
+
+    async def guard_tutorial_before_first_unit(self, data, quiz_id):
+        hub_session = (
+            data.get('hub_session')
+            or data.get('hub_session_code')
+            or await self._get_hub_session_code_for_room()
+        )
+        warning = await self.get_tutorial_start_warning(hub_session)
+        if warning and not data.get('force_tutorial_continue'):
+            await self.send(text_data=json.dumps({
+                'type': 'tutorial_ack_warning',
+                'original_message': data,
+                **warning,
+            }))
+            return True
+        if data.get('force_tutorial_continue'):
+            await self.channel_layer.group_send(
+                self.room_group_name,
+                {'type': 'tutorial_force_close'},
+            )
+        return False
 
     # Database operations
     @database_sync_to_async
@@ -564,7 +655,7 @@ class QuizConsumer(AsyncWebsocketConsumer):
                 'options': options,
                 'short_answer_fields': q.get_public_short_answer_fields(),
                 'time_limit': q.time_limit,
-                'points': q.points,
+                'points': q.get_effective_max_points(),
             }
         except Quiz.DoesNotExist:
             return None
@@ -621,6 +712,7 @@ class QuizConsumer(AsyncWebsocketConsumer):
 
     @database_sync_to_async
     def mark_tutorial_completed(self, participant_name, hub_session_code):
+        progress = mark_tutorial_completed('quiz', self.room_code, hub_session_code, participant_name)
         try:
             quiz = Quiz.objects.get(room_code=self.room_code)
             participant = quiz.participants.get(name=participant_name, hub_session_code=hub_session_code)
@@ -628,38 +720,60 @@ class QuizConsumer(AsyncWebsocketConsumer):
             participant.save(update_fields=['tutorial_completed'])
         except (Quiz.DoesNotExist, QuizParticipant.DoesNotExist):
             pass
+        return progress
 
     @database_sync_to_async
     def get_tutorial_progress(self, quiz_id, hub_session_code):
-        qs = QuizParticipant.objects.filter(quiz_id=quiz_id, is_active=True)
-        if hub_session_code:
-            qs = qs.filter(hub_session_code=hub_session_code)
-        total = qs.count()
-        completed = qs.filter(tutorial_completed=True).count()
-        return completed, total
+        return get_tutorial_progress('quiz', self.room_code, hub_session_code)
+
+    @database_sync_to_async
+    def get_tutorial_start_warning(self, hub_session_code):
+        return get_tutorial_start_warning('quiz', self.room_code, hub_session_code)
 
     @database_sync_to_async
     def set_tutorial_active_db(self, quiz_id, active):
         try:
             quiz = Quiz.objects.get(id=quiz_id)
-            quiz.tutorial_active = bool(active)
-            quiz.save(update_fields=['tutorial_active'])
+            if not active:
+                deactivate_tutorial_runtime('quiz', self.room_code, self._get_hub_session_code_for_room_sync(), quiz)
+            else:
+                quiz.tutorial_active = True
+                quiz.save(update_fields=['tutorial_active'])
         except Quiz.DoesNotExist:
             pass
 
     @database_sync_to_async
-    def get_tutorial_payload(self, quiz_id):
+    def get_tutorial_payload(self, quiz_id, hub_session_code=None, participant_name=None):
         try:
             quiz = Quiz.objects.get(id=quiz_id)
-            if not quiz.tutorial_enabled or not quiz.tutorial_active:
-                return None
-            return {
-                'game_title': quiz.title,
-                'tutorial_title': quiz.tutorial_title or 'Tutorial',
-                'tutorial_text': quiz.tutorial_text or '',
-            }
+            payload = get_tutorial_payload('quiz', self.room_code, hub_session_code, participant_name)
+            if payload:
+                payload['game_title'] = quiz.title
+            return payload
         except Quiz.DoesNotExist:
             return None
+
+    @database_sync_to_async
+    def activate_tutorial_runtime(self, quiz_id, hub_session_code, show_tutorial):
+        try:
+            quiz = Quiz.objects.get(id=quiz_id)
+            return activate_tutorial_runtime(
+                'quiz',
+                self.room_code,
+                hub_session_code,
+                quiz,
+                show_tutorial,
+            )
+        except Quiz.DoesNotExist:
+            return None
+
+    @database_sync_to_async
+    def start_unit_tutorial_if_needed(self, hub_session_code):
+        return start_unit_tutorial_if_needed('quiz', self.room_code, hub_session_code)
+
+    @database_sync_to_async
+    def finish_current_unit_tutorial(self, hub_session_code):
+        return finish_current_unit_tutorial('quiz', self.room_code, hub_session_code)
 
     @database_sync_to_async
     def start_quiz_db(self, quiz_id, hub_session_code=None):
@@ -750,6 +864,15 @@ class QuizConsumer(AsyncWebsocketConsumer):
         try:
             qs = HubGameStep.objects.select_related('session').filter(game_key='quiz', room_code=self.room_code)
             # Prefer an active session if available
+            active = qs.filter(session__ended_at__isnull=True).order_by('-id').first()
+            step = active or qs.order_by('-id').first()
+            return step.session.code if step else None
+        except Exception:
+            return None
+
+    def _get_hub_session_code_for_room_sync(self):
+        try:
+            qs = HubGameStep.objects.select_related('session').filter(game_key='quiz', room_code=self.room_code)
             active = qs.filter(session__ended_at__isnull=True).order_by('-id').first()
             step = active or qs.order_by('-id').first()
             return step.session.code if step else None
@@ -859,6 +982,13 @@ class QuizConsumer(AsyncWebsocketConsumer):
                 answer_to_store = target_question.serialize_short_answer_submission(answer_text)
                 display_answer = target_question.format_short_answer_submission(answer_text)
 
+            is_tutorial_answer = is_unit_tutorial_question(
+                'quiz',
+                self.room_code,
+                hub_session_code,
+                target_question.id,
+            )
+
             # Create new answer
             answer = QuizAnswer.objects.create(
                 quiz=quiz,
@@ -867,6 +997,9 @@ class QuizConsumer(AsyncWebsocketConsumer):
                 answer_text=answer_to_store,
                 time_taken=time_taken
             )
+            if is_tutorial_answer and answer.points_earned:
+                answer.points_earned = 0
+                answer.save(update_fields=['points_earned', 'updated_at'])
 
             # Resolve key → full text for multiple choice
             if target_question.question_type == 'multiple_choice':
@@ -889,8 +1022,13 @@ class QuizConsumer(AsyncWebsocketConsumer):
                 'display_answer': display_answer,
                 'question_type': target_question.get_effective_question_type(),
                 'field_results': field_results,
-                'can_mark_correct': target_question.get_effective_question_type() == 'short_answer' and not answer.is_correct,
+                'can_mark_correct': (
+                    not is_tutorial_answer
+                    and target_question.get_effective_question_type() == 'short_answer'
+                    and not answer.is_correct
+                ),
                 'total_score': participant.total_score,
+                'is_tutorial_round': is_tutorial_answer,
                 'submitted_at': answer.submitted_at.isoformat(),
             }
 

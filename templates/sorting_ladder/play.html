@@ -49,6 +49,7 @@
         <!-- Main Content -->
         <main class="quiz-main">
             <div class="container">
+                {% include 'includes/_unit_tutorial_notice.html' %}
                 <div class="row justify-content-center">
                     <div class="col-lg-8">
                         <!-- Waiting for quiz start -->
@@ -200,6 +201,9 @@
                                         <span class="score-label">rounds survived</span>
                                     </div>
                                 </div>
+                                {% with post_game_game_key="sorting_ladder" %}
+                                    {% include 'includes/_post_game_results.html' %}
+                                {% endwith %}
                                 <!-- <div class="quiz-actions">
                                     <a href="/quiz/result/{{ quiz.room_code }}/{{ participant.name }}/" class="btn btn-primary btn-lg">
                                         <i data-lucide="bar-chart-3"></i>
@@ -1233,14 +1237,19 @@
                         case 'tutorial_start':
                             window.gameTutorial?.showFromPayload(data);
                             break;
+                        case 'tutorial_force_close':
+                            window.gameTutorial?.forceClose();
+                            break;
                         case 'question_started':
                             window.gameTutorial?.forceClose();
+                            window.unitTutorialNotice?.setFromPayload(data);
                             this.onQuestionStarted(data);
                             break;
                         case 'round_result':
                             this.onRoundResult(data);
                             break;
                         case 'question_ended':
+                            window.unitTutorialNotice?.hide();
                             this.onQuestionEnded(data);
                             break;
                         case 'topic_selected':

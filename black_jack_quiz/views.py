@@ -6,6 +6,7 @@ from django.utils import timezone
 from django.db.models import Avg, Count, Q
 import json
 from .models import BlackJackQuiz, BlackJackQuestion, BlackJackParticipant, BlackJackAnswer, BlackJackSession
+from games_hub.unit_tutorial_runtime import get_scorebox_excluded_tutorial_question_ids, get_unit_tutorial_state, is_unit_tutorial_question
 
 
 def _get_scoped_participants(quiz, session_code):
@@ -15,19 +16,25 @@ def _get_scoped_participants(quiz, session_code):
     return list(participants.order_by('name', 'id'))
 
 
-def _get_current_run_answers(quiz, participants=None):
+def _get_current_run_answers(quiz, participants=None, session_code=None):
     answers = BlackJackAnswer.objects.filter(quiz=quiz)
     if participants is not None:
         answers = answers.filter(participant__in=participants)
     if quiz.started_at:
         answers = answers.filter(submitted_at__gte=quiz.started_at)
+    tutorial_question_ids = get_scorebox_excluded_tutorial_question_ids('blackjack', quiz.room_code, session_code)
+    if tutorial_question_ids:
+        answers = answers.exclude(question_id__in=tutorial_question_ids)
     return answers
 
 
 def _get_finalized_set_numbers(quiz):
+    tutorial_set_number = getattr(quiz, 'tutorial_set_number', None)
     session = getattr(quiz, 'session', None)
     if session:
         finalized_set_numbers = session.get_finalized_set_numbers()
+        if tutorial_set_number:
+            finalized_set_numbers = [set_number for set_number in finalized_set_numbers if set_number != tutorial_set_number]
         if finalized_set_numbers:
             return finalized_set_numbers
     if quiz.status == 'completed' and not quiz.current_question_id:
@@ -39,6 +46,7 @@ def _get_ordered_set_numbers(quiz):
     total_sets = quiz.get_total_sets()
     if total_sets <= 0:
         return []
+    tutorial_set_number = getattr(quiz, 'tutorial_set_number', None)
 
     session = getattr(quiz, 'session', None)
     finalized_set_numbers = _get_finalized_set_numbers(quiz)
@@ -50,15 +58,19 @@ def _get_ordered_set_numbers(quiz):
     seen_set_numbers = set()
 
     for set_number in finalized_set_numbers:
+        if tutorial_set_number and set_number == tutorial_set_number:
+            continue
         if set_number not in seen_set_numbers:
             ordered_set_numbers.append(set_number)
             seen_set_numbers.add(set_number)
 
-    if current_set_number and current_set_number not in seen_set_numbers:
+    if current_set_number and current_set_number != tutorial_set_number and current_set_number not in seen_set_numbers:
         ordered_set_numbers.append(current_set_number)
         seen_set_numbers.add(current_set_number)
 
     for set_number in range(1, total_sets + 1):
+        if tutorial_set_number and set_number == tutorial_set_number:
+            continue
         if set_number not in seen_set_numbers:
             ordered_set_numbers.append(set_number)
             seen_set_numbers.add(set_number)
@@ -78,7 +90,7 @@ def _build_set_points_lookup(quiz, participants, finalized_set_numbers):
         return results_by_set
 
     answers = list(
-        _get_current_run_answers(quiz, participants=participants)
+        _get_current_run_answers(quiz, participants=participants, session_code=participants[0].hub_session_code if participants else None)
         .select_related('participant')
         .order_by('question_number', 'submitted_at', 'id')
     )
@@ -197,7 +209,7 @@ def _build_last_completed_set_summary(quiz, participant, session_code):
 
     set_question_ids = quiz.get_set_question_ids(last_set_number, active_only=False)
     set_answers = list(
-        _get_current_run_answers(quiz).filter(
+        _get_current_run_answers(quiz, session_code=session_code).filter(
             participant=participant,
             question_id__in=set_question_ids,
         )
@@ -385,6 +397,10 @@ def blackjack_play(request, room_code, participant_name):
         )
         quiz_session = getattr(quiz, 'session', None)
         current_question_end_time = quiz_session.question_end_time if quiz_session else None
+        current_set_number = quiz.get_current_set_number()
+        if quiz_session and not quiz.current_question_id:
+            current_set_number = quiz_session.get_normalized_selected_set_number(active_only=True)
+        tutorial_state = get_unit_tutorial_state('blackjack', quiz.room_code, session_code)
         
         context = {
             'quiz': quiz,
@@ -395,9 +411,13 @@ def blackjack_play(request, room_code, participant_name):
             'current_question_in_set': quiz.get_current_question_position_in_set() or 1,
             'current_set_question_count': quiz.get_set_question_count(
                 question_id=quiz.current_question_id if quiz.current_question_id else None,
-                set_number=quiz.get_current_set_number(),
+                set_number=current_set_number,
             ),
-            'current_set_number': quiz.get_current_set_number(),
+            'current_set_number': current_set_number,
+            'current_unit_is_tutorial': bool(
+                tutorial_state.get('current_unit_is_tutorial')
+                and current_set_number == quiz.tutorial_set_number
+            ),
             'total_sets': quiz.get_total_sets(),
             'set_scoreboard': set_scoreboard,
             'score_total_earned': score_total_earned,
@@ -435,6 +455,10 @@ def blackjack_result(request, room_code, participant_name):
             quiz=quiz,
             participant=participant
         ).select_related('question').order_by('question_number')
+        tutorial_state = get_unit_tutorial_state('blackjack', quiz.room_code, participant.hub_session_code)
+        tutorial_question_id = tutorial_state.get('tutorial_question_id') if tutorial_state.get('requested') else None
+        if tutorial_question_id:
+            participant_answers = participant_answers.exclude(question_id=tutorial_question_id)
         
         # Calculate statistics
         total_answers = participant_answers.count()
@@ -550,6 +574,19 @@ def submit_answer(request, room_code, participant_name):
                 'success': False,
                 'error': 'Please provide a valid whole number.'
             })
+        is_tutorial_answer = is_unit_tutorial_question(
+            'blackjack',
+            quiz.room_code,
+            session_code,
+            quiz.current_question_id,
+        )
+        previous_participant_state = {
+            'total_points': participant.total_points,
+            'overall_points': participant.overall_points,
+            'questions_answered': participant.questions_answered,
+            'is_busted': participant.is_busted,
+            'final_score': participant.final_score,
+        }
         
         # Create answer
         answer = BlackJackAnswer.objects.create(
@@ -560,6 +597,13 @@ def submit_answer(request, room_code, participant_name):
             time_taken=time_taken,
             question_number=quiz.current_question_number
         )
+        if is_tutorial_answer:
+            if answer.points_earned:
+                answer.points_earned = 0
+                answer.save(update_fields=['points_earned'])
+            for field, value in previous_participant_state.items():
+                setattr(participant, field, value)
+            participant.save(update_fields=list(previous_participant_state.keys()))
         
         # Refresh participant to get updated totals
         participant.refresh_from_db()
@@ -576,6 +620,7 @@ def submit_answer(request, room_code, participant_name):
             'total_points': participant.total_points,
             'overall_points': participant.overall_points,
             'is_busted': participant.is_busted,
+            'is_tutorial_round': is_tutorial_answer,
             'status': participant.get_status(),
             'questions_remaining': max(
                 0,

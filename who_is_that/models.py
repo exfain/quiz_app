@@ -35,6 +35,7 @@ class WhoThatQuiz(SyncBase):
     max_participants = models.IntegerField(default=50)
     # Optional predefined set of questions for this quiz session
     selected_questions = models.ManyToManyField('WhoThatQuestion', blank=True, related_name='quizzes')
+    tutorial_question = models.ForeignKey('WhoThatQuestion', on_delete=models.SET_NULL, null=True, blank=True, related_name='tutorial_in_quizzes')
     
     class Meta:
         ordering = ['-created_at']

@@ -283,6 +283,7 @@
                 <div class="meta-pill">Session {{ session.code }}</div>
             </div>
         </header>
+        {% include 'includes/_unit_tutorial_notice.html' %}
         <section class="stage" id="stage">
             <div class="waiting">
                 <h2>Warte auf das naechste Spiel</h2>
@@ -587,11 +588,13 @@
             lastSignature = signature;
 
             if (!state || !state.game) {
+                window.unitTutorialNotice?.hide();
                 stage.innerHTML = waitingMarkup(state?.message);
                 return;
             }
 
             const renderer = renderers[state.game.game_key];
+            window.unitTutorialNotice?.setFromPayload(state.game, state.game.game_key === 'blackjack' ? 'Tutorialset' : undefined);
             stage.innerHTML = renderer ? renderer(state.game) : waitingMarkup('Dieser Spieltyp hat noch keine Spectator-Anzeige.');
         }
 

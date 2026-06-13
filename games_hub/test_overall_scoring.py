@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 from django.contrib.auth.models import User
 from django.test import TestCase
@@ -12,8 +13,10 @@ from games_hub.check_in import (
     reset_session_check_in,
     start_session_check_in,
 )
-from games_hub.models import HubGameStep, HubParticipant, HubSession
-from games_hub.views import get_leaderboard_data
+from django.utils import timezone
+
+from games_hub.models import HubGameParticipantSnapshot, HubGameStep, HubParticipant, HubSession
+from games_hub.views import get_leaderboard_data, get_post_game_results
 
 
 class OverallScoringTests(TestCase):
@@ -120,6 +123,137 @@ class OverallScoringTests(TestCase):
         self.assertEqual(by_name['C']['game_base_scores'][game_key], 3)
         self.assertEqual(by_name['D']['game_base_scores'][game_key], 1)
         self.assertEqual(by_name['D']['game_scores'][game_key], 0)
+
+    def test_post_game_results_ranking_mode_without_weighting(self):
+        session = self._session(
+            code='POST1',
+            overall_scoring_mode=HubSession.OVERALL_SCORING_RANKING,
+        )
+        self._hub_participants(session, ['Anna', 'Ben', 'Carla', 'David'])
+        quiz, step = self._quiz_step(session, '9201', 0, 'Musikquiz Runde 1')
+        self._quiz_participant(quiz, session, 'Anna', 10)
+        self._quiz_participant(quiz, session, 'Ben', 8)
+        self._quiz_participant(quiz, session, 'Carla', 8)
+
+        data = get_post_game_results(session, step, participant_name='Ben')
+        by_name = {row['participant']: row for row in data['rows']}
+
+        self.assertTrue(data['available'])
+        self.assertEqual(data['game']['title'], 'Musikquiz Runde 1')
+        self.assertEqual(data['game']['type'], 'Quick Quiz')
+        self.assertEqual(data['scoring_mode'], HubSession.OVERALL_SCORING_RANKING)
+        self.assertEqual(data['weight_display'], '\u00d71.00')
+        self.assertEqual(by_name['Anna']['rank'], 1)
+        self.assertEqual(by_name['Ben']['rank'], 2)
+        self.assertEqual(by_name['Carla']['rank'], 2)
+        self.assertEqual(by_name['David']['rank'], 4)
+        self.assertEqual(by_name['Anna']['overall_points'], 4)
+        self.assertEqual(by_name['Ben']['overall_points'], 3)
+        self.assertEqual(by_name['Carla']['overall_points'], 3)
+        self.assertEqual(by_name['David']['overall_points'], 1)
+        self.assertTrue(by_name['Ben']['is_current_participant'])
+
+    def test_post_game_results_ranking_mode_with_linear_weighting(self):
+        session = self._session(
+            code='POST2',
+            overall_scoring_mode=HubSession.OVERALL_SCORING_RANKING,
+            overall_weighting_mode=HubSession.OVERALL_WEIGHTING_LINEAR_CAP,
+        )
+        self._hub_participants(session, ['Anna', 'Ben', 'Carla', 'David'])
+        quiz, step = self._quiz_step(session, '9202', 1, 'Gewichtetes Spiel')
+        self._quiz_participant(quiz, session, 'Anna', 10)
+        self._quiz_participant(quiz, session, 'Ben', 8)
+        self._quiz_participant(quiz, session, 'Carla', 8)
+
+        data = get_post_game_results(session, step)
+        by_name = {row['participant']: row for row in data['rows']}
+
+        self.assertEqual(data['weight'], 1.15)
+        self.assertEqual(data['weight_display'], '\u00d71.15')
+        self.assertEqual(by_name['Anna']['overall_points'], 4.6)
+        self.assertEqual(by_name['Ben']['overall_points'], 3.45)
+        self.assertEqual(by_name['Carla']['overall_points'], 3.45)
+        self.assertEqual(by_name['David']['overall_points'], 1.15)
+
+    def test_post_game_results_simple_mode_uses_game_points_and_shows_rank(self):
+        session = self._session(
+            code='POST3',
+            overall_scoring_mode=HubSession.OVERALL_SCORING_SIMPLE,
+            overall_weighting_mode=HubSession.OVERALL_WEIGHTING_LINEAR_CAP,
+        )
+        self._hub_participants(session, ['Anna', 'Ben', 'Carla', 'David'])
+        quiz, step = self._quiz_step(session, '9203', 1, 'Simple Gewichtung')
+        self._quiz_participant(quiz, session, 'Anna', 10)
+        self._quiz_participant(quiz, session, 'Ben', 8)
+        self._quiz_participant(quiz, session, 'Carla', 8)
+
+        data = get_post_game_results(session, step)
+        by_name = {row['participant']: row for row in data['rows']}
+
+        self.assertEqual(data['scoring_mode'], HubSession.OVERALL_SCORING_SIMPLE)
+        self.assertEqual(by_name['Anna']['rank'], 1)
+        self.assertEqual(by_name['Ben']['rank'], 2)
+        self.assertEqual(by_name['Carla']['rank'], 2)
+        self.assertEqual(by_name['David']['rank'], 4)
+        self.assertEqual(by_name['Anna']['overall_points'], 11.5)
+        self.assertEqual(by_name['Ben']['overall_points'], 9.2)
+        self.assertEqual(by_name['Carla']['overall_points'], 9.2)
+        self.assertEqual(by_name['David']['overall_points'], 0)
+
+    def test_post_game_results_uses_snapshot_for_missing_auto_zero_and_late_join(self):
+        session = self._session(
+            code='POST4',
+            overall_scoring_mode=HubSession.OVERALL_SCORING_RANKING,
+        )
+        self._complete_check_in(session, ['Anna', 'Ben', 'Carla', 'David'])
+        HubParticipant.objects.filter(session=session, nickname='David').update(left_permanently_at=timezone.now())
+        quiz, step = self._quiz_step(session, '9204', 0, 'Snapshot Spiel')
+        HubGameParticipantSnapshot.create_for_step(step)
+        HubParticipant.objects.create(session=session, nickname='Eva')
+        self._quiz_participant(quiz, session, 'Anna', 10)
+        self._quiz_participant(quiz, session, 'Ben', 8)
+        self._quiz_participant(quiz, session, 'Carla', 8)
+        self._quiz_participant(quiz, session, 'Eva', 99)
+
+        data = get_post_game_results(session, step)
+        by_name = {row['participant']: row for row in data['rows']}
+
+        self.assertEqual(set(by_name.keys()), {'Anna', 'Ben', 'Carla', 'David'})
+        self.assertEqual(by_name['David']['game_points'], 0)
+        self.assertEqual(by_name['David']['overall_points'], 1)
+        self.assertNotIn('Eva', by_name)
+
+    def test_post_game_results_api_marks_current_participant(self):
+        session = self._session(
+            code='POST5',
+            overall_scoring_mode=HubSession.OVERALL_SCORING_RANKING,
+        )
+        self._hub_participants(session, ['Anna', 'Ben'])
+        quiz, step = self._quiz_step(session, '9205', 0, 'API Spiel')
+        self._quiz_participant(quiz, session, 'Anna', 5)
+        self._quiz_participant(quiz, session, 'Ben', 1)
+
+        response = self.client.get(
+            reverse('games_hub:post_game_results_api', args=[session.code]),
+            {'game_key': 'quiz', 'room_code': step.room_code, 'participant': 'Anna'},
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        anna = next(row for row in payload['rows'] if row['participant'] == 'Anna')
+
+        self.assertTrue(payload['available'])
+        self.assertEqual(payload['game']['title'], 'API Spiel')
+        self.assertTrue(anna['is_current_participant'])
+
+    def test_post_game_results_include_contains_table_and_current_row_hook(self):
+        template_path = Path(__file__).resolve().parents[1] / 'templates' / 'includes' / '_post_game_results.html'
+        source = template_path.read_text(encoding='utf-8')
+
+        self.assertIn('data-post-game-results', source)
+        self.assertIn('post-game-results-table', source)
+        self.assertIn('is-current-player', source)
+        self.assertIn('Punkte im Spiel', source)
+        self.assertIn('Punkte fuers Gesamtkonto', source)
 
     def test_scoring_settings_api_locks_after_first_game_start(self):
         self.client.force_login(self.user)

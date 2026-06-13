@@ -501,6 +501,11 @@
     padding: 1rem;
 }
 
+.blackjack-set-card.tutorial-set-card-selected {
+    border-color: var(--primary-color);
+    background: #eef6ff;
+}
+
 .blackjack-set-card h6 {
     margin: 0;
 }
@@ -671,6 +676,7 @@ document.addEventListener('DOMContentLoaded', function() {
     let blackJackSetCount = 1;
     let blackJackQuestionSetAssignments = new Map();
     let blackJackQuestionMeta = new Map();
+    let blackJackTutorialSetNumber = null;
 
     const customQuizSetSizesInput = document.getElementById('customQuizSetSizes');
     const blackjackSetSummary = document.getElementById('blackjackSetSummary');
@@ -691,6 +697,17 @@ document.addEventListener('DOMContentLoaded', function() {
         const parsed = parseInt(setNumber, 10);
         if (!Number.isFinite(parsed) || parsed < 1) return 1;
         return Math.min(parsed, Math.max(1, blackJackSetCount));
+    }
+
+    function normalizeBlackJackTutorialSetNumber(setNumber) {
+        const parsed = parseInt(setNumber, 10);
+        return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+    }
+
+    function clearBlackJackTutorialSetIfInvalid(configuredSetCount = Math.max(1, blackJackSetCount)) {
+        if (blackJackTutorialSetNumber && (configuredSetCount < 1 || blackJackTutorialSetNumber > configuredSetCount)) {
+            blackJackTutorialSetNumber = null;
+        }
     }
 
     function getBlackJackSetOptions(selectedSetNumber) {
@@ -724,9 +741,12 @@ document.addEventListener('DOMContentLoaded', function() {
 
         let markup = '';
         const questionSets = buildBlackJackQuestionSets();
+        clearBlackJackTutorialSetIfInvalid(questionSets.length);
 
         for (let setNumber = 1; setNumber <= Math.max(1, blackJackSetCount); setNumber += 1) {
             const questionSet = questionSets[setNumber - 1] || [];
+            const checked = blackJackTutorialSetNumber === setNumber;
+            const disabled = Boolean(blackJackTutorialSetNumber && !checked);
             const questionsMarkup = questionSet.length
                 ? `<ul>${questionSet.map(questionId => {
                     const question = blackJackQuestionMeta.get(questionId);
@@ -739,13 +759,17 @@ document.addEventListener('DOMContentLoaded', function() {
                 : '';
 
             markup += `
-                <div class="blackjack-set-card">
+                <div class="blackjack-set-card${checked ? ' tutorial-set-card-selected' : ''}">
                     <div class="d-flex justify-content-between align-items-start gap-2">
                         <div>
                             <h6>Set ${setNumber}</h6>
                             <div class="text-muted small">${questionSet.length} question${questionSet.length === 1 ? '' : 's'}</div>
                         </div>
                         ${removeButton}
+                    </div>
+                    <div class="form-check mt-2">
+                        <input class="form-check-input blackjack-tutorial-set-check" type="checkbox" data-set-number="${setNumber}" ${checked ? 'checked' : ''} ${disabled ? 'disabled' : ''}>
+                        <label class="form-check-label small">als Tutorialset verwenden</label>
                     </div>
                     ${questionsMarkup}
                 </div>
@@ -776,6 +800,7 @@ document.addEventListener('DOMContentLoaded', function() {
         blackJackSetCount = 1;
         blackJackQuestionSetAssignments = new Map();
         blackJackQuestionMeta = new Map();
+        blackJackTutorialSetNumber = null;
         syncBlackJackSetBuilder();
     }
 
@@ -820,6 +845,7 @@ document.addEventListener('DOMContentLoaded', function() {
             });
         }
 
+        clearBlackJackTutorialSetIfInvalid();
         syncBlackJackSetBuilder();
     }
 
@@ -837,6 +863,7 @@ document.addEventListener('DOMContentLoaded', function() {
         });
 
         blackJackSetCount = Math.max(1, blackJackSetCount - 1);
+        clearBlackJackTutorialSetIfInvalid();
         syncBlackJackSetBuilder();
     }
 
@@ -1054,6 +1081,7 @@ document.addEventListener('DOMContentLoaded', function() {
             if (setSizesInput) setSizesInput.value = data.set_sizes || '';
             const scoringModeInput = document.getElementById('customQuizScoringMode');
             if (scoringModeInput) scoringModeInput.value = data.scoring_mode === 'rank' ? 'rank' : 'simple';
+            blackJackTutorialSetNumber = normalizeBlackJackTutorialSetNumber(data.tutorial_set_number);
             const btnPrimary = document.getElementById('createCustomQuizBtn');
             if (btnPrimary) btnPrimary.innerHTML = '<i data-lucide="check"></i> Update Quiz';
             loadBlackJackQuestionSets(data.question_sets || [], (data.questions || []).map(question => question.id));
@@ -1202,7 +1230,7 @@ document.addEventListener('DOMContentLoaded', function() {
                     'X-CSRFToken': getCookie('csrftoken'),
                     'Content-Type': 'application/json',
                 },
-                body: JSON.stringify({ quiz_id: blackJackCurrentQuizId, title: title, question_ids: selected, question_sets: questionSets, total_questions: totalQuestions, set_sizes: setSizes, scoring_mode: scoringMode })
+                body: JSON.stringify({ quiz_id: blackJackCurrentQuizId, title: title, question_ids: selected, question_sets: questionSets, total_questions: totalQuestions, set_sizes: setSizes, scoring_mode: scoringMode, tutorial_set_number: blackJackTutorialSetNumber })
             })
             .then(r => r.json())
             .then(data => {
@@ -1222,7 +1250,7 @@ document.addEventListener('DOMContentLoaded', function() {
                     'X-CSRFToken': getCookie('csrftoken'),
                     'Content-Type': 'application/json',
                 },
-                body: JSON.stringify({ title: title, question_ids: selected, question_sets: questionSets, total_questions: totalQuestions, set_sizes: setSizes, scoring_mode: scoringMode })
+                body: JSON.stringify({ title: title, question_ids: selected, question_sets: questionSets, total_questions: totalQuestions, set_sizes: setSizes, scoring_mode: scoringMode, tutorial_set_number: blackJackTutorialSetNumber })
             })
             .then(r => r.json())
             .then(data => {
@@ -1260,6 +1288,16 @@ document.addEventListener('DOMContentLoaded', function() {
         const button = e.target.closest('.remove-blackjack-set-btn');
         if (!button) return;
         removeBlackJackSet(parseInt(button.getAttribute('data-set-number'), 10));
+    });
+
+    blackjackSetSummary?.addEventListener('change', function(e) {
+        const checkbox = e.target.closest('.blackjack-tutorial-set-check');
+        if (!checkbox) return;
+        const setNumber = parseInt(checkbox.getAttribute('data-set-number'), 10);
+        blackJackTutorialSetNumber = checkbox.checked
+            ? setNumber
+            : (blackJackTutorialSetNumber === setNumber ? null : blackJackTutorialSetNumber);
+        syncBlackJackSetBuilder();
     });
 
     // Auto-open create modal if ?create=1

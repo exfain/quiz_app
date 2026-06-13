@@ -12,6 +12,7 @@ from games_hub.active_game_guard import (
 )
 from games_hub.check_in import complete_session_check_in, participant_check_in, start_session_check_in
 from games_hub.models import HubGameParticipantSnapshot, HubGameStep, HubParticipant, HubSession
+from games_hub.tutorial_runtime import activate_tutorial_runtime, mark_tutorial_completed
 from games_hub.views import get_leaderboard_data
 from .consumers import WerWeissMehrConsumer
 from .models import (
@@ -426,7 +427,12 @@ class WerWeissMehrAdminIntegrationTests(TestCase):
             room_code=game.room_code,
             title=game.title,
         )
-        self._complete_check_in(session)
+        HubParticipant.objects.create(session=session, nickname='Lisa')
+        HubParticipant.objects.create(session=session, nickname='Ben')
+        start_session_check_in(session)
+        participant_check_in(session, 'Lisa')
+        participant_check_in(session, 'Ben')
+        complete_session_check_in(session)
 
         response = self.client.post(
             f'/wer-weiss-mehr/start/{game.room_code}/',
@@ -516,6 +522,76 @@ class WerWeissMehrAdminIntegrationTests(TestCase):
         self.assertEqual(participant_payload['target_answers'], [])
         self.assertEqual(participant_payload['responses'], [])
         self.assertTrue(all(tile['text'] == '' for tile in participant_payload['question']['tiles']))
+
+    def test_start_set_endpoint_warns_when_tutorial_acknowledgements_are_open(self):
+        game = WerWeissMehrGame.objects.create(
+            title='Set Start Tutorial',
+            creator=self.user,
+            status='waiting',
+            tutorial_enabled=True,
+            tutorial_title='Intro',
+            tutorial_text='Bitte lesen.',
+        )
+        WerWeissMehrSession.objects.create(quiz=game)
+        question = WerWeissMehrQuestion.objects.create(
+            question_text='Nenne Bundeslaender',
+            round_time_limit=30,
+            created_by=self.user,
+        )
+        WerWeissMehrAnswerOption.objects.create(question=question, canonical_text='Bayern')
+        WerWeissMehrAnswerOption.objects.create(question=question, canonical_text='Saarland')
+        question.recalculate_answer_sort_order()
+        game.selected_questions.add(question)
+        game.question_order = [question.id]
+        game.save(update_fields=['question_order'])
+        session = HubSession.objects.create(code='WWMTUT', name='Set Tutorial')
+        HubGameStep.objects.create(
+            session=session,
+            order=0,
+            game_key='wer_weiss_mehr',
+            room_code=game.room_code,
+            title=game.title,
+        )
+        HubParticipant.objects.create(session=session, nickname='Lisa')
+        HubParticipant.objects.create(session=session, nickname='Ben')
+        self.assertTrue(start_session_check_in(session)['success'])
+        self.assertTrue(participant_check_in(session, 'Lisa')['success'])
+        self.assertTrue(participant_check_in(session, 'Ben')['success'])
+        self.assertTrue(complete_session_check_in(session)['success'])
+        WerWeissMehrParticipant.objects.create(
+            quiz=game,
+            name='Lisa',
+            hub_session_code=session.code,
+        )
+        WerWeissMehrParticipant.objects.create(
+            quiz=game,
+            name='Ben',
+            hub_session_code=session.code,
+        )
+        game.start_quiz()
+        activate_tutorial_runtime('wer_weiss_mehr', game.room_code, session.code, game, True)
+        mark_tutorial_completed('wer_weiss_mehr', game.room_code, session.code, 'Lisa')
+
+        response = self.client.post(
+            f'/wer-weiss-mehr/start-set/{game.room_code}/',
+            data=json.dumps({
+                'hub_session': session.code,
+                'question_id': question.id,
+                'time_limit_seconds': 30,
+            }),
+            content_type='application/json',
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertFalse(payload['success'])
+        self.assertEqual(payload['type'], 'tutorial_ack_warning')
+        self.assertEqual(payload['message'], 'Nicht alle Teilnehmer haben die Erläuterung bestätigt')
+        self.assertEqual(payload['completed'], 1)
+        self.assertEqual(payload['total'], 2)
+        runtime_session = game.session
+        runtime_session.refresh_from_db()
+        self.assertEqual(runtime_session.phase, WerWeissMehrSession.PHASE_IDLE)
 
     def test_end_round_endpoint_evaluates_submitted_pending_and_empty_answers(self):
         game = WerWeissMehrGame.objects.create(title='End Round', creator=self.user, status='waiting')

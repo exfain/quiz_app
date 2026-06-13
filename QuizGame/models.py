@@ -35,6 +35,7 @@ class Quiz(SyncBase):
     max_participants = models.IntegerField(default=50)
     # Optional predefined set of questions for this quiz session
     selected_questions = models.ManyToManyField('QuizQuestion', blank=True, related_name='quizzes')
+    tutorial_question = models.ForeignKey('QuizQuestion', on_delete=models.SET_NULL, null=True, blank=True, related_name='tutorial_in_quizzes')
     
     class Meta:
         ordering = ['-created_at']
@@ -258,6 +259,11 @@ class QuizQuestion(SyncBase):
             for field in self.get_short_answer_fields()
         ]
 
+    def get_effective_max_points(self):
+        if self.get_effective_question_type() == 'short_answer':
+            return self.get_short_answer_field_count()
+        return 1
+
     def parse_short_answer_submission(self, answer):
         field_count = self.get_short_answer_field_count()
         if field_count <= 1:
@@ -379,8 +385,8 @@ class QuizParticipant(SyncBase):
     
     def calculate_score(self):
         """Recalculate total score based on answers"""
-        correct_answers = self.quiz_answers.filter(is_correct=True)
-        self.total_score = correct_answers.count()
+        total = self.quiz_answers.aggregate(total=models.Sum('points_earned'))['total'] or 0
+        self.total_score = total
         self.questions_answered = self.quiz_answers.count()
         self.save()
         return self.total_score
@@ -419,14 +425,19 @@ class QuizAnswer(SyncBase):
                 self.answer_text = self.question.serialize_short_answer_submission(self.answer_text)
                 self.field_results = self.question.evaluate_short_answer_fields(self.answer_text)
                 self.is_correct = all(field['is_correct'] for field in self.field_results)
+                self.points_earned = self._points_from_short_answer_results(self.field_results)
             else:
                 self.is_correct = self.question.is_correct_answer(self.answer_text)
                 self.field_results = []
-            self.points_earned = 1 if self.is_correct else 0
+                self.points_earned = 1 if self.is_correct else 0
         super().save(*args, **kwargs)
         
         # Update participant's total score
         self.participant.calculate_score()
+
+    @staticmethod
+    def _points_from_short_answer_results(results):
+        return sum(1 for field in (results or []) if field.get('is_correct'))
 
     def get_short_answer_field_results(self):
         if self.question.get_effective_question_type() != 'short_answer':
@@ -465,7 +476,7 @@ class QuizAnswer(SyncBase):
         target['manual_override'] = target['is_correct'] != bool(target.get('auto_correct'))
         self.field_results = results
         self.is_correct = all(field['is_correct'] for field in results)
-        self.points_earned = 1 if self.is_correct else 0
+        self.points_earned = self._points_from_short_answer_results(results)
         self.save(update_fields=['field_results', 'is_correct', 'points_earned', 'updated_at'])
 
     def promote_short_answer_to_correct(self):
@@ -478,7 +489,7 @@ class QuizAnswer(SyncBase):
             field['manual_override'] = not bool(field.get('auto_correct'))
         self.field_results = results
         self.is_correct = True
-        self.points_earned = 1
+        self.points_earned = self._points_from_short_answer_results(results)
         self.save(update_fields=['field_results', 'is_correct', 'points_earned', 'updated_at'])
     
     def __str__(self):

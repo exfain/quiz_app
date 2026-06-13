@@ -41,6 +41,7 @@ class BlackJackQuiz(SyncBase):
     scoring_mode = models.CharField(max_length=10, choices=SCORING_MODE_CHOICES, default='simple')
     # Optional predefined set of questions for this quiz session
     selected_questions = models.ManyToManyField('BlackJackQuestion', blank=True, related_name='quizzes')
+    tutorial_set_number = models.PositiveIntegerField(null=True, blank=True)
     
     class Meta:
         ordering = ['-created_at']
@@ -500,6 +501,15 @@ class BlackJackQuiz(SyncBase):
             return []
         return list(explicit_sets[set_number - 1])
 
+    def get_tutorial_set_question_ids(self, active_only=True):
+        if not self.tutorial_set_number:
+            return []
+        return self.get_set_question_ids(self.tutorial_set_number, active_only=active_only)
+
+    def get_tutorial_question_id_for_runtime(self, active_only=True):
+        tutorial_question_ids = self.get_tutorial_set_question_ids(active_only=active_only)
+        return tutorial_question_ids[0] if tutorial_question_ids else None
+
     def get_remaining_question_ids_for_next_turn(self, active_only=True, set_number=None):
         try:
             session = self.session
@@ -709,7 +719,17 @@ class BlackJackParticipant(SyncBase):
     
     def calculate_score(self):
         """Recalculate the current set stars and determine if the player busted in this set."""
-        latest_answer = self.blackjack_answers.select_related('question').order_by('-submitted_at', '-id').first()
+        from games_hub.unit_tutorial_runtime import get_scorebox_excluded_tutorial_question_ids
+
+        tutorial_question_ids = get_scorebox_excluded_tutorial_question_ids(
+            'blackjack',
+            self.quiz.room_code,
+            self.hub_session_code,
+        )
+        scored_answers = self.blackjack_answers.select_related('question')
+        if tutorial_question_ids:
+            scored_answers = scored_answers.exclude(question_id__in=tutorial_question_ids)
+        latest_answer = scored_answers.order_by('-submitted_at', '-id').first()
 
         if not latest_answer:
             self.questions_answered = 0
@@ -722,7 +742,7 @@ class BlackJackParticipant(SyncBase):
         current_set_number = self.quiz.get_set_number_for_question_id(latest_answer.question_id, active_only=False)
         current_set_question_ids = self.quiz.get_set_question_ids(current_set_number, active_only=False)
         if current_set_question_ids:
-            current_set_answers = self.blackjack_answers.filter(
+            current_set_answers = scored_answers.filter(
                 question_id__in=current_set_question_ids,
             )
         else:
@@ -731,7 +751,7 @@ class BlackJackParticipant(SyncBase):
             questions_per_set = self.quiz.get_questions_per_set()
             first_question_number = ((current_set_number - 1) * questions_per_set) + 1
             last_question_number = current_set_number * questions_per_set
-            current_set_answers = self.blackjack_answers.filter(
+            current_set_answers = scored_answers.filter(
                 question_number__gte=first_question_number,
                 question_number__lte=last_question_number,
             )

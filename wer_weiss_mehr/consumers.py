@@ -6,6 +6,20 @@ from channels.generic.websocket import AsyncWebsocketConsumer
 from games_hub.active_game_guard import resolve_session_game_activation_for_room
 from games_hub.lobby_return_flow import ensure_session_players_ready_for_game_start_for_room
 from games_hub.models import HubGameStep
+from games_hub.tutorial_runtime import (
+    activate_tutorial_runtime,
+    deactivate_tutorial_runtime,
+    force_close_tutorial_runtime,
+    get_tutorial_payload,
+    get_tutorial_start_warning,
+    mark_tutorial_completed,
+)
+from games_hub.unit_tutorial_runtime import (
+    finish_current_unit_tutorial,
+    prepare_unit_tutorial_runtime,
+    start_unit_tutorial_if_needed,
+    validate_unit_tutorial_request,
+)
 
 from .models import WerWeissMehrGame, WerWeissMehrParticipant, WerWeissMehrSession
 from .services import (
@@ -44,6 +58,8 @@ class WerWeissMehrConsumer(AsyncWebsocketConsumer):
         try:
             if msg_type == 'admin_start_quiz':
                 await self.handle_admin_start_quiz(data)
+            elif msg_type == 'tutorial_completed':
+                await self.handle_tutorial_completed(data)
             elif msg_type == 'admin_set_inactive':
                 await self.handle_admin_set_inactive()
             elif msg_type == 'admin_end_quiz':
@@ -85,6 +101,15 @@ class WerWeissMehrConsumer(AsyncWebsocketConsumer):
     async def quiz_ended(self, event):
         await self.send_json({'type': 'quiz_ended', **event})
 
+    async def tutorial_start(self, event):
+        await self.send_json({'type': 'tutorial_start', **event})
+
+    async def tutorial_progress(self, event):
+        await self.send_json({'type': 'tutorial_progress', **event})
+
+    async def tutorial_force_close(self, event):
+        await self.send_json({'type': 'tutorial_force_close'})
+
     async def handle_admin_start_quiz(self, data):
         hub_session_code = data.get('hub_session_code') or data.get('hub_session')
         lobby_ready = await database_sync_to_async(ensure_session_players_ready_for_game_start_for_room)(
@@ -98,6 +123,19 @@ class WerWeissMehrConsumer(AsyncWebsocketConsumer):
                 'message': lobby_ready.get('message') or 'Noch nicht alle Teilnehmer sind in der Lobby.',
                 'not_in_lobby_count': lobby_ready.get('not_in_lobby_count', 0),
                 'participants_not_in_lobby': lobby_ready.get('participants_not_in_lobby', []),
+            })
+            return
+
+        play_tutorial = bool(data.get('play_tutorial', False))
+        unit_tutorial_validation = await database_sync_to_async(validate_unit_tutorial_request)(
+            'wer_weiss_mehr',
+            self.room_code,
+            play_tutorial,
+        )
+        if not unit_tutorial_validation.get('success'):
+            await self.send_json({
+                'type': unit_tutorial_validation.get('type', 'error'),
+                'message': unit_tutorial_validation.get('message') or 'Tutorialfrage fehlt.',
             })
             return
 
@@ -117,12 +155,28 @@ class WerWeissMehrConsumer(AsyncWebsocketConsumer):
             })
             return
 
+        await database_sync_to_async(prepare_unit_tutorial_runtime)(
+            'wer_weiss_mehr',
+            self.room_code,
+            hub_session_code,
+            play_tutorial,
+            validate=False,
+        )
         await self.start_quiz_db()
+        tutorial_payload = await self.activate_tutorial_runtime_db(
+            hub_session_code,
+            bool(data.get('show_tutorial', False)),
+        )
         await self.send_state(data)
         await self.channel_layer.group_send(self.room_group_name, {
             'type': 'quiz_started',
             'message': 'Wer weiß mehr wurde gestartet.',
         })
+        if tutorial_payload:
+            await self.channel_layer.group_send(self.room_group_name, {
+                'type': 'tutorial_start',
+                **tutorial_payload,
+            })
         await self.broadcast_state(data)
         await self.hub_mirror_event('quiz_started', {
             'room_code': self.room_code,
@@ -154,18 +208,55 @@ class WerWeissMehrConsumer(AsyncWebsocketConsumer):
         }, session_code=hub_session_code)
 
     async def handle_admin_start_set(self, data):
+        hub_session_code = data.get('hub_session_code') or data.get('hub_session')
+        if await self.guard_tutorial_before_first_unit(data, hub_session_code):
+            return
+        await self.deactivate_tutorial_runtime_db(hub_session_code)
+        unit_tutorial = await self.start_unit_tutorial_if_needed_db(hub_session_code)
+        question_id = (
+            unit_tutorial.get('tutorial_question_id')
+            if unit_tutorial.get('is_tutorial_round')
+            else data.get('question_id')
+        )
         await database_sync_to_async(start_set)(
             await self.get_quiz(),
-            data.get('question_id'),
-            hub_session_code=data.get('hub_session_code') or data.get('hub_session'),
+            question_id,
+            hub_session_code=hub_session_code,
             time_limit_seconds=data.get('time_limit_seconds'),
         )
         await self.broadcast_state(data)
         await self.hub_mirror_event('question_started', {
             'room_code': self.room_code,
             'game_key': 'wer_weiss_mehr',
-            'question_id': data.get('question_id'),
-        }, session_code=data.get('hub_session_code') or data.get('hub_session'))
+            'question_id': question_id,
+            'is_tutorial_round': bool(unit_tutorial.get('is_tutorial_round')),
+        }, session_code=hub_session_code)
+
+    async def handle_tutorial_completed(self, data):
+        participant_name = data.get('participant_name') or data.get('name')
+        hub_session = data.get('hub_session_code') or data.get('hub_session')
+        progress = await self.mark_tutorial_completed_db(participant_name, hub_session)
+        await self.channel_layer.group_send(self.room_group_name, {
+            'type': 'tutorial_progress',
+            **progress,
+        })
+
+    async def guard_tutorial_before_first_unit(self, data, hub_session_code):
+        hub_session_code = hub_session_code or await self._get_hub_session_code_for_room()
+        warning = await self.get_tutorial_start_warning_db(hub_session_code)
+        if warning and not data.get('force_tutorial_continue'):
+            await self.send_json({
+                'type': 'tutorial_ack_warning',
+                'original_message': data,
+                **warning,
+            })
+            return True
+        if data.get('force_tutorial_continue'):
+            await self.channel_layer.group_send(
+                self.room_group_name,
+                {'type': 'tutorial_force_close'},
+            )
+        return False
 
     async def handle_admin_end_round(self, data=None):
         data = data or {}
@@ -199,6 +290,7 @@ class WerWeissMehrConsumer(AsyncWebsocketConsumer):
         data = data or {}
         hub_session_code = data.get('hub_session_code') or data.get('hub_session')
         await database_sync_to_async(finish_set)(await self.get_quiz())
+        await self.finish_current_unit_tutorial_db(hub_session_code)
         await self.broadcast_state(data)
         await self.hub_mirror_event('question_ended', {
             'room_code': self.room_code,
@@ -249,6 +341,14 @@ class WerWeissMehrConsumer(AsyncWebsocketConsumer):
             participant_name=data.get('participant_name') or data.get('name'),
         )
         await self.send_json({'type': 'state', **state})
+        participant_name = data.get('participant_name') or data.get('name')
+        if participant_name:
+            tutorial_payload = await self.get_tutorial_payload_db(
+                data.get('hub_session_code') or data.get('hub_session'),
+                participant_name,
+            )
+            if tutorial_payload:
+                await self.send_json({'type': 'tutorial_start', **tutorial_payload})
 
     async def broadcast_state(self, data):
         await self.channel_layer.group_send(self.room_group_name, {
@@ -269,6 +369,52 @@ class WerWeissMehrConsumer(AsyncWebsocketConsumer):
         WerWeissMehrSession.objects.get_or_create(quiz=quiz)
 
     @database_sync_to_async
+    def activate_tutorial_runtime_db(self, hub_session_code, show_tutorial):
+        quiz = WerWeissMehrGame.objects.get(room_code=self.room_code)
+        return activate_tutorial_runtime(
+            'wer_weiss_mehr',
+            self.room_code,
+            hub_session_code,
+            quiz,
+            show_tutorial,
+        )
+
+    @database_sync_to_async
+    def deactivate_tutorial_runtime_db(self, hub_session_code):
+        quiz = WerWeissMehrGame.objects.get(room_code=self.room_code)
+        deactivate_tutorial_runtime('wer_weiss_mehr', self.room_code, hub_session_code, quiz)
+
+    @database_sync_to_async
+    def get_tutorial_payload_db(self, hub_session_code, participant_name):
+        return get_tutorial_payload(
+            'wer_weiss_mehr',
+            self.room_code,
+            hub_session_code,
+            participant_name,
+        )
+
+    @database_sync_to_async
+    def mark_tutorial_completed_db(self, participant_name, hub_session_code):
+        return mark_tutorial_completed(
+            'wer_weiss_mehr',
+            self.room_code,
+            hub_session_code,
+            participant_name,
+        )
+
+    @database_sync_to_async
+    def get_tutorial_start_warning_db(self, hub_session_code):
+        return get_tutorial_start_warning('wer_weiss_mehr', self.room_code, hub_session_code)
+
+    @database_sync_to_async
+    def start_unit_tutorial_if_needed_db(self, hub_session_code):
+        return start_unit_tutorial_if_needed('wer_weiss_mehr', self.room_code, hub_session_code)
+
+    @database_sync_to_async
+    def finish_current_unit_tutorial_db(self, hub_session_code):
+        return finish_current_unit_tutorial('wer_weiss_mehr', self.room_code, hub_session_code)
+
+    @database_sync_to_async
     def set_inactive_db(self):
         quiz = WerWeissMehrGame.objects.get(room_code=self.room_code)
         quiz.set_inactive()
@@ -276,6 +422,7 @@ class WerWeissMehrConsumer(AsyncWebsocketConsumer):
     @database_sync_to_async
     def end_quiz_db(self, hub_session_code=None):
         quiz = WerWeissMehrGame.objects.get(room_code=self.room_code)
+        deactivate_tutorial_runtime('wer_weiss_mehr', self.room_code, hub_session_code, quiz)
         quiz.end_quiz()
         participants = quiz.participants.all()
         if hub_session_code is not None:

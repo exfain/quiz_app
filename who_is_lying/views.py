@@ -14,9 +14,11 @@ from .models import (
     get_question_timer_state,
     get_recently_ended_question_id,
 )
+from games_hub.unit_tutorial_runtime import get_scorebox_excluded_tutorial_question_ids, is_current_unit_tutorial_question
 
 
-def _get_ordered_quiz_questions(quiz):
+def _get_ordered_quiz_questions(quiz, session_code=None):
+    tutorial_question_ids = get_scorebox_excluded_tutorial_question_ids('who', quiz.room_code, session_code)
     selected_questions = list(quiz.selected_questions.all())
     configured_order_ids = []
     for raw_question_id in quiz.question_order or []:
@@ -31,14 +33,19 @@ def _get_ordered_quiz_questions(quiz):
     fallback_questions = {}
     played_questions = []
     seen_played_ids = set()
-    for answer in WhoAnswer.objects.filter(quiz=quiz).select_related('question').order_by('submitted_at', 'id'):
+    answers_qs = WhoAnswer.objects.filter(quiz=quiz).select_related('question').order_by('submitted_at', 'id')
+    if session_code:
+        answers_qs = answers_qs.filter(participant__hub_session_code=session_code)
+    for answer in answers_qs:
+        if answer.question_id in tutorial_question_ids:
+            continue
         fallback_questions[answer.question_id] = answer.question
         if answer.question_id in seen_played_ids:
             continue
         played_questions.append(answer.question)
         seen_played_ids.add(answer.question_id)
 
-    if quiz.current_question_id and quiz.current_question_id not in fallback_questions and quiz.current_question:
+    if quiz.current_question_id and quiz.current_question_id not in fallback_questions and quiz.current_question and quiz.current_question_id not in tutorial_question_ids:
         fallback_questions[quiz.current_question_id] = quiz.current_question
 
     configured_by_id = {question.id: question for question in selected_questions}
@@ -52,13 +59,15 @@ def _get_ordered_quiz_questions(quiz):
             ordered_questions.append(resolved_question)
             seen_ids.add(resolved_question.id)
 
-    if quiz.current_question_id and quiz.current_question_id not in seen_ids:
+    if quiz.current_question_id and quiz.current_question_id not in seen_ids and quiz.current_question_id not in tutorial_question_ids:
         current_question = configured_by_id.get(quiz.current_question_id, quiz.current_question)
         if current_question:
             ordered_questions.append(current_question)
             seen_ids.add(quiz.current_question_id)
 
     for question in selected_questions:
+        if question.id in tutorial_question_ids:
+            continue
         if question.id not in seen_ids:
             ordered_questions.append(question)
             seen_ids.add(question.id)
@@ -71,11 +80,13 @@ def _get_ordered_quiz_questions(quiz):
     return ordered_questions
 
 
-def _build_participant_progress_history(quiz, participant):
-    ordered_questions = _get_ordered_quiz_questions(quiz)
+def _build_participant_progress_history(quiz, participant, session_code=None):
+    ordered_questions = _get_ordered_quiz_questions(quiz, session_code)
+    tutorial_question_ids = get_scorebox_excluded_tutorial_question_ids('who', quiz.room_code, session_code)
     answers_by_question_id = {
         answer.question_id: answer
         for answer in WhoAnswer.objects.filter(quiz=quiz, participant=participant).select_related('question')
+        if answer.question_id not in tutorial_question_ids
     }
 
     history = []
@@ -92,12 +103,13 @@ def _build_participant_progress_history(quiz, participant):
     return history
 
 
-def _build_question_scoreboard(quiz, participant):
-    ordered_questions = _get_ordered_quiz_questions(quiz)
-    history = _build_participant_progress_history(quiz, participant)
+def _build_question_scoreboard(quiz, participant, session_code=None):
+    ordered_questions = _get_ordered_quiz_questions(quiz, session_code)
+    history = _build_participant_progress_history(quiz, participant, session_code)
     history_by_question_id = {entry['question_id']: entry for entry in history}
 
-    current_question_id = quiz.current_question_id if quiz.current_question_id else None
+    tutorial_question_ids = get_scorebox_excluded_tutorial_question_ids('who', quiz.room_code, session_code)
+    current_question_id = quiz.current_question_id if quiz.current_question_id not in tutorial_question_ids else None
     current_question_number = next(
         (index for index, question in enumerate(ordered_questions, start=1) if question.id == current_question_id),
         None,
@@ -300,6 +312,7 @@ def who_play(request, room_code, participant_name):
         question_scoreboard, initial_progress_history, current_question_number = _build_question_scoreboard(
             quiz,
             participant,
+            session_code,
         )
         
         current_question_timer_state = None
@@ -336,6 +349,7 @@ def who_play(request, room_code, participant_name):
             'current_question_started_at': current_question_started_at,
             'current_question_end_time': current_question_end_time,
             'who_timer_server_now': server_now,
+            'current_unit_is_tutorial': is_current_unit_tutorial_question('who', quiz.room_code, session_code, quiz.current_question_id),
         }
         return render(request, 'who_is_lying/play.html', context)
         

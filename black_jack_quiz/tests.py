@@ -8,7 +8,9 @@ from django.test import TestCase, TransactionTestCase
 from django.urls import reverse
 from django.utils import timezone
 
-from games_hub.models import HubGameStep, HubSession
+from games_hub.models import HubGameStep, HubParticipant, HubSession
+from games_hub.tutorial_runtime import activate_tutorial_runtime as activate_game_tutorial_runtime
+from games_hub.unit_tutorial_runtime import get_unit_tutorial_state, prepare_unit_tutorial_runtime
 
 from .consumers import BlackJackConsumer
 from .models import BlackJackAnswer, BlackJackParticipant, BlackJackQuestion, BlackJackQuiz, BlackJackSession
@@ -205,6 +207,10 @@ class BlackJackTotalQuestionsConfigTests(TestCase):
         self.assertContains(response, 'blackjackSetSummary')
         self.assertContains(response, 'Create explicit sets and assign each selected question to a concrete set.')
         self.assertContains(response, 'question-set-select')
+        self.assertContains(response, 'als Tutorialset verwenden')
+        self.assertNotContains(response, 'als Tutorial verwenden')
+        self.assertContains(response, 'tutorial_set_number')
+        self.assertNotContains(response, 'tutorial_question_id')
 
     def test_active_manage_games_flow_renders_blackjack_set_builder(self):
         response = self.client.get(reverse('admin_dashboard:create_game'))
@@ -216,6 +222,7 @@ class BlackJackTotalQuestionsConfigTests(TestCase):
         self.assertContains(response, 'manage-blackjack-set-select')
         self.assertContains(response, 'payload.question_sets = questionSets')
         self.assertContains(response, 'payload.set_sizes = questionSets.map(questionSet => questionSet.length).join')
+        self.assertContains(response, 'payload.tutorial_set_number = tutorialSetNumber')
 
     def test_custom_quiz_creation_persists_explicit_question_sets(self):
         questions = [self._question(answer) for answer in (10, 20, 30)]
@@ -234,6 +241,26 @@ class BlackJackTotalQuestionsConfigTests(TestCase):
         self.assertEqual(response.status_code, 200)
         quiz = BlackJackQuiz.objects.get(title='Explicit Sets Quiz')
         self.assertEqual(quiz.question_order, [[questions[0].id, questions[1].id], [questions[2].id]])
+
+    def test_custom_quiz_creation_persists_tutorial_set_number(self):
+        questions = [self._question(answer) for answer in (10, 20, 30)]
+
+        response = self.client.post(
+            reverse('admin_dashboard:create_black_jack_custom_quiz'),
+            data=json.dumps({
+                'title': 'Tutorial Set Quiz',
+                'question_ids': [question.id for question in questions],
+                'total_questions': 5,
+                'set_sizes': '1,2',
+                'tutorial_set_number': 2,
+            }),
+            content_type='application/json',
+        )
+
+        self.assertEqual(response.status_code, 200, response.content)
+        quiz = BlackJackQuiz.objects.get(title='Tutorial Set Quiz')
+        self.assertEqual(quiz.tutorial_set_number, 2)
+        self.assertEqual(quiz.get_tutorial_set_question_ids(active_only=False), [questions[1].id, questions[2].id])
 
     def test_selected_questions_endpoint_returns_explicit_set_metadata(self):
         questions = [self._question(answer) for answer in (10, 20, 30)]
@@ -254,6 +281,28 @@ class BlackJackTotalQuestionsConfigTests(TestCase):
         self.assertTrue(payload['success'])
         self.assertEqual(payload['question_sets'], [[questions[0].id], [questions[1].id, questions[2].id]])
         self.assertEqual(payload['set_sizes'], '1,2')
+
+    def test_selected_questions_endpoint_returns_tutorial_set_not_question_flags(self):
+        questions = [self._question(answer) for answer in (10, 20, 30)]
+        quiz = BlackJackQuiz.objects.create(
+            creator=self.user,
+            title='Editable Tutorial Set',
+            total_questions=5,
+            question_order=[[questions[0].id], [questions[1].id, questions[2].id]],
+            tutorial_set_number=2,
+        )
+        quiz.selected_questions.set(questions)
+
+        response = self.client.get(
+            reverse('admin_dashboard:get_blackjack_selected_questions', args=[quiz.id])
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload['success'])
+        self.assertEqual(payload['tutorial_set_number'], 2)
+        self.assertNotIn('tutorial_question_id', payload)
+        self.assertTrue(all('is_tutorial' not in row for row in payload['questions']))
 
     def test_update_custom_quiz_persists_explicit_question_sets(self):
         questions = [self._question(answer) for answer in (10, 20, 30)]
@@ -280,6 +329,69 @@ class BlackJackTotalQuestionsConfigTests(TestCase):
         self.assertEqual(response.status_code, 200)
         quiz.refresh_from_db()
         self.assertEqual(quiz.question_order, [[questions[0].id], [questions[1].id, questions[2].id]])
+
+    def test_update_custom_quiz_persists_tutorial_set_number(self):
+        questions = [self._question(answer) for answer in (10, 20, 30)]
+        quiz = BlackJackQuiz.objects.create(
+            creator=self.user,
+            title='Editable Tutorial Set',
+            total_questions=5,
+            question_order=[[questions[0].id], [questions[1].id, questions[2].id]],
+        )
+        quiz.selected_questions.set(questions)
+
+        response = self.client.post(
+            reverse('admin_dashboard:update_black_jack_custom_quiz'),
+            data=json.dumps({
+                'quiz_id': quiz.id,
+                'title': 'Editable Tutorial Set',
+                'question_ids': [questions[0].id, questions[1].id, questions[2].id],
+                'total_questions': 5,
+                'set_sizes': '1,2',
+                'tutorial_set_number': 2,
+            }),
+            content_type='application/json',
+        )
+
+        self.assertEqual(response.status_code, 200, response.content)
+        quiz.refresh_from_db()
+        self.assertEqual(quiz.tutorial_set_number, 2)
+
+    def test_custom_quiz_rejects_multiple_tutorial_sets(self):
+        questions = [self._question(answer) for answer in (10, 20)]
+
+        response = self.client.post(
+            reverse('admin_dashboard:create_black_jack_custom_quiz'),
+            data=json.dumps({
+                'title': 'Invalid Tutorial Sets',
+                'question_ids': [question.id for question in questions],
+                'total_questions': 5,
+                'set_sizes': '1,1',
+                'tutorial_set_numbers': [1, 2],
+            }),
+            content_type='application/json',
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertFalse(response.json().get('success'))
+
+    def test_custom_quiz_rejects_tutorial_set_outside_configured_sets(self):
+        questions = [self._question(answer) for answer in (10, 20)]
+
+        response = self.client.post(
+            reverse('admin_dashboard:create_black_jack_custom_quiz'),
+            data=json.dumps({
+                'title': 'Invalid Tutorial Set',
+                'question_ids': [question.id for question in questions],
+                'total_questions': 5,
+                'set_sizes': '1,1',
+                'tutorial_set_number': 3,
+            }),
+            content_type='application/json',
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertFalse(response.json().get('success'))
 
     def test_selected_questions_endpoint_keeps_legacy_flat_quiz_loadable(self):
         questions = [self._question(answer) for answer in (10, 20, 30)]
@@ -3102,15 +3214,30 @@ class BlackJackTutorialRuntimeTests(TransactionTestCase):
         self.assertFalse(self.quiz.tutorial_active)
 
     def test_participant_rejoin_during_active_tutorial_receives_tutorial_start(self):
+        hub_session = HubSession.objects.create(
+            code='BJHUB1',
+            name='Black Jack Tutorial Rejoin',
+            is_active=True,
+            started_at=timezone.now(),
+        )
+        HubParticipant.objects.create(session=hub_session, nickname='Alice')
+        HubGameStep.objects.create(
+            session=hub_session,
+            order=0,
+            game_key='blackjack',
+            room_code=self.quiz.room_code,
+            title=self.quiz.title,
+        )
         participant = BlackJackParticipant.objects.create(
             quiz=self.quiz,
             name='Alice',
-            hub_session_code='HUB1',
+            hub_session_code=hub_session.code,
             is_active=True,
         )
         self.quiz.status = 'active'
-        self.quiz.tutorial_active = True
-        self.quiz.save(update_fields=['status', 'tutorial_active'])
+        self.quiz.started_at = timezone.now()
+        self.quiz.save(update_fields=['status', 'started_at'])
+        activate_game_tutorial_runtime('blackjack', self.quiz.room_code, hub_session.code, self.quiz, True)
 
         async_to_sync(self.consumer.handle_participant_join)({
             'participant_name': participant.name,
@@ -3139,6 +3266,117 @@ class BlackJackTutorialRuntimeTests(TransactionTestCase):
         self.assertIn('question_ending', message_types)
         self.assertIn('question_ended', message_types)
         self.assertLess(message_types.index('question_ending'), message_types.index('question_ended'))
+
+    def test_tutorial_set_answer_does_not_award_points_or_bust_player(self):
+        hub_session = HubSession.objects.create(
+            code='BJT1',
+            name='Black Jack Tutorial Set Session',
+            is_active=True,
+            started_at=timezone.now(),
+        )
+        HubGameStep.objects.create(
+            session=hub_session,
+            order=0,
+            game_key='blackjack',
+            room_code=self.quiz.room_code,
+            title=self.quiz.title,
+        )
+        tutorial_question = BlackJackQuestion.objects.create(
+            question_text='Tutorial question',
+            correct_answer=10,
+            created_by=self.user,
+        )
+        normal_question = BlackJackQuestion.objects.create(
+            question_text='Scored question',
+            correct_answer=21,
+            created_by=self.user,
+        )
+        participant = BlackJackParticipant.objects.create(
+            quiz=self.quiz,
+            name='Alice',
+            hub_session_code=hub_session.code,
+            is_active=True,
+        )
+        self.quiz.status = 'active'
+        self.quiz.started_at = timezone.now()
+        self.quiz.total_questions = 1
+        self.quiz.question_order = [[tutorial_question.id], [normal_question.id]]
+        self.quiz.tutorial_set_number = 1
+        self.quiz.save(update_fields=[
+            'status',
+            'started_at',
+            'total_questions',
+            'question_order',
+            'tutorial_set_number',
+        ])
+        self.quiz.selected_questions.set([tutorial_question, normal_question])
+        prepare_unit_tutorial_runtime('blackjack', self.quiz.room_code, hub_session.code, True)
+
+        async_to_sync(self.consumer.handle_admin_send_question)({
+            'question_id': normal_question.id,
+            'selected_set_number': 2,
+            'hub_session_code': hub_session.code,
+        })
+
+        question_started = [
+            message for _, message in self.consumer.channel_layer.group_messages
+            if message['type'] == 'question_started'
+        ][-1]
+        self.assertEqual(question_started['question']['id'], tutorial_question.id)
+        self.assertTrue(question_started['question']['is_tutorial_round'])
+        self.assertTrue(get_unit_tutorial_state('blackjack', self.quiz.room_code, hub_session.code)['current_unit_is_tutorial'])
+
+        play_response = self.client.get(
+            reverse('black_jack_quiz:play', args=[self.quiz.room_code, participant.name]),
+            {'hub_session': hub_session.code},
+        )
+        self.assertEqual(play_response.status_code, 200)
+        self.assertTrue(play_response.context['current_unit_is_tutorial'])
+        self.assertEqual(
+            [entry['set_number'] for entry in play_response.context['set_scoreboard']],
+            [2],
+        )
+        self.assertContains(play_response, 'Tutorialset - keine Wertung')
+
+        tutorial_result = async_to_sync(self.consumer.save_participant_answer)(
+            participant.name,
+            hub_session.code,
+            100,
+            1.0,
+            question_id=tutorial_question.id,
+        )
+
+        participant.refresh_from_db()
+        answer = BlackJackAnswer.objects.get(
+            quiz=self.quiz,
+            participant=participant,
+            question=tutorial_question,
+        )
+        self.assertTrue(tutorial_result['is_tutorial_round'])
+        self.assertEqual(tutorial_result['points_earned'], 0)
+        self.assertEqual(answer.points_earned, 0)
+        self.assertEqual(participant.total_points, 0)
+        self.assertEqual(participant.overall_points, 0)
+        self.assertEqual(participant.questions_answered, 0)
+        self.assertFalse(participant.is_busted)
+
+        async_to_sync(self.consumer.handle_admin_end_question)({'hub_session_code': hub_session.code})
+        tutorial_state = get_unit_tutorial_state('blackjack', self.quiz.room_code, hub_session.code)
+        self.assertTrue(tutorial_state['tutorial_has_been_played'])
+        self.assertFalse(tutorial_state['current_unit_is_tutorial'])
+
+        async_to_sync(self.consumer.handle_admin_send_question)({
+            'question_id': normal_question.id,
+            'selected_set_number': 2,
+            'hub_session_code': hub_session.code,
+        })
+
+        scored_question_started = [
+            message for _, message in self.consumer.channel_layer.group_messages
+            if message['type'] == 'question_started'
+        ][-1]
+        self.assertEqual(scored_question_started['question']['id'], normal_question.id)
+        self.assertFalse(scored_question_started['question']['is_tutorial_round'])
 
     def test_save_participant_answer_rejects_recently_ended_no_answer_bust(self):
         question_one = BlackJackQuestion.objects.create(

@@ -49,6 +49,7 @@
         <!-- Main Content -->
         <main class="quiz-main">
             <div class="container">
+                {% include 'includes/_unit_tutorial_notice.html' %}
                 <div class="assign-play-layout">
                     <div class="assign-main-column">
                         <!-- Waiting State -->
@@ -243,6 +244,9 @@
                                         <span class="score-label">points</span>
                                     </div>
                                 </div>
+                                {% with post_game_game_key="assign" %}
+                                    {% include 'includes/_post_game_results.html' %}
+                                {% endwith %}
                                 <!-- <div class="quiz-actions">
                                     <a href="/assign/result/{{ quiz.room_code }}/{{ participant.name }}/" class="btn btn-primary btn-lg">
                                         <i data-lucide="bar-chart-3"></i>
@@ -1214,8 +1218,13 @@
                             window.gameTutorial?.showFromPayload(data);
                             break;
 
+                        case 'tutorial_force_close':
+                            window.gameTutorial?.forceClose();
+                            break;
+
                         case 'question_started':
                             window.gameTutorial?.forceClose();
+                            window.unitTutorialNotice?.setFromPayload(data);
                             this.onQuestionStarted(data.question);
                             break;
 
@@ -1224,6 +1233,7 @@
                             break;
 
                         case 'question_ended':
+                            window.unitTutorialNotice?.hide();
                             this.onQuestionEnded();
                             break;
 
@@ -1431,8 +1441,13 @@
                         ...question,
                         all_right_items: question.all_right_items || question.right_items || [],
                     };
-                    this.moveQuestionToNextFreeScoreSlot(question.id, question.total_possible_points);
-                    this.setCurrentQuestion(question.id);
+                    this.currentQuestionIsTutorial = !!question?.is_tutorial_round;
+                    if (this.currentQuestionIsTutorial) {
+                        this.setCurrentQuestion(null);
+                    } else {
+                        this.moveQuestionToNextFreeScoreSlot(question.id, question.total_possible_points);
+                        this.setCurrentQuestion(question.id);
+                    }
 
                     this.totalRounds = question.total_rounds;
                     this.roundSubmitted = false;

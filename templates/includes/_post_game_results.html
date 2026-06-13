@@ -1,0 +1,219 @@
+<section class="post-game-results-card"
+         data-post-game-results
+         data-session-code="{% firstof post_game_session_code hub_session session_code %}"
+         data-game-key="{{ post_game_game_key }}"
+         data-room-code="{% firstof post_game_room_code quiz.room_code game.room_code %}"
+         data-participant-name="{% firstof post_game_participant_name participant.name %}">
+    <div class="post-game-results-loading">Endergebnis wird geladen...</div>
+    <div class="post-game-results-content d-none"></div>
+</section>
+
+<style>
+.post-game-results-card {
+    margin-top: 1.5rem;
+    padding: 1rem;
+    border: 1px solid rgba(15, 23, 42, 0.12);
+    border-radius: 16px;
+    background: rgba(255, 255, 255, 0.86);
+    color: #172033;
+    box-shadow: 0 12px 32px rgba(15, 23, 42, 0.08);
+}
+.post-game-results-card h3 {
+    margin: 0 0 0.25rem;
+    font-size: 1.35rem;
+    font-weight: 800;
+}
+.post-game-results-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    margin-bottom: 1rem;
+    color: #64748b;
+    font-size: 0.9rem;
+}
+.post-game-results-table-wrap {
+    overflow-x: auto;
+}
+.post-game-results-table {
+    width: 100%;
+    min-width: 680px;
+    border-collapse: collapse;
+}
+.post-game-results-table th,
+.post-game-results-table td {
+    padding: 0.72rem 0.8rem;
+    border-bottom: 1px solid rgba(15, 23, 42, 0.1);
+    text-align: left;
+    white-space: nowrap;
+}
+.post-game-results-table th {
+    font-size: 0.78rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: #64748b;
+}
+.post-game-results-table td.is-number,
+.post-game-results-table th.is-number {
+    text-align: right;
+}
+.post-game-results-table tr.is-current-player {
+    background: rgba(37, 99, 235, 0.12);
+    font-weight: 800;
+}
+.post-game-results-empty,
+.post-game-results-loading {
+    color: #64748b;
+    font-size: 0.95rem;
+}
+</style>
+
+<script>
+(function () {
+    if (window.__postGameResultsControllerInstalled) return;
+    window.__postGameResultsControllerInstalled = true;
+
+    const htmlEscape = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;',
+        "'": '&#039;'
+    }[char]));
+
+    const formatScore = (value) => {
+        const number = Number(value || 0);
+        if (Number.isInteger(number)) return String(number);
+        return number.toFixed(2).replace(/\.?0+$/, '');
+    };
+
+    const isVisible = (element) => {
+        const state = element.closest('.game-state, .end-screen') || element;
+        return !state.classList.contains('d-none');
+    };
+
+    const buildUrl = (element) => {
+        const sessionCode = resolveSessionCode(element);
+        const params = new URLSearchParams({
+            game_key: element.dataset.gameKey || '',
+            room_code: element.dataset.roomCode || '',
+            participant: element.dataset.participantName || ''
+        });
+        return `/hub/api/session/${encodeURIComponent(sessionCode)}/post-game-results/?${params}`;
+    };
+
+    const resolveSessionCode = (element) => {
+        if (element.dataset.sessionCode) return element.dataset.sessionCode;
+        const queryCode = new URLSearchParams(window.location.search).get('hub_session') || '';
+        if (queryCode) return queryCode;
+        try {
+            return localStorage.getItem('hub_session_code') || '';
+        } catch (_) {
+            return '';
+        }
+    };
+
+    const renderTable = (payload) => {
+        const rows = payload.rows || [];
+        const rankingMode = payload.scoring_mode === 'ranking';
+        const header = rankingMode
+            ? '<th>Teilnehmer</th><th class="is-number">Punkte im Spiel</th><th class="is-number">Rang</th><th class="is-number">Faktor</th><th class="is-number">Punkte fuers Gesamtkonto</th>'
+            : '<th>Teilnehmer</th><th class="is-number">Rang</th><th class="is-number">Punkte im Spiel</th><th class="is-number">Faktor</th><th class="is-number">Punkte fuers Gesamtkonto</th>';
+        const body = rows.map((row) => {
+            const currentClass = row.is_current_participant ? ' class="is-current-player"' : '';
+            const rankingCells = rankingMode
+                ? `<td class="is-number">${formatScore(row.game_points)}</td><td class="is-number">${row.rank || '-'}</td>`
+                : `<td class="is-number">${row.rank || '-'}</td><td class="is-number">${formatScore(row.game_points)}</td>`;
+            return `<tr${currentClass}>
+                <td>${htmlEscape(row.participant)}</td>
+                ${rankingCells}
+                <td class="is-number">${htmlEscape(row.weight_display || payload.weight_display || '\u00d71.00')}</td>
+                <td class="is-number">${formatScore(row.overall_points)}</td>
+            </tr>`;
+        }).join('');
+
+        return `<div class="post-game-results-table-wrap">
+            <table class="post-game-results-table">
+                <thead><tr>${header}</tr></thead>
+                <tbody>${body}</tbody>
+            </table>
+        </div>`;
+    };
+
+    const renderPayload = (element, payload) => {
+        const loading = element.querySelector('.post-game-results-loading');
+        const content = element.querySelector('.post-game-results-content');
+        if (!content) return;
+        if (!payload.available) {
+            loading?.classList.add('d-none');
+            content.classList.remove('d-none');
+            content.innerHTML = `<div class="post-game-results-empty">${htmlEscape(payload.message || payload.error || 'Kein Endergebnis verfuegbar.')}</div>`;
+            return;
+        }
+
+        const game = payload.game || {};
+        loading?.classList.add('d-none');
+        content.classList.remove('d-none');
+        content.innerHTML = `
+            <h3>Spiel beendet</h3>
+            <div class="post-game-results-meta">
+                <span>${htmlEscape(game.title || 'Spiel')}</span>
+                <span>${htmlEscape(game.type || '')}</span>
+                <span>Spiel ${htmlEscape(game.game_number || '')}</span>
+                <span>${htmlEscape(payload.scoring_mode_label || '')}</span>
+                <span>Faktor ${htmlEscape(payload.weight_display || '\u00d71.00')}</span>
+            </div>
+            ${renderTable(payload)}
+        `;
+    };
+
+    const loadResults = async (element) => {
+        if (element.dataset.loaded === '1') return;
+        const sessionCode = resolveSessionCode(element);
+        const gameKey = element.dataset.gameKey || '';
+        const roomCode = element.dataset.roomCode || '';
+        if (!sessionCode || !gameKey || !roomCode) {
+            renderPayload(element, {
+                available: false,
+                message: 'Endergebnis ist nur innerhalb einer Hub-Session verfuegbar.'
+            });
+            element.dataset.loaded = '1';
+            return;
+        }
+        element.dataset.loaded = '1';
+        try {
+            const response = await fetch(buildUrl(element), {credentials: 'same-origin'});
+            const contentType = response.headers.get('content-type') || '';
+            if (!contentType.includes('application/json')) {
+                throw new Error(`Unerwartete Antwort vom Server (HTTP ${response.status}).`);
+            }
+            const payload = await response.json();
+            renderPayload(element, payload);
+        } catch (error) {
+            element.dataset.loaded = '0';
+            renderPayload(element, {
+                available: false,
+                message: error.message || 'Endergebnis konnte nicht geladen werden.'
+            });
+        }
+    };
+
+    const watchElement = (element) => {
+        const maybeLoad = () => {
+            if (isVisible(element)) loadResults(element);
+        };
+        maybeLoad();
+        const state = element.closest('.game-state, .end-screen') || element;
+        new MutationObserver(maybeLoad).observe(state, {attributes: true, attributeFilter: ['class']});
+    };
+
+    const setup = () => {
+        document.querySelectorAll('[data-post-game-results]').forEach(watchElement);
+    };
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', setup);
+    } else {
+        setup();
+    }
+})();
+</script>

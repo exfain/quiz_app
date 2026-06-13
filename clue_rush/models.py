@@ -37,6 +37,7 @@ class ClueRushGame(SyncBase):
     question_start_time = models.DateTimeField(null=True, blank=True)
 
     selected_questions = models.ManyToManyField('ClueQuestion', blank=True, related_name='games')
+    tutorial_question = models.ForeignKey('ClueQuestion', on_delete=models.SET_NULL, null=True, blank=True, related_name='tutorial_in_games')
     
     class Meta:
         ordering = ['-created_at']

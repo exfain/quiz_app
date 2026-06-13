@@ -20,7 +20,7 @@ from pathlib import Path
 
 from Assign.models import AssignQuestion, AssignQuiz
 from Estimation.models import EstimationQuestion, EstimationQuiz
-from QuizGame.models import Quiz
+from QuizGame.models import Quiz, QuizQuestion
 from black_jack_quiz.models import BlackJackQuiz
 from clue_rush.models import Clue, ClueQuestion, ClueRushGame, ClueRushSession
 from django.contrib.auth.models import User
@@ -31,6 +31,7 @@ from sorting_ladder.models import SortingLadderGame
 from where_is_this.models import WhereQuiz
 from who_is_lying.models import WhoQuiz
 from who_is_that.models import WhoThatQuiz
+from wer_weiss_mehr.models import WerWeissMehrGame
 from games_hub.playwright_e2e import install_browser_test_stubs, start_chromium_browser
 
 # ---------------------------------------------------------------------------
@@ -268,22 +269,170 @@ class ManageGamesApiTest(TestCase):
         home_url = reverse("admin_dashboard:home")
         self.assertContains(resp, home_url)
 
-    def test_manage_games_create_flow_renders_tutorial_fields(self):
+    def test_manage_games_create_flow_renders_explanation_fields_without_toggle(self):
         resp = self.client.get(reverse("admin_dashboard:create_game"))
         self.assertEqual(resp.status_code, 200)
-        self.assertContains(resp, 'id="gameTutorialEnabled"', html=False)
+        self.assertNotContains(resp, 'id="gameTutorialEnabled"', html=False)
+        self.assertContains(resp, "Spielerläuterung")
+        self.assertContains(resp, "Titel der Spielerläuterung")
+        self.assertContains(resp, "Text der Spielerläuterung")
         self.assertContains(resp, 'id="gameTutorialTitle"', html=False)
         self.assertContains(resp, 'id="gameTutorialText"', html=False)
+        self.assertContains(resp, "als Tutorial verwenden")
+        self.assertContains(resp, "als Tutorialset verwenden")
+        self.assertContains(resp, "tutorial_question_id")
+        self.assertContains(resp, "tutorial_set_number")
+        self.assertContains(resp, "tutorial-question-check")
 
-    def test_custom_create_endpoints_store_tutorial_fields(self):
+    def test_game_models_expose_single_tutorial_question_slot(self):
+        for model in [
+            Quiz,
+            EstimationQuiz,
+            AssignQuiz,
+            WhereQuiz,
+            WhoQuiz,
+            WhoThatQuiz,
+            ClueRushGame,
+            SortingLadderGame,
+            WerWeissMehrGame,
+        ]:
+            self.assertTrue(hasattr(model, "tutorial_question"), model.__name__)
+        self.assertTrue(hasattr(BlackJackQuiz, "tutorial_set_number"))
+        self.assertFalse(hasattr(BlackJackQuiz, "tutorial_question"))
+
+    def test_custom_quiz_stores_one_selected_tutorial_question(self):
+        question_one = QuizQuestion.objects.create(
+            question_text="Question one",
+            question_type="short_answer",
+            correct_answer="One",
+            created_by=self.user,
+        )
+        question_two = QuizQuestion.objects.create(
+            question_text="Question two",
+            question_type="short_answer",
+            correct_answer="Two",
+            created_by=self.user,
+        )
+
+        resp = self.client.post(
+            reverse("admin_dashboard:create_custom_quiz"),
+            data=json.dumps({
+                "title": "Tutorial Quiz",
+                "question_ids": [question_one.id, question_two.id],
+                "tutorial_question_id": question_two.id,
+            }),
+            content_type="application/json",
+        )
+
+        self.assertEqual(resp.status_code, 200, resp.content)
+        data = resp.json()
+        self.assertTrue(data.get("success"), data)
+        quiz = Quiz.objects.get(id=data["quiz_id"])
+        self.assertEqual(quiz.tutorial_question_id, question_two.id)
+
+        selected_resp = self.client.get(reverse("admin_dashboard:get_quiz_selected_questions", args=[quiz.id]))
+        selected_data = selected_resp.json()
+        self.assertEqual(selected_data["tutorial_question_id"], question_two.id)
+        row_by_id = {row["id"]: row for row in selected_data["questions"]}
+        self.assertFalse(row_by_id[question_one.id]["is_tutorial"])
+        self.assertTrue(row_by_id[question_two.id]["is_tutorial"])
+
+    def test_custom_quiz_rejects_multiple_tutorial_questions(self):
+        question_one = QuizQuestion.objects.create(
+            question_text="Question one",
+            question_type="short_answer",
+            correct_answer="One",
+            created_by=self.user,
+        )
+        question_two = QuizQuestion.objects.create(
+            question_text="Question two",
+            question_type="short_answer",
+            correct_answer="Two",
+            created_by=self.user,
+        )
+
+        resp = self.client.post(
+            reverse("admin_dashboard:create_custom_quiz"),
+            data=json.dumps({
+                "title": "Invalid Tutorial Quiz",
+                "question_ids": [question_one.id, question_two.id],
+                "tutorial_question_ids": [question_one.id, question_two.id],
+            }),
+            content_type="application/json",
+        )
+
+        self.assertEqual(resp.status_code, 400)
+        self.assertFalse(resp.json().get("success"))
+
+    def test_custom_quiz_rejects_tutorial_question_outside_selection(self):
+        selected_question = QuizQuestion.objects.create(
+            question_text="Selected",
+            question_type="short_answer",
+            correct_answer="Selected",
+            created_by=self.user,
+        )
+        other_question = QuizQuestion.objects.create(
+            question_text="Other",
+            question_type="short_answer",
+            correct_answer="Other",
+            created_by=self.user,
+        )
+
+        resp = self.client.post(
+            reverse("admin_dashboard:create_custom_quiz"),
+            data=json.dumps({
+                "title": "Invalid Tutorial Quiz",
+                "question_ids": [selected_question.id],
+                "tutorial_question_id": other_question.id,
+            }),
+            content_type="application/json",
+        )
+
+        self.assertEqual(resp.status_code, 400)
+        self.assertFalse(resp.json().get("success"))
+
+    def test_custom_quiz_clears_tutorial_question_when_removed_from_selection(self):
+        question_one = QuizQuestion.objects.create(
+            question_text="Question one",
+            question_type="short_answer",
+            correct_answer="One",
+            created_by=self.user,
+        )
+        question_two = QuizQuestion.objects.create(
+            question_text="Question two",
+            question_type="short_answer",
+            correct_answer="Two",
+            created_by=self.user,
+        )
+        quiz = Quiz.objects.create(title="Tutorial Quiz", creator=self.user, status="waiting")
+        quiz.selected_questions.set([question_one, question_two])
+        quiz.tutorial_question = question_two
+        quiz.question_order = [question_one.id, question_two.id]
+        quiz.save(update_fields=["tutorial_question", "question_order"])
+
+        resp = self.client.post(
+            reverse("admin_dashboard:update_custom_quiz"),
+            data=json.dumps({
+                "quiz_id": quiz.id,
+                "title": quiz.title,
+                "question_ids": [question_one.id],
+            }),
+            content_type="application/json",
+        )
+
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertTrue(resp.json().get("success"))
+        quiz.refresh_from_db()
+        self.assertIsNone(quiz.tutorial_question_id)
+
+    def test_custom_create_endpoints_store_explanation_fields_without_toggle(self):
         for game_key, url_name in GAME_CUSTOM_CREATE_URLS.items():
-            title = f"Tutorial {game_key} {rand_str(4)}"
+            title = f"Explanation {game_key} {rand_str(4)}"
             payload = {
                 "title": title,
                 "internal_description": "Admin note",
-                "tutorial_enabled": True,
                 "tutorial_title": f"{game_key} intro",
-                "tutorial_text": f"{game_key} tutorial text",
+                "tutorial_text": f"{game_key} explanation text",
             }
             resp = self.client.post(
                 reverse(url_name),
@@ -297,7 +446,28 @@ class ManageGamesApiTest(TestCase):
             obj = GAME_MODELS[game_key].objects.get(id=object_id)
             self.assertTrue(obj.tutorial_enabled, game_key)
             self.assertEqual(obj.tutorial_title, f"{game_key} intro", game_key)
-            self.assertEqual(obj.tutorial_text, f"{game_key} tutorial text", game_key)
+            self.assertEqual(obj.tutorial_text, f"{game_key} explanation text", game_key)
+
+    def test_custom_create_without_explanation_text_keeps_player_explanation_disabled(self):
+        for game_key, url_name in GAME_CUSTOM_CREATE_URLS.items():
+            title = f"No explanation {game_key} {rand_str(4)}"
+            resp = self.client.post(
+                reverse(url_name),
+                data=json.dumps({
+                    "title": title,
+                    "tutorial_title": "",
+                    "tutorial_text": "",
+                }),
+                content_type="application/json",
+            )
+            self.assertEqual(resp.status_code, 200, f"{game_key}: {resp.content}")
+            data = resp.json()
+            self.assertTrue(data.get("success"), f"{game_key}: {data}")
+            object_id = data.get("quiz_id") or data.get("game_id")
+            obj = GAME_MODELS[game_key].objects.get(id=object_id)
+            self.assertFalse(obj.tutorial_enabled, game_key)
+            self.assertEqual(obj.tutorial_title, "", game_key)
+            self.assertEqual(obj.tutorial_text, "", game_key)
 
     def test_custom_update_endpoints_persist_tutorial_fields(self):
         id_key_by_game = {
@@ -327,9 +497,8 @@ class ManageGamesApiTest(TestCase):
             update_payload = {
                 id_key_by_game[game_key]: object_id,
                 "title": f"After {game_key}",
-                "tutorial_enabled": True,
                 "tutorial_title": f"{game_key} updated intro",
-                "tutorial_text": f"{game_key} updated tutorial",
+                "tutorial_text": f"{game_key} updated explanation",
                 selected_key_by_game.get(game_key, "question_ids"): [],
             }
             update_resp = self.client.post(
@@ -344,11 +513,11 @@ class ManageGamesApiTest(TestCase):
             self.assertEqual(obj.title, f"After {game_key}", game_key)
             self.assertTrue(obj.tutorial_enabled, game_key)
             self.assertEqual(obj.tutorial_title, f"{game_key} updated intro", game_key)
-            self.assertEqual(obj.tutorial_text, f"{game_key} updated tutorial", game_key)
+            self.assertEqual(obj.tutorial_text, f"{game_key} updated explanation", game_key)
 
     def test_edit_game_prefills_tutorial_values(self):
         quiz = Quiz.objects.create(
-            title="Tutorial Quiz",
+            title="Explanation Quiz",
             internal_description="Admin info",
             tutorial_enabled=True,
             tutorial_title="Welcome",
@@ -356,13 +525,23 @@ class ManageGamesApiTest(TestCase):
             creator=self.user,
             status="waiting",
         )
+        question = QuizQuestion.objects.create(
+            question_text="Tutorial question",
+            question_type="short_answer",
+            correct_answer="Answer",
+            created_by=self.user,
+        )
+        quiz.selected_questions.set([question])
+        quiz.tutorial_question = question
+        quiz.save(update_fields=["tutorial_question"])
 
         resp = self.client.get(reverse("admin_dashboard:edit_game", args=["quiz", quiz.id]))
 
         self.assertEqual(resp.status_code, 200)
-        self.assertContains(resp, 'const EDIT_TUTORIAL_ENABLED = true;', html=False)
         self.assertContains(resp, 'const EDIT_TUTORIAL_TITLE = "Welcome";', html=False)
         self.assertContains(resp, 'const EDIT_TUTORIAL_TEXT = "Read this first";', html=False)
+        self.assertContains(resp, f'const EDIT_TUTORIAL_QUESTION_ID = {question.id};', html=False)
+        self.assertNotContains(resp, 'id="gameTutorialEnabled"', html=False)
 
     def test_tutorial_toggle_is_gated_by_tutorial_enabled_in_all_monitors(self):
         monitor_templates = [
@@ -375,6 +554,7 @@ class ManageGamesApiTest(TestCase):
             "templates/admin_dashboard/blackjack_monitor.html",
             "templates/admin_dashboard/clue_rush_monitor.html",
             "templates/admin_dashboard/sorting_ladder_monitor.html",
+            "templates/admin_dashboard/wer_weiss_mehr_monitor.html",
         ]
         repo_root = Path(__file__).resolve().parent.parent
         expected_gate = "{% if quiz.status == 'waiting' and quiz.tutorial_enabled %}"
@@ -382,6 +562,31 @@ class ManageGamesApiTest(TestCase):
         for relative_path in monitor_templates:
             content = (repo_root / relative_path).read_text(encoding="utf-8")
             self.assertIn(expected_gate, content, relative_path)
+            self.assertIn("Spielerläuterung anzeigen", content, relative_path)
+            self.assertNotIn('id="showTutorialToggle" checked', content, relative_path)
+            self.assertIn("Tutorial spielen", content, relative_path)
+            self.assertIn('id="playTutorialToggle"', content, relative_path)
+            self.assertNotIn('id="playTutorialToggle" checked', content, relative_path)
+            self.assertIn("play_tutorial", content, relative_path)
+            self.assertIn("tutorial_question_missing", content, relative_path)
+            self.assertIn("showTutorialQuestionMissing", content, relative_path)
+            self.assertIn("tutorial_ack_warning", content, relative_path)
+            self.assertIn("handleTutorialAckWarning", content, relative_path)
+            self.assertIn("_unit_tutorial_notice.html", content, relative_path)
+            self.assertIn("unitTutorialNotice", content, relative_path)
+            if relative_path.endswith("blackjack_monitor.html"):
+                self.assertIn("Für dieses Spiel wurde kein Tutorialset festgelegt.", content)
+
+        blackjack_content = (repo_root / "templates/admin_dashboard/blackjack_monitor.html").read_text(encoding="utf-8")
+        self.assertIn("tutorial_notice_label='Tutorialset'", blackjack_content)
+
+        base_content = (repo_root / "templates/admin_dashboard/base.html").read_text(encoding="utf-8")
+        self.assertIn("Nicht alle Teilnehmer haben die Erläuterung bestätigt", base_content)
+        self.assertIn("tutorialQuestionMissingModal", base_content)
+        self.assertIn("showTutorialQuestionMissing", base_content)
+        self.assertIn("F&uuml;r dieses Spiel wurde keine Tutorialfrage festgelegt.", base_content)
+        self.assertIn("Trotzdem fortfahren", base_content)
+        self.assertIn("Zurück", base_content)
 
     def test_tutorial_overlay_is_wired_into_all_active_player_templates(self):
         play_templates = [
@@ -394,13 +599,26 @@ class ManageGamesApiTest(TestCase):
             "templates/black_jack_quiz/play.html",
             "templates/clue_rush/play.html",
             "templates/sorting_ladder/play.html",
+            "templates/wer_weiss_mehr/play.html",
         ]
         repo_root = Path(__file__).resolve().parent.parent
 
         for relative_path in play_templates:
             content = (repo_root / relative_path).read_text(encoding="utf-8")
             self.assertIn("{% include 'includes/_game_tutorial_overlay.html' %}", content, relative_path)
-            self.assertIn("case 'tutorial_start':", content, relative_path)
+            self.assertIn("_unit_tutorial_notice.html", content, relative_path)
+            self.assertIn("unitTutorialNotice", content, relative_path)
+            self.assertTrue(
+                "case 'tutorial_start':" in content or "data.type === 'tutorial_start'" in content,
+                relative_path,
+            )
+            self.assertIn("tutorial_force_close", content, relative_path)
+
+        blackjack_content = (repo_root / "templates/black_jack_quiz/play.html").read_text(encoding="utf-8")
+        self.assertIn("tutorial_notice_label='Tutorialset'", blackjack_content)
+        spectator_content = (repo_root / "templates/hub/spectate.html").read_text(encoding="utf-8")
+        self.assertIn("_unit_tutorial_notice.html", spectator_content)
+        self.assertIn("unitTutorialNotice", spectator_content)
 
 
 # Assign-Fragen dÃ¼rfen fÃ¼r Tests jetzt auch rechtsseitige Distractors oder Gleichstand haben.

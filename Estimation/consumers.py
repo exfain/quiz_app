@@ -7,6 +7,21 @@ from .models import EstimationQuiz, EstimationParticipant, EstimationQuestion, E
 from games_hub.active_game_guard import resolve_session_game_activation_for_room
 from games_hub.lobby_return_flow import ensure_session_players_ready_for_game_start_for_room
 from games_hub.models import HubGameStep
+from games_hub.tutorial_runtime import (
+    activate_tutorial_runtime,
+    deactivate_tutorial_runtime,
+    force_close_tutorial_runtime,
+    get_tutorial_payload,
+    get_tutorial_start_warning,
+    mark_tutorial_completed,
+)
+from games_hub.unit_tutorial_runtime import (
+    finish_current_unit_tutorial,
+    is_unit_tutorial_question,
+    prepare_unit_tutorial_runtime,
+    start_unit_tutorial_if_needed,
+    validate_unit_tutorial_request,
+)
 
 
 class EstimationConsumer(AsyncWebsocketConsumer):
@@ -60,6 +75,8 @@ class EstimationConsumer(AsyncWebsocketConsumer):
                 await self.handle_participant_update_pending_answer(text_data_json)
             elif message_type == 'participant_join':
                 await self.handle_participant_join(text_data_json)
+            elif message_type == 'tutorial_completed':
+                await self.handle_tutorial_completed(text_data_json)
             elif message_type == 'ping':
                 await self.handle_ping()
             elif message_type == 'admin_show_leaderboard':
@@ -89,6 +106,20 @@ class EstimationConsumer(AsyncWebsocketConsumer):
             return
         quiz = await self.get_quiz()
         if quiz:
+            show_tutorial = bool(data.get('show_tutorial', False))
+            play_tutorial = bool(data.get('play_tutorial', False))
+            hub_session_code = await self._get_hub_session_code_for_room()
+            unit_tutorial_validation = await database_sync_to_async(validate_unit_tutorial_request)(
+                'estimation',
+                self.room_code,
+                play_tutorial,
+            )
+            if not unit_tutorial_validation.get('success'):
+                await self.send(text_data=json.dumps({
+                    'type': unit_tutorial_validation.get('type', 'error'),
+                    'message': unit_tutorial_validation.get('message') or 'Tutorialfrage fehlt.',
+                }))
+                return
             activation = await database_sync_to_async(resolve_session_game_activation_for_room)(
                 'estimation',
                 self.room_code,
@@ -102,14 +133,15 @@ class EstimationConsumer(AsyncWebsocketConsumer):
                     payload['active_game'] = activation['active_game']
                 await self.send(text_data=json.dumps(payload))
                 return
-            show_tutorial = bool(data.get('show_tutorial', True))
+            await database_sync_to_async(prepare_unit_tutorial_runtime)(
+                'estimation',
+                self.room_code,
+                hub_session_code,
+                play_tutorial,
+                validate=False,
+            )
             await self.start_quiz_db(quiz.id)
-            tutorial_payload = None
-            if quiz.tutorial_enabled and show_tutorial:
-                await self.set_tutorial_active_db(quiz.id, True)
-                tutorial_payload = await self.get_tutorial_payload(quiz.id)
-            else:
-                await self.set_tutorial_active_db(quiz.id, False)
+            tutorial_payload = await self.activate_tutorial_runtime(quiz.id, hub_session_code, show_tutorial)
             
             # Broadcast to all participants
             await self.channel_layer.group_send(
@@ -167,6 +199,21 @@ class EstimationConsumer(AsyncWebsocketConsumer):
         except Exception:
             pass
 
+        if await self.guard_tutorial_before_first_unit(data, quiz.id):
+            return
+
+        hub_session = (
+            data.get('hub_session')
+            or data.get('hub_session_code')
+            or await self._get_hub_session_code_for_room()
+        )
+        unit_tutorial = await self.start_unit_tutorial_if_needed(hub_session)
+        is_tutorial_round = bool(unit_tutorial.get('is_tutorial_round'))
+        if is_tutorial_round and str(unit_tutorial.get('tutorial_question_id') or '') != str(question.id):
+            question = await self.get_question(unit_tutorial.get('tutorial_question_id'))
+            if not question:
+                return
+
         await self.set_tutorial_active_db(quiz.id, False)
         # Update quiz with new question
         await self.update_quiz_question(quiz, question, custom_time_limit)
@@ -190,7 +237,8 @@ class EstimationConsumer(AsyncWebsocketConsumer):
                     'unit': question_data['unit'],
                     'unit_display': question_data['unit_display'],
                     'question_number': question_number,
-                    'max_points': max_points,
+                    'max_points': 0 if is_tutorial_round else max_points,
+                    'is_tutorial_round': is_tutorial_round,
                     'hint_text': question.hint_text,
                     'time_limit': effective_time_limit
                 }
@@ -205,8 +253,11 @@ class EstimationConsumer(AsyncWebsocketConsumer):
             correct_answer_data = await self.get_current_question_answer(quiz)
             max_points = await self.get_current_question_max_points(quiz)
             evaluated_pending_answers = await self.finalize_pending_answers(quiz.id)
+            hub_session = data.get('hub_session') or data.get('hub_session_code') or await self._get_hub_session_code_for_room()
+            unit_tutorial = await self.finish_current_unit_tutorial(hub_session)
+            is_tutorial_round = bool(unit_tutorial.get('is_tutorial_round'))
             rank_results = None
-            if quiz.get_effective_scoring_mode() == 'rank':
+            if not is_tutorial_round and quiz.get_effective_scoring_mode() == 'rank':
                 rank_results = await self.compute_rank_points_for_current_question(quiz.id)
                 if rank_results and evaluated_pending_answers:
                     rank_points_by_participant = {
@@ -226,8 +277,9 @@ class EstimationConsumer(AsyncWebsocketConsumer):
                 'type': 'question_ended',
                 'message': 'Time\'s up!',
                 'correct_answer': correct_answer_data,
-                'max_points': max_points,
+                'max_points': 0 if is_tutorial_round else max_points,
                 'evaluated_pending_answers': evaluated_pending_answers,
+                'is_tutorial_round': is_tutorial_round,
             }
             if rank_results is not None:
                 payload['rank_results'] = [
@@ -322,6 +374,7 @@ class EstimationConsumer(AsyncWebsocketConsumer):
                 'type': 'answer_submitted',
                 'message': 'Answer submitted successfully',
                 'points_earned': answer['points_earned'],
+                'is_tutorial_round': answer['is_tutorial_round'],
                 'accuracy_percentage': answer['accuracy_percentage'],
                 'user_answer': answer['user_answer'],
                 'percentage_difference': answer['percentage_difference']
@@ -337,6 +390,7 @@ class EstimationConsumer(AsyncWebsocketConsumer):
                         'user_answer': answer['user_answer'],
                         'formatted_answer': answer['formatted_answer'],
                         'points_earned': answer['points_earned'],
+                        'is_tutorial_round': answer['is_tutorial_round'],
                         'accuracy_percentage': answer['accuracy_percentage'],
                         'percentage_difference': answer['percentage_difference'],
                         'difference_indicator': answer['difference_indicator'],
@@ -382,7 +436,11 @@ class EstimationConsumer(AsyncWebsocketConsumer):
                     'type': 'quiz_started',
                     'message': 'Quiz is already in progress'
                 }))
-                tutorial_payload = await self.get_tutorial_payload(quiz.id)
+                tutorial_payload = await self.get_tutorial_payload(
+                    quiz.id,
+                    hub_session,
+                    participant_name=participant_name,
+                )
                 if tutorial_payload:
                     await self.send(text_data=json.dumps({
                         'type': 'tutorial_start',
@@ -394,6 +452,15 @@ class EstimationConsumer(AsyncWebsocketConsumer):
                         'type': 'question_started',
                         'question': current_question_data
                     }))
+
+    async def handle_tutorial_completed(self, data):
+        participant_name = data.get('participant_name') or data.get('name')
+        hub_session = data.get('hub_session') or data.get('hub_session_code')
+        progress = await self.mark_tutorial_completed(participant_name, hub_session)
+        await self.channel_layer.group_send(
+            self.room_group_name,
+            {'type': 'tutorial_progress', **progress}
+        )
 
     async def handle_admin_show_leaderboard(self):
         await self.channel_layer.group_send(
@@ -433,7 +500,45 @@ class EstimationConsumer(AsyncWebsocketConsumer):
             'game_title': event.get('game_title'),
             'tutorial_title': event.get('tutorial_title'),
             'tutorial_text': event.get('tutorial_text'),
+            'official_participants': event.get('official_participants', []),
+            'completed': event.get('completed', 0),
+            'total': event.get('total', 0),
+            'all_done': event.get('all_done', False),
+            'participants': event.get('participants', []),
         }))
+
+    async def tutorial_progress(self, event):
+        await self.send(text_data=json.dumps({
+            'type': 'tutorial_progress',
+            'completed': event.get('completed', 0),
+            'total': event.get('total', 0),
+            'all_done': event.get('all_done', False),
+            'participants': event.get('participants', []),
+        }))
+
+    async def tutorial_force_close(self, event):
+        await self.send(text_data=json.dumps({'type': 'tutorial_force_close'}))
+
+    async def guard_tutorial_before_first_unit(self, data, quiz_id):
+        hub_session = (
+            data.get('hub_session')
+            or data.get('hub_session_code')
+            or await self._get_hub_session_code_for_room()
+        )
+        warning = await self.get_tutorial_start_warning(hub_session)
+        if warning and not data.get('force_tutorial_continue'):
+            await self.send(text_data=json.dumps({
+                'type': 'tutorial_ack_warning',
+                'original_message': data,
+                **warning,
+            }))
+            return True
+        if data.get('force_tutorial_continue'):
+            await self.channel_layer.group_send(
+                self.room_group_name,
+                {'type': 'tutorial_force_close'},
+            )
+        return False
 
     async def question_started(self, event):
         """Send new question to client"""
@@ -523,24 +628,48 @@ class EstimationConsumer(AsyncWebsocketConsumer):
     def set_tutorial_active_db(self, quiz_id, active):
         try:
             quiz = EstimationQuiz.objects.get(id=quiz_id)
-            quiz.tutorial_active = bool(active)
-            quiz.save(update_fields=['tutorial_active'])
+            if active:
+                quiz.tutorial_active = True
+                quiz.save(update_fields=['tutorial_active'])
+            else:
+                deactivate_tutorial_runtime('estimation', self.room_code, None, quiz)
         except EstimationQuiz.DoesNotExist:
             pass
 
     @database_sync_to_async
-    def get_tutorial_payload(self, quiz_id):
+    def get_tutorial_payload(self, quiz_id, hub_session_code=None, participant_name=None):
         try:
             quiz = EstimationQuiz.objects.get(id=quiz_id)
-            if not quiz.tutorial_enabled or not quiz.tutorial_active:
-                return None
-            return {
-                'game_title': quiz.title,
-                'tutorial_title': quiz.tutorial_title or 'Tutorial',
-                'tutorial_text': quiz.tutorial_text or '',
-            }
+            payload = get_tutorial_payload('estimation', self.room_code, hub_session_code, participant_name)
+            if payload:
+                payload['game_title'] = quiz.title
+            return payload
         except EstimationQuiz.DoesNotExist:
             return None
+
+    @database_sync_to_async
+    def activate_tutorial_runtime(self, quiz_id, hub_session_code, show_tutorial):
+        try:
+            quiz = EstimationQuiz.objects.get(id=quiz_id)
+            return activate_tutorial_runtime('estimation', self.room_code, hub_session_code, quiz, show_tutorial)
+        except EstimationQuiz.DoesNotExist:
+            return None
+
+    @database_sync_to_async
+    def start_unit_tutorial_if_needed(self, hub_session_code):
+        return start_unit_tutorial_if_needed('estimation', self.room_code, hub_session_code)
+
+    @database_sync_to_async
+    def finish_current_unit_tutorial(self, hub_session_code):
+        return finish_current_unit_tutorial('estimation', self.room_code, hub_session_code)
+
+    @database_sync_to_async
+    def mark_tutorial_completed(self, participant_name, hub_session_code):
+        return mark_tutorial_completed('estimation', self.room_code, hub_session_code, participant_name)
+
+    @database_sync_to_async
+    def get_tutorial_start_warning(self, hub_session_code):
+        return get_tutorial_start_warning('estimation', self.room_code, hub_session_code)
 
     @database_sync_to_async
     def get_question(self, question_id):
@@ -847,6 +976,15 @@ class EstimationConsumer(AsyncWebsocketConsumer):
                 user_answer=user_answer_float,
                 time_taken=time_taken
             )
+            is_tutorial_answer = is_unit_tutorial_question(
+                'estimation',
+                self.room_code,
+                hub_session_code,
+                quiz.current_question_id,
+            )
+            if is_tutorial_answer and answer.points_earned:
+                answer.points_earned = 0
+                answer.save(update_fields=['points_earned', 'updated_at'])
 
             if hasattr(quiz, 'session'):
                 pending_answers = dict(quiz.session.pending_answers or {})
@@ -856,6 +994,7 @@ class EstimationConsumer(AsyncWebsocketConsumer):
             
             return {
                 'points_earned': answer.points_earned,
+                'is_tutorial_round': is_tutorial_answer,
                 'accuracy_percentage': answer.get_accuracy_percentage(),
                 'user_answer': answer.user_answer,
                 'formatted_answer': answer.get_formatted_user_answer(),

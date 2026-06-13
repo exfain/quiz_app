@@ -151,7 +151,7 @@
 
 <script>
 const QB_CONFIG = {
-    quiz:           { url: '/admin-dashboard/quiz/questions/',           dataKey: 'questions', columns: [{key:'question_text',label:'Question'},{key:'question_type',label:'Type'},{key:'points',label:'Points'},{key:'time_limit',label:'Time (s)'}] },
+    quiz:           { url: '/admin-dashboard/quiz/questions/',           dataKey: 'questions', columns: [{key:'question_text',label:'Question'},{key:'question_type',label:'Type'},{key:'time_limit',label:'Time (s)'}] },
     estimation:     { url: '/admin-dashboard/estimation/questions/',     dataKey: 'questions', columns: [{key:'question_text',label:'Question'},{key:'correct_answer',label:'Answer'},{key:'unit',label:'Unit'},{key:'points_display',label:'Zonenpunkte'}] },
     assign:         { url: '/admin-dashboard/assign/questions/',         dataKey: 'questions', columns: [{key:'question_text',label:'Topic'},{key:'time_limit',label:'Time (s)'}] },
     where:          { url: '/admin-dashboard/where/questions/',          dataKey: 'questions', columns: [{key:'question_text',label:'Location'},{key:'points',label:'Points'}] },
@@ -492,7 +492,6 @@ const qbPopulate = {
         document.getElementById('qbq-id').value = q.id;
         document.getElementById('qbq-text').value = q.question_text || '';
         document.getElementById('qbq-type').value = q.question_type || 'multiple_choice';
-        document.getElementById('qbq-points').value = q.points || '';
         document.getElementById('qbq-time').value = q.time_limit || '';
         document.getElementById('qbq-a').value = q.option_a || '';
         document.getElementById('qbq-b').value = q.option_b || '';
@@ -607,7 +606,6 @@ const qbCollect = {
             question_id: document.getElementById('qbq-id').value,
             question_text: document.getElementById('qbq-text').value.trim(),
             question_type: document.getElementById('qbq-type').value,
-            points: parseInt(document.getElementById('qbq-points').value) || 0,
             time_limit: parseInt(document.getElementById('qbq-time').value) || 30,
             option_a: document.getElementById('qbq-a').value.trim(),
             option_b: document.getElementById('qbq-b').value.trim(),
@@ -841,8 +839,6 @@ function qbAddClueRow(container, text = '', order = '', duration = 10) {
                                 <option value="true_false">True / False</option>
                                 <option value="short_answer">Short Answer</option>
                             </select></div>
-                        <div class="col-md-4"><label class="form-label">Points</label>
-                            <input type="number" class="form-control" id="qbq-points"></div>
                         <div class="col-md-4"><label class="form-label">Time (s)</label>
                             <input type="number" class="form-control" id="qbq-time"></div>
                     </div>

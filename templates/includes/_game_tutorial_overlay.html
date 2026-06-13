@@ -54,9 +54,9 @@
 <div id="gameTutorialOverlay" class="game-tutorial-overlay" aria-hidden="true">
     <div class="game-tutorial-card">
         <div class="game-tutorial-kicker" id="gameTutorialGameTitle"></div>
-        <h2 class="game-tutorial-title" id="gameTutorialTitle">Tutorial</h2>
+        <h2 class="game-tutorial-title" id="gameTutorialTitle">Spielerläuterung</h2>
         <div class="game-tutorial-text" id="gameTutorialText"></div>
-        <button type="button" class="btn btn-primary game-tutorial-close" id="gameTutorialCloseBtn">Verstanden</button>
+        <button type="button" class="btn btn-primary game-tutorial-close" id="gameTutorialCloseBtn">Okay</button>
     </div>
 </div>
 
@@ -76,6 +76,11 @@
             };
         }
 
+        const participantName = '{{ participant.name|default:""|escapejs }}';
+        const hubSession = '{{ hub_session|default:""|escapejs }}';
+        let currentPayload = null;
+        let completionSent = false;
+
         function hideOverlay() {
             const elements = getOverlayElements();
             if (!elements.overlay) {
@@ -90,11 +95,72 @@
             if (!elements.overlay) {
                 return;
             }
+            const officialParticipants = Array.isArray(payload?.official_participants)
+                ? payload.official_participants
+                : [];
+            if (participantName && officialParticipants.length && !officialParticipants.includes(participantName)) {
+                hideOverlay();
+                return;
+            }
+            currentPayload = payload || {};
+            completionSent = false;
             elements.gameTitle.textContent = payload?.game_title || '';
-            elements.title.textContent = payload?.tutorial_title || 'Tutorial';
+            elements.title.textContent = payload?.tutorial_title || 'Spielerläuterung';
             elements.text.textContent = payload?.tutorial_text || '';
             elements.overlay.classList.add('is-visible');
             elements.overlay.setAttribute('aria-hidden', 'false');
+        }
+
+        function getTutorialWebSocketUrl() {
+            const parts = window.location.pathname.split('/').filter(Boolean);
+            if (parts.length < 3) {
+                return null;
+            }
+            const routeMap = {
+                quiz: 'quiz',
+                assign: 'assign',
+                estimation: 'estimation',
+                where: 'where',
+                who: 'who',
+                'who-is-that': 'who_that',
+                blackjack: 'blackjack',
+                'clue-rush': 'clue-rush',
+                'sorting-ladder': 'sorting-ladder',
+                'wer-weiss-mehr': 'wer-weiss-mehr',
+            };
+            const wsPath = routeMap[parts[0]];
+            const roomCode = parts[2];
+            if (!wsPath || !roomCode) {
+                return null;
+            }
+            const scheme = window.location.protocol === 'https:' ? 'wss' : 'ws';
+            return `${scheme}://${window.location.host}/ws/${wsPath}/${roomCode}/`;
+        }
+
+        function sendCompletion() {
+            if (completionSent || !participantName || !currentPayload) {
+                return;
+            }
+            completionSent = true;
+            const wsUrl = getTutorialWebSocketUrl();
+            if (!wsUrl) {
+                return;
+            }
+            try {
+                const ackSocket = new WebSocket(wsUrl);
+                ackSocket.onopen = function () {
+                    ackSocket.send(JSON.stringify({
+                        type: 'tutorial_completed',
+                        participant_name: participantName,
+                        name: participantName,
+                        hub_session: hubSession,
+                        hub_session_code: hubSession,
+                    }));
+                    setTimeout(function () {
+                        try { ackSocket.close(); } catch (_) {}
+                    }, 100);
+                };
+            } catch (_) {}
         }
 
         window.gameTutorial = {
@@ -108,6 +174,7 @@
 
         document.addEventListener('click', function (event) {
             if (event.target && event.target.id === 'gameTutorialCloseBtn') {
+                sendCompletion();
                 hideOverlay();
             }
         });

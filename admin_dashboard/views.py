@@ -40,6 +40,7 @@ from games_hub.active_game_guard import (
     resolve_session_game_activation_for_room,
 )
 from games_hub.models import HubSession, HubParticipant, HubGameStep
+from games_hub.unit_tutorial_runtime import get_unit_tutorial_state, is_current_unit_tutorial_question
 from games_website.services import sync_all_models_to_supabase, restore_all_models_from_supabase
 
 
@@ -284,6 +285,12 @@ def duplicate_session(request):
                     try:
                         orig_game = game_model.objects.get(room_code=step.room_code)
                         new_game.selected_questions.set(orig_game.selected_questions.all())
+                        if step.game_key == 'blackjack' and getattr(orig_game, 'tutorial_set_number', None):
+                            new_game.tutorial_set_number = orig_game.tutorial_set_number
+                            new_game.save(update_fields=['tutorial_set_number'])
+                        elif getattr(orig_game, 'tutorial_question_id', None):
+                            new_game.tutorial_question_id = orig_game.tutorial_question_id
+                            new_game.save(update_fields=['tutorial_question'])
                     except game_model.DoesNotExist:
                         pass
 
@@ -414,6 +421,7 @@ def create_clue_rush_game(request):
         if question_ids:
             qs = ClueQuestion.objects.filter(id__in=question_ids, is_active=True)
             quiz.selected_questions.set(qs)
+            _apply_tutorial_question_selection(quiz, data, qs.values_list('id', flat=True))
 
         # Create session
         ClueRushSession.objects.create(quiz=quiz)
@@ -446,6 +454,7 @@ def create_clue_rush_custom_game(request):
         if question_ids:
             qs = ClueQuestion.objects.filter(id__in=question_ids, is_active=True)
             quiz.selected_questions.set(qs)
+            _apply_tutorial_question_selection(quiz, data, qs.values_list('id', flat=True))
 
         # Always create a session on creation for admin monitor
         ClueRushSession.objects.create(quiz=quiz)
@@ -486,7 +495,9 @@ def update_clue_rush_custom_game(request):
             qs = ClueQuestion.objects.filter(id__in=data['question_ids'], is_active=True)
             quiz.selected_questions.set(qs)
             quiz.question_order = [int(i) for i in data['question_ids']]
-            quiz.save(update_fields=['question_order'])
+            fields_to_update = ['question_order']
+            _apply_tutorial_question_selection(quiz, data, qs.values_list('id', flat=True), fields_to_update)
+            quiz.save(update_fields=list(dict.fromkeys(fields_to_update)))
 
         return JsonResponse({'success': True})
     except Exception as e:
@@ -601,6 +612,7 @@ def clue_rush_monitor(request, room_code):
         'current_revealed_clue_count': current_revealed_clue_count,
         'initial_live_responses': initial_live_responses,
         'lobby_url': _get_lobby_url(request, room_code),
+        'current_unit_is_tutorial': is_current_unit_tutorial_question('clue_rush', quiz.room_code, response_session_code, quiz.current_question_id),
     }
     return render(request, 'admin_dashboard/clue_rush_monitor.html', context)
 
@@ -829,6 +841,7 @@ def sorting_ladder_monitor(request, room_code):
         'current_round_time_left': current_round_time_left,
         'lobby_url': _get_lobby_url(request, room_code),
         'hub_session': hub_session or '',
+        'current_unit_is_tutorial': is_current_unit_tutorial_question('sorting_ladder', quiz.room_code, hub_session, quiz.current_question_id),
     }
     return render(request, 'admin_dashboard/sorting_ladder_monitor.html', context)
 
@@ -1210,6 +1223,7 @@ def get_clue_rush_selected_questions(request, quiz_id: int):
             'time_limit': q.time_limit,
             'created_at': q.created_at.strftime('%Y-%m-%d %H:%M:%S'),
             'is_active': q.is_active,
+            'is_tutorial': q.id == quiz.tutorial_question_id,
         } for q in qs]
         _order = quiz.question_order or []
         if _order:
@@ -1221,6 +1235,7 @@ def get_clue_rush_selected_questions(request, quiz_id: int):
             'count': len(questions),
             'total_questions': quiz.total_questions,
             'scoring_mode': getattr(quiz, 'scoring_mode', 'simple'),
+            'tutorial_question_id': quiz.tutorial_question_id,
         })
     except Exception as e:
         return JsonResponse({'success': False, 'error': str(e)}, status=400)
@@ -1354,6 +1369,7 @@ def create_sorting_ladder_custom_game(request):
             qs = SortingQuestion.objects.filter(id__in=topic_ids, is_active=True)
             # selected_questions is a ManyToMany to SortingQuestion on the game model
             quiz.selected_questions.set(qs)
+            _apply_tutorial_question_selection(quiz, data, qs.values_list('id', flat=True))
 
         # Ensure a session exists for monitoring
         if not hasattr(quiz, 'session'):
@@ -1381,12 +1397,13 @@ def get_sorting_selected_topics(request, quiz_id: int):
             'item_count': t.elements.count(),
             'created_at': t.created_at.strftime('%Y-%m-%d %H:%M:%S'),
             'is_active': t.is_active,
+            'is_tutorial': t.id == quiz.tutorial_question_id,
         } for t in qs]
         _order = quiz.question_order or []
         if _order:
             _omap = {i: pos for pos, i in enumerate(_order)}
             topics.sort(key=lambda t: _omap.get(t['id'], len(_order)))
-        return JsonResponse({'success': True, 'topics': topics, 'count': len(topics)})
+        return JsonResponse({'success': True, 'topics': topics, 'count': len(topics), 'tutorial_question_id': quiz.tutorial_question_id})
     except Exception as e:  # pylint: disable=broad-except
         return JsonResponse({'success': False, 'error': str(e)}, status=400)
 
@@ -1421,7 +1438,9 @@ def update_sorting_ladder_custom_game(request):
             qs = SortingQuestion.objects.filter(id__in=data['topic_ids'], is_active=True)
             quiz.selected_questions.set(qs)
             quiz.question_order = [int(i) for i in data['topic_ids']]
-            quiz.save(update_fields=['question_order'])
+            fields_to_update = ['question_order']
+            _apply_tutorial_question_selection(quiz, data, qs.values_list('id', flat=True), fields_to_update)
+            quiz.save(update_fields=list(dict.fromkeys(fields_to_update)))
 
         return JsonResponse({'success': True})
     except Exception as e:  # pylint: disable=broad-except
@@ -1757,6 +1776,7 @@ def wer_weiss_mehr_monitor(request, room_code):
         ).prefetch_related('answers')
 
     WerWeissMehrSession.objects.get_or_create(quiz=quiz)
+    tutorial_state = get_unit_tutorial_state('wer_weiss_mehr', quiz.room_code, hub_session)
     return render(request, 'admin_dashboard/wer_weiss_mehr_monitor.html', {
         'quiz': quiz,
         'participants': participants.order_by('-total_score', 'name'),
@@ -1764,6 +1784,10 @@ def wer_weiss_mehr_monitor(request, room_code):
         'available_questions': available_questions,
         'lobby_url': _get_lobby_url(request, room_code),
         'hub_session': hub_session,
+        'current_unit_is_tutorial': bool(
+            tutorial_state.get('current_unit_is_tutorial')
+            and str(tutorial_state.get('tutorial_question_id') or '') == str(quiz.current_question_id or '')
+        ),
     })
 
 
@@ -1864,7 +1888,9 @@ def create_wer_weiss_mehr_custom_game(request):
             status='waiting',
         )
         if question_ids:
-            quiz.selected_questions.set(WerWeissMehrQuestion.objects.filter(id__in=question_ids, is_active=True))
+            qs = WerWeissMehrQuestion.objects.filter(id__in=question_ids, is_active=True)
+            quiz.selected_questions.set(qs)
+            _apply_tutorial_question_selection(quiz, data, qs.values_list('id', flat=True))
         WerWeissMehrSession.objects.create(quiz=quiz)
         return JsonResponse({'success': True, 'room_code': quiz.room_code, 'quiz_id': quiz.id})
     except Exception as e:
@@ -1894,9 +1920,11 @@ def update_wer_weiss_mehr_custom_game(request):
             inline_question = _create_wer_weiss_mehr_inline_question_if_present(data, request.user)
             if inline_question and inline_question.id not in question_ids:
                 question_ids.append(inline_question.id)
-            quiz.selected_questions.set(WerWeissMehrQuestion.objects.filter(id__in=question_ids, is_active=True))
+            qs = WerWeissMehrQuestion.objects.filter(id__in=question_ids, is_active=True)
+            quiz.selected_questions.set(qs)
             quiz.question_order = question_ids
             fields_to_update.append('question_order')
+            _apply_tutorial_question_selection(quiz, data, qs.values_list('id', flat=True), fields_to_update)
         if fields_to_update:
             quiz.save(update_fields=list(dict.fromkeys(fields_to_update)))
         return JsonResponse({'success': True})
@@ -1934,8 +1962,15 @@ def get_wer_weiss_mehr_selected_questions(request, quiz_id):
         questions.sort(key=lambda question: order_map.get(question.id, len(order_map)))
     return JsonResponse({
         'success': True,
-        'questions': [_serialize_wer_weiss_mehr_question(question) for question in questions],
+        'questions': [
+            {
+                **_serialize_wer_weiss_mehr_question(question),
+                'is_tutorial': question.id == quiz.tutorial_question_id,
+            }
+            for question in questions
+        ],
         'count': len(questions),
+        'tutorial_question_id': quiz.tutorial_question_id,
     })
 
 
@@ -2304,6 +2339,8 @@ def edit_game(request, game_type, game_id):
         'game_tutorial_enabled': getattr(game, 'tutorial_enabled', False),
         'game_tutorial_title': getattr(game, 'tutorial_title', ''),
         'game_tutorial_text': getattr(game, 'tutorial_text', ''),
+        'game_tutorial_question_id': None if game_type == 'blackjack' else getattr(game, 'tutorial_question_id', None),
+        'game_tutorial_set_number': getattr(game, 'tutorial_set_number', None) if game_type == 'blackjack' else None,
         'game_type': game_type,
         'game_scoring_mode': getattr(game, 'scoring_mode', ''),
         'selected_ids_json': _json.dumps(selected_ids),
@@ -2311,10 +2348,12 @@ def edit_game(request, game_type, game_id):
 
 
 def _normalize_tutorial_payload(data):
-    enabled = bool(data.get('tutorial_enabled'))
+    tutorial_title = (data.get('tutorial_title') or '').strip()
+    tutorial_text = (data.get('tutorial_text') or '').strip()
+    enabled = bool(tutorial_title or tutorial_text)
     if not enabled:
         return False, '', ''
-    return True, (data.get('tutorial_title') or '').strip(), (data.get('tutorial_text') or '').strip()
+    return True, tutorial_title, tutorial_text
 
 
 def _apply_tutorial_fields(game, data, fields_to_update):
@@ -2329,6 +2368,124 @@ def _apply_tutorial_fields(game, data, fields_to_update):
         'tutorial_title',
         'tutorial_text',
     ])
+
+
+def _normalize_question_ids(raw_ids):
+    normalized_ids = []
+    for raw_id in raw_ids or []:
+        try:
+            question_id = int(raw_id)
+        except (TypeError, ValueError):
+            continue
+        if question_id not in normalized_ids:
+            normalized_ids.append(question_id)
+    return normalized_ids
+
+
+def _extract_tutorial_question_id(data):
+    raw_values = []
+    has_field = False
+    if 'tutorial_question_ids' in data:
+        has_field = True
+        values = data.get('tutorial_question_ids') or []
+        raw_values.extend(values if isinstance(values, list) else [values])
+    if 'tutorial_question_id' in data:
+        has_field = True
+        raw_values.append(data.get('tutorial_question_id'))
+
+    selected_ids = []
+    for raw_value in raw_values:
+        if raw_value in (None, '', False):
+            continue
+        try:
+            question_id = int(raw_value)
+        except (TypeError, ValueError):
+            raise ValueError('Invalid tutorial question.')
+        if question_id not in selected_ids:
+            selected_ids.append(question_id)
+
+    if len(selected_ids) > 1:
+        raise ValueError('Only one tutorial question can be selected per game.')
+    return (selected_ids[0] if selected_ids else None), has_field
+
+
+def _apply_tutorial_question_selection(game, data, selected_question_ids, fields_to_update=None):
+    tutorial_question_id, has_field = _extract_tutorial_question_id(data)
+    selected_ids = set(_normalize_question_ids(selected_question_ids))
+
+    if has_field and tutorial_question_id is not None and tutorial_question_id not in selected_ids:
+        raise ValueError('Tutorial question must be one of the selected questions.')
+
+    if has_field:
+        next_tutorial_id = tutorial_question_id
+    else:
+        current_tutorial_id = getattr(game, 'tutorial_question_id', None)
+        next_tutorial_id = current_tutorial_id if current_tutorial_id in selected_ids else None
+
+    if getattr(game, 'tutorial_question_id', None) == next_tutorial_id:
+        return
+
+    game.tutorial_question_id = next_tutorial_id
+    if fields_to_update is not None:
+        fields_to_update.append('tutorial_question')
+    else:
+        game.save(update_fields=['tutorial_question'])
+
+
+def _extract_blackjack_tutorial_set_number(data):
+    raw_values = []
+    has_field = False
+    if 'tutorial_set_numbers' in data:
+        has_field = True
+        values = data.get('tutorial_set_numbers') or []
+        raw_values.extend(values if isinstance(values, list) else [values])
+    if 'tutorial_set_number' in data:
+        has_field = True
+        raw_values.append(data.get('tutorial_set_number'))
+
+    selected_set_numbers = []
+    for raw_value in raw_values:
+        if raw_value in (None, '', False):
+            continue
+        try:
+            set_number = int(raw_value)
+        except (TypeError, ValueError):
+            raise ValueError('Invalid tutorial set.')
+        if set_number < 1:
+            raise ValueError('Invalid tutorial set.')
+        if set_number not in selected_set_numbers:
+            selected_set_numbers.append(set_number)
+
+    if len(selected_set_numbers) > 1:
+        raise ValueError('Only one tutorial set can be selected per Black Jack quiz.')
+    return (selected_set_numbers[0] if selected_set_numbers else None), has_field
+
+
+def _apply_blackjack_tutorial_set_selection(quiz, data, fields_to_update=None):
+    tutorial_set_number, has_field = _extract_blackjack_tutorial_set_number(data)
+    configured_sets = quiz.get_explicit_question_sets(active_only=False)
+
+    if has_field and tutorial_set_number is not None and tutorial_set_number > len(configured_sets):
+        raise ValueError('Tutorial set must be one of the configured sets.')
+
+    if has_field:
+        next_tutorial_set_number = tutorial_set_number
+    else:
+        current_tutorial_set_number = getattr(quiz, 'tutorial_set_number', None)
+        next_tutorial_set_number = (
+            current_tutorial_set_number
+            if current_tutorial_set_number and current_tutorial_set_number <= len(configured_sets)
+            else None
+        )
+
+    if getattr(quiz, 'tutorial_set_number', None) == next_tutorial_set_number:
+        return
+
+    quiz.tutorial_set_number = next_tutorial_set_number
+    if fields_to_update is not None:
+        fields_to_update.append('tutorial_set_number')
+    else:
+        quiz.save(update_fields=['tutorial_set_number'])
 
 
 @admin_required
@@ -2416,16 +2573,16 @@ def get_quiz_selected_questions(request, quiz_id: int):
             'id': q.id,
             'question_text': q.question_text,
             'question_type': q.question_type,
-            'points': q.points,
             'time_limit': q.time_limit,
             'created_at': q.created_at.strftime('%Y-%m-%d %H:%M:%S'),
             'is_active': q.is_active,
+            'is_tutorial': q.id == quiz.tutorial_question_id,
         } for q in qs]
         _order = quiz.question_order or []
         if _order:
             _omap = {i: pos for pos, i in enumerate(_order)}
             questions.sort(key=lambda q: _omap.get(q['id'], len(_order)))
-        return JsonResponse({'success': True, 'questions': questions, 'count': len(questions)})
+        return JsonResponse({'success': True, 'questions': questions, 'count': len(questions), 'tutorial_question_id': quiz.tutorial_question_id})
     except Exception as e:
         return JsonResponse({'success': False, 'error': str(e)}, status=400)
 
@@ -2465,7 +2622,9 @@ def update_custom_quiz(request):
             qs = QuizQuestion.objects.filter(id__in=question_ids)
             quiz.selected_questions.set(qs)
             quiz.question_order = [int(i) for i in question_ids]
-            quiz.save(update_fields=['question_order'])
+            fields_to_update = ['question_order']
+            _apply_tutorial_question_selection(quiz, data, qs.values_list('id', flat=True), fields_to_update)
+            quiz.save(update_fields=list(dict.fromkeys(fields_to_update)))
 
         return JsonResponse({'success': True})
     except json.JSONDecodeError:
@@ -2490,12 +2649,13 @@ def get_assign_selected_questions(request, quiz_id: int):
             'left_items': getattr(q, 'left_items', []),
             'right_items': getattr(q, 'right_items', []),
             'correct_matches': getattr(q, 'correct_matches', {}),
+            'is_tutorial': q.id == quiz.tutorial_question_id,
         } for q in qs]
         _order = quiz.question_order or []
         if _order:
             _omap = {i: pos for pos, i in enumerate(_order)}
             questions.sort(key=lambda q: _omap.get(q['id'], len(_order)))
-        return JsonResponse({'success': True, 'questions': questions, 'count': len(questions)})
+        return JsonResponse({'success': True, 'questions': questions, 'count': len(questions), 'tutorial_question_id': quiz.tutorial_question_id})
     except Exception as e:
         return JsonResponse({'success': False, 'error': str(e)}, status=400)
 
@@ -2534,7 +2694,9 @@ def update_assign_custom_quiz(request):
             qs = AssignQuestion.objects.filter(id__in=question_ids)
             quiz.selected_questions.set(qs)
             quiz.question_order = [int(i) for i in question_ids]
-            quiz.save(update_fields=['question_order'])
+            fields_to_update = ['question_order']
+            _apply_tutorial_question_selection(quiz, data, qs.values_list('id', flat=True), fields_to_update)
+            quiz.save(update_fields=list(dict.fromkeys(fields_to_update)))
 
         return JsonResponse({'success': True})
     except json.JSONDecodeError:
@@ -2580,12 +2742,13 @@ def get_estimation_selected_questions(request, quiz_id: int):
             'unit': getattr(q, 'unit', None),
             'created_at': q.created_at.strftime('%Y-%m-%d %H:%M:%S'),
             'is_active': getattr(q, 'is_active', True),
+            'is_tutorial': q.id == quiz.tutorial_question_id,
         } for q in qs]
         _order = quiz.question_order or []
         if _order:
             _omap = {i: pos for pos, i in enumerate(_order)}
             questions.sort(key=lambda q: _omap.get(q['id'], len(_order)))
-        return JsonResponse({'success': True, 'questions': questions, 'count': len(questions), 'scoring_mode': getattr(quiz, 'scoring_mode', None)})
+        return JsonResponse({'success': True, 'questions': questions, 'count': len(questions), 'scoring_mode': getattr(quiz, 'scoring_mode', None), 'tutorial_question_id': quiz.tutorial_question_id})
     except Exception as e:
         return JsonResponse({'success': False, 'error': str(e)}, status=400)
 
@@ -2628,7 +2791,9 @@ def update_estimation_custom_quiz(request):
             qs = EstimationQuestion.objects.filter(id__in=question_ids)
             quiz.selected_questions.set(qs)
             quiz.question_order = [int(i) for i in question_ids]
-            quiz.save(update_fields=['question_order'])
+            fields_to_update = ['question_order']
+            _apply_tutorial_question_selection(quiz, data, qs.values_list('id', flat=True), fields_to_update)
+            quiz.save(update_fields=list(dict.fromkeys(fields_to_update)))
 
         return JsonResponse({'success': True})
     except json.JSONDecodeError:
@@ -2669,12 +2834,13 @@ def get_where_selected_questions(request, quiz_id: int):
             'time_limit': getattr(q, 'time_limit', None),
             'created_at': q.created_at.strftime('%Y-%m-%d %H:%M:%S'),
             'is_active': getattr(q, 'is_active', True),
+            'is_tutorial': q.id == quiz.tutorial_question_id,
         } for q in qs]
         _order = quiz.question_order or []
         if _order:
             _omap = {i: pos for pos, i in enumerate(_order)}
             questions.sort(key=lambda q: _omap.get(q['id'], len(_order)))
-        return JsonResponse({'success': True, 'questions': questions, 'count': len(questions)})
+        return JsonResponse({'success': True, 'questions': questions, 'count': len(questions), 'tutorial_question_id': quiz.tutorial_question_id})
     except Exception as e:
         return JsonResponse({'success': False, 'error': str(e)}, status=400)
 
@@ -2713,7 +2879,9 @@ def update_where_custom_quiz(request):
             qs = WhereQuestion.objects.filter(id__in=question_ids)
             quiz.selected_questions.set(qs)
             quiz.question_order = [int(i) for i in question_ids]
-            quiz.save(update_fields=['question_order'])
+            fields_to_update = ['question_order']
+            _apply_tutorial_question_selection(quiz, data, qs.values_list('id', flat=True), fields_to_update)
+            quiz.save(update_fields=list(dict.fromkeys(fields_to_update)))
 
         return JsonResponse({'success': True})
     except json.JSONDecodeError:
@@ -2776,6 +2944,7 @@ def get_blackjack_selected_questions(request, quiz_id: int):
             'scoring_mode': getattr(quiz, 'scoring_mode', 'simple'),
             'question_sets': explicit_sets,
             'set_sizes': ','.join(str(len(question_set)) for question_set in explicit_sets),
+            'tutorial_set_number': quiz.tutorial_set_number,
         })
     except Exception as e:
         return JsonResponse({'success': False, 'error': str(e)}, status=400)
@@ -2843,7 +3012,9 @@ def update_black_jack_custom_quiz(request):
             )
             quiz.selected_questions.set(qs)
             quiz.question_order = explicit_sets if explicit_sets else ordered_question_ids
-            quiz.save(update_fields=['question_order'])
+            fields_to_update = ['question_order']
+            _apply_blackjack_tutorial_set_selection(quiz, data, fields_to_update)
+            quiz.save(update_fields=list(dict.fromkeys(fields_to_update)))
 
         return JsonResponse({'success': True})
     except json.JSONDecodeError:
@@ -2885,12 +3056,13 @@ def get_who_that_selected_questions(request, quiz_id: int):
             'time_limit': getattr(q, 'time_limit', None),
             'created_at': q.created_at.strftime('%Y-%m-%d %H:%M:%S'),
             'is_active': getattr(q, 'is_active', True),
+            'is_tutorial': q.id == quiz.tutorial_question_id,
         } for q in qs]
         _order = quiz.question_order or []
         if _order:
             _omap = {i: pos for pos, i in enumerate(_order)}
             questions.sort(key=lambda q: _omap.get(q['id'], len(_order)))
-        return JsonResponse({'success': True, 'questions': questions, 'count': len(questions)})
+        return JsonResponse({'success': True, 'questions': questions, 'count': len(questions), 'tutorial_question_id': quiz.tutorial_question_id})
     except Exception as e:
         return JsonResponse({'success': False, 'error': str(e)}, status=400)
 
@@ -2929,7 +3101,9 @@ def update_who_that_custom_quiz(request):
             qs = WhoThatQuestion.objects.filter(id__in=question_ids)
             quiz.selected_questions.set(qs)
             quiz.question_order = [int(i) for i in question_ids]
-            quiz.save(update_fields=['question_order'])
+            fields_to_update = ['question_order']
+            _apply_tutorial_question_selection(quiz, data, qs.values_list('id', flat=True), fields_to_update)
+            quiz.save(update_fields=list(dict.fromkeys(fields_to_update)))
 
         return JsonResponse({'success': True})
     except json.JSONDecodeError:
@@ -2971,12 +3145,13 @@ def get_who_selected_questions(request, quiz_id: int):
             'time_limit': getattr(q, 'time_limit', None),
             'created_at': q.created_at.strftime('%Y-%m-%d %H:%M:%S'),
             'is_active': getattr(q, 'is_active', True),
+            'is_tutorial': q.id == quiz.tutorial_question_id,
         } for q in qs]
         _order = quiz.question_order or []
         if _order:
             _omap = {i: pos for pos, i in enumerate(_order)}
             questions.sort(key=lambda q: _omap.get(q['id'], len(_order)))
-        return JsonResponse({'success': True, 'questions': questions, 'count': len(questions)})
+        return JsonResponse({'success': True, 'questions': questions, 'count': len(questions), 'tutorial_question_id': quiz.tutorial_question_id})
     except Exception as e:
         return JsonResponse({'success': False, 'error': str(e)}, status=400)
 
@@ -3015,7 +3190,9 @@ def update_who_custom_quiz(request):
             qs = WhoQuestion.objects.filter(id__in=question_ids)
             quiz.selected_questions.set(qs)
             quiz.question_order = [int(i) for i in question_ids]
-            quiz.save(update_fields=['question_order'])
+            fields_to_update = ['question_order']
+            _apply_tutorial_question_selection(quiz, data, qs.values_list('id', flat=True), fields_to_update)
+            quiz.save(update_fields=list(dict.fromkeys(fields_to_update)))
 
         return JsonResponse({'success': True})
     except json.JSONDecodeError:
@@ -3093,6 +3270,7 @@ def quiz_monitor(request, room_code):
         'available_questions': available_questions,
         'quiz_session': quiz_session,
         'lobby_url': _get_lobby_url(request, room_code),
+        'current_unit_is_tutorial': is_current_unit_tutorial_question('quiz', quiz.room_code, hub_session, quiz.current_question_id),
     }
     return render(request, 'admin_dashboard/quiz_monitor.html', context)
 
@@ -3315,6 +3493,7 @@ def create_who_custom_quiz(request):
         if question_ids:
             qs = WhoQuestion.objects.filter(id__in=question_ids, created_by=request.user)
             quiz.selected_questions.set(qs)
+            _apply_tutorial_question_selection(quiz, data, qs.values_list('id', flat=True))
 
         WhoSession.objects.create(quiz=quiz)
 
@@ -3347,6 +3526,7 @@ def create_who_that_custom_quiz(request):
         if question_ids:
             qs = WhoThatQuestion.objects.filter(id__in=question_ids, is_active=True)
             quiz.selected_questions.set(qs)
+            _apply_tutorial_question_selection(quiz, data, qs.values_list('id', flat=True))
 
         WhoThatSession.objects.create(quiz=quiz)
 
@@ -3382,6 +3562,7 @@ def create_custom_quiz(request):
         if question_ids:
             qs = QuizQuestion.objects.filter(id__in=question_ids, is_active=True)
             quiz.selected_questions.set(qs)
+            _apply_tutorial_question_selection(quiz, data, qs.values_list('id', flat=True))
 
         # Create session
         QuizSession.objects.create(quiz=quiz)
@@ -3446,7 +3627,6 @@ def add_question(request):
     try:
         question_text = request.POST.get('question_text', '').strip()
         question_type = _quiz_effective_question_type(request.POST.get('question_type', 'multiple_choice'))
-        points = int(request.POST.get('points', 10))
         time_limit = int(request.POST.get('time_limit', 30))
         explanation = request.POST.get('explanation', '').strip()
         
@@ -3474,7 +3654,7 @@ def add_question(request):
         question = QuizQuestion.objects.create(
             question_text=question_text,
             question_type=question_type,
-            points=points,
+            points=1,
             time_limit=time_limit,
             correct_answer=short_answer_data['correct_answer'] if short_answer_data else correct_answer,
             correct_answer_2=short_answer_data['correct_answer_2'] if short_answer_data else '',
@@ -3527,7 +3707,6 @@ def get_quiz_question_detail(request, question_id):
             'id': question.id,
             'question_text': question.question_text,
             'question_type': question.get_effective_question_type(),
-            'points': question.points,
             'time_limit': question.time_limit,
             'option_a': question.option_a or '',
             'option_b': question.option_b or '',
@@ -3567,7 +3746,6 @@ def update_quiz_question(request):
 
         question_text = request.POST.get('question_text', '').strip()
         question_type = _quiz_effective_question_type(request.POST.get('question_type', question.question_type))
-        points = int(request.POST.get('points', question.points))
         time_limit = int(request.POST.get('time_limit', question.time_limit))
         explanation = request.POST.get('explanation', question.explanation or '').strip()
 
@@ -3586,7 +3764,6 @@ def update_quiz_question(request):
 
         question.question_text = question_text
         question.question_type = question_type
-        question.points = points
         question.time_limit = time_limit
         question.correct_answer = short_answer_data['correct_answer'] if short_answer_data else correct_answer
         question.correct_answer_2 = short_answer_data['correct_answer_2'] if short_answer_data else ''
@@ -4081,6 +4258,7 @@ def where_monitor(request, room_code):
         'available_questions': available_questions,
         'quiz_session': quiz_session,
         'lobby_url': _get_lobby_url(request, room_code),
+        'current_unit_is_tutorial': is_current_unit_tutorial_question('where', quiz.room_code, hub_session, quiz.current_question_id),
     }
     return render(request, 'admin_dashboard/where_monitor.html', context)
 
@@ -4134,6 +4312,7 @@ def create_where_custom_quiz(request):
         if question_ids:
             qs = WhereQuestion.objects.filter(id__in=question_ids, is_active=True)
             quiz.selected_questions.set(qs)
+            _apply_tutorial_question_selection(quiz, data, qs.values_list('id', flat=True))
 
         WhereSession.objects.create(quiz=quiz)
 
@@ -4957,6 +5136,7 @@ def assign_monitor(request, room_code):
         'hub_session': hub_session or '',
         'current_round_index': current_round_index,
         'total_rounds_current': total_rounds_current,
+        'current_unit_is_tutorial': is_current_unit_tutorial_question('assign', quiz.room_code, hub_session, quiz.current_question_id),
     }
     return render(request, 'admin_dashboard/assign_monitor.html', context)
 
@@ -5011,6 +5191,7 @@ def create_assign_custom_quiz(request):
         if question_ids:
             qs = AssignQuestion.objects.filter(id__in=question_ids, is_active=True)
             quiz.selected_questions.set(qs)
+            _apply_tutorial_question_selection(quiz, data, qs.values_list('id', flat=True))
 
         # Create session
         AssignSession.objects.create(quiz=quiz)
@@ -5882,6 +6063,7 @@ def create_estimation_custom_quiz(request):
         if question_ids:
             qs = EstimationQuestion.objects.filter(id__in=question_ids, is_active=True)
             quiz.selected_questions.set(qs)
+            _apply_tutorial_question_selection(quiz, data, qs.values_list('id', flat=True))
 
         EstimationSession.objects.create(quiz=quiz)
 
@@ -5958,6 +6140,7 @@ def estimation_monitor(request, room_code):
         # not a per-question persisted time_limit field.
         'default_question_time_limit': default_question_time_limit,
         'lobby_url': _get_lobby_url(request, room_code),
+        'current_unit_is_tutorial': is_current_unit_tutorial_question('estimation', quiz.room_code, hub_session, quiz.current_question_id),
     }
     return render(request, 'admin_dashboard/estimation_monitor.html', context)
 
@@ -6344,6 +6527,7 @@ def who_monitor(request, room_code):
         'current_question_time_per_person': current_question_time_per_person,
         'current_question_started_at': current_question_started_at,
         'who_timer_server_now': who_timer_server_now,
+        'current_unit_is_tutorial': is_current_unit_tutorial_question('who', quiz.room_code, hub_session, quiz.current_question_id),
     }
     return render(request, 'admin_dashboard/who_lying_monitor.html', context)
 
@@ -7039,6 +7223,7 @@ def who_that_monitor(request, room_code):
         'review_question_id': review_question.id if review_question else None,
         'current_question_time_left': current_question_time_left,
         'lobby_url': _get_lobby_url(request, room_code),
+        'current_unit_is_tutorial': is_current_unit_tutorial_question('who_that', quiz.room_code, active_hub_session_code, quiz.current_question_id),
     }
     return render(request, 'admin_dashboard/who_that_monitor.html', context)
 
@@ -7892,6 +8077,7 @@ def create_black_jack_custom_quiz(request):
         # Attach selected questions (only active ones the user can access)
         if ordered_question_ids:
             quiz.selected_questions.set(active_questions)
+        _apply_blackjack_tutorial_set_selection(quiz, data)
 
         # Create session
         BlackJackSession.objects.create(quiz=quiz)
@@ -7985,6 +8171,7 @@ def blackjack_monitor(request, room_code):
                 quiz_session.get_remaining_question_ids_for_set(set_index, active_only=True)
             ),
         })
+    tutorial_state = get_unit_tutorial_state('blackjack', quiz.room_code, hub_session)
     
     context = {
         'quiz': quiz,
@@ -8007,6 +8194,10 @@ def blackjack_monitor(request, room_code):
         'selected_set_number': selected_set_number,
         'selected_set_has_remaining_questions': bool(configured_question_ids),
         'blackjack_set_overview': set_overview,
+        'current_unit_is_tutorial': bool(
+            tutorial_state.get('current_unit_is_tutorial')
+            and current_set_number == quiz.tutorial_set_number
+        ),
     }
     return render(request, 'admin_dashboard/blackjack_monitor.html', context)
 
@@ -8646,7 +8837,6 @@ def get_quiz_questions(request):
         questions = questions.filter(
             Q(question_text__icontains=search_query) |
             Q(question_type__icontains=search_query) |
-            Q(points__icontains=search_query) |
             Q(time_limit__icontains=search_query)
         )
     
@@ -8661,7 +8851,6 @@ def get_quiz_questions(request):
             'id': question.id,
             'question_text': question.question_text,
             'question_type': question.get_effective_question_type(),
-            'points': question.points,
             'time_limit': question.time_limit,
             'created_at': question.created_at.strftime('%Y-%m-%d %H:%M:%S'),
             'is_active': question.is_active,

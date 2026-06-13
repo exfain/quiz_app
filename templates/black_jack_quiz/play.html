@@ -96,6 +96,7 @@
         <!-- Main Content -->
         <main class="quiz-main">
             <div class="container">
+                {% include 'includes/_unit_tutorial_notice.html' with tutorial_notice_label='Tutorialset' %}
                 <div class="row g-4 align-items-start">
                     <div class="col-lg-8">
                         <!-- Waiting State -->
@@ -373,6 +374,9 @@
                                         {% endfor %}
                                     </div>
                                 </div>
+                                {% with post_game_game_key="blackjack" %}
+                                    {% include 'includes/_post_game_results.html' %}
+                                {% endwith %}
                                 <!-- <div class="quiz-actions">
                                     <a href="/blackjack/result/{{ quiz.room_code }}/{{ participant.name }}/" class="btn btn-primary btn-lg">
                                         <i data-lucide="bar-chart-3"></i>
@@ -1556,13 +1560,19 @@
                         case 'tutorial_start':
                             window.gameTutorial?.showFromPayload(data);
                             break;
-                            
+
+                        case 'tutorial_force_close':
+                            window.gameTutorial?.forceClose();
+                            break;
+
                         case 'question_started':
                             window.gameTutorial?.forceClose();
+                            window.unitTutorialNotice?.setFromPayload(data, 'Tutorialset');
                             this.onQuestionStarted(data.question);
                             break;
                             
                         case 'question_ended':
+                            window.unitTutorialNotice?.hide();
                             this.onQuestionEnded(data);
                             break;
 
@@ -1622,6 +1632,7 @@
                 }
 
                 onQuestionStarted(question) {
+                    this.currentQuestionIsTutorial = !!question?.is_tutorial_round;
                     const questionInSet = question.question_in_set || question.question_number || 0;
                     const setNumber = question.set_number || 1;
 
@@ -1636,10 +1647,12 @@
                     this.questionStartTime = Date.now();
                     this.currentQuestionId = question.id || null;
                     this.currentQuestionEndTime = question.question_end_time || null;
-                    this.currentSetNumber = setNumber;
+                    if (!this.currentQuestionIsTutorial) {
+                        this.currentSetNumber = setNumber;
+                    }
                     this.totalSets = question.total_sets || this.totalSets;
                     this.totalQuestions = question.set_question_count || question.total_questions || this.totalQuestions;
-                    this.updateSetScoreRowStates();
+                    if (!this.currentQuestionIsTutorial) this.updateSetScoreRowStates();
                     
                     this.loadQuestion(question);
                     this.startQuestionTimer(question.time_limit || 30, question.question_end_time || null);
@@ -1695,7 +1708,7 @@
                         this.applyNoAnswerElimination(noAnswerElimination);
                     }
 
-                    if (data.set_complete) {
+                    if (data.set_complete && !data.is_tutorial_round) {
                         this.applySetResults(data.set_number, data.set_results);
                         this.storeLastCompletedSetSummary(data.set_number, data.set_results);
                         this.renderCompletedSetScreens();

@@ -16,6 +16,8 @@
         <div class="player-pill">{{ participant.name }}</div>
     </header>
 
+    {% include 'includes/_unit_tutorial_notice.html' %}
+
     <section class="wwm-card">
         <div id="statusText" class="status-text">Verbinde...</div>
         <div id="timerBox" class="timer-box d-none"><span id="timerValue">0</span>s</div>
@@ -31,6 +33,9 @@
             <div class="ended-card">
                 <h2 id="endScreenTitle">Spiel beendet</h2>
                 <p id="endScreenText">Das Spiel wurde beendet.</p>
+                {% with post_game_game_key="wer_weiss_mehr" %}
+                    {% include 'includes/_post_game_results.html' %}
+                {% endwith %}
             </div>
         </div>
         <div id="lobbyActions" class="lobby-actions d-none">
@@ -71,6 +76,7 @@ body { margin: 0; min-height: 100vh; background: radial-gradient(circle at top l
 </style>
 
 {% include 'includes/_hub_return_to_lobby_player.html' %}
+{% include 'includes/_game_tutorial_overlay.html' %}
 
 <script>
 const ROOM_CODE = '{{ quiz.room_code }}';
@@ -118,6 +124,8 @@ function connectSocket() {
         const data = JSON.parse(event.data);
         if (['state_updated', 'quiz_started', 'quiz_ended'].includes(data.type)) fetchState();
         if (data.type === 'state') renderState(data);
+        if (data.type === 'tutorial_start') window.gameTutorial?.showFromPayload(data);
+        if (data.type === 'tutorial_force_close') window.gameTutorial?.forceClose();
         if (data.type === 'error') showMessage(data.message || 'Verbindungsfehler.', 'danger');
     };
     ws.onerror = () => {
@@ -246,6 +254,7 @@ function submitAnswer(answerText) {
 function renderState(state) {
     latestState = state;
     const question = state.question;
+    window.unitTutorialNotice?.setFromPayload(state);
     const own = state.participant_state || {};
     const answerArea = document.getElementById('answerArea');
     const messageBox = document.getElementById('messageBox');

@@ -11,6 +11,19 @@ from django.views.decorators.http import require_POST
 
 from games_hub.active_game_guard import resolve_session_game_activation_for_room
 from games_hub.lobby_return_flow import ensure_session_players_ready_for_game_start_for_room
+from games_hub.tutorial_runtime import (
+    activate_tutorial_runtime,
+    deactivate_tutorial_runtime,
+    force_close_tutorial_runtime,
+    get_tutorial_start_warning,
+)
+from games_hub.unit_tutorial_runtime import (
+    finish_current_unit_tutorial,
+    get_unit_tutorial_state,
+    prepare_unit_tutorial_runtime,
+    start_unit_tutorial_if_needed,
+    validate_unit_tutorial_request,
+)
 
 from .models import WerWeissMehrGame, WerWeissMehrParticipant, WerWeissMehrSession
 from .services import (
@@ -97,11 +110,16 @@ def play(request, room_code, participant_name):
     participant.is_active = True
     participant.last_activity = timezone.now()
     participant.save(update_fields=['is_active', 'last_activity'])
+    tutorial_state = get_unit_tutorial_state('wer_weiss_mehr', quiz.room_code, session_code)
 
     return render(request, 'wer_weiss_mehr/play.html', {
         'quiz': quiz,
         'participant': participant,
         'hub_session': session_code or '',
+        'current_unit_is_tutorial': bool(
+            tutorial_state.get('current_unit_is_tutorial')
+            and str(tutorial_state.get('tutorial_question_id') or '') == str(quiz.current_question_id or '')
+        ),
     })
 
 
@@ -194,6 +212,20 @@ def start_game(request, room_code):
             'participants_not_in_lobby': lobby_ready.get('participants_not_in_lobby', []),
         }, status=409)
 
+    play_tutorial = bool(data.get('play_tutorial', False))
+    unit_tutorial_validation = validate_unit_tutorial_request(
+        'wer_weiss_mehr',
+        quiz.room_code,
+        play_tutorial,
+    )
+    if not unit_tutorial_validation.get('success'):
+        return JsonResponse({
+            'success': False,
+            'type': unit_tutorial_validation.get('type', 'error'),
+            'error': unit_tutorial_validation.get('message') or 'Tutorialfrage fehlt.',
+            'message': unit_tutorial_validation.get('message') or 'Tutorialfrage fehlt.',
+        })
+
     activation = resolve_session_game_activation_for_room(
         'wer_weiss_mehr',
         quiz.room_code,
@@ -211,11 +243,26 @@ def start_game(request, room_code):
             'locked_participant_count': activation.get('locked_participant_count'),
         }, status=status)
 
+    show_tutorial = bool(data.get('show_tutorial', False))
     quiz.refresh_from_db()
+    prepare_unit_tutorial_runtime(
+        'wer_weiss_mehr',
+        quiz.room_code,
+        hub_session,
+        play_tutorial,
+        validate=False,
+    )
     quiz.start_quiz()
+    tutorial_payload = activate_tutorial_runtime(
+        'wer_weiss_mehr',
+        quiz.room_code,
+        hub_session,
+        quiz,
+        show_tutorial,
+    )
     WerWeissMehrSession.objects.get_or_create(quiz=quiz)
     state_payload = build_game_state(quiz, hub_session_code=hub_session)
-    _broadcast_game_started(quiz, hub_session)
+    _broadcast_game_started(quiz, hub_session, tutorial_payload)
     return JsonResponse(state_payload)
 
 
@@ -239,6 +286,22 @@ def start_game_set(request, room_code):
         return JsonResponse({'success': False, 'error': 'Set-ID fehlt oder ist ungueltig.'}, status=400)
 
     hub_session = (data.get('hub_session') or data.get('hub_session_code') or '').strip() or None
+    warning = get_tutorial_start_warning('wer_weiss_mehr', quiz.room_code, hub_session)
+    if warning and not data.get('force_tutorial_continue'):
+        return JsonResponse({
+            'success': False,
+            'type': 'tutorial_ack_warning',
+            'original_message': data,
+            **warning,
+        })
+    if data.get('force_tutorial_continue'):
+        if force_close_tutorial_runtime('wer_weiss_mehr', quiz.room_code, hub_session, quiz):
+            _broadcast_tutorial_force_close(quiz)
+
+    deactivate_tutorial_runtime('wer_weiss_mehr', quiz.room_code, hub_session, quiz)
+    unit_tutorial = start_unit_tutorial_if_needed('wer_weiss_mehr', quiz.room_code, hub_session)
+    if unit_tutorial.get('is_tutorial_round'):
+        question_id = unit_tutorial.get('tutorial_question_id')
     try:
         start_set(
             quiz,
@@ -252,7 +315,15 @@ def start_game_set(request, room_code):
     quiz.refresh_from_db()
     state_payload = build_game_state(quiz, hub_session_code=hub_session)
     _broadcast_state_updated(quiz, hub_session)
-    _broadcast_hub_event(quiz, hub_session, 'question_started', {'question_id': question_id})
+    _broadcast_hub_event(
+        quiz,
+        hub_session,
+        'question_started',
+        {
+            'question_id': question_id,
+            'is_tutorial_round': bool(unit_tutorial.get('is_tutorial_round')),
+        },
+    )
     return JsonResponse(state_payload)
 
 
@@ -338,6 +409,7 @@ def finish_current_set(request, room_code):
     hub_session = (data.get('hub_session') or data.get('hub_session_code') or '').strip() or None
     try:
         finish_set(quiz)
+        finish_current_unit_tutorial('wer_weiss_mehr', quiz.room_code, hub_session)
     except ValueError as exc:
         return JsonResponse({'success': False, 'error': str(exc)}, status=400)
     except Exception as exc:  # pylint: disable=broad-except
@@ -441,6 +513,7 @@ def end_game(request, room_code):
 
     hub_session = (data.get('hub_session') or data.get('hub_session_code') or '').strip() or None
     try:
+        deactivate_tutorial_runtime('wer_weiss_mehr', quiz.room_code, hub_session, quiz)
         quiz.end_quiz()
         quiz.refresh_from_db()
         final_scores_qs = quiz.participants.all()
@@ -461,7 +534,7 @@ def end_game(request, room_code):
         }, status=500)
 
 
-def _broadcast_game_started(quiz, hub_session):
+def _broadcast_game_started(quiz, hub_session, tutorial_payload=None):
     channel_layer = get_channel_layer()
     if not channel_layer:
         return
@@ -475,6 +548,11 @@ def _broadcast_game_started(quiz, hub_session):
         'type': 'state_updated',
         'payload': {'hub_session_code': hub_session},
     })
+    if tutorial_payload:
+        async_to_sync(channel_layer.group_send)(room_group, {
+            'type': 'tutorial_start',
+            **tutorial_payload,
+        })
 
     if not hub_session:
         return
@@ -508,6 +586,15 @@ def _broadcast_state_updated(quiz, hub_session):
     async_to_sync(channel_layer.group_send)(f'werweissmehr_{quiz.room_code}', {
         'type': 'state_updated',
         'payload': {'hub_session_code': hub_session},
+    })
+
+
+def _broadcast_tutorial_force_close(quiz):
+    channel_layer = get_channel_layer()
+    if not channel_layer:
+        return
+    async_to_sync(channel_layer.group_send)(f'werweissmehr_{quiz.room_code}', {
+        'type': 'tutorial_force_close',
     })
 
 

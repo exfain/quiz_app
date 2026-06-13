@@ -49,6 +49,7 @@
         <!-- Main Content -->
         <main class="quiz-main">
             <div class="container">
+                {% include 'includes/_unit_tutorial_notice.html' %}
                 <div class="row justify-content-center">
                     <div class="col-xl-10">
                         <div class="who-that-play-layout">
@@ -250,6 +251,9 @@
                                         <span class="score-label">points</span>
                                     </div>
                                 </div>
+                                {% with post_game_game_key="who_that" %}
+                                    {% include 'includes/_post_game_results.html' %}
+                                {% endwith %}
                                 <!-- <div class="quiz-actions">
                                     <a href="/who-is-that/result/{{ quiz.room_code }}/{{ participant.name }}/" class="btn btn-primary btn-lg">
                                         <i data-lucide="bar-chart-3"></i>
@@ -1434,13 +1438,19 @@
                         case 'tutorial_start':
                             window.gameTutorial?.showFromPayload(data);
                             break;
-                            
+
+                        case 'tutorial_force_close':
+                            window.gameTutorial?.forceClose();
+                            break;
+
                         case 'question_started':
                             window.gameTutorial?.forceClose();
+                            window.unitTutorialNotice?.setFromPayload(data);
                             this.onQuestionStarted(data.question);
                             break;
                             
                         case 'question_ended':
+                            window.unitTutorialNotice?.hide();
                             this.onQuestionEnded(data);
                             break;
                             
@@ -1503,6 +1513,7 @@
                 onQuestionStarted(question) {
                     const submittedState = this.getSubmittedStateForQuestion(question.id);
                     this.hasAnswered = false;
+                    this.currentQuestionIsTutorial = !!question?.is_tutorial_round;
                     const nextQuestionNumber = Number(question.question_number);
                     this.currentQuestionNumber = Number.isNaN(nextQuestionNumber) || nextQuestionNumber <= 0
                         ? this.currentQuestionNumber + 1
@@ -1513,6 +1524,11 @@
                         : Date.now();
                     
                     this.loadQuestion(question, submittedState);
+                    if (this.currentQuestionIsTutorial) {
+                        this.currentQuestionId = null;
+                    } else {
+                        this.markQuestionAsCurrent(this.currentQuestionNumber, question.id);
+                    }
                     this.startQuestionTimer(question.time_left || question.time_limit || 30, question.question_end_time || null);
                     this.showState(submittedState ? 'answerSubmittedState' : 'questionState');
                     
@@ -1535,18 +1551,18 @@
                         (entry.hub_session_code || '') === (this.hubSession || '')
                     ));
 
-                    if (!this.hasAnswered && evaluatedPendingAnswer) {
+                    if (!this.currentQuestionIsTutorial && !this.hasAnswered && evaluatedPendingAnswer) {
                         this.hasAnswered = true;
                         this.onAnswerSubmitted(evaluatedPendingAnswer);
                     }
 
                     this.currentQuestionId = null;
 
-                    if (!this.lastAnswerEvaluation && endedQuestionNumber > 0) {
+                    if (!this.currentQuestionIsTutorial && !this.lastAnswerEvaluation && endedQuestionNumber > 0) {
                         this.setQuestionResult(endedQuestionNumber, false, null, endedQuestionPoints, 0);
                     }
 
-                    if (data.correct_answer) {
+                    if (!this.currentQuestionIsTutorial && data.correct_answer) {
                         const isCorrect = Boolean(this.lastAnswerEvaluation && this.lastAnswerEvaluation.is_correct);
                         const earnedPoints = this.lastAnswerEvaluation
                             ? (parseInt(this.lastAnswerEvaluation.points_earned || 0, 10) || 0)
@@ -1604,10 +1620,11 @@
                 }
 
                 loadQuestion(question, submittedState = null) {
-                    this.currentQuestionId = question.id;
+                    this.currentQuestionIsTutorial = !!question?.is_tutorial_round;
+                    this.currentQuestionId = this.currentQuestionIsTutorial ? null : question.id;
                     this.currentQuestionPoints = Number(question.points || 0) || 0;
                     const questionNumber = Number(question.question_number);
-                    if (!Number.isNaN(questionNumber) && questionNumber > 0) {
+                    if (!this.currentQuestionIsTutorial && !Number.isNaN(questionNumber) && questionNumber > 0) {
                         this.currentQuestionNumber = questionNumber;
                         this.markQuestionAsCurrent(questionNumber, question.id);
                     }

@@ -7,6 +7,21 @@ from .models import WhoThatQuiz, WhoThatParticipant, WhoThatQuestion, WhoThatAns
 from games_hub.active_game_guard import resolve_session_game_activation_for_room
 from games_hub.lobby_return_flow import ensure_session_players_ready_for_game_start_for_room
 from games_hub.models import HubGameStep
+from games_hub.tutorial_runtime import (
+    activate_tutorial_runtime,
+    deactivate_tutorial_runtime,
+    force_close_tutorial_runtime,
+    get_tutorial_payload,
+    get_tutorial_start_warning,
+    mark_tutorial_completed,
+)
+from games_hub.unit_tutorial_runtime import (
+    finish_current_unit_tutorial,
+    is_unit_tutorial_question,
+    prepare_unit_tutorial_runtime,
+    start_unit_tutorial_if_needed,
+    validate_unit_tutorial_request,
+)
 
 
 class WhoThatConsumer(AsyncWebsocketConsumer):
@@ -58,6 +73,8 @@ class WhoThatConsumer(AsyncWebsocketConsumer):
                 await self.handle_participant_update_pending_answer(text_data_json)
             elif message_type == 'participant_join':
                 await self.handle_participant_join(text_data_json)
+            elif message_type == 'tutorial_completed':
+                await self.handle_tutorial_completed(text_data_json)
             elif message_type == 'ping':
                 await self.handle_ping()
             elif message_type == 'admin_show_leaderboard':
@@ -87,6 +104,20 @@ class WhoThatConsumer(AsyncWebsocketConsumer):
             return
         quiz = await self.get_quiz()
         if quiz:
+            show_tutorial = bool(data.get('show_tutorial', False))
+            play_tutorial = bool(data.get('play_tutorial', False))
+            hub_session_code = await self._get_hub_session_code_for_room()
+            unit_tutorial_validation = await database_sync_to_async(validate_unit_tutorial_request)(
+                'who_that',
+                self.room_code,
+                play_tutorial,
+            )
+            if not unit_tutorial_validation.get('success'):
+                await self.send(text_data=json.dumps({
+                    'type': unit_tutorial_validation.get('type', 'error'),
+                    'message': unit_tutorial_validation.get('message') or 'Tutorialfrage fehlt.',
+                }))
+                return
             activation = await database_sync_to_async(resolve_session_game_activation_for_room)(
                 'who_that',
                 self.room_code,
@@ -100,14 +131,15 @@ class WhoThatConsumer(AsyncWebsocketConsumer):
                     payload['active_game'] = activation['active_game']
                 await self.send(text_data=json.dumps(payload))
                 return
-            show_tutorial = bool(data.get('show_tutorial', True))
+            await database_sync_to_async(prepare_unit_tutorial_runtime)(
+                'who_that',
+                self.room_code,
+                hub_session_code,
+                play_tutorial,
+                validate=False,
+            )
             await self.start_quiz_db(quiz.id)
-            tutorial_payload = None
-            if quiz.tutorial_enabled and show_tutorial:
-                await self.set_tutorial_active_db(quiz.id, True)
-                tutorial_payload = await self.get_tutorial_payload(quiz.id)
-            else:
-                await self.set_tutorial_active_db(quiz.id, False)
+            tutorial_payload = await self.activate_tutorial_runtime(quiz.id, hub_session_code, show_tutorial)
 
             # Broadcast to all participants
             await self.channel_layer.group_send(
@@ -151,7 +183,6 @@ class WhoThatConsumer(AsyncWebsocketConsumer):
         if not question:
             return
 
-        await self.set_tutorial_active_db(quiz.id, False)
         # If quiz has a predefined set, enforce membership
         try:
             has_selected = await self.quiz_has_selected_questions(quiz.id)
@@ -165,6 +196,23 @@ class WhoThatConsumer(AsyncWebsocketConsumer):
                     return
         except Exception:
             pass
+
+        if await self.guard_tutorial_before_first_unit(data, quiz.id):
+            return
+
+        hub_session = (
+            data.get('hub_session')
+            or data.get('hub_session_code')
+            or await self._get_hub_session_code_for_room()
+        )
+        unit_tutorial = await self.start_unit_tutorial_if_needed(hub_session)
+        is_tutorial_round = bool(unit_tutorial.get('is_tutorial_round'))
+        if is_tutorial_round and str(unit_tutorial.get('tutorial_question_id') or '') != str(question.id):
+            question = await self.get_question(unit_tutorial.get('tutorial_question_id'))
+            if not question:
+                return
+
+        await self.set_tutorial_active_db(quiz.id, False)
 
         # Determine the effective time limit for this send (do NOT persist on the question)
         effective_time_limit = custom_time_limit if custom_time_limit is not None else question.time_limit
@@ -182,7 +230,8 @@ class WhoThatConsumer(AsyncWebsocketConsumer):
                     'id': question.id,
                     'question_text': question.question_text,
                     'image_url': question_data['image_url'],
-                    'points': 1,
+                    'points': 0 if is_tutorial_round else 1,
+                    'is_tutorial_round': is_tutorial_round,
                     'question_number': question_timing.get('question_number', 0),
                     'time_limit': effective_time_limit,
                     'time_left': question_timing['time_left'],
@@ -200,6 +249,8 @@ class WhoThatConsumer(AsyncWebsocketConsumer):
             # Get the correct answer before clearing the question
             correct_answer_data = await self.get_current_question_answer(quiz)
             evaluated_pending_answers = await self.finalize_pending_answers(quiz.id)
+            hub_session = data.get('hub_session') or data.get('hub_session_code') or await self._get_hub_session_code_for_room()
+            unit_tutorial = await self.finish_current_unit_tutorial(hub_session)
 
             await self.clear_current_question(quiz.id)
 
@@ -210,6 +261,7 @@ class WhoThatConsumer(AsyncWebsocketConsumer):
                     'message': 'Time\'s up!',
                     'correct_answer': correct_answer_data,
                     'evaluated_pending_answers': evaluated_pending_answers,
+                    'is_tutorial_round': bool(unit_tutorial.get('is_tutorial_round')),
                 }
             )
 
@@ -276,6 +328,7 @@ class WhoThatConsumer(AsyncWebsocketConsumer):
                 'message': 'Answer submitted successfully',
                 'is_correct': answer['is_correct'],
                 'points_earned': answer['points_earned'],
+                'is_tutorial_round': answer['is_tutorial_round'],
                 'accuracy_percentage': answer['accuracy_percentage'],
                 'match_quality': answer['match_quality']
             }))
@@ -297,6 +350,7 @@ class WhoThatConsumer(AsyncWebsocketConsumer):
                         'is_manual_override': False,
                         'can_mark_correct': answer['can_mark_correct'],
                         'points_earned': answer['points_earned'],
+                        'is_tutorial_round': answer['is_tutorial_round'],
                         'accuracy_percentage': answer['accuracy_percentage'],
                         'match_quality': answer['match_quality'],
                         'time_taken': answer['time_taken'],
@@ -342,7 +396,11 @@ class WhoThatConsumer(AsyncWebsocketConsumer):
                     'type': 'quiz_started',
                     'message': 'Quiz is already in progress'
                 }))
-                tutorial_payload = await self.get_tutorial_payload(quiz.id)
+                tutorial_payload = await self.get_tutorial_payload(
+                    quiz.id,
+                    hub_session,
+                    participant_name=participant_name,
+                )
                 if tutorial_payload:
                     await self.send(text_data=json.dumps({
                         'type': 'tutorial_start',
@@ -354,6 +412,15 @@ class WhoThatConsumer(AsyncWebsocketConsumer):
                         'type': 'question_started',
                         'question': current_question_data
                     }))
+
+    async def handle_tutorial_completed(self, data):
+        participant_name = data.get('participant_name') or data.get('name')
+        hub_session = data.get('hub_session') or data.get('hub_session_code')
+        progress = await self.mark_tutorial_completed(participant_name, hub_session)
+        await self.channel_layer.group_send(
+            self.room_group_name,
+            {'type': 'tutorial_progress', **progress}
+        )
 
     async def handle_admin_show_leaderboard(self):
         await self.channel_layer.group_send(
@@ -393,7 +460,45 @@ class WhoThatConsumer(AsyncWebsocketConsumer):
             'game_title': event.get('game_title'),
             'tutorial_title': event.get('tutorial_title'),
             'tutorial_text': event.get('tutorial_text'),
+            'official_participants': event.get('official_participants', []),
+            'completed': event.get('completed', 0),
+            'total': event.get('total', 0),
+            'all_done': event.get('all_done', False),
+            'participants': event.get('participants', []),
         }))
+
+    async def tutorial_progress(self, event):
+        await self.send(text_data=json.dumps({
+            'type': 'tutorial_progress',
+            'completed': event.get('completed', 0),
+            'total': event.get('total', 0),
+            'all_done': event.get('all_done', False),
+            'participants': event.get('participants', []),
+        }))
+
+    async def tutorial_force_close(self, event):
+        await self.send(text_data=json.dumps({'type': 'tutorial_force_close'}))
+
+    async def guard_tutorial_before_first_unit(self, data, quiz_id):
+        hub_session = (
+            data.get('hub_session')
+            or data.get('hub_session_code')
+            or await self._get_hub_session_code_for_room()
+        )
+        warning = await self.get_tutorial_start_warning(hub_session)
+        if warning and not data.get('force_tutorial_continue'):
+            await self.send(text_data=json.dumps({
+                'type': 'tutorial_ack_warning',
+                'original_message': data,
+                **warning,
+            }))
+            return True
+        if data.get('force_tutorial_continue'):
+            await self.channel_layer.group_send(
+                self.room_group_name,
+                {'type': 'tutorial_force_close'},
+            )
+        return False
 
     async def question_started(self, event):
         """Send new question to client"""
@@ -496,24 +601,48 @@ class WhoThatConsumer(AsyncWebsocketConsumer):
     def set_tutorial_active_db(self, quiz_id, active):
         try:
             quiz = WhoThatQuiz.objects.get(id=quiz_id)
-            quiz.tutorial_active = bool(active)
-            quiz.save(update_fields=['tutorial_active'])
+            if active:
+                quiz.tutorial_active = True
+                quiz.save(update_fields=['tutorial_active'])
+            else:
+                deactivate_tutorial_runtime('who_that', self.room_code, None, quiz)
         except WhoThatQuiz.DoesNotExist:
             pass
 
     @database_sync_to_async
-    def get_tutorial_payload(self, quiz_id):
+    def get_tutorial_payload(self, quiz_id, hub_session_code=None, participant_name=None):
         try:
             quiz = WhoThatQuiz.objects.get(id=quiz_id)
-            if not quiz.tutorial_enabled or not quiz.tutorial_active:
-                return None
-            return {
-                'game_title': quiz.title,
-                'tutorial_title': quiz.tutorial_title or 'Tutorial',
-                'tutorial_text': quiz.tutorial_text or '',
-            }
+            payload = get_tutorial_payload('who_that', self.room_code, hub_session_code, participant_name)
+            if payload:
+                payload['game_title'] = quiz.title
+            return payload
         except WhoThatQuiz.DoesNotExist:
             return None
+
+    @database_sync_to_async
+    def activate_tutorial_runtime(self, quiz_id, hub_session_code, show_tutorial):
+        try:
+            quiz = WhoThatQuiz.objects.get(id=quiz_id)
+            return activate_tutorial_runtime('who_that', self.room_code, hub_session_code, quiz, show_tutorial)
+        except WhoThatQuiz.DoesNotExist:
+            return None
+
+    @database_sync_to_async
+    def start_unit_tutorial_if_needed(self, hub_session_code):
+        return start_unit_tutorial_if_needed('who_that', self.room_code, hub_session_code)
+
+    @database_sync_to_async
+    def finish_current_unit_tutorial(self, hub_session_code):
+        return finish_current_unit_tutorial('who_that', self.room_code, hub_session_code)
+
+    @database_sync_to_async
+    def mark_tutorial_completed(self, participant_name, hub_session_code):
+        return mark_tutorial_completed('who_that', self.room_code, hub_session_code, participant_name)
+
+    @database_sync_to_async
+    def get_tutorial_start_warning(self, hub_session_code):
+        return get_tutorial_start_warning('who_that', self.room_code, hub_session_code)
 
     @database_sync_to_async
     def get_question(self, question_id):
@@ -659,6 +788,15 @@ class WhoThatConsumer(AsyncWebsocketConsumer):
                 user_answer=user_answer,
                 time_taken=time_taken
             )
+            is_tutorial_answer = is_unit_tutorial_question(
+                'who_that',
+                self.room_code,
+                hub_session_code,
+                quiz.current_question_id,
+            )
+            if is_tutorial_answer and answer.points_earned:
+                answer.points_earned = 0
+                answer.save(update_fields=['points_earned', 'updated_at'])
 
             # Record stats in session
             if hasattr(quiz, 'session'):
@@ -676,8 +814,9 @@ class WhoThatConsumer(AsyncWebsocketConsumer):
                 'hub_session_code': participant.hub_session_code,
                 'user_answer': answer.user_answer,
                 'is_correct': answer.is_correct,
-                'can_mark_correct': not answer.is_correct,
+                'can_mark_correct': not is_tutorial_answer and not answer.is_correct,
                 'points_earned': answer.points_earned,
+                'is_tutorial_round': is_tutorial_answer,
                 'accuracy_percentage': answer.get_accuracy_percentage(),
                 'match_quality': answer.get_match_quality(),
                 'time_taken': answer.time_taken,

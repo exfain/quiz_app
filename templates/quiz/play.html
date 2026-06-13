@@ -45,6 +45,7 @@
         <!-- Main Content -->
         <main class="quiz-main">
             <div class="container">
+                {% include 'includes/_unit_tutorial_notice.html' %}
                 <div class="row g-3 align-items-start">
                     <div class="col-lg-8">
                         <!-- Waiting State -->
@@ -185,6 +186,9 @@
                                         <span class="score-label">points</span>
                                     </div>
                                 </div>
+                                {% with post_game_game_key="quiz" %}
+                                    {% include 'includes/_post_game_results.html' %}
+                                {% endwith %}
                                 <!-- <div class="quiz-actions">
                                     <a href="/quiz/result/{{ quiz.room_code }}/{{ participant.name }}/" class="btn btn-primary btn-lg">
                                         <i data-lucide="bar-chart-3"></i>
@@ -215,7 +219,9 @@
                                     <div class="quiz-score-row score-box__row is-{{ question.status }}" data-question-number="{{ question.number }}" data-question-id="{{ question.id }}">
                                         <div class="quiz-score-badge score-box__badge">{{ question.number }}</div>
                                         <div class="quiz-score-mark score-box__value">
-                                            {% if question.is_correct is True %}
+                                            {% if question.status == 'played' and question.max_points > 1 %}
+                                                <span>{{ question.points_earned|default:0 }}/{{ question.max_points }}</span>
+                                            {% elif question.is_correct is True %}
                                                 <span>✓</span>
                                             {% elif question.is_correct is False %}
                                                 <span>X</span>
@@ -1272,8 +1278,13 @@
                             window.gameTutorial?.showFromPayload(data);
                             break;
 
+                        case 'tutorial_force_close':
+                            window.gameTutorial?.forceClose();
+                            break;
+
                         case 'question_started':
                             window.gameTutorial?.forceClose();
+                            window.unitTutorialNotice?.setFromPayload(data);
                             if (typeof tutForceClose === 'function') tutForceClose();
                             if (data.question) {
                                 this.onQuestionStarted(data.question, data.question.time_limit);
@@ -1282,8 +1293,10 @@
                             
                         case 'answer_submitted':
                             this.answerSubmissionConfirmed = true;
-                            this.storePendingProgressEvaluation(data.is_correct, data.question_id);
-                            this.applyPendingProgressEvaluationIfEnded(data.question_id);
+                            if (!data.is_tutorial_round) {
+                                this.storePendingProgressEvaluation(data.is_correct, data.question_id, data.points_earned);
+                                this.applyPendingProgressEvaluationIfEnded(data.question_id);
+                            }
                             // Gesamtpunkte direkt aus der Serverantwort übernehmen
                             break;
 
@@ -1292,6 +1305,7 @@
                             break;
 
                         case 'question_ended':
+                            window.unitTutorialNotice?.hide();
                             this.onQuestionEnded(data);
                             break;
 
@@ -1394,10 +1408,15 @@
                     this.answerSubmissionConfirmed = false;
                     this.selectedAnswer = null;
                     this.currentQuestion = question;
+                    this.currentQuestionIsTutorial = !!question?.is_tutorial_round;
                     this.lastSubmittedAnswerDisplay = null;
                     this.recentlyEndedQuestionId = null;
-                    this.reorderScoreboardForQuestionStart(question.id);
-                    this.setCurrentQuestion(question.id);
+                    if (this.currentQuestionIsTutorial) {
+                        this.setCurrentQuestion(null);
+                    } else {
+                        this.reorderScoreboardForQuestionStart(question.id);
+                        this.setCurrentQuestion(question.id);
+                    }
                     const submittedAnswerText = document.getElementById('submittedAnswerText');
                     if (submittedAnswerText) submittedAnswerText.textContent = '';
                     this.questionStartTime = Date.now();
@@ -1416,8 +1435,10 @@
                     this.recentlyEndedQuestionId = endedQuestionId !== null && endedQuestionId !== undefined
                         ? Number(endedQuestionId)
                         : null;
-                    this.applyPendingProgressEvaluation(endedQuestionId);
-                    if (!awaitingFinalizedAnswer) {
+                    if (!data?.is_tutorial_round) {
+                        this.applyPendingProgressEvaluation(endedQuestionId);
+                    }
+                    if (!data?.is_tutorial_round && !awaitingFinalizedAnswer) {
                         this.markCurrentQuestionIncorrectIfNeeded();
                     }
                     this.setCurrentQuestion(null);
@@ -1445,7 +1466,7 @@
 
                 applyManualAnswerCorrection(data) {
                     if (!data || data.participant_name !== this.participantName) return;
-                    this.pushProgressEntry(!!data.is_correct, data.question_id);
+                    this.pushProgressEntry(!!data.is_correct, data.question_id, data.points_earned);
                 }
 
                 loadCurrentQuestion() {
@@ -1636,19 +1657,22 @@
                     }));
                 }
 
-                storePendingProgressEvaluation(isCorrect, questionId) {
+                storePendingProgressEvaluation(isCorrect, questionId, pointsEarned = null) {
                     const normalizedQuestionId = Number(questionId);
                     if (Number.isNaN(normalizedQuestionId)) return;
-                    this.pendingScoreEvaluations.set(normalizedQuestionId, !!isCorrect);
+                    this.pendingScoreEvaluations.set(normalizedQuestionId, {
+                        is_correct: !!isCorrect,
+                        points_earned: pointsEarned,
+                    });
                 }
 
                 applyPendingProgressEvaluation(questionId) {
                     const normalizedQuestionId = Number(questionId);
                     if (Number.isNaN(normalizedQuestionId)) return false;
                     if (!this.pendingScoreEvaluations.has(normalizedQuestionId)) return false;
-                    const isCorrect = this.pendingScoreEvaluations.get(normalizedQuestionId);
+                    const evaluation = this.pendingScoreEvaluations.get(normalizedQuestionId);
                     this.pendingScoreEvaluations.delete(normalizedQuestionId);
-                    this.pushProgressEntry(isCorrect, normalizedQuestionId);
+                    this.pushProgressEntry(evaluation.is_correct, normalizedQuestionId, evaluation.points_earned);
                     return true;
                 }
 
@@ -1659,7 +1683,7 @@
                     return this.applyPendingProgressEvaluation(normalizedQuestionId);
                 }
 
-                pushProgressEntry(isCorrect, questionId = null) {
+                pushProgressEntry(isCorrect, questionId = null, pointsEarned = null) {
                     const normalizedQuestionId = questionId !== null && questionId !== undefined
                         ? Number(questionId)
                         : Number(this.currentQuestionId);
@@ -1667,6 +1691,14 @@
                         ? this.getQuestionNumberById(questionId)
                         : this.getCurrentQuestionNumber();
                     if (!questionNumber) return;
+                    const questionMeta = (this.scoreboardQuestions || []).find(
+                        (question) => Number(question?.id) === normalizedQuestionId
+                            || Number(question?.number) === questionNumber
+                    ) || {};
+                    const maxPoints = Number(questionMeta.max_points || 1) || 1;
+                    const normalizedPoints = pointsEarned !== null && pointsEarned !== undefined
+                        ? Number(pointsEarned)
+                        : (isCorrect ? maxPoints : 0);
                     const existingIndex = (this.progressHistory || []).findIndex(
                         (entry) => Number(entry?.question_id) === normalizedQuestionId
                             || Number(entry?.question_number) === questionNumber
@@ -1675,6 +1707,8 @@
                         question_id: Number.isNaN(normalizedQuestionId) ? null : normalizedQuestionId,
                         question_number: questionNumber,
                         is_correct: !!isCorrect,
+                        points_earned: Number.isNaN(normalizedPoints) ? 0 : normalizedPoints,
+                        max_points: maxPoints,
                     };
                     if (existingIndex >= 0) {
                         this.progressHistory.splice(existingIndex, 1, entry);
@@ -1694,7 +1728,7 @@
                         (entry) => Number(entry?.question_id) === normalizedCurrentQuestionId
                     );
                     if (!exists) {
-                        this.pushProgressEntry(false, normalizedCurrentQuestionId);
+                        this.pushProgressEntry(false, normalizedCurrentQuestionId, 0);
                     }
                 }
 
@@ -1873,13 +1907,16 @@
                     );
                     const currentQuestionNumber = this.getCurrentQuestionNumber();
                     let totalCorrect = 0;
-                    const totalQuestions = (this.scoreboardQuestions || []).length;
+                    let totalQuestions = 0;
 
                     (this.scoreboardQuestions || []).forEach((question, index) => {
                         const questionNumber = Number(question?.number) || index + 1;
                         const progressEntry = progressByQuestionId.get(Number(question?.id));
-                        if (progressEntry && progressEntry.is_correct) {
-                            totalCorrect += 1;
+                        const maxPoints = Number(question?.max_points || 1) || 1;
+                        totalQuestions += maxPoints;
+                        if (progressEntry) {
+                            const earned = Number(progressEntry.points_earned);
+                            totalCorrect += Number.isNaN(earned) ? (progressEntry.is_correct ? maxPoints : 0) : earned;
                         }
                         const isCurrent = !progressEntry && currentQuestionNumber === questionNumber;
                         const rowState = progressEntry ? 'is-played' : isCurrent ? 'is-current' : 'is-upcoming';
@@ -1892,7 +1929,7 @@
                         row.innerHTML = `
                             <div class="quiz-score-badge score-box__badge">${questionNumber}</div>
                             <div class="quiz-score-mark score-box__value">
-                                ${progressEntry ? `<span>${progressEntry.is_correct ? '✓' : 'X'}</span>` : '<span class="quiz-score-empty score-box__empty">__</span>'}
+                                ${progressEntry ? `<span>${maxPoints > 1 ? `${Number(progressEntry.points_earned || 0)}/${maxPoints}` : (progressEntry.is_correct ? '&#10003;' : 'X')}</span>` : '<span class="quiz-score-empty score-box__empty">__</span>'}
                             </div>
                         `;
                         list.appendChild(row);

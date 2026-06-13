@@ -1,7 +1,16 @@
 from .models import AssignAnswer
+from games_hub.unit_tutorial_runtime import get_scorebox_excluded_tutorial_question_ids, get_unit_tutorial_state
+
+
+def _get_run_tutorial_question_id(quiz, session_code=None):
+    state = get_unit_tutorial_state('assign', quiz.room_code, session_code)
+    if not state.get('requested'):
+        return getattr(quiz, 'tutorial_question_id', None)
+    return state.get('tutorial_question_id')
 
 
 def get_ordered_quiz_questions(quiz, session_code=None):
+    tutorial_question_ids = get_scorebox_excluded_tutorial_question_ids('assign', quiz.room_code, session_code)
     configured_questions = []
     configured_by_id = {}
     if quiz.selected_questions.exists():
@@ -25,17 +34,21 @@ def get_ordered_quiz_questions(quiz, session_code=None):
     if session_code:
         played_answers = played_answers.filter(participant__hub_session_code=session_code)
     for answer in played_answers:
+        if answer.question_id in tutorial_question_ids:
+            continue
         if answer.question_id in seen_ids:
             continue
         questions.append(answer.question)
         seen_ids.add(answer.question_id)
 
-    if quiz.current_question_id and quiz.current_question_id not in seen_ids:
+    if quiz.current_question_id and quiz.current_question_id not in seen_ids and quiz.current_question_id not in tutorial_question_ids:
         current_question = configured_by_id.get(quiz.current_question_id, quiz.current_question)
         questions.append(current_question)
         seen_ids.add(quiz.current_question_id)
 
     for question in configured_questions:
+        if question.id in tutorial_question_ids:
+            continue
         if question.id in seen_ids:
             continue
         questions.append(question)
@@ -47,6 +60,7 @@ def get_ordered_quiz_questions(quiz, session_code=None):
 def build_participant_progress_history(quiz, participant, session_code=None):
     scoped_session_code = session_code if session_code is not None else participant.hub_session_code
     ordered_questions = get_ordered_quiz_questions(quiz, scoped_session_code)
+    tutorial_question_ids = get_scorebox_excluded_tutorial_question_ids('assign', quiz.room_code, scoped_session_code)
     question_number_by_id = {
         question.id: index
         for index, question in enumerate(ordered_questions, start=1)
@@ -60,6 +74,8 @@ def build_participant_progress_history(quiz, participant, session_code=None):
     history = []
     seen_question_ids = set()
     for answer in answers:
+        if answer.question_id in tutorial_question_ids:
+            continue
         if answer.question_id in seen_question_ids:
             continue
         question_number = question_number_by_id.get(answer.question_id)

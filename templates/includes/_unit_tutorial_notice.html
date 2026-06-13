@@ -1,0 +1,70 @@
+<div id="unitTutorialNotice" class="unit-tutorial-notice{% if not current_unit_is_tutorial %} d-none{% endif %}" role="status" aria-live="polite" data-label="{{ tutorial_notice_label|default:'Tutorialfrage' }}">
+    <strong id="unitTutorialNoticeTitle">{{ tutorial_notice_label|default:'Tutorialfrage' }} - keine Wertung</strong>
+    <span>Diese Runde dient nur zum Ausprobieren. Es werden keine Punkte vergeben.</span>
+</div>
+
+<style>
+.unit-tutorial-notice {
+    border: 1px solid #f0c36a;
+    background: #fff7df;
+    color: #604000;
+    border-radius: 14px;
+    padding: 12px 16px;
+    margin: 0 0 16px;
+    box-shadow: 0 10px 24px rgba(96, 64, 0, .12);
+}
+.unit-tutorial-notice strong {
+    display: block;
+    font-weight: 800;
+    margin-bottom: 2px;
+}
+.unit-tutorial-notice span {
+    display: block;
+    font-size: .92rem;
+}
+.d-none {
+    display: none !important;
+}
+</style>
+
+<script>
+(function() {
+    if (window.unitTutorialNotice) return;
+
+    function resolvePayload(payload) {
+        return payload?.question || payload?.payload?.question || payload?.state?.question || payload?.game?.question || payload || {};
+    }
+
+    function isTutorialPayload(payload) {
+        const resolved = resolvePayload(payload);
+        return Boolean(
+            payload?.is_tutorial_round ||
+            payload?.payload?.is_tutorial_round ||
+            payload?.state?.question?.is_tutorial_round ||
+            payload?.game?.question?.is_tutorial_round ||
+            resolved?.is_tutorial_round
+        );
+    }
+
+    window.unitTutorialNotice = {
+        show(label) {
+            const box = document.getElementById('unitTutorialNotice');
+            if (!box) return;
+            const resolvedLabel = label || box.dataset.label || 'Tutorialfrage';
+            const title = document.getElementById('unitTutorialNoticeTitle');
+            if (title) title.textContent = `${resolvedLabel} - keine Wertung`;
+            box.classList.remove('d-none');
+        },
+        hide() {
+            document.getElementById('unitTutorialNotice')?.classList.add('d-none');
+        },
+        setFromPayload(payload, label) {
+            if (isTutorialPayload(payload)) {
+                this.show(label);
+            } else {
+                this.hide();
+            }
+        },
+    };
+})();
+</script>

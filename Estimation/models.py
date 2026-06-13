@@ -35,6 +35,7 @@ class EstimationQuiz(SyncBase):
     max_participants = models.IntegerField(default=50)
     # Optional predefined set of questions for this quiz session
     selected_questions = models.ManyToManyField('EstimationQuestion', blank=True, related_name='quizzes')
+    tutorial_question = models.ForeignKey('EstimationQuestion', on_delete=models.SET_NULL, null=True, blank=True, related_name='tutorial_in_quizzes')
     # "tolerance" is kept as a legacy alias for the zone scoring mode.
     SCORING_CHOICES = [
         ('zones', 'Zone Mode'),

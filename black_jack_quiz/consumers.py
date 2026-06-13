@@ -8,6 +8,21 @@ from .models import BlackJackQuiz, BlackJackParticipant, BlackJackQuestion, Blac
 from games_hub.active_game_guard import resolve_session_game_activation_for_room
 from games_hub.lobby_return_flow import ensure_session_players_ready_for_game_start_for_room
 from games_hub.models import HubGameStep
+from games_hub.tutorial_runtime import (
+    activate_tutorial_runtime,
+    deactivate_tutorial_runtime,
+    force_close_tutorial_runtime,
+    get_tutorial_payload,
+    get_tutorial_start_warning,
+    mark_tutorial_completed,
+)
+from games_hub.unit_tutorial_runtime import (
+    finish_current_unit_tutorial,
+    is_unit_tutorial_question,
+    prepare_unit_tutorial_runtime,
+    start_unit_tutorial_if_needed,
+    validate_unit_tutorial_request,
+)
 
 
 class BlackJackConsumer(AsyncWebsocketConsumer):
@@ -59,6 +74,8 @@ class BlackJackConsumer(AsyncWebsocketConsumer):
                 await self.handle_participant_question_timeout(text_data_json)
             elif message_type == 'participant_join':
                 await self.handle_participant_join(text_data_json)
+            elif message_type == 'tutorial_completed':
+                await self.handle_tutorial_completed(text_data_json)
             elif message_type == 'ping':
                 await self.handle_ping()
             elif message_type == 'admin_show_leaderboard':
@@ -88,6 +105,20 @@ class BlackJackConsumer(AsyncWebsocketConsumer):
             return
         quiz = await self.get_quiz()
         if quiz:
+            show_tutorial = bool(data.get('show_tutorial', False))
+            play_tutorial = bool(data.get('play_tutorial', False))
+            hub_session_code = await self._get_hub_session_code_for_room()
+            unit_tutorial_validation = await database_sync_to_async(validate_unit_tutorial_request)(
+                'blackjack',
+                self.room_code,
+                play_tutorial,
+            )
+            if not unit_tutorial_validation.get('success'):
+                await self.send(text_data=json.dumps({
+                    'type': unit_tutorial_validation.get('type', 'error'),
+                    'message': unit_tutorial_validation.get('message') or 'Tutorialset fehlt.',
+                }))
+                return
             activation = await database_sync_to_async(resolve_session_game_activation_for_room)(
                 'blackjack',
                 self.room_code,
@@ -101,14 +132,19 @@ class BlackJackConsumer(AsyncWebsocketConsumer):
                     payload['active_game'] = activation['active_game']
                 await self.send(text_data=json.dumps(payload))
                 return
-            show_tutorial = bool(data.get('show_tutorial', True))
+            await database_sync_to_async(prepare_unit_tutorial_runtime)(
+                'blackjack',
+                self.room_code,
+                hub_session_code,
+                play_tutorial,
+                validate=False,
+            )
             started_quiz = await self.start_quiz_db(quiz.get('id'))
-            tutorial_payload = None
-            if quiz.get('tutorial_enabled') and show_tutorial:
-                await self.set_tutorial_active_db(quiz.get('id'), True)
-                tutorial_payload = await self.get_tutorial_payload(quiz.get('id'))
-            else:
-                await self.set_tutorial_active_db(quiz.get('id'), False)
+            tutorial_payload = await self.activate_tutorial_runtime(
+                quiz.get('id'),
+                hub_session_code,
+                show_tutorial,
+            )
             
             # Broadcast to all participants
             await self.channel_layer.group_send(
@@ -158,23 +194,36 @@ class BlackJackConsumer(AsyncWebsocketConsumer):
         if not question:
             return
 
-        send_error = await self.get_next_question_send_error(quiz.get('id'), question.id, selected_set_number)
-        if send_error:
-            await self.send(text_data=json.dumps({
-                'type': 'error',
-                'message': send_error
-            }))
+        if await self.guard_tutorial_before_first_unit(data, quiz.get('id')):
             return
+
+        hub_session = data.get('hub_session') or data.get('hub_session_code') or await self._get_hub_session_code_for_room()
+        unit_tutorial = await self.start_unit_tutorial_if_needed(hub_session)
+        is_tutorial_round = bool(unit_tutorial.get('is_tutorial_round'))
+        if is_tutorial_round and str(unit_tutorial.get('tutorial_question_id') or '') != str(question.id):
+            question = await self.get_question(unit_tutorial.get('tutorial_question_id'))
+            if not question:
+                return
+
+        if not is_tutorial_round:
+            send_error = await self.get_next_question_send_error(quiz.get('id'), question.id, selected_set_number)
+            if send_error:
+                await self.send(text_data=json.dumps({
+                    'type': 'error',
+                    'message': send_error
+                }))
+                return
 
         # Determine the effective time limit for this send (do NOT persist on the question)
         effective_time_limit = custom_time_limit if custom_time_limit is not None else question.time_limit
         await self.set_tutorial_active_db(quiz.get('id'), False)
         # Update quiz with new question
-        await self.update_quiz_question(quiz, question, effective_time_limit)
+        await self.update_quiz_question(quiz, question, effective_time_limit, is_tutorial_round=is_tutorial_round)
         current_question_data = await self.get_current_question_data()
         if not current_question_data:
             return
         current_question_data['time_limit'] = effective_time_limit
+        current_question_data['is_tutorial_round'] = is_tutorial_round
         
         # Broadcast new question to all participants
         await self.channel_layer.group_send(
@@ -240,6 +289,7 @@ class BlackJackConsumer(AsyncWebsocketConsumer):
                     'set_results': transition.get('participants', []),
                     'no_answer_bust_participants': transition.get('no_answer_bust_participants', []),
                     'final_scores': final_scores,
+                    'is_tutorial_round': bool(transition.get('is_tutorial_round')),
                 }
             )
 
@@ -319,6 +369,7 @@ class BlackJackConsumer(AsyncWebsocketConsumer):
                 'total_points': answer_result['total_points'],
                 'overall_points': answer_result['overall_points'],
                 'is_busted': answer_result['is_busted'],
+                'is_tutorial_round': answer_result.get('is_tutorial_round', False),
                 'questions_remaining': max(0, answer_result['set_question_count'] - answer_result['questions_answered'])
             }))
 
@@ -334,6 +385,7 @@ class BlackJackConsumer(AsyncWebsocketConsumer):
                         'difference': answer_result['difference'],
                         'total_points': answer_result['total_points'],
                         'is_busted': answer_result['is_busted'],
+                        'is_tutorial_round': answer_result.get('is_tutorial_round', False),
                         'status': answer_result['status'],
                         'time_taken': time_taken,
                         'question_number': answer_result['question_number']
@@ -375,7 +427,11 @@ class BlackJackConsumer(AsyncWebsocketConsumer):
                     'started_at': quiz.get('started_at'),
                     'timestamp': quiz.get('started_at'),
                 }))
-                tutorial_payload = await self.get_tutorial_payload(quiz.get('id'))
+                tutorial_payload = await self.get_tutorial_payload(
+                    quiz.get('id'),
+                    hub_session,
+                    participant_name=participant_name,
+                )
                 if tutorial_payload:
                     await self.send(text_data=json.dumps({
                         'type': 'tutorial_start',
@@ -387,6 +443,15 @@ class BlackJackConsumer(AsyncWebsocketConsumer):
                         'type': 'question_started',
                         'question': current_question_data
                     }))
+
+    async def handle_tutorial_completed(self, data):
+        participant_name = data.get('participant_name') or data.get('name')
+        hub_session = data.get('hub_session') or data.get('hub_session_code')
+        progress = await self.mark_tutorial_completed(participant_name, hub_session)
+        await self.channel_layer.group_send(
+            self.room_group_name,
+            {'type': 'tutorial_progress', **progress}
+        )
 
     async def handle_admin_show_leaderboard(self):
         await self.channel_layer.group_send(
@@ -448,6 +513,7 @@ class BlackJackConsumer(AsyncWebsocketConsumer):
             'set_results': event.get('set_results', []),
             'no_answer_bust_participants': event.get('no_answer_bust_participants', []),
             'final_scores': event.get('final_scores', []),
+            'is_tutorial_round': event.get('is_tutorial_round', False),
         }))
 
     async def tutorial_start(self, event):
@@ -456,7 +522,45 @@ class BlackJackConsumer(AsyncWebsocketConsumer):
             'game_title': event.get('game_title'),
             'tutorial_title': event.get('tutorial_title'),
             'tutorial_text': event.get('tutorial_text'),
+            'official_participants': event.get('official_participants', []),
+            'completed': event.get('completed', 0),
+            'total': event.get('total', 0),
+            'all_done': event.get('all_done', False),
+            'participants': event.get('participants', []),
         }))
+
+    async def tutorial_progress(self, event):
+        await self.send(text_data=json.dumps({
+            'type': 'tutorial_progress',
+            'completed': event.get('completed', 0),
+            'total': event.get('total', 0),
+            'all_done': event.get('all_done', False),
+            'participants': event.get('participants', []),
+        }))
+
+    async def tutorial_force_close(self, event):
+        await self.send(text_data=json.dumps({'type': 'tutorial_force_close'}))
+
+    async def guard_tutorial_before_first_unit(self, data, quiz_id):
+        hub_session = (
+            data.get('hub_session')
+            or data.get('hub_session_code')
+            or await self._get_hub_session_code_for_room()
+        )
+        warning = await self.get_tutorial_start_warning(hub_session)
+        if warning and not data.get('force_tutorial_continue'):
+            await self.send(text_data=json.dumps({
+                'type': 'tutorial_ack_warning',
+                'original_message': data,
+                **warning,
+            }))
+            return True
+        if data.get('force_tutorial_continue'):
+            await self.channel_layer.group_send(
+                self.room_group_name,
+                {'type': 'tutorial_force_close'},
+            )
+        return False
 
     async def quiz_ended(self, event):
         """Send quiz ended message"""
@@ -496,6 +600,8 @@ class BlackJackConsumer(AsyncWebsocketConsumer):
             if not question:
                 return None
             session = getattr(quiz, 'session', None)
+            hub_session = self._get_hub_session_code_for_room_sync()
+            is_tutorial_round = is_unit_tutorial_question('blackjack', self.room_code, hub_session, question.id)
             return {
                 'id': question.id,
                 'question_text': question.question_text,
@@ -506,6 +612,7 @@ class BlackJackConsumer(AsyncWebsocketConsumer):
                 'set_question_count': quiz.get_set_question_count(question_id=question.id),
                 'set_number': quiz.get_current_set_number(),
                 'total_sets': quiz.get_total_sets(),
+                'is_tutorial_round': is_tutorial_round,
             }
         except BlackJackQuiz.DoesNotExist:
             return None
@@ -627,29 +734,77 @@ class BlackJackConsumer(AsyncWebsocketConsumer):
     def set_tutorial_active_db(self, quiz_id, active):
         try:
             quiz = BlackJackQuiz.objects.get(id=quiz_id)
-            quiz.tutorial_active = bool(active)
-            quiz.save(update_fields=['tutorial_active'])
+            if active:
+                quiz.tutorial_active = True
+                quiz.save(update_fields=['tutorial_active'])
+            else:
+                deactivate_tutorial_runtime('blackjack', self.room_code, None, quiz)
         except BlackJackQuiz.DoesNotExist:
             pass
 
     @database_sync_to_async
-    def get_tutorial_payload(self, quiz_id):
+    def get_tutorial_payload(self, quiz_id, hub_session_code=None, participant_name=None):
         try:
             quiz = BlackJackQuiz.objects.get(id=quiz_id)
-            if not quiz.tutorial_enabled or not quiz.tutorial_active:
-                return None
-            return {
-                'game_title': quiz.title,
-                'tutorial_title': quiz.tutorial_title or 'Tutorial',
-                'tutorial_text': quiz.tutorial_text or '',
-            }
+            payload = get_tutorial_payload('blackjack', self.room_code, hub_session_code, participant_name)
+            if payload:
+                payload['game_title'] = quiz.title
+            return payload
         except BlackJackQuiz.DoesNotExist:
             return None
 
     @database_sync_to_async
-    def update_quiz_question(self, quiz_data, question, effective_time_limit=None):
+    def activate_tutorial_runtime(self, quiz_id, hub_session_code, show_tutorial):
+        try:
+            quiz = BlackJackQuiz.objects.get(id=quiz_id)
+            return activate_tutorial_runtime('blackjack', self.room_code, hub_session_code, quiz, show_tutorial)
+        except BlackJackQuiz.DoesNotExist:
+            return None
+
+    @database_sync_to_async
+    def mark_tutorial_completed(self, participant_name, hub_session_code):
+        return mark_tutorial_completed('blackjack', self.room_code, hub_session_code, participant_name)
+
+    @database_sync_to_async
+    def get_tutorial_start_warning(self, hub_session_code):
+        return get_tutorial_start_warning('blackjack', self.room_code, hub_session_code)
+
+    @database_sync_to_async
+    def start_unit_tutorial_if_needed(self, hub_session_code):
+        return start_unit_tutorial_if_needed('blackjack', self.room_code, hub_session_code)
+
+    @database_sync_to_async
+    def finish_current_unit_tutorial(self, hub_session_code):
+        return finish_current_unit_tutorial('blackjack', self.room_code, hub_session_code)
+
+    @database_sync_to_async
+    def update_quiz_question(self, quiz_data, question, effective_time_limit=None, is_tutorial_round=False):
         try:
             quiz = BlackJackQuiz.objects.get(id=quiz_data['id'])
+            if is_tutorial_round:
+                now = timezone.now()
+                quiz.current_question = question
+                quiz.question_start_time = now
+                if hasattr(quiz, 'session'):
+                    session = quiz.session
+                    try:
+                        time_limit = int(effective_time_limit) if effective_time_limit is not None else question.time_limit
+                        if time_limit <= 0:
+                            time_limit = question.time_limit
+                    except (TypeError, ValueError):
+                        time_limit = question.time_limit
+                    session.is_question_active = True
+                    session.question_end_time = now + timezone.timedelta(seconds=time_limit)
+                    session.total_responses_current_question = 0
+                    session.average_points_current_question = 0
+                    session.save(update_fields=[
+                        'is_question_active',
+                        'question_end_time',
+                        'total_responses_current_question',
+                        'average_points_current_question',
+                    ])
+                quiz.save(update_fields=['current_question', 'question_start_time'])
+                return
             if hasattr(quiz, 'session'):
                 quiz.session.send_question(question, time_limit=effective_time_limit)
                 return
@@ -671,6 +826,40 @@ class BlackJackConsumer(AsyncWebsocketConsumer):
                     'set_complete': False,
                     'set_number': quiz.get_current_set_number(),
                     'quiz_complete': quiz.is_quiz_complete(),
+                }
+            resolved_session_code = self._get_hub_session_code_for_room_sync()
+            if quiz.current_question_id and is_unit_tutorial_question(
+                'blackjack',
+                self.room_code,
+                resolved_session_code,
+                quiz.current_question_id,
+            ):
+                try:
+                    session = quiz.session
+                except Exception:
+                    session = None
+                quiz.current_question = None
+                quiz.question_start_time = None
+                quiz.save(update_fields=['current_question', 'question_start_time'])
+                if session:
+                    session.is_question_active = False
+                    session.question_end_time = None
+                    session.total_responses_current_question = 0
+                    session.average_points_current_question = 0
+                    session.save(update_fields=[
+                        'is_question_active',
+                        'question_end_time',
+                        'total_responses_current_question',
+                        'average_points_current_question',
+                    ])
+                unit_tutorial = finish_current_unit_tutorial('blackjack', self.room_code, resolved_session_code)
+                return {
+                    'set_complete': False,
+                    'set_number': quiz.get_current_set_number(),
+                    'quiz_complete': False,
+                    'participants': [],
+                    'no_answer_bust_participants': [],
+                    'is_tutorial_round': bool(unit_tutorial.get('is_tutorial_round')),
                 }
             if hasattr(quiz, 'session'):
                 return quiz.session.end_current_question()
@@ -696,10 +885,17 @@ class BlackJackConsumer(AsyncWebsocketConsumer):
         try:
             quiz = BlackJackQuiz.objects.get(id=quiz_data['id'])
             if quiz.current_question:
+                resolved_session_code = self._get_hub_session_code_for_room_sync()
                 return {
                     'question_id': quiz.current_question_id,
                     'correct_answer': quiz.current_question.correct_answer,
-                    'explanation': quiz.current_question.explanation
+                    'explanation': quiz.current_question.explanation,
+                    'is_tutorial_round': is_unit_tutorial_question(
+                        'blackjack',
+                        self.room_code,
+                        resolved_session_code,
+                        quiz.current_question_id,
+                    ),
                 }
         except BlackJackQuiz.DoesNotExist:
             pass
@@ -781,6 +977,12 @@ class BlackJackConsumer(AsyncWebsocketConsumer):
 
             if not target_question:
                 return None
+            is_tutorial_answer = is_unit_tutorial_question(
+                'blackjack',
+                self.room_code,
+                hub_session_code,
+                target_question.id,
+            )
             
             # Check if answer already exists
             existing_answer = BlackJackAnswer.objects.filter(
@@ -798,6 +1000,13 @@ class BlackJackConsumer(AsyncWebsocketConsumer):
             except (ValueError, TypeError):
                 return None
             
+            previous_participant_state = {
+                'total_points': participant.total_points,
+                'overall_points': participant.overall_points,
+                'questions_answered': participant.questions_answered,
+                'is_busted': participant.is_busted,
+                'final_score': participant.final_score,
+            }
             # Create new answer
             answer = BlackJackAnswer.objects.create(
                 quiz=quiz,
@@ -807,6 +1016,13 @@ class BlackJackConsumer(AsyncWebsocketConsumer):
                 time_taken=time_taken,
                 question_number=quiz.current_question_number
             )
+            if is_tutorial_answer:
+                if answer.points_earned:
+                    answer.points_earned = 0
+                    answer.save(update_fields=['points_earned'])
+                for field, value in previous_participant_state.items():
+                    setattr(participant, field, value)
+                participant.save(update_fields=list(previous_participant_state.keys()))
             
             # Refresh participant data after score calculation
             participant.refresh_from_db()
@@ -822,6 +1038,7 @@ class BlackJackConsumer(AsyncWebsocketConsumer):
                 'questions_answered': participant.questions_answered,
                 'question_number': answer.question_number,
                 'set_question_count': quiz.get_set_question_count(question_number=quiz.current_question_number),
+                'is_tutorial_round': is_tutorial_answer,
             }
             
         except (BlackJackQuiz.DoesNotExist, BlackJackParticipant.DoesNotExist):
@@ -863,8 +1080,7 @@ class BlackJackConsumer(AsyncWebsocketConsumer):
             return []
 
     # --- Hub mirroring helpers ---
-    @database_sync_to_async
-    def _get_hub_session_code_for_room(self):
+    def _get_hub_session_code_for_room_sync(self):
         try:
             qs = HubGameStep.objects.select_related('session').filter(game_key='blackjack', room_code=self.room_code)
             active = qs.filter(session__ended_at__isnull=True).order_by('-id').first()
@@ -872,6 +1088,10 @@ class BlackJackConsumer(AsyncWebsocketConsumer):
             return step.session.code if step else None
         except Exception:
             return None
+
+    @database_sync_to_async
+    def _get_hub_session_code_for_room(self):
+        return self._get_hub_session_code_for_room_sync()
 
     async def hub_mirror_event(self, event_type: str, payload: dict):
         session_code = await self._get_hub_session_code_for_room()

@@ -675,6 +675,104 @@ def get_leaderboard_data(session, participant_count_override=None):
         },
     }
 
+
+def _format_weight_display(weight):
+    return f"\u00d7{float(weight or 1):.2f}"
+
+
+def _scoreboard_rows_for_instance(leaderboard_data, instance_key):
+    rows = []
+    for participant_data in leaderboard_data.get('participants', []):
+        game_scores = participant_data.get('game_scores') or {}
+        if instance_key not in game_scores:
+            continue
+        rows.append(participant_data)
+    return rows
+
+
+def get_post_game_results(session, game_step, participant_name=None):
+    """Return the completed single-game scoreboard using overall leaderboard scoring."""
+    instance_key = f"step:{game_step.id}"
+    leaderboard_data = get_leaderboard_data(session)
+    instance_meta = leaderboard_data.get('instances', {}).get(instance_key)
+
+    if not instance_meta:
+        return {
+            'available': False,
+            'message': 'Dieses Spiel ist in der Sessionwertung nicht verfuegbar.',
+            'rows': [],
+        }
+
+    rows_source = _scoreboard_rows_for_instance(leaderboard_data, instance_key)
+    if instance_meta.get('status') != 'completed':
+        return {
+            'available': False,
+            'message': 'Das Spiel ist noch nicht abgeschlossen.',
+            'game': instance_meta,
+            'rows': [],
+        }
+    if not rows_source:
+        return {
+            'available': False,
+            'message': 'Fuer dieses Spiel liegen noch keine Ergebnisdaten vor.',
+            'game': instance_meta,
+            'rows': [],
+        }
+
+    score_by_name = {
+        row['name']: row.get('game_scores', {}).get(instance_key, 0)
+        for row in rows_source
+    }
+    _, placement_ranks = _ranking_points_for_scores(
+        score_by_name,
+        total_players=len(score_by_name),
+    )
+    scoring_mode = session.overall_scoring_mode
+    current_name = (participant_name or '').strip()
+    weight = float(instance_meta.get('weight') or 1)
+    rows = []
+
+    for row in rows_source:
+        name = row['name']
+        game_points = row.get('game_scores', {}).get(instance_key, 0)
+        overall_points = row.get('game_overall_scores', {}).get(instance_key, 0)
+        overall_base_points = row.get('game_base_scores', {}).get(instance_key, 0)
+        rank = (
+            row.get('game_ranks', {}).get(instance_key)
+            if scoring_mode == HubSession.OVERALL_SCORING_RANKING
+            else None
+        ) or placement_ranks.get(name)
+        rows.append({
+            'participant': name,
+            'game_points': _display_score(game_points),
+            'rank': rank,
+            'weight': _display_score(weight),
+            'weight_display': _format_weight_display(weight),
+            'overall_base_points': _display_score(overall_base_points),
+            'overall_points': _display_score(overall_points),
+            'is_current_participant': bool(current_name) and name == current_name,
+        })
+
+    rows.sort(key=lambda row: (row.get('rank') or 999999, row['participant'].lower()))
+    return {
+        'available': True,
+        'game': {
+            'key': instance_key,
+            'game_key': instance_meta.get('game_key'),
+            'room_code': instance_meta.get('room_code'),
+            'title': instance_meta.get('title') or instance_meta.get('type'),
+            'type': instance_meta.get('type'),
+            'game_number': instance_meta.get('game_number'),
+            'status': instance_meta.get('status'),
+        },
+        'scoring_mode': scoring_mode,
+        'scoring_mode_label': 'Ranking' if scoring_mode == HubSession.OVERALL_SCORING_RANKING else 'Einfach',
+        'weight': _display_score(weight),
+        'weight_display': _format_weight_display(weight),
+        'rows': rows,
+    }
+
+
 @login_required
 @require_POST
 def set_hub_participant_score(request):
@@ -852,6 +950,41 @@ def session_leaderboard_api(request, session_code):
         return JsonResponse({'error': 'Session not found'}, status=404)
     except Exception as e:
         return JsonResponse({'error': str(e)}, status=500)
+
+
+def post_game_results_api(request, session_code):
+    if request.method != 'GET':
+        return JsonResponse({'error': 'Method not allowed'}, status=405)
+
+    session = get_object_or_404(HubSession, code=session_code)
+    game_key = (request.GET.get('game_key') or '').strip()
+    room_code = (request.GET.get('room_code') or '').strip()
+    participant_name = (request.GET.get('participant') or request.GET.get('participant_name') or '').strip()
+    if not game_key or not room_code:
+        return JsonResponse({
+            'available': False,
+            'error': 'game_key und room_code sind erforderlich.',
+            'rows': [],
+        }, status=400)
+
+    step = (
+        session.steps
+        .filter(game_key=game_key, room_code=room_code)
+        .order_by('-order', '-id')
+        .first()
+    )
+    if not step:
+        return JsonResponse({
+            'available': False,
+            'error': 'Spiel wurde in dieser Session nicht gefunden.',
+            'rows': [],
+        }, status=404)
+
+    return JsonResponse(
+        get_post_game_results(session, step, participant_name=participant_name),
+        json_dumps_params={'ensure_ascii': False},
+    )
+
 
 def lobby(request, session_code: str):
     session = get_object_or_404(HubSession, code=session_code)

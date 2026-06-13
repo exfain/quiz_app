@@ -2,6 +2,12 @@ import math
 
 from django.db import transaction
 from django.utils import timezone
+from games_hub.unit_tutorial_runtime import (
+    get_scorebox_excluded_tutorial_question_ids,
+    get_unit_tutorial_state,
+    is_current_unit_tutorial_question,
+    is_unit_tutorial_question,
+)
 
 from .models import (
     WerWeissMehrAnswerOption,
@@ -25,6 +31,15 @@ def get_ordered_questions(quiz):
     return questions
 
 
+def get_ordered_scored_questions(quiz, hub_session_code=None):
+    tutorial_question_ids = get_scorebox_excluded_tutorial_question_ids(
+        'wer_weiss_mehr',
+        quiz.room_code,
+        hub_session_code,
+    )
+    return [question for question in get_ordered_questions(quiz) if question.id not in tutorial_question_ids]
+
+
 def get_scoped_participants(quiz, hub_session_code=None, active_only=False):
     participants = quiz.participants.all()
     if hub_session_code is not None:
@@ -36,7 +51,12 @@ def get_scoped_participants(quiz, hub_session_code=None, active_only=False):
 
 def start_set(quiz, question_id, hub_session_code=None, time_limit_seconds=None):
     question = WerWeissMehrQuestion.objects.get(id=question_id, is_active=True)
-    if quiz.selected_questions.exists() and not quiz.selected_questions.filter(id=question.id).exists():
+    is_tutorial_round = is_unit_tutorial_question('wer_weiss_mehr', quiz.room_code, hub_session_code, question.id)
+    if (
+        quiz.selected_questions.exists()
+        and not is_tutorial_round
+        and not quiz.selected_questions.filter(id=question.id).exists()
+    ):
         raise ValueError('Dieses Set gehoert nicht zu diesem Spiel.')
     session, _ = WerWeissMehrSession.objects.get_or_create(quiz=quiz)
     participants = get_scoped_participants(quiz, hub_session_code=hub_session_code, active_only=True)
@@ -273,18 +293,19 @@ def build_game_state(quiz, hub_session_code=None, participant_name=None):
         'question': _serialize_question(
             question,
             session,
+            hub_session_code=hub_session_code,
             include_hidden_text=not is_participant_view,
         ) if question else None,
         'available_questions': []
         if is_participant_view
-        else [_serialize_available_question(question, session) for question in get_ordered_questions(quiz)],
+        else [_serialize_available_question(question, session) for question in get_ordered_scored_questions(quiz, hub_session_code)],
         'participants': [_serialize_participant(p, current_states.get(p.id)) for p in participants],
         'responses': [] if is_participant_view else responses,
         'target_answers': []
         if is_participant_view
         else (_serialize_target_answers(question, session) if question else []),
         'can_start_next_round': _can_start_next_round(quiz, session, question),
-        'scorebox': _serialize_scorebox(quiz, participants),
+        'scorebox': _serialize_scorebox(quiz, participants, hub_session_code=hub_session_code),
         'participant_state': _serialize_own_state(quiz, participant, question, own_state, own_response, own_pending, session)
         if participant else None,
     }
@@ -333,7 +354,7 @@ def _serialize_available_question(question, session=None):
     }
 
 
-def _serialize_question(question, session, include_hidden_text=False):
+def _serialize_question(question, session, hub_session_code=None, include_hidden_text=False):
     revealed_ids = set(session.revealed_answers.filter(question=question).values_list('id', flat=True))
     if session.phase == WerWeissMehrSession.PHASE_REVIEW and session.current_round:
         revealed_ids.update(
@@ -352,6 +373,12 @@ def _serialize_question(question, session, include_hidden_text=False):
         'id': question.id,
         'question_text': question.question_text,
         'round_time_limit': question.round_time_limit,
+        'is_tutorial_round': is_current_unit_tutorial_question(
+            'wer_weiss_mehr',
+            session.quiz.room_code,
+            hub_session_code,
+            question.id,
+        ),
         'answer_count': answer_count,
         'revealed_count': answer_count if reveal_all else len(revealed_ids),
         'tiles': [
@@ -514,8 +541,8 @@ def _serialize_own_state(quiz, participant, question, state, response, pending, 
     }
 
 
-def _serialize_scorebox(quiz, participants):
-    selected_questions = get_ordered_questions(quiz)
+def _serialize_scorebox(quiz, participants, hub_session_code=None):
+    selected_questions = get_ordered_scored_questions(quiz, hub_session_code)
     states = WerWeissMehrParticipantState.objects.filter(
         quiz=quiz,
         participant_id__in=[participant.id for participant in participants],

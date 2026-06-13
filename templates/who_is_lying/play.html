@@ -49,6 +49,7 @@
         <!-- Main Content -->
         <main class="quiz-main">
             <div class="container">
+                {% include 'includes/_unit_tutorial_notice.html' %}
                 <div class="row justify-content-center">
                     <div class="col-lg-10">
                         <!-- Waiting State -->
@@ -204,6 +205,9 @@
                                         <span class="score-label">points</span>
                                     </div>
                                 </div>
+                                {% with post_game_game_key="who" %}
+                                    {% include 'includes/_post_game_results.html' %}
+                                {% endwith %}
                                 <!-- <div class="quiz-actions">
                                     <a href="/who/result/{{ quiz.room_code }}/{{ participant.name }}/" class="btn btn-primary btn-lg">
                                         <i data-lucide="bar-chart-3"></i>
@@ -1279,13 +1283,19 @@
                         case 'tutorial_start':
                             window.gameTutorial?.showFromPayload(data);
                             break;
-                            
+
+                        case 'tutorial_force_close':
+                            window.gameTutorial?.forceClose();
+                            break;
+
                         case 'question_started':
                             window.gameTutorial?.forceClose();
+                            window.unitTutorialNotice?.setFromPayload(data);
                             this.onQuestionStarted(data.question);
                             break;
                             
                         case 'question_ended':
+                            window.unitTutorialNotice?.hide();
                             this.onQuestionEnded();
                             break;
                             
@@ -1396,7 +1406,8 @@
                     this.selectedPeople.clear();
                     this.syncServerClock(question?.server_now);
                     this.questionStartTime = this.parseServerTimestamp(question?.question_started_at) ?? this.getSynchronizedNowMs();
-                    const currentEntry = this.moveQuestionToNextFreeScoreSlot(question?.id, question?.total_possible_points);
+                    this.currentQuestionIsTutorial = !!question?.is_tutorial_round;
+                    const currentEntry = this.currentQuestionIsTutorial ? null : this.moveQuestionToNextFreeScoreSlot(question?.id, question?.total_possible_points);
                     this.currentQuestionIndex = Number(currentEntry?.number || question?.question_number) || (this.currentQuestionIndex + 1) || 1;
                     this.currentPersonPosition = Number(question?.current_person_index || 0) || 0;
                     this.questionHasEnded = false;
@@ -1405,7 +1416,7 @@
                     this.loadQuestion(question);
                     this.showState('questionState');
                     this.startQuestionTimer(question);
-                    this.renderScoreHistory();
+                    if (!this.currentQuestionIsTutorial) this.renderScoreHistory();
                 }
 
                 onQuestionEnded() {
@@ -1570,7 +1581,9 @@
                     // Update submitted state with results
                     document.getElementById('correctIdentifications').textContent = data.correct_identifications;
                     document.getElementById('pointsEarned').textContent = data.points_earned;
-                    this.pushScoreHistory(parseInt(data.points_earned || 0, 10) || 0);
+                    if (!data.is_tutorial_round) {
+                        this.pushScoreHistory(parseInt(data.points_earned || 0, 10) || 0);
+                    }
                     
                     // Show detailed breakdown
                     this.showResultsBreakdown(data.analysis);

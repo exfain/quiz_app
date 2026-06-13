@@ -6,6 +6,7 @@
 
 {% block content %}
 <div class="where-monitor-content">
+    {% include 'includes/_unit_tutorial_notice.html' %}
     <!-- Quiz Status Header -->
     <div class="quiz-status-header mb-4">
         <div class="row align-items-center">
@@ -42,8 +43,14 @@
                         <div class="d-flex align-items-center gap-3">
                         {% if quiz.status == 'waiting' and quiz.tutorial_enabled %}
                             <div class="form-check form-switch mb-0">
-                                <input class="form-check-input" type="checkbox" id="showTutorialToggle" checked>
-                                <label class="form-check-label" for="showTutorialToggle">Tutorial anzeigen</label>
+                                <input class="form-check-input" type="checkbox" id="showTutorialToggle">
+                                <label class="form-check-label" for="showTutorialToggle">Spielerläuterung anzeigen</label>
+                            </div>
+                            {% endif %}
+                            {% if quiz.status == 'waiting' %}
+                            <div class="form-check form-switch mb-0">
+                                <input class="form-check-input" type="checkbox" id="playTutorialToggle">
+                                <label class="form-check-label" for="playTutorialToggle">Tutorial spielen</label>
                             </div>
                             {% endif %}
                             <button class="btn btn-success" id="startQuizBtn">
@@ -250,12 +257,12 @@
                 </div>
             </div>
 
-            <!-- Tutorial Progress -->
+            <!-- Spielerläuterung Progress -->
             <div class="card mt-4" id="tutorialProgressCard" {% if quiz.status != 'active' %}style="display:none"{% endif %}>
                 <div class="card-header">
                     <h6 class="card-title mb-0">
                         <i data-lucide="book-open"></i>
-                        Tutorial
+                        Spielerläuterung
                     </h6>
                 </div>
                 <div class="card-body">
@@ -1029,20 +1036,30 @@ document.addEventListener('DOMContentLoaded', function() {
                     break;
                     
                 case 'tutorial_start':
-                    this.updateTutorialProgress(0, 0, false);
+                    this.updateTutorialProgress(0, 0, false, data.participants || []);
                     break;
 
                 case 'tutorial_progress':
-                    this.updateTutorialProgress(data.completed, data.total, data.all_done);
+                    this.updateTutorialProgress(data.completed, data.total, data.all_done, data.participants || []);
+                    break;
+
+                case 'tutorial_ack_warning':
+                    this.handleTutorialAckWarning(data);
+                    break;
+
+                case 'tutorial_question_missing':
+                    window.showTutorialQuestionMissing?.(data);
                     break;
                     
                 case 'question_started':
+                    window.unitTutorialNotice?.setFromPayload(data);
                     this.resetLiveResponseStateForQuestion();
                     console.log('Question started');
                     location.reload();
                     break;
                     
                 case 'question_ended':
+                    window.unitTutorialNotice?.hide();
                     console.log('Question ended:', data.message);
                     this.stopQuizTimer();
                     this.setQuizTimer(0);
@@ -1059,6 +1076,7 @@ document.addEventListener('DOMContentLoaded', function() {
                     break;
                     
                 case 'quiz_ended':
+                    window.unitTutorialNotice?.hide();
                     console.log('Quiz ended:', data.message);
                     // Clear persisted sent state so a new session starts fresh
                     this.resetSentStates();
@@ -1076,6 +1094,53 @@ document.addEventListener('DOMContentLoaded', function() {
             }
         }
         
+        updateTutorialProgress(completed, total, allDone, participants = []) {
+            const card = document.getElementById('tutorialProgressCard');
+            if (card) card.style.display = '';
+            const text = document.getElementById('tutProgressText');
+            const bar = document.getElementById('tutProgressBar');
+            const badge = document.getElementById('tutAllDoneBadge');
+            let list = document.getElementById('tutParticipantStatusList');
+            if (!list && card) {
+                list = document.createElement('div');
+                list.id = 'tutParticipantStatusList';
+                list.className = 'small mt-3';
+                card.querySelector('.card-body')?.appendChild(list);
+            }
+            if (text) text.textContent = completed + ' / ' + total;
+            const pct = total > 0 ? Math.round((completed / total) * 100) : 0;
+            if (bar) {
+                bar.style.width = pct + '%';
+                bar.setAttribute('aria-valuenow', pct);
+            }
+            if (list) {
+                list.innerHTML = (participants || []).map(participant => `
+                    <div class="d-flex justify-content-between border-top py-1">
+                        <span>${participant.name || ''}</span>
+                        <span class="badge ${participant.completed ? 'bg-success' : 'bg-warning text-dark'}">
+                            ${participant.completed ? 'bestätigt' : 'offen'}
+                        </span>
+                    </div>
+                `).join('');
+            }
+            if (badge) {
+                badge.style.display = allDone ? '' : 'none';
+                if (allDone) lucide.createIcons();
+            }
+        }
+
+        handleTutorialAckWarning(data) {
+            const originalMessage = data.original_message || {};
+            window.showTutorialAckWarning?.(data, () => {
+                if (this.websocket && this.websocket.readyState === WebSocket.OPEN) {
+                    this.websocket.send(JSON.stringify({
+                        ...originalMessage,
+                        force_tutorial_continue: true,
+                    }));
+                }
+            }, () => location.reload());
+        }
+
         bindEvents() {
             // Start Quiz button
             document.getElementById('startQuizBtn')?.addEventListener('click', () => {
@@ -1151,9 +1216,15 @@ document.addEventListener('DOMContentLoaded', function() {
         startQuiz() {
             if (this.websocket && this.websocket.readyState === WebSocket.OPEN) {
                 const showTutorial = document.getElementById('showTutorialToggle')?.checked ?? false;
+                const playTutorial = document.getElementById('playTutorialToggle')?.checked ?? false;
+                if (playTutorial && !{{ quiz.tutorial_question_id|yesno:"true,false" }}) {
+                    window.showTutorialQuestionMissing?.();
+                    return;
+                }
                 this.websocket.send(JSON.stringify({
                     type: 'admin_start_quiz',
-                    show_tutorial: showTutorial
+                    show_tutorial: showTutorial,
+                    play_tutorial: playTutorial
                 }));
                 // Notify hub so participants get navigated, then reload
                 try {

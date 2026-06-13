@@ -11,6 +11,7 @@ from .scoreboard import (
     build_question_scoreboard,
     get_ordered_quiz_questions,
 )
+from games_hub.unit_tutorial_runtime import is_current_unit_tutorial_question
 
 
 def _get_ordered_quiz_questions(quiz, session_code=None):
@@ -190,6 +191,7 @@ def assign_play(request, room_code, participant_name):
             'question_scoreboard': question_scoreboard,
             'initial_progress_history': initial_progress_history,
             'current_question_id': current_question_id,
+            'current_unit_is_tutorial': is_current_unit_tutorial_question('assign', quiz.room_code, session_code, quiz.current_question_id),
             'score_total_earned': score_total_earned,
             'score_total_max': score_total_max,
         }

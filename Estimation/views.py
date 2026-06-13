@@ -6,9 +6,23 @@ from django.utils import timezone
 from django.db.models import Avg, Count, Q
 import json
 from .models import EstimationQuiz, EstimationQuestion, EstimationParticipant, EstimationAnswer, EstimationSession
+from games_hub.unit_tutorial_runtime import (
+    get_scorebox_excluded_tutorial_question_ids,
+    get_unit_tutorial_state,
+    is_current_unit_tutorial_question,
+    is_unit_tutorial_question,
+)
+
+
+def _get_run_tutorial_question_id(quiz, session_code=None):
+    state = get_unit_tutorial_state('estimation', quiz.room_code, session_code)
+    if not state.get('requested'):
+        return getattr(quiz, 'tutorial_question_id', None)
+    return state.get('tutorial_question_id')
 
 
 def _get_ordered_quiz_questions(quiz, session_code=None):
+    tutorial_question_ids = get_scorebox_excluded_tutorial_question_ids('estimation', quiz.room_code, session_code)
     configured_questions = list(quiz.selected_questions.all())
     configured_order_ids = []
     for raw_question_id in quiz.question_order or []:
@@ -28,13 +42,15 @@ def _get_ordered_quiz_questions(quiz, session_code=None):
     played_questions = []
     seen_played_ids = set()
     for answer in answers_qs:
+        if answer.question_id in tutorial_question_ids:
+            continue
         fallback_questions[answer.question_id] = answer.question
         if answer.question_id in seen_played_ids:
             continue
         played_questions.append(answer.question)
         seen_played_ids.add(answer.question_id)
 
-    if quiz.current_question_id and quiz.current_question_id not in fallback_questions:
+    if quiz.current_question_id and quiz.current_question_id not in fallback_questions and quiz.current_question_id not in tutorial_question_ids:
         fallback_questions[quiz.current_question_id] = quiz.current_question
 
     configured_by_id = {question.id: question for question in configured_questions}
@@ -48,13 +64,15 @@ def _get_ordered_quiz_questions(quiz, session_code=None):
             ordered_questions.append(resolved_question)
             seen_ids.add(resolved_question.id)
 
-    if quiz.current_question_id and quiz.current_question_id not in seen_ids:
+    if quiz.current_question_id and quiz.current_question_id not in seen_ids and quiz.current_question_id not in tutorial_question_ids:
         current_question = configured_by_id.get(quiz.current_question_id, quiz.current_question)
         if current_question:
             ordered_questions.append(current_question)
             seen_ids.add(quiz.current_question_id)
 
     for question in configured_questions:
+        if question.id in tutorial_question_ids:
+            continue
         if question.id not in seen_ids:
             ordered_questions.append(question)
             seen_ids.add(question.id)
@@ -81,9 +99,11 @@ def _get_question_max_points_for_score_box(quiz, question, session_code=None):
 
 def _build_participant_progress_history(quiz, participant, session_code=None):
     ordered_questions = _get_ordered_quiz_questions(quiz, session_code)
+    tutorial_question_ids = get_scorebox_excluded_tutorial_question_ids('estimation', quiz.room_code, session_code)
     answers_by_question_id = {
         answer.question_id: answer
         for answer in EstimationAnswer.objects.filter(quiz=quiz, participant=participant).select_related('question')
+        if answer.question_id not in tutorial_question_ids
     }
 
     history = []
@@ -311,6 +331,11 @@ def estimation_play(request, room_code, participant_name):
             session_code,
         )
         
+        is_current_tutorial = (
+            quiz.current_question_id
+            and _get_run_tutorial_question_id(quiz, session_code) == quiz.current_question_id
+        )
+
         context = {
             'quiz': quiz,
             'participant': participant,
@@ -318,8 +343,10 @@ def estimation_play(request, room_code, participant_name):
             'participant_count': quiz.get_participant_count(session_code),
             'question_scoreboard': question_scoreboard,
             'initial_progress_history': initial_progress_history,
+            'current_unit_is_tutorial': is_current_unit_tutorial_question('estimation', quiz.room_code, session_code, quiz.current_question_id),
             'current_question_number': current_question_number or 0,
             'current_question_max_points': (
+                0 if is_current_tutorial else
                 _get_question_max_points_for_score_box(quiz, quiz.current_question, session_code)
                 if quiz.current_question else 0
             ),
@@ -466,6 +493,15 @@ def submit_answer(request, room_code, participant_name):
             user_answer=user_answer_float,
             time_taken=time_taken
         )
+        is_tutorial_answer = is_unit_tutorial_question(
+            'estimation',
+            quiz.room_code,
+            session_code,
+            quiz.current_question_id,
+        )
+        if is_tutorial_answer and answer.points_earned:
+            answer.points_earned = 0
+            answer.save(update_fields=['points_earned', 'updated_at'])
 
         if hasattr(quiz, 'session'):
             pending_answers = dict(quiz.session.pending_answers or {})
@@ -480,6 +516,7 @@ def submit_answer(request, room_code, participant_name):
         return JsonResponse({
             'success': True,
             'points_earned': answer.points_earned,
+            'is_tutorial_round': is_tutorial_answer,
             'accuracy_percentage': answer.get_accuracy_percentage(),
             'formatted_answer': answer.get_formatted_user_answer(),
             'percentage_difference': answer.get_percentage_difference(),
