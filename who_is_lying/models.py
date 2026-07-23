@@ -1,8 +1,10 @@
-from django.db import models
+from django.db import models, transaction
 from django.core.cache import cache
 from games_website.models import SyncBase
 from django.contrib.auth.models import User
 from django.utils import timezone
+import hashlib
+import logging
 import math
 import random
 import string
@@ -10,6 +12,7 @@ import json
 
 
 RECENTLY_ENDED_QUESTION_CACHE_TTL_SECONDS = 30
+logger = logging.getLogger(__name__)
 
 
 def _get_recently_ended_question_cache_key(room_code):
@@ -237,41 +240,24 @@ class WhoQuestion(SyncBase):
     
     def get_randomized_people(self, room_code=None):
         """Return people shuffled for gameplay"""
-        import random
-        
-        # Create a deterministic seed based on question ID and room code
         seed_string = f"{self.id}_{room_code or 'default'}"
-        seed = abs(hash(seed_string)) % (2**32)
-        
-        # Save the current random state
-        random_state = random.getstate()
-        
-        try:
-            # Set our deterministic seed
-            random.seed(seed)
-            
-            # Create a copy of people with original indices
-            people_with_indices = [(i, person) for i, person in enumerate(self.people)]
-            
-            # Shuffle the people deterministically
-            shuffled_people = people_with_indices.copy()
-            random.shuffle(shuffled_people)
-            
-            # Create mapping from shuffled position to original index
-            position_to_original = {}
-            shuffled_people_formatted = []
-            
-            for new_pos, (original_idx, person) in enumerate(shuffled_people):
-                position_to_original[new_pos] = original_idx
-                shuffled_people_formatted.append({
-                    'id': new_pos, 
-                    'name': person['name'],
-                    'original_index': original_idx
-                })
-            
-        finally:
-            # Always restore the previous random state
-            random.setstate(random_state)
+        seed = int.from_bytes(
+            hashlib.sha256(seed_string.encode('utf-8')).digest()[:8],
+            byteorder='big',
+        )
+        randomizer = random.Random(seed)
+        shuffled_people = list(enumerate(self.people))
+        randomizer.shuffle(shuffled_people)
+
+        position_to_original = {}
+        shuffled_people_formatted = []
+        for new_pos, (original_idx, person) in enumerate(shuffled_people):
+            position_to_original[new_pos] = original_idx
+            shuffled_people_formatted.append({
+                'id': new_pos,
+                'name': person['name'],
+                'original_index': original_idx,
+            })
         
         return {
             'people': shuffled_people_formatted,
@@ -317,12 +303,45 @@ class WhoParticipant(SyncBase):
         answers = self.who_answers.all()
         if not answers:
             return 0
-        
+
         total_accuracy = sum(answer.get_accuracy_percentage() for answer in answers)
         return round(total_accuracy / len(answers), 1)
-    
+
     def __str__(self):
         return f"{self.name} in {self.quiz.room_code}"
+
+
+@transaction.atomic
+def ensure_who_participant_for_hub(quiz, participant_name, session_code, *, activate=True):
+    """Idempotently bind one authorized hub identity to this quiz instance."""
+    normalized_name = str(participant_name or '').strip()
+    normalized_session = str(session_code or '').strip()
+    if not normalized_name or not normalized_session:
+        raise ValueError('Participant name and hub session are required.')
+
+    participant, created = WhoParticipant.objects.get_or_create(
+        quiz=quiz,
+        name=normalized_name,
+        hub_session_code=normalized_session,
+        defaults={'is_active': bool(activate)},
+    )
+    if activate and not participant.is_active:
+        participant.is_active = True
+        participant.last_activity = timezone.now()
+        participant.save(update_fields=['is_active', 'last_activity'])
+    logger.info(
+        'Who participant binding ensured',
+        extra={
+            'who_participant_id': participant.id,
+            'who_quiz_id': quiz.id,
+            'who_room_code': quiz.room_code,
+            'hub_session_code': normalized_session,
+            'participant_created': created,
+            'participant_activated': bool(activate),
+            'participant_is_active': participant.is_active,
+        },
+    )
+    return participant
 
 
 class WhoAnswer(SyncBase):

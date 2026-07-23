@@ -75,6 +75,43 @@
         background: #6b7280;
         cursor: not-allowed;
       }
+      .readiness-overlay {
+        position: fixed;
+        inset: 0;
+        z-index: 1000;
+        display: none;
+        align-items: center;
+        justify-content: center;
+        padding: 1.5rem;
+        background: rgba(2, 6, 23, 0.72);
+      }
+      .readiness-overlay.is-visible {
+        display: flex;
+      }
+      .readiness-card {
+        width: min(100%, 420px);
+        padding: 1.5rem;
+        border-radius: 16px;
+        background: #ffffff;
+        color: #0f172a;
+        box-shadow: 0 22px 60px rgba(0, 0, 0, 0.35);
+      }
+      .readiness-card h3 {
+        margin: 0 0 0.65rem;
+      }
+      .readiness-card p {
+        margin: 0 0 1rem;
+        color: #475569;
+      }
+      .readiness-card button {
+        background: #16a34a;
+        border: 0;
+        border-radius: 10px;
+        color: #ffffff;
+        font-weight: 700;
+        padding: 0.65rem 1rem;
+        width: 100%;
+      }
       ul { 
         padding-left: 1.5rem; 
         margin-top: 1rem;
@@ -151,23 +188,28 @@
 
       /* Leaderboard */
       .leaderboard-section { margin-top: 1.5rem; }
+      .lb-table-scroll { width: 100%; max-width: 100%; overflow-x: auto; }
       .section-title { font-size: .85rem; color: var(--muted); border: 1px solid rgba(148,163,184,.25); background: rgba(15,23,42,.5); padding: .35rem .6rem; border-radius: 999px; display: inline-block; margin-bottom: .9rem; }
-      .lb-table { width: 100%; border-collapse: collapse; }
+      .lb-table { width: 100%; min-width: max-content; border-collapse: collapse; }
       .lb-table th { font-size: .75rem; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; padding: .4rem .75rem; text-align: left; border-bottom: 1px solid rgba(148,163,184,.15); }
       .lb-table td { padding: .55rem .75rem; border-bottom: 1px solid rgba(148,163,184,.07); font-size: .9rem; }
       .lb-rank { font-weight: 700; width: 2rem; color: var(--muted); }
-      .lb-rank.gold { color: #fbbf24; }
-      .lb-rank.silver { color: #94a3b8; }
-      .lb-rank.bronze { color: #c07b3a; }
       .lb-name { font-weight: 600; }
       .lb-score { text-align: center; font-weight: 700; color: var(--primary); }
       .lb-games { text-align: center; color: var(--muted); font-size: .8rem; }
       .lb-table th.lb-score, .lb-table th.lb-games { text-align: center; }
+      .lb-empty { padding: .8rem 0; color: var(--muted); font-size: .85rem; }
     </style>
   </head>
   <body>
-    <div class="container">
-      <div class="header">
+    <div
+      class="container"
+      data-participant-lobby
+      data-lobby-name="{{ session_name }}"
+      data-vhs-next-game-number="{{ next_game_number|default_if_none:'' }}"
+      data-vhs-next-game-state="{% if next_game_number is not None %}planned{% else %}complete{% endif %}"
+    >
+      <div class="header" data-participant-lobby-heading>
         <div class="title" id="lobbyTitle">{{ session_name }}</div>
       </div>
 
@@ -188,15 +230,15 @@
         <div id="statusMessage" class="status-message" style="display: none;"></div>
       </div>
 
-      <div class="card join-card" id="checkInCard" style="display:none;">
+      <div class="card join-card" id="checkInCard" data-participant-lobby-status style="display:none;">
         <div class="lobby-top">
           <div>
-            <div class="section-title">Check-in</div>
-            <div class="muted" id="checkInStatusText">Warte auf Check-in.</div>
+            <div class="section-title" data-participant-lobby-status-label>Check-in</div>
+            <div class="muted" id="checkInStatusText" data-participant-lobby-status-copy>Warte auf Check-in.</div>
           </div>
           <button id="readyCheckInBtn" type="button" disabled>Ich bin bereit</button>
         </div>
-        <div class="muted" id="checkInCounts" style="margin-top:.75rem;">Bereit: 0</div>
+        <div class="muted" id="checkInCounts" data-participant-lobby-status-count style="margin-top:.75rem;">Bereit: 0</div>
       </div>
 
       <div class="vote-section" id="voteSection" style="display:none;">
@@ -213,21 +255,26 @@
       </div>
 
       <div class="leaderboard-section" id="leaderboardSection" style="display:none;">
-        <div class="card">
-          <div class="section-title">Leaderboard</div>
-          <table class="lb-table">
-            <thead>
-              <tr>
-                <th class="lb-rank">#</th>
-                <th>Player</th>
-                <th class="lb-score">Points</th>
-              </tr>
-            </thead>
-            <tbody id="leaderboardBody"></tbody>
-          </table>
+        <div class="card participant-leaderboard-panel">
+          <div class="section-title participant-leaderboard-title">RANGLISTE</div>
+          <div class="lb-empty" id="leaderboardEmpty" hidden></div>
+          <div class="lb-table-scroll" id="leaderboardScroll">
+            <table class="lb-table">
+              <thead id="leaderboardHead"></thead>
+              <tbody id="leaderboardBody"></tbody>
+            </table>
+          </div>
         </div>
       </div>
-      <div class="share" style="text-align:center; margin-top:2rem; padding-bottom:1rem;">Share link: <code>{{ request.scheme }}://{{ request.get_host }}/hub/lobby/{{ session_code }}/</code></div>
+      <div class="share" data-participant-lobby-share style="text-align:center; margin-top:2rem; padding-bottom:1rem;"><span data-participant-lobby-share-label>Share link:</span> <code data-participant-lobby-share-value>{{ request.scheme }}://{{ request.get_host }}/hub/lobby/{{ session_code }}/</code></div>
+    </div>
+
+    <div class="readiness-overlay" id="readinessOverlay" aria-hidden="true">
+      <div class="readiness-card">
+        <h3>Bereitschaftscheck</h3>
+        <p id="readinessMessage">Bitte bestätige, dass du bereit bist.</p>
+        <button type="button" id="readinessReadyBtn">Bereit</button>
+      </div>
     </div>
 
     <script>
@@ -239,6 +286,43 @@
       let nicknameCheckTimeout = null;
       let currentNickname = '';
       let sessionEndedReceived = false;
+      const initialNextGameNumber = Number(
+        document.querySelector('[data-participant-lobby]')?.dataset.vhsNextGameNumber
+      );
+      let latestNextGameNumber = Number.isInteger(initialNextGameNumber) && initialNextGameNumber > 0
+        ? initialNextGameNumber
+        : null;
+      let nextGameSequenceComplete = (
+        document.querySelector('[data-participant-lobby]')?.dataset.vhsNextGameState === 'complete'
+      );
+
+      function syncParticipantLobbyMetadata(state) {
+        const lobbyRoot = document.querySelector('[data-participant-lobby]');
+        if (!lobbyRoot) return;
+
+        const nickname = currentNickname || nicknameInput.value.trim();
+        if (nickname) lobbyRoot.dataset.participantName = nickname;
+        else delete lobbyRoot.dataset.participantName;
+
+        if (!state || !Object.prototype.hasOwnProperty.call(state, 'next_game_number')) return;
+        const nextGameNumber = Number(state.next_game_number);
+        if (Number.isInteger(nextGameNumber) && nextGameNumber > 0) {
+          if (
+            nextGameSequenceComplete ||
+            (latestNextGameNumber !== null && nextGameNumber < latestNextGameNumber)
+          ) {
+            return;
+          }
+          latestNextGameNumber = nextGameNumber;
+          lobbyRoot.dataset.vhsNextGameNumber = String(nextGameNumber);
+          lobbyRoot.dataset.vhsNextGameState = 'planned';
+        } else if (state.next_game_complete === true) {
+          latestNextGameNumber = null;
+          nextGameSequenceComplete = true;
+          delete lobbyRoot.dataset.vhsNextGameNumber;
+          lobbyRoot.dataset.vhsNextGameState = 'complete';
+        }
+      }
 
       // DOM elements
       const nicknameInput = document.getElementById('nickname');
@@ -250,6 +334,9 @@
       const checkInStatusText = document.getElementById('checkInStatusText');
       const checkInCounts = document.getElementById('checkInCounts');
       const readyCheckInBtn = document.getElementById('readyCheckInBtn');
+      const readinessOverlay = document.getElementById('readinessOverlay');
+      const readinessMessage = document.getElementById('readinessMessage');
+      const readinessReadyBtn = document.getElementById('readinessReadyBtn');
 
       // Populate known participants from server-side context
       const dbParticipants = {{ participants|safe }};
@@ -323,6 +410,35 @@
           });
       }
 
+      function renderReadinessState(payload) {
+        if (!payload || !payload.readiness_check) return;
+        const check = payload.readiness_check || {};
+        const participants = payload.readiness_participants || [];
+        const nickname = currentNickname || nicknameInput.value.trim();
+        const me = participants.find(p => (p.nickname || '').toLowerCase() === nickname.toLowerCase());
+        const shouldShow = !!check.active && !!nickname && !!me && !me.ready;
+        readinessOverlay?.classList.toggle('is-visible', shouldShow);
+        readinessOverlay?.setAttribute('aria-hidden', shouldShow ? 'false' : 'true');
+        if (readinessMessage) {
+          readinessMessage.textContent = me?.ready
+            ? 'Du bist bereit.'
+            : 'Bereitschaftscheck: Bitte bestätige, dass du bereit bist.';
+        }
+      }
+
+      function submitReadiness() {
+        const nickname = currentNickname || nicknameInput.value.trim();
+        if (!nickname) return;
+        readinessReadyBtn.disabled = true;
+        ws.send(JSON.stringify({ type: 'participant_ready', nickname }));
+        if (readinessMessage) readinessMessage.textContent = 'Du bist bereit.';
+        setTimeout(() => {
+          readinessOverlay?.classList.remove('is-visible');
+          readinessOverlay?.setAttribute('aria-hidden', 'true');
+          readinessReadyBtn.disabled = false;
+        }, 350);
+      }
+
       // WebSocket event handlers
       ws.onopen = () => {
         // Request current state
@@ -357,9 +473,15 @@
         
         // Handle redirection to active game if available
         if (data.type === 'lobby_join_success') {
+          currentNickname = nicknameInput.value.trim();
+          syncParticipantLobbyMetadata();
 
           // Check for active game and redirect if needed
           (function() {
+            const returnedToLobby = new URLSearchParams(window.location.search).get('return') === '1';
+            if (returnedToLobby) {
+              return;
+            }
             
             // Check if there's an active game from the server-side context
             const activeGameKey = data.game_key;
@@ -378,6 +500,9 @@
                 blackjack: { join: '/blackjack/join/', play: '/blackjack/play/' },
                 sorting_ladder: { join: '/sorting-ladder/join/', play: '/sorting-ladder/play/' },
                 wer_weiss_mehr: { join: '/wer-weiss-mehr/join/', play: '/wer-weiss-mehr/play/' },
+                buzzer: { join: '/buzzer/join/', play: '/buzzer/play/' },
+                host_points: { join: '/host-points/join/', play: '/host-points/play/' },
+                wann_war_das: { join: '/wann-war-das/join/', play: '/wann-war-das/play/' },
               };
               
               const code = '{{ session_code }}';
@@ -451,6 +576,7 @@
           });
           // Update available games for voting
           currentSteps = data.steps || [];
+          syncParticipantLobbyMetadata(data);
           refreshVotes();
           updateNicknameStatus();
           maybeHideJoin();
@@ -460,10 +586,15 @@
             if (data.scoreboard_visible) fetchLeaderboard();
           }
           renderCheckInState(data);
+          renderReadinessState(data);
         }
 
         if (['check_in_started', 'participant_checked_in', 'check_in_completed', 'check_in_reset'].includes(data.type)) {
           renderCheckInState(data);
+        }
+
+        if (['readiness_started', 'readiness_participant_ready', 'readiness_ended'].includes(data.type)) {
+          renderReadinessState(data);
         }
 
         if (data.type === 'join_success') {
@@ -473,6 +604,7 @@
           joinBtn.disabled = true;
           joinBtn.textContent = 'Joined';
           currentNickname = nicknameInput.value.trim();
+          syncParticipantLobbyMetadata();
           const titleEl = document.getElementById('lobbyTitle');
           if (titleEl) titleEl.textContent = '{{ session_name }} (' + currentNickname + ')';
           fetchCheckInState();
@@ -496,12 +628,17 @@
             blackjack: { join: '/blackjack/join/', play: '/blackjack/play/' },
             sorting_ladder: { join: '/sorting-ladder/join/', play: '/sorting-ladder/play/' },
             wer_weiss_mehr: { join: '/wer-weiss-mehr/join/', play: '/wer-weiss-mehr/play/' },
+            buzzer: { join: '/buzzer/join/', play: '/buzzer/play/' },
+            host_points: { join: '/host-points/join/', play: '/host-points/play/' },
+            wann_war_das: { join: '/wann-war-das/join/', play: '/wann-war-das/play/' },
           };
           
           if (step.room_code && routes[step.game_key]) {
             const nickname = currentNickname || nicknameInput.value.trim();
             const joinUrl = new URL(routes[step.game_key].join, window.location.origin);
-            const playUrl = new URL(`${routes[step.game_key].play}${step.room_code}/${encodeURIComponent(nickname)}/?hub_session=${code}`, window.location.origin);
+            const playUrl = new URL(`${routes[step.game_key].play}${step.room_code}/${encodeURIComponent(nickname)}/`, window.location.origin);
+            playUrl.searchParams.set('hub_session', code);
+            appendGameStartIntroParams(playUrl, step);
 
             // Prepare join payload
             const csrfToken = "{{ csrf_token }}"; // or get dynamically if rendered server-side
@@ -531,14 +668,29 @@
                 if (data.success) {
                   console.log('Join successful, redirecting to play URL');
                   window.location.href = playUrl.toString();
+                } else if (step.game_key === 'who') {
+                  console.error('Who join failed; keeping participant in the hub lobby.', data.error);
+                  showStatus(data.error || 'Teilnahme am aktuellen Spiel konnte nicht bestaetigt werden.', 'error');
                 } else {
                   console.error('Join failed, falling back to play URL ');
                   window.location.href = playUrl.toString();
                 }
               })
+              .catch(error => {
+                console.error('Error joining game:', error);
+                if (step.game_key === 'who') {
+                  showStatus('Teilnahme am aktuellen Spiel konnte nicht bestaetigt werden.', 'error');
+                  return;
+                }
+                window.location.href = playUrl.toString();
+              });
             } catch (error) {
               console.error('Error joining game:', error);
-              window.location.href = playUrl.toString();
+              if (step.game_key === 'who') {
+                showStatus('Teilnahme am aktuellen Spiel konnte nicht bestaetigt werden.', 'error');
+              } else {
+                window.location.href = playUrl.toString();
+              }
             }
 
           }
@@ -627,6 +779,7 @@
           joinCard.style.display = 'none';
           if (nick) {
             currentNickname = nick;
+            syncParticipantLobbyMetadata();
             const titleEl = document.getElementById('lobbyTitle');
             if (titleEl) titleEl.textContent = '{{ session_name }} (' + nick + ')';
           }
@@ -685,6 +838,11 @@
         }
       }
 
+      const initialWhoJoinError = new URLSearchParams(window.location.search).get('who_join_error');
+      if (initialWhoJoinError) {
+        showStatus(initialWhoJoinError, 'error');
+      }
+
 
       function renderSessionEnded() {
         sessionEndedReceived = true;
@@ -717,8 +875,35 @@
         quiz: 'Quiz', assign: 'Assign', estimation: 'Estimation',
         where: 'Where Is This', who: 'Who Is Lying', who_that: 'Who Is That',
         blackjack: 'Black Jack', sorting_ladder: 'Sorting Ladder', clue_rush: 'Clue Rush',
+        buzzer: 'Buzzer',
+        host_points: 'Host-Punktevergabe',
+        wann_war_das: 'Wann war das?',
         wer_weiss_mehr: 'Wer weiß mehr?',
       };
+
+      function findStepMetadata(step) {
+        return (currentSteps || []).find(candidate =>
+          String(candidate.room_code || '') === String(step.room_code || '') &&
+          String(candidate.game_key || '') === String(step.game_key || '')
+        ) || null;
+      }
+
+      function appendGameStartIntroParams(playUrl, step) {
+        const matchedStep = findStepMetadata(step);
+        const matchedOrder = Number(matchedStep?.order);
+        const stepOrder = Number(step.order);
+        const rawOrder = Number.isInteger(matchedOrder) && matchedOrder >= 0 ? matchedOrder : stepOrder;
+        const displayOrder = Number.isInteger(rawOrder) && rawOrder >= 0 ? String(rawOrder + 1) : '';
+        const fallbackName = gameNames[step.game_key] || 'Spiel';
+        const displayName = step.title || matchedStep?.title || matchedStep?.display_name || fallbackName;
+
+        playUrl.searchParams.set('game_start_intro', '1');
+        playUrl.searchParams.set('game_start_key', step.game_key || '');
+        playUrl.searchParams.set('game_start_room', step.room_code || '');
+        playUrl.searchParams.set('game_start_nonce', String(Date.now()));
+        if (displayOrder) playUrl.searchParams.set('game_start_order', displayOrder);
+        playUrl.searchParams.set('game_start_title', displayName);
+      }
 
       function hideVoting() {
         voteSection.style.display = 'none';
@@ -789,8 +974,10 @@
 
       // Leaderboard
       const leaderboardSection = document.getElementById('leaderboardSection');
+      const leaderboardHead = document.getElementById('leaderboardHead');
       const leaderboardBody = document.getElementById('leaderboardBody');
-      const rankLabels = ['gold', 'silver', 'bronze'];
+      const leaderboardEmpty = document.getElementById('leaderboardEmpty');
+      const leaderboardScroll = document.getElementById('leaderboardScroll');
       let scoreboardVisible = false;
 
       function setScoreboardVisible(visible) {
@@ -798,45 +985,100 @@
         leaderboardSection.style.display = visible ? '' : 'none';
       }
 
+      function appendLeaderboardCell(row, tagName, text, className = '') {
+        const cell = document.createElement(tagName);
+        cell.className = className;
+        cell.textContent = text;
+        row.appendChild(cell);
+        return cell;
+      }
+
+      function showLeaderboardEmpty(message) {
+        leaderboardHead.replaceChildren();
+        leaderboardBody.replaceChildren();
+        leaderboardScroll.hidden = true;
+        leaderboardEmpty.hidden = false;
+        leaderboardEmpty.textContent = message;
+      }
+
+      function renderParticipantLeaderboard(data) {
+        const players = Array.isArray(data.participants) ? data.participants : [];
+        const completedGames = (Array.isArray(data.games) ? data.games : [])
+          .filter(game => game.status === 'completed')
+          .sort((left, right) => left.game_number - right.game_number);
+
+        if (data.participant_found === false) {
+          showLeaderboardEmpty('Dein Ranglistenplatz ist noch nicht verfügbar.');
+          return;
+        }
+        if (players.length === 0) {
+          showLeaderboardEmpty('Noch keine Ranglistendaten verfügbar.');
+          return;
+        }
+
+        leaderboardHead.replaceChildren();
+        leaderboardBody.replaceChildren();
+        leaderboardEmpty.hidden = true;
+        leaderboardScroll.hidden = false;
+
+        const headingRow = document.createElement('tr');
+        appendLeaderboardCell(headingRow, 'th', 'RANG', 'lb-rank');
+        appendLeaderboardCell(headingRow, 'th', 'NAME', 'lb-name');
+        completedGames.forEach(game => {
+          appendLeaderboardCell(headingRow, 'th', `#${game.game_number}`, 'lb-game-score');
+        });
+        appendLeaderboardCell(headingRow, 'th', 'GESAMT', 'lb-score');
+        leaderboardHead.appendChild(headingRow);
+
+        players.forEach(player => {
+          const row = document.createElement('tr');
+          if (player.is_current_participant) {
+            row.classList.add('is-current-player');
+          }
+
+          appendLeaderboardCell(row, 'td', `#${player.rank}`, 'lb-rank');
+          const nameCell = appendLeaderboardCell(row, 'td', player.name, 'lb-name');
+          nameCell.title = player.name;
+
+          completedGames.forEach(game => {
+            const gameScore = player.game_overall_scores?.[game.key]
+              ?? player.game_scores?.[game.key];
+            appendLeaderboardCell(
+              row,
+              'td',
+              gameScore === undefined || gameScore === null ? '\u2013' : gameScore,
+              'lb-game-score'
+            );
+          });
+          appendLeaderboardCell(
+            row,
+            'td',
+            player.total_with_adjustment ?? player.weighted_score ?? 0,
+            'lb-score'
+          );
+          leaderboardBody.appendChild(row);
+        });
+      }
+
       function fetchLeaderboard() {
         if (!scoreboardVisible) return;
-        fetch(`/hub/api/session/${code}/leaderboard/`)
+        const participantName = (currentNickname || nicknameInput.value.trim()).trim();
+        if (!participantName) {
+          showLeaderboardEmpty('Dein Ranglistenplatz ist noch nicht verfügbar.');
+          return;
+        }
+
+        const query = new URLSearchParams({ participant_name: participantName });
+        fetch(`/hub/api/session/${code}/leaderboard/?${query.toString()}`)
           .then(r => r.json())
-          .then(data => {
-            let players = data.participants || [];
-
-            // If no game data yet, build list from known lobby participants with 0 points
-            if (players.length === 0 && lobbyNicknames.length > 0) {
-              players = lobbyNicknames.map(name => ({
-                name: name,
-                weighted_score: 0,
-                games_played: 0,
-              }));
-            }
-
-            if (players.length === 0) return;
-
-            leaderboardBody.innerHTML = '';
-            const onlineSet = new Set(lobbyNicknames.map(n => n.toLowerCase()));
-            players.forEach((p, i) => {
-              const rankClass = rankLabels[i] || '';
-              const isOnline = onlineSet.has(p.name.toLowerCase());
-              const dotHtml = isOnline ? '<span class="online">●</span> ' : '<span class="offline">●</span> ';
-              const tr = document.createElement('tr');
-              tr.innerHTML = `
-                <td class="lb-rank ${rankClass}">${i + 1}</td>
-                <td class="lb-name" ${p.name.toLowerCase() === (currentNickname || nicknameInput.value.trim()).toLowerCase() ? 'style="text-decoration:underline;"' : ''}>${dotHtml}${p.name}</td>
-                <td class="lb-score">${p.total_with_adjustment ?? p.weighted_score}</td>
-              `;
-              leaderboardBody.appendChild(tr);
-            });
-          })
-          .catch(() => {});
+          .then(renderParticipantLeaderboard)
+          .catch(() => showLeaderboardEmpty('Rangliste derzeit nicht verfügbar.'));
       }
 
       readyCheckInBtn.addEventListener('click', submitCheckIn);
+      readinessReadyBtn?.addEventListener('click', submitReadiness);
       setInterval(fetchLeaderboard, 10000);
     </script>
-  {% include 'includes/accessibility_widget.html' %}
+  {% include 'includes/accessibility_widget.html' with participant_options_menu=True %}
   </body>
 </html>

@@ -20,8 +20,8 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 </head>
-<body class="blackjack-result-page">
-    <div class="result-container">
+<body class="blackjack-result-page participant-result-page">
+    <div class="result-container" data-participant-name="{{ participant.name }}">
         <!-- Header -->
         <header class="result-header">
             <div class="container">
@@ -1211,5 +1211,6 @@
             });
         });
     </script>
+{% include 'includes/accessibility_widget.html' with participant_options_menu=True %}
 </body>
 </html>

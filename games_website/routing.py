@@ -23,6 +23,9 @@ from clue_rush.routing import websocket_urlpatterns as clue_rush_ws
 from games_hub.routing import websocket_urlpatterns as hub_ws
 from sorting_ladder.routing import websocket_urlpatterns as sorting_ladder_ws
 from wer_weiss_mehr.routing import websocket_urlpatterns as wer_weiss_mehr_ws
+from buzzer.routing import websocket_urlpatterns as buzzer_ws
+from host_points.routing import websocket_urlpatterns as host_points_ws
+from wann_war_das.routing import websocket_urlpatterns as wann_war_das_ws
 
 application = ProtocolTypeRouter({
     # HTTP requests are handled by Django's default ASGI application
@@ -43,6 +46,9 @@ application = ProtocolTypeRouter({
                 + hub_ws
                 + sorting_ladder_ws
                 + wer_weiss_mehr_ws
+                + buzzer_ws
+                + host_points_ws
+                + wann_war_das_ws
             )
         )
     ),

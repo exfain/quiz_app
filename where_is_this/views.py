@@ -58,13 +58,6 @@ def _get_ordered_quiz_questions(quiz, session_code=None):
             ordered_questions.append(current_question)
             seen_ids.add(quiz.current_question_id)
 
-    for question in selected_questions:
-        if question.id in tutorial_question_ids:
-            continue
-        if question.id not in seen_ids:
-            ordered_questions.append(question)
-            seen_ids.add(question.id)
-
     for question_id, question in fallback_questions.items():
         if question_id not in seen_ids:
             ordered_questions.append(question)
@@ -73,19 +66,25 @@ def _get_ordered_quiz_questions(quiz, session_code=None):
     return ordered_questions
 
 
-def _get_total_questions_sent(quiz):
+def _is_current_question_active(quiz, question_id):
+    if not quiz.current_question_id or quiz.current_question_id != question_id:
+        return False
     try:
-        return max(0, int(quiz.session.total_questions_sent or 0))
+        return bool(quiz.session.is_question_active)
     except WhereSession.DoesNotExist:
-        distinct_answer_count = (
-            WhereAnswer.objects.filter(quiz=quiz)
-            .values('question_id')
-            .distinct()
-            .count()
-        )
-        if quiz.current_question_id:
-            return distinct_answer_count + 1
-        return distinct_answer_count
+        return quiz.status == 'active'
+
+
+def _get_question_max_points_for_score_box(quiz, question, session_code=None):
+    scoring_mode = quiz.get_effective_scoring_mode()
+    if scoring_mode == 'rank':
+        answer_qs = WhereAnswer.objects.filter(quiz=quiz, question=question)
+        if session_code:
+            answer_qs = answer_qs.filter(participant__hub_session_code=session_code)
+        played_max_points = answer_qs.order_by('-points_earned').values_list('points_earned', flat=True).first()
+        if played_max_points is not None:
+            return int(played_max_points)
+    return question.get_max_points_for_mode(scoring_mode, quiz.get_participant_count(session_code))
 
 
 def _build_question_scoreboard(quiz, participant, session_code=None):
@@ -108,27 +107,19 @@ def _build_question_scoreboard(quiz, participant, session_code=None):
     if current_question_id:
         asked_question_ids.add(current_question_id)
 
-    total_questions_sent = _get_total_questions_sent(quiz)
-    if total_questions_sent > len(asked_question_ids):
-        for question in ordered_questions:
-            if question.id in asked_question_ids:
-                continue
-            asked_question_ids.add(question.id)
-            if len(asked_question_ids) >= total_questions_sent:
-                break
-
     history = []
     scoreboard = []
     for index, question in enumerate(ordered_questions, start=1):
         answer = participant_answers.get(question.id)
-        if answer:
+        is_running_answer = answer and _is_current_question_active(quiz, question.id)
+        if answer and not is_running_answer:
             status = 'played'
             earned_points = int(answer.points_earned or 0)
             history.append({
                 'question_id': question.id,
                 'question_number': index,
                 'points': earned_points,
-                'max_points': int(question.points or 0),
+                'max_points': _get_question_max_points_for_score_box(quiz, question, session_code),
             })
         elif quiz.status == 'active' and current_question_id == question.id:
             status = 'current'
@@ -140,7 +131,7 @@ def _build_question_scoreboard(quiz, participant, session_code=None):
                 'question_id': question.id,
                 'question_number': index,
                 'points': 0,
-                'max_points': int(question.points or 0),
+                'max_points': _get_question_max_points_for_score_box(quiz, question, session_code),
             })
         else:
             status = 'upcoming'
@@ -150,7 +141,7 @@ def _build_question_scoreboard(quiz, participant, session_code=None):
             'id': question.id,
             'number': index,
             'earned_points': earned_points,
-            'max_points': int(question.points or 0),
+            'max_points': _get_question_max_points_for_score_box(quiz, question, session_code),
             'status': status,
         })
 
@@ -445,25 +436,39 @@ def submit_answer(request, room_code, participant_name):
             })
         
         data = json.loads(request.body)
-        user_latitude = float(data.get('latitude'))
-        user_longitude = float(data.get('longitude'))
+        x_norm = data.get('x_norm')
+        y_norm = data.get('y_norm')
+        user_latitude = data.get('latitude')
+        user_longitude = data.get('longitude')
         time_taken = data.get('time_taken', 0)
         
-        if user_latitude is None or user_longitude is None:
+        if (x_norm is None or y_norm is None) and (user_latitude is None or user_longitude is None):
             return JsonResponse({
                 'success': False,
                 'error': 'Please select a location on the map before submitting.'
             })
-        
+
+        answer_kwargs = {
+            'quiz': quiz,
+            'participant': participant,
+            'question': quiz.current_question,
+            'time_taken': time_taken,
+        }
+        if x_norm is not None and y_norm is not None:
+            answer_kwargs.update({
+                'x_norm': float(x_norm),
+                'y_norm': float(y_norm),
+                'user_latitude': 0,
+                'user_longitude': 0,
+            })
+        else:
+            answer_kwargs.update({
+                'user_latitude': float(user_latitude),
+                'user_longitude': float(user_longitude),
+            })
+
         # Create answer
-        answer = WhereAnswer.objects.create(
-            quiz=quiz,
-            participant=participant,
-            question=quiz.current_question,
-            user_latitude=user_latitude,
-            user_longitude=user_longitude,
-            time_taken=time_taken
-        )
+        answer = WhereAnswer.objects.create(**answer_kwargs)
         
         # Update participant's last activity
         participant.last_activity = timezone.now()
@@ -471,13 +476,8 @@ def submit_answer(request, room_code, participant_name):
         
         return JsonResponse({
             'success': True,
-            'points_earned': answer.points_earned,
-            'distance_km': answer.distance_km,
-            'formatted_distance': answer.get_formatted_distance(),
-            'accuracy_percentage': answer.accuracy_percentage,
-            'accuracy_category': answer.get_accuracy_category(),
-            'correct_latitude': quiz.current_question.correct_latitude,
-            'correct_longitude': quiz.current_question.correct_longitude,
+            'x_norm': answer.x_norm,
+            'y_norm': answer.y_norm,
         })
         
     except json.JSONDecodeError:

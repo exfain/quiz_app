@@ -29,6 +29,7 @@
                 <div class="header-content">
                     <div class="quiz-info">
                         <h1 class="quiz-title">{{ quiz.title }}</h1>
+                        {% include 'includes/_session_game_number.html' with game_key='quiz' room_code=quiz.room_code %}
                     </div>
                     <div class="participant-info">
                         <div class="participant-avatar">
@@ -51,23 +52,12 @@
                         <!-- Waiting State -->
                         <div id="waitingQuizState" class="game-state {% if quiz.status != 'waiting' %}d-none{% endif %}">
                             <div class="waiting-card">
-                                <div class="waiting-animation">
-                                    <div class="pulse-ring"></div>
-                                    <div class="pulse-ring delay-1"></div>
-                                    <div class="pulse-ring delay-2"></div>
-                                    <i data-lucide="clock"></i>
-                                </div>
-                                <h2>Waiting for Quiz to Start</h2>
-                                <p>The quiz host will start the session shortly. Stay tuned!</p>
-                                <div class="participants-count">
-                                    <i data-lucide="users"></i>
-                                    <span id="waitingParticipantCount">{{ participant_count }}</span> participants joined
-                                </div>
+                                {% include 'includes/_participant_start_waiting.html' with waiting_game_title=quiz.title %}
                             </div>
                         </div>
 
                         <!-- Correct Answer State -->
-                        <div id="correctAnswerState" class="game-state d-none">
+                        <div id="correctAnswerState" class="game-state d-none" data-vhs-reveal-game-type="quiz">
                             <div class="correct-answer-card">
                                 <div class="answer-reveal">
                                     <div class="reveal-icon">
@@ -99,10 +89,7 @@
                         <div id="waitingQuestionState" class="game-state d-none">
                             <div class="waiting-card">
                                 <div class="waiting-animation">
-                                    <div class="pulse-ring"></div>
-                                    <div class="pulse-ring delay-1"></div>
-                                    <div class="pulse-ring delay-2"></div>
-                                    <i data-lucide="clock"></i>
+                                    <div class="qa-wait-loader" aria-hidden="true"></div>
                                 </div>
                                 <h2>Waiting for Next Question</h2>
                                 <p>Get ready for the next challenge!</p>
@@ -125,23 +112,26 @@
                                 </div>
 
                                 <!-- Question Content -->
-                                <div class="question-content">
-                                    <div class="question-text" id="questionText">
+                                <div class="question-content quick-quiz-layout">
+                                    <div class="question-text quick-quiz-question" id="questionText">
                                         {% if quiz.current_question %}
                                             {{ quiz.current_question.question_text }}
                                         {% endif %}
                                     </div>
 
-                                    <!-- Answer Options -->
-                                    <div class="answer-options" id="answerOptions">
-                                        <!-- Options will be dynamically populated -->
-                                    </div>
+                                    <div class="quick-quiz-response-area">
+                                        <!-- Answer Options -->
+                                        <div class="answer-options quick-quiz-answer-list" id="answerOptions">
+                                            <!-- Options will be dynamically populated -->
+                                        </div>
 
-                                    <!-- Submit Button -->
-                                    <button class="btn btn-primary btn-lg w-100 submit-answer" id="submitAnswerBtn" disabled>
-                                        <i data-lucide="send"></i>
-                                        Submit Answer
-                                    </button>
+                                        <!-- Submit Button -->
+                                        <div class="quick-quiz-submit-row">
+                                            <button class="btn btn-primary btn-lg w-100 submit-answer quick-quiz-submit vhs-quick-quiz-submit" id="submitAnswerBtn" aria-pressed="false" disabled>
+                                                Einloggen
+                                            </button>
+                                        </div>
+                                    </div>
                                 </div>
                             </div>
                         </div>
@@ -216,7 +206,7 @@
                             <h6 class="mb-2 score-box__title">Punkte</h6>
                             <div id="quizScoreList" class="quiz-score-list score-box__list">
                                 {% for question in question_scoreboard %}
-                                    <div class="quiz-score-row score-box__row is-{{ question.status }}" data-question-number="{{ question.number }}" data-question-id="{{ question.id }}">
+                                    <div class="quiz-score-row score-box__row is-{{ question.status }}" data-question-number="{{ question.number }}" data-question-id="{{ question.id }}" data-points-earned="{% if question.status == 'played' %}{{ question.points_earned|default:0 }}{% endif %}" data-max-points="{{ question.max_points }}">
                                         <div class="quiz-score-badge score-box__badge">{{ question.number }}</div>
                                         <div class="quiz-score-mark score-box__value">
                                             {% if question.status == 'played' and question.max_points > 1 %}
@@ -284,7 +274,7 @@
                 <div style="background:#f8fafc; border-radius:.75rem; padding:1.25rem; text-align:left; margin-bottom:1.5rem;">
                     <div class="tut-rule"><span class="tut-icon">❓</span><span>The host asks a question – you see it on your screen.</span></div>
                     <div class="tut-rule"><span class="tut-icon">⏱️</span><span>You have a countdown. Answer as quickly as possible!</span></div>
-                    <div class="tut-rule"><span class="tut-icon">👆</span><span>Select an answer and click <em>Submit Answer</em>.</span></div>
+                    <div class="tut-rule"><span class="tut-icon">👆</span><span>Wähle eine Antwort und klicke auf <em>Einloggen</em>.</span></div>
                     <div class="tut-rule"><span class="tut-icon">🏆</span><span>The more correct answers, the more points!</span></div>
                 </div>
                 <button class="tut-btn" onclick="tutNext()">Next &rarr;</button>
@@ -781,6 +771,10 @@
             text-align: center;
         }
 
+        .quick-quiz-response-area {
+            display: contents;
+        }
+
         .answer-options {
             display: grid;
             gap: 1rem;
@@ -800,16 +794,8 @@
             user-select: none;
         }
 
-        .answer-option:hover {
-            background-color: var(--bg-tertiary);
-            border-color: var(--color-primary);
-            box-shadow: var(--shadow-md);
-        }
-
         .answer-option.selected {
-            background-color: var(--primary-50);
-            border-color: var(--color-primary);
-            color: var(--primary-700);
+            font-weight: 700;
         }
 
         .answer-option.disabled {
@@ -835,8 +821,14 @@
             flex-shrink: 0;
         }
 
-        .answer-option.selected .option-key {
-            background-color: var(--primary-700);
+        .answer-option-single-label {
+            justify-content: center;
+            text-align: center;
+        }
+
+        .answer-option-single-label .option-text {
+            flex: 0 1 auto;
+            font-weight: 700;
         }
 
         .option-text {
@@ -1190,6 +1182,7 @@
 
     {% include 'includes/_hub_return_to_lobby_player.html' %}
     {% include 'includes/_game_tutorial_overlay.html' %}
+    {% include 'includes/_session_game_start_intro.html' %}
 <script>
         document.addEventListener('DOMContentLoaded', function() {
             lucide.createIcons();
@@ -1205,7 +1198,11 @@
                     this.questionStartTime = null;
                     this.selectedAnswer = null;
                     this.hasAnswered = false;
+                    this.submissionPending = false;
                     this.answerSubmissionConfirmed = false;
+                    this.submissionQuestionId = null;
+                    this.pendingSubmittedAnswerDisplay = null;
+                    this.pendingSubmissionTime = null;
                     this.currentQuestion = null;
                     this.lastSubmittedAnswerDisplay = null;
                     this.scoreboardQuestions = this.readJsonScript('quizScoreboardData', []);
@@ -1213,6 +1210,7 @@
                     this.currentQuestionId = this.readJsonScript('quizCurrentQuestionId', null);
                     this.pendingScoreEvaluations = new Map();
                     this.recentlyEndedQuestionId = null;
+                    this.revealedQuestionId = null;
                     
                     this.init();
                 }
@@ -1268,6 +1266,7 @@
                 
 
                 handleWebSocketMessage(data) {
+                    window.sessionGameStartIntro?.handleState(data);
                     console.log("Data: ", data);
                     switch(data.type) {
                         case 'quiz_started':
@@ -1292,12 +1291,12 @@
                             break;
                             
                         case 'answer_submitted':
-                            this.answerSubmissionConfirmed = true;
-                            if (!data.is_tutorial_round) {
-                                this.storePendingProgressEvaluation(data.is_correct, data.question_id, data.points_earned);
-                                this.applyPendingProgressEvaluationIfEnded(data.question_id);
-                            }
+                            this.onAnswerSubmitted(data);
                             // Gesamtpunkte direkt aus der Serverantwort übernehmen
+                            break;
+
+                        case 'answer_rejected':
+                            this.onAnswerRejected(data);
                             break;
 
                         case 'answer_corrected':
@@ -1346,18 +1345,79 @@
                     const userTextEl = document.getElementById('submittedAnswerText');
                     const userAnswer = this.lastSubmittedAnswerDisplay
                         || ((userTextEl && userTextEl.textContent) ? userTextEl.textContent : '-');
-                    const questionText = this.currentQuestion?.question_text || document.getElementById('questionText')?.textContent || '-';
+                    const questionText = this.currentQuestion?.question_text
+                        || correctAnswerData?.question_text
+                        || document.getElementById('questionText')?.textContent
+                        || '-';
 
                     const display = document.getElementById('correctAnswerDisplay');
                     const compUser = document.getElementById('userAnswerDisplay');
                     const compCorrect = document.getElementById('correctAnswerComparison');
                     const revealedQuestion = document.getElementById('revealedQuestionText');
+                    const revealState = document.getElementById('correctAnswerState');
                     if (display) display.textContent = correctText;
                     if (compUser) compUser.textContent = userAnswer;
                     if (compCorrect) compCorrect.textContent = correctText;
                     if (revealedQuestion) revealedQuestion.textContent = questionText;
+                    if (revealState) {
+                        revealState.dataset.vhsRevealQuestionType = this.currentQuestion?.question_type
+                            || correctAnswerData?.question_type
+                            || '';
+                    }
 
                     this.showState('correctAnswerState');
+                }
+
+                onAnswerSubmitted(data) {
+                    const questionId = Number(data?.question_id);
+                    const activeQuestionId = Number(this.currentQuestion?.id ?? this.currentQuestionId);
+                    const pendingQuestionId = Number(this.submissionQuestionId);
+                    if (
+                        Number.isNaN(questionId)
+                        || (questionId !== activeQuestionId && questionId !== pendingQuestionId && questionId !== this.revealedQuestionId)
+                    ) {
+                        return;
+                    }
+
+                    this.submissionPending = false;
+                    this.answerSubmissionConfirmed = true;
+                    this.hasAnswered = true;
+                    const submittedAnswerDisplay = data.display_answer || this.pendingSubmittedAnswerDisplay || '-';
+                    const submittedTime = Number(data.time_taken ?? this.pendingSubmissionTime);
+                    this.lastSubmittedAnswerDisplay = submittedAnswerDisplay;
+
+                    const submittedAnswerText = document.getElementById('submittedAnswerText');
+                    if (submittedAnswerText) submittedAnswerText.textContent = submittedAnswerDisplay;
+                    const submittedTimeElement = document.getElementById('submittedTime');
+                    if (submittedTimeElement && Number.isFinite(submittedTime)) {
+                        submittedTimeElement.textContent = submittedTime.toFixed(1);
+                    }
+
+                    if (!data.is_tutorial_round && data.evaluation_revealed) {
+                        this.storePendingProgressEvaluation(data.is_correct, data.question_id, data.points_earned);
+                        this.applyPendingProgressEvaluationIfEnded(data.question_id);
+                    }
+
+                    if (this.revealedQuestionId === questionId) {
+                        const userAnswerDisplay = document.getElementById('userAnswerDisplay');
+                        if (userAnswerDisplay) userAnswerDisplay.textContent = submittedAnswerDisplay;
+                        return;
+                    }
+
+                    if (questionId === activeQuestionId) {
+                        this.showState('answerSubmittedState');
+                    }
+                }
+
+                onAnswerRejected(data) {
+                    const questionId = Number(data?.question_id);
+                    if (Number.isNaN(questionId) || questionId !== Number(this.submissionQuestionId)) return;
+                    if (this.answerSubmissionConfirmed) return;
+
+                    this.submissionPending = false;
+                    this.hasAnswered = false;
+                    this.pendingSubmittedAnswerDisplay = null;
+                    this.pendingSubmissionTime = null;
                 }
 
                 bindEvents() {
@@ -1405,12 +1465,17 @@
 
                 onQuestionStarted(question, timeLimit) {
                     this.hasAnswered = false;
+                    this.submissionPending = false;
                     this.answerSubmissionConfirmed = false;
+                    this.submissionQuestionId = null;
+                    this.pendingSubmittedAnswerDisplay = null;
+                    this.pendingSubmissionTime = null;
                     this.selectedAnswer = null;
                     this.currentQuestion = question;
                     this.currentQuestionIsTutorial = !!question?.is_tutorial_round;
                     this.lastSubmittedAnswerDisplay = null;
                     this.recentlyEndedQuestionId = null;
+                    this.revealedQuestionId = null;
                     if (this.currentQuestionIsTutorial) {
                         this.setCurrentQuestion(null);
                     } else {
@@ -1431,14 +1496,26 @@
                     clearInterval(this.questionTimer);
 
                     const endedQuestionId = data?.correct_answer?.question_id || this.currentQuestion?.id || null;
-                    const awaitingFinalizedAnswer = this.finalizePendingAnswerOnQuestionEnd(endedQuestionId);
                     this.recentlyEndedQuestionId = endedQuestionId !== null && endedQuestionId !== undefined
                         ? Number(endedQuestionId)
                         : null;
-                    if (!data?.is_tutorial_round) {
-                        this.applyPendingProgressEvaluation(endedQuestionId);
+                    this.revealedQuestionId = this.recentlyEndedQuestionId;
+                    this.submissionPending = false;
+                    this.disableAnswerControls();
+                    const ownQuestionEndResult = this.getOwnQuestionEndResult(data, endedQuestionId);
+                    if (ownQuestionEndResult?.display_answer) {
+                        this.lastSubmittedAnswerDisplay = ownQuestionEndResult.display_answer;
+                        const submittedAnswerText = document.getElementById('submittedAnswerText');
+                        if (submittedAnswerText) submittedAnswerText.textContent = ownQuestionEndResult.display_answer;
                     }
-                    if (!data?.is_tutorial_round && !awaitingFinalizedAnswer) {
+                    let appliedQuestionEndResult = false;
+                    if (!data?.is_tutorial_round) {
+                        appliedQuestionEndResult = this.applyQuestionEndResult(data, endedQuestionId);
+                        if (!appliedQuestionEndResult) {
+                            this.applyPendingProgressEvaluation(endedQuestionId);
+                        }
+                    }
+                    if (!data?.is_tutorial_round && !this.hasProgressEntry(endedQuestionId)) {
                         this.markCurrentQuestionIncorrectIfNeeded();
                     }
                     this.setCurrentQuestion(null);
@@ -1466,6 +1543,11 @@
 
                 applyManualAnswerCorrection(data) {
                     if (!data || data.participant_name !== this.participantName) return;
+                    const normalizedQuestionId = Number(data.question_id);
+                    if (!Number.isNaN(normalizedQuestionId) && Number(this.currentQuestionId) === normalizedQuestionId) {
+                        this.storePendingProgressEvaluation(data.is_correct, data.question_id, data.points_earned);
+                        return;
+                    }
                     this.pushProgressEntry(!!data.is_correct, data.question_id, data.points_earned);
                 }
 
@@ -1493,7 +1575,11 @@
                 loadQuestion(question) {
                     document.getElementById('questionText').textContent = question.question_text;
                     const optionsContainer = document.getElementById('answerOptions');
+                    const submitButton = document.getElementById('submitAnswerBtn');
                     optionsContainer.innerHTML = '';
+                    optionsContainer.classList.toggle('quick-quiz-short-answer-form', question.question_type === 'short_answer');
+                    submitButton.classList.remove('is-selected');
+                    submitButton.setAttribute('aria-pressed', 'false');
 
                     if (question.question_type === 'multiple_choice') {
                         question.options.forEach(option => {
@@ -1501,8 +1587,8 @@
                             optionsContainer.appendChild(optionEl);
                         });
                     } else if (question.question_type === 'true_false') {
-                        const trueOption = this.createMultipleChoiceOption('True', 'True');
-                        const falseOption = this.createMultipleChoiceOption('False', 'False');
+                        const trueOption = this.createMultipleChoiceOption('True', 'Stimmt', { singleLabel: true });
+                        const falseOption = this.createMultipleChoiceOption('False', 'Stimmt nicht', { singleLabel: true });
                         optionsContainer.appendChild(trueOption);
                         optionsContainer.appendChild(falseOption);
                     } else if (question.question_type === 'short_answer') {
@@ -1512,18 +1598,20 @@
                         const inputs = [];
                         fields.forEach((field, index) => {
                             const wrapper = document.createElement('div');
-                            wrapper.className = 'mb-3';
+                            wrapper.className = 'mb-3 quick-quiz-short-answer-field';
+                            const inputId = `shortAnswerInput${index + 1}`;
                             if (fields.length > 1) {
                                 const label = document.createElement('label');
                                 label.className = 'form-label fw-semibold';
                                 label.textContent = field.label || `Answer ${index + 1}`;
+                                label.htmlFor = inputId;
                                 wrapper.appendChild(label);
                             }
                             const input = document.createElement('input');
                             input.type = 'text';
                             input.className = 'short-answer-input';
                             input.placeholder = field.label || 'Type your answer here...';
-                            input.id = `shortAnswerInput${index + 1}`;
+                            input.id = inputId;
                             wrapper.appendChild(input);
                             inputs.push({ key: field.key || `answer_${index + 1}`, input, label: field.label || `Answer ${index + 1}` });
                             optionsContainer.appendChild(wrapper);
@@ -1533,6 +1621,7 @@
                             if (inputs.length === 1) {
                                 this.selectedAnswer = inputs[0].input.value.trim();
                                 document.getElementById('submitAnswerBtn').disabled = !this.selectedAnswer;
+                                this.syncPendingAnswer();
                                 return;
                             }
                             const answers = {};
@@ -1544,6 +1633,7 @@
                             });
                             this.selectedAnswer = answers;
                             document.getElementById('submitAnswerBtn').disabled = !allFilled;
+                            this.syncPendingAnswer();
                         };
 
                         inputs.forEach(({ input }) => input.addEventListener('input', onInput));
@@ -1578,12 +1668,29 @@
                             if (!answerPayload) return null;
                             submittedAnswerDisplay = answerPayload;
                         }
+                    } else if (this.currentQuestion.question_type === 'true_false') {
+                        submittedAnswerDisplay = answerPayload === 'True' ? 'Stimmt' : 'Stimmt nicht';
                     }
 
                     return {
                         answerPayload,
                         submittedAnswerDisplay,
                     };
+                }
+
+                syncPendingAnswer() {
+                    if (this.hasAnswered || this.submissionPending) return;
+                    if (!this.websocket || this.websocket.readyState !== WebSocket.OPEN) return;
+                    const questionId = this.currentQuestion?.id ?? this.currentQuestionId;
+                    if (questionId === null || questionId === undefined) return;
+                    const prepared = this.getPreparedAnswerSubmission();
+                    this.websocket.send(JSON.stringify({
+                        type: 'participant_update_pending_answer',
+                        participant_name: this.participantName,
+                        hub_session: this.hubSession,
+                        question_id: questionId,
+                        answer: prepared ? prepared.answerPayload : null,
+                    }));
                 }
 
                 disableAnswerControls() {
@@ -1597,31 +1704,6 @@
 
                     const submitButton = document.getElementById('submitAnswerBtn');
                     if (submitButton) submitButton.disabled = true;
-                }
-
-                finalizePendingAnswerOnQuestionEnd(questionId) {
-                    if (this.answerSubmissionConfirmed || !this.selectedAnswer || !questionId || !this.websocket || this.websocket.readyState !== WebSocket.OPEN) {
-                        return false;
-                    }
-
-                    const prepared = this.getPreparedAnswerSubmission();
-                    if (!prepared) return false;
-
-                    const timeTaken = this.questionStartTime ? Math.max(0, (Date.now() - this.questionStartTime) / 1000) : 0;
-                    this.disableAnswerControls();
-                    this.hasAnswered = true;
-                    this.lastSubmittedAnswerDisplay = prepared.submittedAnswerDisplay;
-
-                    this.websocket.send(JSON.stringify({
-                        type: 'participant_finalize_answer',
-                        participant_name: this.participantName,
-                        hub_session: this.hubSession,
-                        question_id: questionId,
-                        answer: prepared.answerPayload,
-                        time_taken: timeTaken
-                    }));
-
-                    return true;
                 }
 
                 getQuestionNumberById(questionId) {
@@ -1683,6 +1765,34 @@
                     return this.applyPendingProgressEvaluation(normalizedQuestionId);
                 }
 
+                getOwnQuestionEndResult(data, questionId) {
+                    const normalizedQuestionId = Number(questionId);
+                    if (Number.isNaN(normalizedQuestionId) || !Array.isArray(data?.answer_results)) return null;
+                    return data.answer_results.find((result) => {
+                        return result?.participant_name === this.participantName
+                            && Number(result?.question_id) === normalizedQuestionId;
+                    }) || null;
+                }
+
+                applyQuestionEndResult(data, questionId) {
+                    const result = this.getOwnQuestionEndResult(data, questionId);
+                    if (!result) return false;
+                    const normalizedQuestionId = Number(questionId);
+                    if (!Number.isNaN(normalizedQuestionId)) {
+                        this.pendingScoreEvaluations.delete(normalizedQuestionId);
+                    }
+                    this.pushProgressEntry(!!result.is_correct, result.question_id, result.points_earned);
+                    return true;
+                }
+
+                hasProgressEntry(questionId) {
+                    const normalizedQuestionId = Number(questionId);
+                    if (Number.isNaN(normalizedQuestionId)) return false;
+                    return (this.progressHistory || []).some(
+                        (entry) => Number(entry?.question_id) === normalizedQuestionId
+                    );
+                }
+
                 pushProgressEntry(isCorrect, questionId = null, pointsEarned = null) {
                     const normalizedQuestionId = questionId !== null && questionId !== undefined
                         ? Number(questionId)
@@ -1732,31 +1842,58 @@
                     }
                 }
 
-                createMultipleChoiceOption(key, text) {
+                createMultipleChoiceOption(key, text, options = {}) {
                     const option = document.createElement('div');
-                    option.className = 'answer-option';
+                    option.className = 'answer-option quick-quiz-answer';
                     option.dataset.value = key;
-                    
-                    option.innerHTML = `
-                        <div class="option-key">${key}</div>
-                        <div class="option-text">${text}</div>
-                    `;
+                    option.dataset.qaAnswerSelectable = 'true';
+                    option.setAttribute('role', 'button');
+                    option.setAttribute('tabindex', '0');
+                    option.setAttribute('aria-pressed', 'false');
+                    if (options.singleLabel) {
+                        option.classList.add('answer-option-single-label', 'quick-quiz-answer--boolean');
+                    } else {
+                        const keyElement = document.createElement('div');
+                        keyElement.className = 'option-key';
+                        keyElement.textContent = key;
+                        option.appendChild(keyElement);
+                    }
+
+                    const textElement = document.createElement('div');
+                    textElement.className = 'option-text';
+                    textElement.textContent = text;
+                    option.appendChild(textElement);
                     
                     option.addEventListener('click', () => {
-                        if (this.hasAnswered) return;
-                        
-                        // Clear previous selection
-                        document.querySelectorAll('.answer-option').forEach(opt => {
-                            opt.classList.remove('selected');
-                        });
-                        
-                        // Select this option
-                        option.classList.add('selected');
-                        this.selectedAnswer = key;
-                        document.getElementById('submitAnswerBtn').disabled = false;
+                        if (this.hasAnswered || this.submissionPending) return;
+                        this.setSelectedAnswerOption(option, key);
+                    });
+
+                    option.addEventListener('keydown', (event) => {
+                        if (event.key !== 'Enter' && event.key !== ' ') return;
+                        event.preventDefault();
+                        option.click();
                     });
                     
                     return option;
+                }
+
+                setSelectedAnswerOption(option, key) {
+                    const wasSelected = option.classList.contains('selected') && this.selectedAnswer === key;
+                    document.querySelectorAll('#answerOptions .answer-option').forEach(answerOption => {
+                        answerOption.classList.remove('selected', 'is-theme-clicked');
+                        answerOption.setAttribute('aria-pressed', 'false');
+                    });
+
+                    this.selectedAnswer = null;
+                    if (!wasSelected) {
+                        option.classList.add('selected', 'is-theme-clicked');
+                        option.setAttribute('aria-pressed', 'true');
+                        this.selectedAnswer = key;
+                    }
+
+                    document.getElementById('submitAnswerBtn').disabled = !this.selectedAnswer;
+                    this.syncPendingAnswer();
                 }
 
                 startQuestionTimer(timeLimit) {
@@ -1801,7 +1938,8 @@
                 }
 
                 submitAnswer() {
-                    if (!this.selectedAnswer || this.hasAnswered) return;
+                    if (!this.selectedAnswer || this.hasAnswered || this.submissionPending) return;
+                    if (!this.websocket || this.websocket.readyState !== WebSocket.OPEN) return;
                     
                     const timeTaken = (Date.now() - this.questionStartTime) / 1000;
 
@@ -1809,7 +1947,16 @@
                     if (!prepared) return;
                     const answerPayload = prepared.answerPayload;
                     const submittedAnswerDisplay = prepared.submittedAnswerDisplay;
-                    this.lastSubmittedAnswerDisplay = submittedAnswerDisplay;
+                    const questionId = this.currentQuestion?.id ?? this.currentQuestionId;
+                    if (questionId === null || questionId === undefined) return;
+                    this.submissionPending = true;
+                    this.submissionQuestionId = Number(questionId);
+                    this.pendingSubmittedAnswerDisplay = submittedAnswerDisplay;
+                    this.pendingSubmissionTime = timeTaken;
+
+                    const submitButton = document.getElementById('submitAnswerBtn');
+                    submitButton.classList.add('is-selected');
+                    submitButton.setAttribute('aria-pressed', 'true');
 
                     this.disableAnswerControls();
                     
@@ -1818,27 +1965,14 @@
                         type: 'participant_submit_answer',
                         participant_name: this.participantName,
                         hub_session: this.hubSession,
+                        question_id: questionId,
                         answer: answerPayload,
                         time_taken: timeTaken
                     }));
-                    
-                    this.hasAnswered = true;
-                    
-                    // Show submitted state
-                    setTimeout(() => {
-                        document.getElementById('submittedAnswerText').textContent = submittedAnswerDisplay;
-                        document.getElementById('submittedTime').textContent = timeTaken.toFixed(1);
-                        this.showState('answerSubmittedState');
-                    }, 500);
                 }
 
                 onTimeUp() {
-                    if (this.hasAnswered) return;
-                    
-                    // Keep the question visible locally until the host broadcasts question_ended.
-                    if (this.selectedAnswer) {
-                        this.submitAnswer();
-                    }
+                    if (!this.hasAnswered) this.disableAnswerControls();
                 }
 
                 showWaitingForNextQuestion() {
@@ -1923,6 +2057,10 @@
                         const row = document.createElement('div');
                         row.className = `quiz-score-row score-box__row ${rowState}`;
                         row.dataset.questionNumber = String(questionNumber);
+                        row.dataset.pointsEarned = progressEntry
+                            ? String(Number(progressEntry.points_earned || 0))
+                            : '';
+                        row.dataset.maxPoints = String(maxPoints);
                         if (question?.id !== undefined && question?.id !== null) {
                             row.dataset.questionId = String(question.id);
                         }
@@ -2237,6 +2375,6 @@
 
         });
     </script>
-  {% include 'includes/accessibility_widget.html' %}
+  {% include 'includes/accessibility_widget.html' with participant_options_menu=True %}
 </body>
 </html>

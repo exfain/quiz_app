@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from django.db import transaction
 from django.utils import timezone
 
 from .models import HubGameParticipantSnapshot, HubGameStep, HubSession
+
+
+logger = logging.getLogger(__name__)
 
 
 CHECK_IN_REQUIRED_MESSAGE = (
@@ -25,6 +29,9 @@ def get_game_model_map():
     from clue_rush.models import ClueRushGame
     from sorting_ladder.models import SortingLadderGame
     from wer_weiss_mehr.models import WerWeissMehrGame
+    from buzzer.models import BuzzerGame
+    from host_points.models import HostPointsGame
+    from wann_war_das.models import WannWarDasGame
 
     return {
         'quiz': QuizGameModel,
@@ -37,6 +44,9 @@ def get_game_model_map():
         'clue_rush': ClueRushGame,
         'sorting_ladder': SortingLadderGame,
         'wer_weiss_mehr': WerWeissMehrGame,
+        'buzzer': BuzzerGame,
+        'host_points': HostPointsGame,
+        'wann_war_das': WannWarDasGame,
     }
 
 
@@ -139,6 +149,32 @@ def _iter_session_games(session: HubSession):
         yield step, game
 
 
+def _provision_target_game_participants(step: HubGameStep, game) -> None:
+    if step.game_key != 'who':
+        return
+
+    from who_is_lying.models import ensure_who_participant_for_hub
+
+    snapshots = step.participant_snapshots.select_related('participant').filter(active_player=True)
+    for snapshot in snapshots:
+        ensure_who_participant_for_hub(
+            game,
+            snapshot.participant.nickname,
+            step.session.code,
+            activate=False,
+        )
+        logger.info(
+            'Who participant provisioned before game redirect',
+            extra={
+                'hub_session_code': step.session.code,
+                'hub_participant_id': snapshot.participant_id,
+                'who_quiz_id': game.id,
+                'who_room_code': game.room_code,
+                'participant_presence': 'lobby',
+            },
+        )
+
+
 def resolve_session_game_activation(
     session_code: str,
     target_game_key: str,
@@ -200,6 +236,15 @@ def resolve_session_game_activation(
                 'active_game': _serialize_game(target_step, target_game) if target_game else None,
             }
 
+        if target_game_key == 'who' and target_game:
+            ordered_step_ids = list(
+                session.steps.order_by('order', 'id').values_list('id', flat=True)
+            )
+            target_step_index = ordered_step_ids.index(target_step.id)
+            if session.current_step_index != target_step_index:
+                session.current_step_index = target_step_index
+                session.save(update_fields=['current_step_index'])
+
         target_needs_activation = (
             target_game
             and (
@@ -212,6 +257,7 @@ def resolve_session_game_activation(
         )
         if target_game:
             HubGameParticipantSnapshot.create_for_step(target_step)
+            _provision_target_game_participants(target_step, target_game)
         if target_needs_activation:
             _activate_target_game(target_game_key, target_game)
 

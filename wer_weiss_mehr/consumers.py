@@ -17,7 +17,6 @@ from games_hub.tutorial_runtime import (
 from games_hub.unit_tutorial_runtime import (
     finish_current_unit_tutorial,
     prepare_unit_tutorial_runtime,
-    start_unit_tutorial_if_needed,
     validate_unit_tutorial_request,
 )
 
@@ -29,6 +28,7 @@ from .services import (
     end_current_round,
     finish_set,
     next_round_or_finish,
+    prepare_set_start,
     start_set,
     start_next_round_after_review,
     store_pending_input,
@@ -211,19 +211,23 @@ class WerWeissMehrConsumer(AsyncWebsocketConsumer):
         hub_session_code = data.get('hub_session_code') or data.get('hub_session')
         if await self.guard_tutorial_before_first_unit(data, hub_session_code):
             return
-        await self.deactivate_tutorial_runtime_db(hub_session_code)
-        unit_tutorial = await self.start_unit_tutorial_if_needed_db(hub_session_code)
-        question_id = (
-            unit_tutorial.get('tutorial_question_id')
-            if unit_tutorial.get('is_tutorial_round')
-            else data.get('question_id')
-        )
-        await database_sync_to_async(start_set)(
-            await self.get_quiz(),
-            question_id,
-            hub_session_code=hub_session_code,
-            time_limit_seconds=data.get('time_limit_seconds'),
-        )
+        question_id = data.get('question_id')
+        try:
+            unit_tutorial = await database_sync_to_async(prepare_set_start)(
+                await self.get_quiz(),
+                question_id,
+                hub_session_code=hub_session_code,
+            )
+            await self.deactivate_tutorial_runtime_db(hub_session_code)
+            await database_sync_to_async(start_set)(
+                await self.get_quiz(),
+                question_id,
+                hub_session_code=hub_session_code,
+                time_limit_seconds=data.get('time_limit_seconds'),
+            )
+        except Exception as exc:  # pylint: disable=broad-except
+            await self.send_json({'type': 'error', 'message': str(exc)})
+            return
         await self.broadcast_state(data)
         await self.hub_mirror_event('question_started', {
             'room_code': self.room_code,
@@ -269,10 +273,12 @@ class WerWeissMehrConsumer(AsyncWebsocketConsumer):
         }, session_code=hub_session_code)
 
     async def handle_admin_apply_correction(self, data):
+        hub_session_code = data.get('hub_session_code') or data.get('hub_session')
         await database_sync_to_async(apply_manual_correction)(
             await self.get_quiz(),
             data.get('response_id'),
             data.get('target_answer_id'),
+            hub_session_code=hub_session_code,
         )
         await self.broadcast_state(data)
 
@@ -405,10 +411,6 @@ class WerWeissMehrConsumer(AsyncWebsocketConsumer):
     @database_sync_to_async
     def get_tutorial_start_warning_db(self, hub_session_code):
         return get_tutorial_start_warning('wer_weiss_mehr', self.room_code, hub_session_code)
-
-    @database_sync_to_async
-    def start_unit_tutorial_if_needed_db(self, hub_session_code):
-        return start_unit_tutorial_if_needed('wer_weiss_mehr', self.room_code, hub_session_code)
 
     @database_sync_to_async
     def finish_current_unit_tutorial_db(self, hub_session_code):

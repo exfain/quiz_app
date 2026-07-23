@@ -569,6 +569,66 @@
             `);
         }
 
+        function renderBuzzer(game) {
+            const round = game.round || {};
+            const participants = game.participants || [];
+            return panelMarkup(`
+                <div class="question-panel">
+                    <div class="game-label">Buzzer - Runde ${escapeHtml(round.number || 0)}</div>
+                    <p class="question-text">${round.buzzer_open ? 'Buzzer offen' : (round.current_buzz_participant ? `${escapeHtml(round.current_buzz_participant)} hat gebuzzert` : 'Warte auf Freigabe')}</p>
+                </div>
+                <div class="panel">
+                    <div class="table-responsive">
+                        <table class="table table-sm mb-0">
+                            <thead><tr><th>Teilnehmer</th><th>Punkte</th><th>Status</th></tr></thead>
+                            <tbody>
+                                ${participants.map(p => `<tr><td>${escapeHtml(p.name)}</td><td>${escapeHtml(p.score)}</td><td>${p.has_answer_right ? 'Antwortrecht' : (p.blocked ? 'gesperrt' : '')}</td></tr>`).join('')}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            `);
+        }
+
+        function renderHostPoints(game) {
+            const round = game.round || {};
+            const participants = game.participants || [];
+            return panelMarkup(`
+                <div class="question-panel">
+                    <div class="game-label">Host-Punktevergabe - Runde ${escapeHtml(round.number || 1)}</div>
+                    <p class="question-text">Der Host vergibt die Punkte manuell.</p>
+                </div>
+                <div class="panel">
+                    <div class="table-responsive">
+                        <table class="table table-sm mb-0">
+                            <thead><tr><th>Teilnehmer</th><th>Punkte</th></tr></thead>
+                            <tbody>
+                                ${participants.map(p => `<tr><td>${escapeHtml(p.name)}</td><td>${escapeHtml(p.score)}</td></tr>`).join('')}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            `);
+        }
+
+        function renderWannWarDas(game) {
+            const q = game.question || {};
+            const timer = game.timer || {};
+            const tolerance = timer.current_tolerance !== undefined && timer.current_tolerance !== null ? `±${escapeHtml(timer.current_tolerance)}` : '-';
+            const points = timer.current_points !== undefined && timer.current_points !== null ? escapeHtml(timer.current_points) : '-';
+            return panelMarkup(`
+                <div class="question-panel">
+                    <div class="game-label">Wann war das?</div>
+                    <p class="question-text">${escapeHtml(q.text || 'Warte auf Frage')}</p>
+                    <div class="d-flex flex-wrap gap-2">
+                        <span class="badge bg-info text-dark">Toleranz ${tolerance}</span>
+                        <span class="badge bg-light text-dark">Punkte ${points}</span>
+                        <span class="badge bg-secondary">${escapeHtml(game.response_count || 0)} Antworten</span>
+                    </div>
+                </div>
+            `);
+        }
+
         const renderers = {
             quiz: renderQuiz,
             estimation: renderEstimation,
@@ -580,6 +640,9 @@
             assign: renderAssign,
             sorting_ladder: renderSorting,
             wer_weiss_mehr: renderWerWeissMehr,
+            buzzer: renderBuzzer,
+            host_points: renderHostPoints,
+            wann_war_das: renderWannWarDas,
         };
 
         function renderState(state) {

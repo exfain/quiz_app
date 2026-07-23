@@ -32,6 +32,7 @@
                             {{ quiz.room_code }}
                         </div> -->
                         <h1 class="quiz-title">{{ quiz.title }}</h1>
+                        {% include 'includes/_session_game_number.html' with game_key='who_that' room_code=quiz.room_code %}
                     </div>
                     <div class="participant-info">
                         <div class="participant-avatar">
@@ -57,18 +58,7 @@
                         <!-- Waiting State -->
                         <div id="waitingQuizState" class="game-state {% if quiz.status != 'waiting' %}d-none{% endif %}">
                             <div class="waiting-card">
-                                <div class="waiting-animation">
-                                    <div class="pulse-ring"></div>
-                                    <div class="pulse-ring delay-1"></div>
-                                    <div class="pulse-ring delay-2"></div>
-                                    <i data-lucide="camera"></i>
-                                </div>
-                                <h2>Waiting for Photo Quiz to Start</h2>
-                                <p>Get ready to identify famous people! The quiz host will start the session shortly.</p>
-                                <div class="participants-count">
-                                    <i data-lucide="users"></i>
-                                    <span id="waitingParticipantCount">{{ participant_count }}</span> participants joined
-                                </div>
+                                {% include 'includes/_participant_start_waiting.html' with waiting_game_title=quiz.title %}
                             </div>
                         </div>
 
@@ -97,57 +87,58 @@
                                         {% endif %}
                                     </div>
 
-                                    <!-- Photo Display -->
-                                    <div class="photo-display" id="photoDisplay">
-                                        {% if quiz.current_question and quiz.current_question.image %}
-                                            <img src="{{ quiz.current_question.image.url }}" alt="Question image" class="question-photo" id="questionPhoto">
-                                        {% else %}
-                                            <div class="no-photo-placeholder">
-                                                <i data-lucide="image"></i>
-                                                <span>No photo available</span>
-                                            </div>
-                                        {% endif %}
-                                    </div>
-
-                                    <!-- Category & Hint Display -->
-                                    <div class="question-meta" id="questionMeta" style="display: none;">
-                                        <div class="category-display" id="categoryDisplay" style="display: none;">
-                                            <div class="category-icon">
-                                                <i data-lucide="tag"></i>
-                                            </div>
-                                            <div class="category-text" id="categoryText"></div>
+                                    <div class="who-that-interaction-stack">
+                                        <!-- Photo Display -->
+                                        <div class="photo-display" id="photoDisplay">
+                                            {% if quiz.current_question and quiz.current_question.image %}
+                                                <img src="{{ quiz.current_question.image.url }}" alt="Question image" class="question-photo" id="questionPhoto">
+                                            {% else %}
+                                                <div class="no-photo-placeholder">
+                                                    <i data-lucide="image"></i>
+                                                    <span>No photo available</span>
+                                                </div>
+                                            {% endif %}
                                         </div>
-                                        
-                                        <div class="hint-display" id="hintDisplay" style="display: none;">
-                                            <div class="hint-icon">
-                                                <i data-lucide="lightbulb"></i>
-                                            </div>
-                                            <div class="hint-text" id="hintText"></div>
-                                        </div>
-                                    </div>
 
-                                    <!-- Answer Input Interface -->
-                                    <div class="answer-interface" id="answerInterface">
-                                        <div class="answer-input-container">
-                                            <div class="input-container">
-                                                <input type="text" 
-                                                       class="form-control name-input" 
-                                                       id="nameInput" 
-                                                       placeholder="Type the person's name..." 
-                                                       autocomplete="off"
-                                                       spellcheck="false">
-                                                <div class="input-icon">
-                                                    <i data-lucide="user"></i>
+                                        <!-- Category & Hint Display -->
+                                        <div class="question-meta" id="questionMeta" style="display: none;">
+                                            <div class="category-display" id="categoryDisplay" style="display: none;">
+                                                <div class="category-icon">
+                                                    <i data-lucide="tag"></i>
+                                                </div>
+                                                <div class="category-text" id="categoryText"></div>
+                                            </div>
+
+                                            <div class="hint-display" id="hintDisplay" style="display: none;">
+                                                <div class="hint-icon">
+                                                    <i data-lucide="lightbulb"></i>
+                                                </div>
+                                                <div class="hint-text" id="hintText"></div>
+                                            </div>
+                                        </div>
+
+                                        <!-- Answer Input Interface -->
+                                        <div class="answer-interface" id="answerInterface">
+                                            <div class="answer-input-container">
+                                                <div class="input-container">
+                                                    <input type="text"
+                                                           class="form-control name-input"
+                                                           id="nameInput"
+                                                           placeholder="Type the person's name..."
+                                                           autocomplete="off"
+                                                           spellcheck="false">
+                                                    <div class="input-icon">
+                                                        <i data-lucide="user"></i>
+                                                    </div>
                                                 </div>
                                             </div>
                                         </div>
-                                    </div>
 
-                                    <!-- Submit Button -->
-                                    <button class="btn btn-primary btn-lg w-100 submit-answer" id="submitAnswerBtn" disabled>
-                                        <i data-lucide="send"></i>
-                                        Einloggen
-                                    </button>
+                                        <!-- Submit Button -->
+                                        <button class="btn btn-primary btn-lg w-100 submit-answer vhs-who-that-submit" id="submitAnswerBtn" disabled>
+                                            Einloggen
+                                        </button>
+                                    </div>
                                 </div>
                             </div>
                         </div>
@@ -166,7 +157,7 @@
                                     </div>
                                 </div>
                                 <h2>Answer Submitted!</h2>
-                                <p>Waiting for the other participants before the answer is revealed.</p>
+                                <p class="who-that-submitted-waiting">Waiting for the other participants before the answer is revealed.</p>
                                 <div class="photo-display reveal-photo-display" id="submittedPhotoDisplay">
                                     {% if quiz.current_question and quiz.current_question.image %}
                                         <img src="{{ quiz.current_question.image.url }}" alt="Submitted question image" class="question-photo">
@@ -180,8 +171,8 @@
                                 <div class="submitted-details">
                                     <div class="answer-summary">
                                         <div class="summary-item">
-                                            <span class="summary-label">Your Answer:</span>
-                                            <span class="summary-value" id="submittedAnswer">{% if current_participant_answer %}{{ current_participant_answer.user_answer }}{% else %}-{% endif %}</span>
+                                            <span class="summary-label who-that-submitted-answer-label">Your Answer:</span>
+                                            <span class="summary-value who-that-submitted-answer-value" id="submittedAnswer">{% if current_participant_answer %}{{ current_participant_answer.user_answer }}{% else %}-{% endif %}</span>
                                         </div>
                                     </div>
                                 </div>
@@ -195,14 +186,14 @@
                                     <div class="reveal-icon">
                                         <i data-lucide="eye"></i>
                                     </div>
-                                    <h2>Correct Answer Revealed!</h2>
+                                    <h2 class="who-that-reveal-title">Correct Answer Revealed!</h2>
                                     <div class="photo-display reveal-photo-display" id="correctAnswerPhotoDisplay">
                                         <div class="no-photo-placeholder">
                                             <i data-lucide="image"></i>
                                             <span>No photo available</span>
                                         </div>
                                     </div>
-                                    <div class="answer-display">
+                                    <div class="answer-display who-that-reveal-answer">
                                         <span class="answer-value" id="correctAnswerDisplay">-</span>
                                     </div>
                                     <div class="alternative-answers" id="alternativeAnswersDisplay" style="display: none;">
@@ -211,7 +202,7 @@
                                     </div>
                                 </div>
                                 
-                                <div class="comparison-display">
+                                <div class="comparison-display who-that-reveal-comparison">
                                     <div class="comparison-item">
                                         <div class="comparison-label">Your Answer</div>
                                         <div class="user-answer-display">
@@ -228,7 +219,7 @@
                                     </div>
                                 </div>
                                 
-                                <div class="performance-summary">
+                                <div class="performance-summary who-that-reveal-performance">
                                     <div class="performance-badge" id="performanceBadge">
                                         <span class="performance-text">Good Try!</span>
                                     </div>
@@ -595,36 +586,6 @@
             height: 48px;
             color: var(--color-primary);
             z-index: 2;
-        }
-
-        .waiting-card h2 {
-            font-size: 1.75rem;
-            font-weight: 700;
-            color: var(--text-primary);
-            margin-bottom: 1rem;
-        }
-
-        .waiting-card p {
-            color: var(--text-secondary);
-            font-size: 1.125rem;
-            margin-bottom: 2rem;
-        }
-
-        .participants-count {
-            display: inline-flex;
-            align-items: center;
-            gap: 0.5rem;
-            background-color: var(--bg-secondary);
-            padding: 0.75rem 1.5rem;
-            border-radius: var(--border-radius-xl);
-            color: var(--text-primary);
-            font-weight: 600;
-        }
-
-        .participants-count i {
-            width: 20px;
-            height: 20px;
-            color: var(--color-primary);
         }
 
         /* Question State */
@@ -1341,6 +1302,7 @@
 
     {% include 'includes/_hub_return_to_lobby_player.html' %}
     {% include 'includes/_game_tutorial_overlay.html' %}
+    {% include 'includes/_session_game_start_intro.html' %}
 <script>
         document.addEventListener('DOMContentLoaded', function() {
             lucide.createIcons();
@@ -1430,6 +1392,7 @@
                 }
 
                 handleWebSocketMessage(data) {
+                    window.sessionGameStartIntro?.handleState(data);
                     switch(data.type) {
                         case 'quiz_started':
                             this.onQuizStarted();
@@ -2344,6 +2307,6 @@
         });
     </script>
   {% include 'includes/_leaderboard_overlay.html' %}
-  {% include 'includes/accessibility_widget.html' %}
+  {% include 'includes/accessibility_widget.html' with participant_options_menu=True %}
 </body>
 </html>

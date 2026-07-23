@@ -6,7 +6,7 @@
 {% block page_subtitle %}Real-time monitoring and control for your live quick quiz session{% endblock %}
 
 {% block content %}
-<div class="where-monitor-content">
+<div class="where-monitor-content host-monitor-content">
     {% include 'includes/_unit_tutorial_notice.html' %}
     <!-- Quiz Status Header -->
     <div class="quiz-status-header mb-4">
@@ -146,7 +146,7 @@
                                             <small class="text-muted d-block mb-1">Zeit in Sek.</small>
                                             <input type="number" class="form-control form-control-sm question-time-input" placeholder="Time (s)" min="5" step="1" style="max-width: 120px;" value="{{ question.time_limit }}">
                                         </div>
-                                        <button class="btn btn-secondary send-question-btn" data-question-id="{{ question.id }}" {% if quiz.status != 'active' %}disabled title="Start the quiz to send questions"{% endif %}>
+                                        <button type="button" class="btn btn-secondary send-question-btn" data-question-id="{{ question.id }}" {% if quiz.status != 'active' %}disabled title="Start the quiz to send questions"{% endif %}>
                                             <i data-lucide="send"></i>
                                             Send Question
                                         </button>
@@ -839,7 +839,17 @@ document.addEventListener('DOMContentLoaded', function() {
             this.quizStatus = '{{ quiz.status }}';
             this.isActive = '{{ quiz.status }}' === 'active';
             this.liveResponseState = new Map();
+            this.pendingQuestionId = null;
             this.init();
+        }
+
+        getHubSession() {
+            try {
+                const qs = new URLSearchParams(window.location.search);
+                return qs.get('hub_session') || window.__hubCode || sessionStorage.getItem('_hub_admin') || '';
+            } catch (_) {
+                return '';
+            }
         }
 
         getStorageKey() {
@@ -1046,9 +1056,16 @@ document.addEventListener('DOMContentLoaded', function() {
                     
                 case 'question_started':
                     window.unitTutorialNotice?.setFromPayload(data);
+                    this.clearHostError();
                     this.resetLiveResponseStateForQuestion();
                     console.log('Question started');
-                    location.reload();
+                    if (data.question?.id) {
+                        this.markQuestionSent(data.question.id);
+                        const btn = document.querySelector(`[data-question-id="${data.question.id}"]`);
+                        if (btn) this.updateSendButtonAsSent(btn);
+                        this.pendingQuestionId = null;
+                    }
+                    this.renderActiveQuestion(data.question || {});
                     break;
                     
                 case 'question_ended':
@@ -1063,7 +1080,7 @@ document.addEventListener('DOMContentLoaded', function() {
                     console.log('Quiz ended:', data.message);
                     // Clear persisted sent state so a new session starts fresh
                     this.resetSentStates();
-                    location.reload();
+                    window.hostEndState?.apply({ message: data.message, event: data });
                     break;
 
                 case 'quiz_inactive':
@@ -1071,9 +1088,14 @@ document.addEventListener('DOMContentLoaded', function() {
                     this.isActive = false;
                     location.reload();
                     break;
+
+                case 'error':
+                    this.showHostError(data.message || 'Frage konnte nicht gestartet werden.');
+                    this.resetPendingSendButton(data.question_id || this.pendingQuestionId);
+                    break;
                     
                 default:
-                    console.log('Unknown message type:', data.type);
+                    console.warn('Unknown message type:', data.type);
             }
         }
         
@@ -1176,9 +1198,11 @@ document.addEventListener('DOMContentLoaded', function() {
             // Send Question buttons
             document.querySelectorAll('.send-question-btn').forEach(btn => {
                 btn.addEventListener('click', (e) => {
-                    const questionId = e.target.closest('button').dataset.questionId;
+                    e.preventDefault();
+                    const button = e.currentTarget;
+                    const questionId = button.dataset.questionId;
                     if (!this.isActive) {
-                        alert('Start the quiz before sending questions.');
+                        this.showHostError('Start the quiz before sending questions.');
                         return;
                     }
                     // Ask for confirmation if question was already sent
@@ -1217,6 +1241,128 @@ document.addEventListener('DOMContentLoaded', function() {
                 }
             });
         }
+
+        showHostError(message) {
+            let alertBox = document.getElementById('quizHostError');
+            const container = document.getElementById('availableQuestions') || document.querySelector('.question-panel .card-body') || document.querySelector('.host-monitor-content');
+            if (!alertBox && container) {
+                alertBox = document.createElement('div');
+                alertBox.id = 'quizHostError';
+                alertBox.className = 'alert alert-danger py-2';
+                alertBox.setAttribute('role', 'alert');
+                container.parentNode.insertBefore(alertBox, container);
+            }
+            if (alertBox) {
+                alertBox.textContent = message;
+                alertBox.classList.remove('d-none');
+            } else {
+                alert(message);
+            }
+        }
+
+        clearHostError() {
+            const alertBox = document.getElementById('quizHostError');
+            if (alertBox) {
+                alertBox.textContent = '';
+                alertBox.classList.add('d-none');
+            }
+        }
+
+        resetPendingSendButton(questionId) {
+            if (!questionId) return;
+            const btn = document.querySelector(`[data-question-id="${questionId}"]`);
+            if (!btn) return;
+            btn.disabled = false;
+            btn.classList.remove('loading');
+            btn.innerHTML = '<i data-lucide="send"></i> Send Question';
+            btn.removeAttribute('aria-busy');
+            this.pendingQuestionId = null;
+            try { lucide.createIcons(); } catch(_) {}
+        }
+
+        renderActiveQuestion(question) {
+            const body = document.querySelector('.question-panel .card-body');
+            if (!body || !question?.id) return;
+            const questionText = this.escapeHtml(question.question_text || '');
+            const questionType = this.escapeHtml(question.question_type || '');
+            const points = Number(question.points || 0);
+            const timeLimit = Number(question.time_limit || 0);
+
+            body.innerHTML = `
+                <div id="activeQuestion">
+                    <div class="active-question-header">
+                        <h6>Current Question</h6>
+                        <div class="question-timer" id="questionTimerWrapper">
+                            <div class="timer-circle" id="questionTimerCircle">
+                                <span id="questionTimeLeft">${timeLimit}</span>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="current-question-content">
+                        <div class="question-text">${questionText}</div>
+                        <div class="question-meta mt-2">
+                            <span class="badge bg-secondary">${questionType}</span>
+                            <span class="badge bg-primary">${points} pts</span>
+                        </div>
+                        <div class="question-actions mt-3">
+                            <button type="button" class="btn btn-warning" id="endQuestionBtn">
+                                <i data-lucide="skip-forward"></i>
+                                End Question Early
+                            </button>
+                            <button type="button" class="btn btn-outline-secondary d-none" id="returnToQuestionOverviewBtn">
+                                <i data-lucide="arrow-left"></i>
+                                Back to Question Overview
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            `;
+            document.getElementById('endQuestionBtn')?.addEventListener('click', () => {
+                this.endCurrentQuestion();
+            });
+            document.getElementById('returnToQuestionOverviewBtn')?.addEventListener('click', () => {
+                this.returnToQuestionOverview();
+            });
+            const liveResponsesCard = document.getElementById('liveResponsesCard');
+            if (liveResponsesCard) liveResponsesCard.style.display = '';
+            clearInterval(this.questionTimer);
+            this.startQuestionTimer();
+            try { lucide.createIcons(); } catch(_) {}
+        }
+
+        sendJsonWhenReady(payload, onUnavailable) {
+            const serialized = JSON.stringify(payload);
+            if (this.websocket && this.websocket.readyState === WebSocket.OPEN) {
+                this.websocket.send(serialized);
+                return true;
+            }
+            if (this.websocket && this.websocket.readyState === WebSocket.CONNECTING) {
+                const socket = this.websocket;
+                let settled = false;
+                const cleanup = () => {
+                    socket.removeEventListener('open', handleOpen);
+                    socket.removeEventListener('close', handleUnavailable);
+                    socket.removeEventListener('error', handleUnavailable);
+                };
+                const handleOpen = () => {
+                    if (settled) return;
+                    settled = true;
+                    cleanup();
+                    socket.send(serialized);
+                };
+                const handleUnavailable = () => {
+                    if (settled) return;
+                    settled = true;
+                    cleanup();
+                    onUnavailable?.();
+                };
+                socket.addEventListener('open', handleOpen, { once: true });
+                socket.addEventListener('close', handleUnavailable, { once: true });
+                socket.addEventListener('error', handleUnavailable, { once: true });
+                return true;
+            }
+            return false;
+        }
         
         startQuiz() {
             if (this.websocket && this.websocket.readyState === WebSocket.OPEN) {
@@ -1245,7 +1391,8 @@ document.addEventListener('DOMContentLoaded', function() {
                 this.websocket.send(JSON.stringify({
                     type: 'admin_start_quiz',
                     show_tutorial: showTutorial,
-                    play_tutorial: playTutorial
+                    play_tutorial: playTutorial,
+                    hub_session: this.getHubSession()
                 }));
                 //reload page
                 location.reload();
@@ -1306,36 +1453,48 @@ document.addEventListener('DOMContentLoaded', function() {
         }
         
         sendQuestion(questionId) {
-            if (this.websocket && this.websocket.readyState === WebSocket.OPEN) {
-                const btn = document.querySelector(`[data-question-id="${questionId}"]`);
-                if (btn) btn.classList.add('loading');
+            if (!questionId) {
+                this.showHostError('Frage konnte nicht gestartet werden: Frage-ID fehlt.');
+                return;
+            }
+            const btn = document.querySelector(`[data-question-id="${questionId}"]`);
+            if (btn) {
+                btn.classList.add('loading');
+                btn.disabled = true;
+                btn.setAttribute('aria-busy', 'true');
+            }
+            this.clearHostError();
+            this.pendingQuestionId = questionId;
 
-                // Read optional time override from the adjacent input
-                let customTime = null;
-                try {
-                    const item = btn.closest('.question-item');
-                    const input = item ? item.querySelector('.question-time-input') : null;
-                    if (input && input.value) {
-                        const v = parseInt(input.value, 10);
-                        if (!isNaN(v) && v > 0) customTime = v;
-                    }
-                } catch(_) {}
-
-                const payload = {
-                    type: 'admin_send_question',
-                    question_id: questionId
-                };
-                if (customTime) {
-                    payload.custom_time_limit = customTime;
-                    // Persist for admin-side timer after backend switches state
-                    try { localStorage.setItem(`override_time_${this.roomCode}`, String(customTime)); } catch(_) {}
+            // Read optional time override from the adjacent input
+            let customTime = null;
+            try {
+                const item = btn?.closest('.question-item');
+                const input = item ? item.querySelector('.question-time-input') : null;
+                if (input && input.value) {
+                    const v = parseInt(input.value, 10);
+                    if (!isNaN(v) && v > 0) customTime = v;
                 }
+            } catch(_) {}
 
-                this.websocket.send(JSON.stringify(payload));
+            const payload = {
+                type: 'admin_send_question',
+                question_id: questionId,
+                hub_session: this.getHubSession()
+            };
+            if (customTime) {
+                payload.custom_time_limit = customTime;
+                // Persist for admin-side timer after backend switches state
+                try { localStorage.setItem(`override_time_${this.roomCode}`, String(customTime)); } catch(_) {}
+            }
 
-                // Optimistically mark as sent to prevent duplicate sends
-                this.markQuestionSent(questionId);
-                if (btn) this.updateSendButtonAsSent(btn);
+            const sentOrQueued = this.sendJsonWhenReady(payload, () => {
+                this.showHostError('Frage konnte nicht gestartet werden: Verbindung zum Server ist nicht bereit.');
+                this.resetPendingSendButton(questionId);
+            });
+            if (!sentOrQueued) {
+                this.showHostError('Frage konnte nicht gestartet werden: Verbindung zum Server ist nicht bereit.');
+                this.resetPendingSendButton(questionId);
             }
         }
         

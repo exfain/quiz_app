@@ -32,6 +32,7 @@ from where_is_this.models import WhereQuiz
 from who_is_lying.models import WhoQuiz
 from who_is_that.models import WhoThatQuiz
 from wer_weiss_mehr.models import WerWeissMehrGame
+from host_points.models import HostPointsGame
 from games_hub.playwright_e2e import install_browser_test_stubs, start_chromium_browser
 
 # ---------------------------------------------------------------------------
@@ -48,6 +49,7 @@ GAME_CREATE_URLS = {
     "blackjack":      "admin_dashboard:create_blackjack_quiz",
     "clue_rush":      "admin_dashboard:create_clue_rush_game",
     "sorting_ladder": "admin_dashboard:create_sorting_ladder_game",
+    "host_points":    "admin_dashboard:create_host_points_game",
 }
 
 # Custom-Create-Endpunkte akzeptieren einen "title"-Parameter im JSON-Body.
@@ -62,6 +64,7 @@ GAME_CUSTOM_CREATE_URLS = {
     "blackjack":      "admin_dashboard:create_black_jack_custom_quiz",
     "clue_rush":      "admin_dashboard:create_clue_rush_custom_game",
     "sorting_ladder": "admin_dashboard:create_sorting_ladder_custom_game",
+    "host_points":    "admin_dashboard:create_host_points_game",
 }
 
 GAME_CUSTOM_UPDATE_URLS = {
@@ -74,6 +77,7 @@ GAME_CUSTOM_UPDATE_URLS = {
     "blackjack":      "admin_dashboard:update_black_jack_custom_quiz",
     "clue_rush":      "admin_dashboard:update_clue_rush_custom_game",
     "sorting_ladder": "admin_dashboard:update_sorting_ladder_custom_game",
+    "host_points":    "admin_dashboard:update_host_points_game",
 }
 
 GAME_MODELS = {
@@ -86,6 +90,7 @@ GAME_MODELS = {
     "blackjack": BlackJackQuiz,
     "clue_rush": ClueRushGame,
     "sorting_ladder": SortingLadderGame,
+    "host_points": HostPointsGame,
 }
 
 GAME_TYPE_DISPLAY = {
@@ -98,6 +103,7 @@ GAME_TYPE_DISPLAY = {
     "blackjack":      "Black Jack Quiz",
     "clue_rush":      "Clue Rush",
     "sorting_ladder": "Sorting Ladder",
+    "host_points":    "Host-Punktevergabe",
 }
 
 
@@ -108,6 +114,191 @@ def rand_str(n=8):
 def make_admin(username=None, password="testpass123"):
     username = username or f"admin_{rand_str()}"
     return User.objects.create_superuser(username=username, password=password, email="")
+
+
+class HostEndStateTemplateTest(TestCase):
+    """Regression coverage for live host end-state rendering."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.root = Path(__file__).resolve().parents[1]
+
+    def read_template(self, relative_path):
+        return (self.root / relative_path).read_text(encoding="utf-8")
+
+    def test_base_template_provides_common_host_end_state_for_all_monitor_routes(self):
+        content = self.read_template("templates/admin_dashboard/base.html")
+
+        self.assertIn("window.hostEndState", content)
+        self.assertNotIn("hostEndStateBanner", content)
+        self.assertNotIn("Zur Lobby", content)
+        self.assertNotIn("Zur Session-&Uuml;bersicht", content)
+        self.assertNotIn("Zum Dashboard", content)
+        self.assertIn("#endGameBtn", content)
+        for route_token in [
+            "admin-dashboard\\/quiz",
+            "admin-dashboard\\/estimation",
+            "admin-dashboard\\/where",
+            "admin-dashboard\\/assign",
+            "admin-dashboard\\/sorting-ladder",
+            "admin-dashboard\\/blackjack",
+            "admin-dashboard\\/who",
+            "admin-dashboard\\/who-that",
+            "admin-dashboard\\/clue-rush",
+            "admin-dashboard\\/wer-weiss-mehr",
+            "admin-dashboard\\/buzzer",
+            "admin-dashboard\\/host-points",
+            "admin-dashboard\\/wann-war-das",
+        ]:
+            self.assertIn(route_token, content)
+
+    def test_legacy_quiz_ended_handlers_apply_end_state_without_reload(self):
+        monitor_paths = [
+            "templates/admin_dashboard/quiz_monitor.html",
+            "templates/admin_dashboard/estimation_monitor.html",
+            "templates/admin_dashboard/where_monitor.html",
+            "templates/admin_dashboard/assign_monitor.html",
+            "templates/admin_dashboard/sorting_ladder_monitor.html",
+            "templates/admin_dashboard/blackjack_monitor.html",
+            "templates/admin_dashboard/who_lying_monitor.html",
+            "templates/admin_dashboard/who_that_monitor.html",
+            "templates/admin_dashboard/clue_rush_monitor.html",
+        ]
+
+        for path in monitor_paths:
+            with self.subTest(path=path):
+                content = self.read_template(path)
+                start = content.find("case 'quiz_ended':")
+                self.assertNotEqual(start, -1)
+                end = content.find("case 'quiz_inactive':", start)
+                block = content[start:end if end != -1 else start + 600]
+                self.assertIn("hostEndState?.apply", block)
+                self.assertNotIn("location.reload", block)
+
+    def test_state_based_monitors_apply_common_end_state_when_completed(self):
+        monitor_paths = [
+            "templates/admin_dashboard/buzzer_monitor.html",
+            "templates/admin_dashboard/host_points_monitor.html",
+            "templates/admin_dashboard/wann_war_das_monitor.html",
+            "templates/admin_dashboard/wer_weiss_mehr_monitor.html",
+        ]
+
+        for path in monitor_paths:
+            with self.subTest(path=path):
+                content = self.read_template(path)
+                self.assertIn("hostEndState?.apply", content)
+                self.assertRegex(content, r"completed|cancelled")
+
+
+class HostQuestionStartTemplateTest(TestCase):
+    """Regression coverage for question start acknowledgement flow."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.root = Path(__file__).resolve().parents[1]
+
+    def read_template(self, relative_path):
+        return (self.root / relative_path).read_text(encoding="utf-8")
+
+    def question_send_block(self, content):
+        signatures = [
+            "        sendQuestion(questionId) {",
+            "        async sendQuestion(questionId) {",
+            "        sendQuestion(questionId, totalElements) {",
+        ]
+        start = -1
+        for signature in signatures:
+            start = content.find(signature)
+            if start != -1:
+                break
+        self.assertNotEqual(start, -1)
+        end = content.find("endCurrentQuestion", start)
+        self.assertNotEqual(end, -1)
+        return content[start:end]
+
+    def question_started_block(self, content):
+        start = content.find("case 'question_started':")
+        self.assertNotEqual(start, -1)
+        end = content.find("break;", start)
+        self.assertNotEqual(end, -1)
+        return content[start:end]
+
+    def test_host_does_not_mark_question_sent_before_server_ack(self):
+        monitor_paths = [
+            "templates/admin_dashboard/quiz_monitor.html",
+            "templates/admin_dashboard/estimation_monitor.html",
+            "templates/admin_dashboard/where_monitor.html",
+            "templates/admin_dashboard/who_that_monitor.html",
+            "templates/admin_dashboard/who_lying_monitor.html",
+            "templates/admin_dashboard/clue_rush_monitor.html",
+            "templates/admin_dashboard/assign_monitor.html",
+            "templates/admin_dashboard/sorting_ladder_monitor.html",
+            "templates/admin_dashboard/blackjack_monitor.html",
+        ]
+
+        for path in monitor_paths:
+            with self.subTest(path=path):
+                block = self.question_send_block(self.read_template(path))
+                if "this.websocket.send(JSON.stringify(payload));" in block:
+                    after_send = block.split("this.websocket.send(JSON.stringify(payload));", 1)[1]
+                else:
+                    self.assertIn("this.sendJsonWhenReady(payload", block)
+                    after_send = block.split("this.sendJsonWhenReady(payload", 1)[1]
+                self.assertNotIn("markQuestionSent(questionId)", after_send)
+                self.assertNotIn("updateSendButtonAsSent(btn)", after_send)
+
+    def test_host_marks_question_sent_only_after_question_started_event(self):
+        monitor_paths = [
+            "templates/admin_dashboard/quiz_monitor.html",
+            "templates/admin_dashboard/estimation_monitor.html",
+            "templates/admin_dashboard/where_monitor.html",
+            "templates/admin_dashboard/who_that_monitor.html",
+            "templates/admin_dashboard/who_lying_monitor.html",
+            "templates/admin_dashboard/clue_rush_monitor.html",
+            "templates/admin_dashboard/assign_monitor.html",
+            "templates/admin_dashboard/sorting_ladder_monitor.html",
+            "templates/admin_dashboard/blackjack_monitor.html",
+        ]
+
+        for path in monitor_paths:
+            with self.subTest(path=path):
+                block = self.question_started_block(self.read_template(path))
+                self.assertIn("data.question?.id", block)
+                self.assertIn("this.markQuestionSent(data.question.id)", block)
+
+    def test_send_question_buttons_are_non_submit_buttons(self):
+        monitor_paths = [
+            "templates/admin_dashboard/quiz_monitor.html",
+            "templates/admin_dashboard/estimation_monitor.html",
+            "templates/admin_dashboard/where_monitor.html",
+            "templates/admin_dashboard/who_that_monitor.html",
+            "templates/admin_dashboard/who_lying_monitor.html",
+            "templates/admin_dashboard/clue_rush_monitor.html",
+            "templates/admin_dashboard/assign_monitor.html",
+            "templates/admin_dashboard/sorting_ladder_monitor.html",
+            "templates/admin_dashboard/blackjack_monitor.html",
+        ]
+
+        for path in monitor_paths:
+            with self.subTest(path=path):
+                content = self.read_template(path)
+                self.assertRegex(content, r'<button\s+type="button"[^>]*class="[^"]*\bsend-question-btn\b')
+
+    def test_quick_quiz_send_question_has_visible_error_and_ready_state_guard(self):
+        content = self.read_template("templates/admin_dashboard/quiz_monitor.html")
+        block = self.question_started_block(content)
+
+        self.assertIn("type: 'admin_send_question'", content)
+        self.assertIn("question_id: questionId", content)
+        self.assertIn("hub_session: this.getHubSession()", content)
+        self.assertIn("sendJsonWhenReady", content)
+        self.assertIn("case 'error':", content)
+        self.assertIn("showHostError", content)
+        self.assertIn("Verbindung zum Server ist nicht bereit", content)
+        self.assertIn("this.renderActiveQuestion(data.question || {})", block)
+        self.assertNotIn("location.reload()", block)
 
 
 # ---------------------------------------------------------------------------
@@ -215,6 +406,9 @@ class ManageGamesApiTest(TestCase):
     def test_create_sorting_ladder_game(self):
         self._create_game("sorting_ladder")
 
+    def test_create_host_points_game(self):
+        self._create_game("host_points")
+
     # -- Zwei Spiele löschen --------------------------------------------------
 
     def test_delete_two_games(self):
@@ -273,16 +467,48 @@ class ManageGamesApiTest(TestCase):
         resp = self.client.get(reverse("admin_dashboard:create_game"))
         self.assertEqual(resp.status_code, 200)
         self.assertNotContains(resp, 'id="gameTutorialEnabled"', html=False)
+        self.assertContains(resp, "game-compact-card")
+        self.assertContains(resp, "game-compact-grid")
+        self.assertContains(resp, "Interner Name")
         self.assertContains(resp, "Spielerläuterung")
-        self.assertContains(resp, "Titel der Spielerläuterung")
         self.assertContains(resp, "Text der Spielerläuterung")
-        self.assertContains(resp, 'id="gameTutorialTitle"', html=False)
+        self.assertNotContains(resp, "Titel der Spielerläuterung")
+        self.assertNotContains(resp, 'id="gameTutorialTitle"', html=False)
         self.assertContains(resp, 'id="gameTutorialText"', html=False)
+        self.assertContains(resp, "tutorial_title: ''")
         self.assertContains(resp, "als Tutorial verwenden")
         self.assertContains(resp, "als Tutorialset verwenden")
         self.assertContains(resp, "tutorial_question_id")
         self.assertContains(resp, "tutorial_set_number")
         self.assertContains(resp, "tutorial-question-check")
+        self.assertContains(resp, "game-question-workspace")
+        self.assertContains(resp, "question-form-column")
+        self.assertContains(resp, "question-bank-column")
+        self.assertContains(resp, "question-bank-scroll")
+        self.assertContains(resp, "assigned-questions-card")
+        self.assertContains(resp, "assigned-questions-scroll")
+        self.assertContains(resp, "max. Punktzahl ändern")
+        self.assertContains(resp, "estimation-manual-points-switch")
+        self.assertNotContains(resp, "Punkte manuell definieren")
+        self.assertContains(resp, "const lastQuestionTimeValues = {};")
+        self.assertContains(resp, "function rememberQuestionTimeValues(type)")
+        self.assertContains(resp, "clearRememberedQuestionTimeValues();")
+        self.assertContains(resp, "rememberQuestionTimeValues('quiz');")
+        self.assertContains(resp, "rememberQuestionTimeValues(currentType);")
+        self.assertContains(resp, "getRememberedQuestionTimeValue('quiz', 'quizTimeLimit', '30')")
+        self.assertContains(resp, "getRememberedQuestionTimeValue('estimation', 'est-time', '30')")
+        self.assertContains(resp, "getRememberedQuestionTimeValue('where', 'where-time', '30')")
+        self.assertContains(resp, "getRememberedQuestionTimeValue('who_that', 'whot-time', '30')")
+        self.assertContains(resp, "getRememberedQuestionTimeValue('clue_rush', 'cr-clue-dur', '10')")
+        self.assertContains(resp, "getRememberedQuestionTimeValue('wann_war_das', 'wwd-time-limit', '')")
+        content = resp.content.decode("utf-8")
+        self.assertLess(content.index('id="quizQuestionFormCard"'), content.index('id="assignedQuestionsBody"'))
+        self.assertLess(content.index('id="quizBankTableBody"'), content.index('id="assignedQuestionsBody"'))
+        self.assertLess(content.index('id="genericQuestionFormCard"'), content.index('id="genericAssignedBody"'))
+        self.assertLess(content.index('id="genericBankTableBody"'), content.index('id="genericAssignedBody"'))
+        self.assertGreater(content.index("Spielerläuterung"), content.index('id="section-host_points"'))
+        self.assertGreater(content.index('id="gameTutorialText"'), content.index('id="assignedQuestionsBody"'))
+        self.assertGreater(content.index('id="gameTutorialText"'), content.index('id="genericAssignedBody"'))
 
     def test_game_models_expose_single_tutorial_question_slot(self):
         for model in [
@@ -480,6 +706,7 @@ class ManageGamesApiTest(TestCase):
             "blackjack": "quiz_id",
             "clue_rush": "game_id",
             "sorting_ladder": "quiz_id",
+            "host_points": "game_id",
         }
         selected_key_by_game = {
             "sorting_ladder": "topic_ids",
@@ -538,7 +765,8 @@ class ManageGamesApiTest(TestCase):
         resp = self.client.get(reverse("admin_dashboard:edit_game", args=["quiz", quiz.id]))
 
         self.assertEqual(resp.status_code, 200)
-        self.assertContains(resp, 'const EDIT_TUTORIAL_TITLE = "Welcome";', html=False)
+        self.assertNotContains(resp, 'EDIT_TUTORIAL_TITLE', html=False)
+        self.assertNotContains(resp, 'id="gameTutorialTitle"', html=False)
         self.assertContains(resp, 'const EDIT_TUTORIAL_TEXT = "Read this first";', html=False)
         self.assertContains(resp, f'const EDIT_TUTORIAL_QUESTION_ID = {question.id};', html=False)
         self.assertNotContains(resp, 'id="gameTutorialEnabled"', html=False)
@@ -574,6 +802,7 @@ class ManageGamesApiTest(TestCase):
             self.assertIn("handleTutorialAckWarning", content, relative_path)
             self.assertIn("_unit_tutorial_notice.html", content, relative_path)
             self.assertIn("unitTutorialNotice", content, relative_path)
+            self.assertIn("host-monitor-content", content, relative_path)
             if relative_path.endswith("blackjack_monitor.html"):
                 self.assertIn("Für dieses Spiel wurde kein Tutorialset festgelegt.", content)
 
@@ -581,6 +810,11 @@ class ManageGamesApiTest(TestCase):
         self.assertIn("tutorial_notice_label='Tutorialset'", blackjack_content)
 
         base_content = (repo_root / "templates/admin_dashboard/base.html").read_text(encoding="utf-8")
+        self.assertIn("Compact Host Monitor UI", base_content)
+        self.assertIn(".host-monitor-content", base_content)
+        self.assertIn(".host-session-monitor", base_content)
+        self.assertIn("#endQuizBtn::before", base_content)
+        self.assertIn("scrollbar-gutter: stable", base_content)
         self.assertIn("Nicht alle Teilnehmer haben die Erläuterung bestätigt", base_content)
         self.assertIn("tutorialQuestionMissingModal", base_content)
         self.assertIn("showTutorialQuestionMissing", base_content)
@@ -619,6 +853,8 @@ class ManageGamesApiTest(TestCase):
         spectator_content = (repo_root / "templates/hub/spectate.html").read_text(encoding="utf-8")
         self.assertIn("_unit_tutorial_notice.html", spectator_content)
         self.assertIn("unitTutorialNotice", spectator_content)
+        session_monitor_content = (repo_root / "templates/hub/monitor.html").read_text(encoding="utf-8")
+        self.assertIn("host-session-monitor", session_monitor_content)
 
 
 # Assign-Fragen dÃ¼rfen fÃ¼r Tests jetzt auch rechtsseitige Distractors oder Gleichstand haben.

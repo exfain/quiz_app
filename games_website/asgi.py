@@ -25,6 +25,10 @@ import black_jack_quiz.routing
 import games_hub.routing
 import clue_rush.routing
 import sorting_ladder.routing
+import wer_weiss_mehr.routing
+import buzzer.routing
+import host_points.routing
+import wann_war_das.routing
 
 # Combine all WebSocket URL patterns
 websocket_urlpatterns = []
@@ -38,6 +42,10 @@ websocket_urlpatterns.extend(black_jack_quiz.routing.websocket_urlpatterns)
 websocket_urlpatterns.extend(games_hub.routing.websocket_urlpatterns)
 websocket_urlpatterns.extend(clue_rush.routing.websocket_urlpatterns)
 websocket_urlpatterns.extend(sorting_ladder.routing.websocket_urlpatterns)
+websocket_urlpatterns.extend(wer_weiss_mehr.routing.websocket_urlpatterns)
+websocket_urlpatterns.extend(buzzer.routing.websocket_urlpatterns)
+websocket_urlpatterns.extend(host_points.routing.websocket_urlpatterns)
+websocket_urlpatterns.extend(wann_war_das.routing.websocket_urlpatterns)
 
 application = ProtocolTypeRouter({
     "http": django_asgi_app,

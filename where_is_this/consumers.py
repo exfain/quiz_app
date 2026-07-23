@@ -66,6 +66,8 @@ class WhereConsumer(AsyncWebsocketConsumer):
                 await self.handle_admin_end_quiz(text_data_json)
             elif message_type == 'admin_set_inactive':
                 await self.handle_admin_set_inactive(text_data_json)
+            elif message_type == 'admin_set_scoring_mode':
+                await self.handle_admin_set_scoring_mode(text_data_json)
             elif message_type == 'participant_submit_answer':
                 await self.handle_participant_submit_answer(text_data_json)
             elif message_type == 'participant_join':
@@ -78,6 +80,11 @@ class WhereConsumer(AsyncWebsocketConsumer):
                 await self.handle_admin_show_leaderboard()
             elif message_type == 'admin_hide_leaderboard':
                 await self.handle_admin_hide_leaderboard()
+            else:
+                await self.send(text_data=json.dumps({
+                    'type': 'error',
+                    'message': f'Unknown action: {message_type or "missing type"}'
+                }))
 
         except json.JSONDecodeError:
             await self.send(text_data=json.dumps({
@@ -87,9 +94,15 @@ class WhereConsumer(AsyncWebsocketConsumer):
 
     async def handle_admin_start_quiz(self, data):
         """Handle admin starting the quiz"""
+        hub_session_code = (
+            data.get('hub_session')
+            or data.get('hub_session_code')
+            or await self._get_hub_session_code_for_room()
+        )
         lobby_ready = await database_sync_to_async(ensure_session_players_ready_for_game_start_for_room)(
             'where',
             self.room_code,
+            session_code=hub_session_code,
         )
         if not lobby_ready.get('allowed', True):
             await self.send(text_data=json.dumps({
@@ -103,7 +116,6 @@ class WhereConsumer(AsyncWebsocketConsumer):
         if quiz:
             show_tutorial = bool(data.get('show_tutorial', False))
             play_tutorial = bool(data.get('play_tutorial', False))
-            hub_session_code = await self._get_hub_session_code_for_room()
             unit_tutorial_validation = await database_sync_to_async(validate_unit_tutorial_request)(
                 'where',
                 self.room_code,
@@ -118,6 +130,7 @@ class WhereConsumer(AsyncWebsocketConsumer):
             activation = await database_sync_to_async(resolve_session_game_activation_for_room)(
                 'where',
                 self.room_code,
+                session_code=hub_session_code,
             )
             if not activation.get('success'):
                 payload = {
@@ -135,7 +148,7 @@ class WhereConsumer(AsyncWebsocketConsumer):
                 play_tutorial,
                 validate=False,
             )
-            await self.start_quiz_db(quiz.id)
+            await self.start_quiz_db(quiz.id, reset_runtime=(quiz.status != 'inactive'))
             tutorial_payload = await self.activate_tutorial_runtime(quiz.id, hub_session_code, show_tutorial)
             
             # Broadcast to all participants
@@ -143,14 +156,16 @@ class WhereConsumer(AsyncWebsocketConsumer):
                 self.room_group_name,
                 {
                     'type': 'quiz_started',
-                    'message': 'Where is this? Quiz has started!'
+                    'message': 'Where is this? Quiz has started!',
+                    'timestamp': timezone.now().isoformat(),
                 }
             )
             await self.hub_mirror_event('quiz_started', {
                 'room_code': self.room_code,
                 'game_key': 'where',
+                'title': quiz.title,
                 'message': 'Where is this? Quiz has started!'
-            })
+            }, hub_session_code)
             if tutorial_payload:
                 await self.channel_layer.group_send(
                     self.room_group_name,
@@ -173,10 +188,33 @@ class WhereConsumer(AsyncWebsocketConsumer):
         quiz = await self.get_quiz()
         
         if not quiz:
+            await self.send(text_data=json.dumps({
+                'type': 'error',
+                'message': 'Quiz not found.',
+                'question_id': question_id,
+            }))
+            return
+        if not question_id:
+            await self.send(text_data=json.dumps({
+                'type': 'error',
+                'message': 'Frage konnte nicht gestartet werden: Frage-ID fehlt.',
+            }))
+            return
+        if quiz.status != 'active':
+            await self.send(text_data=json.dumps({
+                'type': 'error',
+                'message': 'Start the quiz before sending a question.',
+                'question_id': question_id,
+            }))
             return
             
         question = await self.get_question(question_id)
         if not question:
+            await self.send(text_data=json.dumps({
+                'type': 'error',
+                'message': 'Frage konnte nicht gestartet werden: Frage wurde nicht gefunden.',
+                'question_id': question_id,
+            }))
             return
 
         # If quiz has a predefined set, enforce membership
@@ -187,7 +225,8 @@ class WhereConsumer(AsyncWebsocketConsumer):
                 if not allowed:
                     await self.send(text_data=json.dumps({
                         'type': 'error',
-                        'message': 'This question is not part of the selected set for this quiz.'
+                        'message': 'This question is not part of the selected set for this quiz.',
+                        'question_id': question_id,
                     }))
                     return
         except Exception:
@@ -218,6 +257,12 @@ class WhereConsumer(AsyncWebsocketConsumer):
         
         # Determine the effective time limit for this send (do NOT persist on the question)
         effective_time_limit = custom_time_limit if custom_time_limit is not None else question.time_limit
+        question_points = await self.get_question_start_points(
+            quiz.id,
+            question.id,
+            hub_session,
+            is_tutorial_round,
+        )
 
         # Broadcast new question to all participants
         await self.channel_layer.group_send(
@@ -228,7 +273,9 @@ class WhereConsumer(AsyncWebsocketConsumer):
                     'id': question.id,
                     'question_text': question.question_text,
                     'time_limit': effective_time_limit,
-                    'points': 0 if is_tutorial_round else question.points,
+                    'points': question_points,
+                    'scoring_mode': quiz.get_effective_scoring_mode(),
+                    'map_type': question.map_type,
                     'is_tutorial_round': is_tutorial_round,
                     'hint_text': question.hint_text,
                     'image_url': question_data['image_url']
@@ -242,6 +289,7 @@ class WhereConsumer(AsyncWebsocketConsumer):
         if quiz:
             hub_session = data.get('hub_session') or data.get('hub_session_code') or await self._get_hub_session_code_for_room()
             unit_tutorial = await self.finish_current_unit_tutorial(hub_session)
+            reveal_payload = await self.finalize_current_question(quiz.id, hub_session, bool(unit_tutorial.get('is_tutorial_round')))
             await self.end_current_question_db(quiz.id)
             
             await self.channel_layer.group_send(
@@ -250,38 +298,61 @@ class WhereConsumer(AsyncWebsocketConsumer):
                     'type': 'question_ended',
                     'message': 'Question time is up!',
                     'is_tutorial_round': bool(unit_tutorial.get('is_tutorial_round')),
+                    **reveal_payload,
                 }
             )
 
     async def handle_admin_end_quiz(self, data):
         """Handle admin ending the quiz"""
         quiz = await self.get_quiz()
-        if quiz:
-            await self.end_quiz_db(quiz.id)
-            # Collect final scores
-            final_scores = await self.get_final_scores()
-            
-            await self.channel_layer.group_send(
-                self.room_group_name,
-                {
-                    'type': 'quiz_ended',
-                    'message': 'Where is this? Quiz has ended. Thank you for participating!',
-                    'final_scores': final_scores
-                }
+        if not quiz:
+            await self.send(text_data=json.dumps({'type': 'error', 'message': 'Quiz not found.'}))
+            return
+
+        hub_session = (
+            data.get('hub_session')
+            or data.get('hub_session_code')
+            or await self._get_hub_session_code_for_room()
+        )
+        if quiz.current_question_id:
+            unit_tutorial = await self.finish_current_unit_tutorial(hub_session)
+            await self.finalize_current_question(
+                quiz.id,
+                hub_session,
+                bool(unit_tutorial.get('is_tutorial_round')),
             )
 
-            # Mirror to hub to auto-advance session
-            # await self.hub_mirror_event('game_ended', {
-            #     'room_code': self.room_code,
-            #     'game_key': 'where'
-            # })
-            # Mirror to hub so hub can advance to next step or end session
-            await self.hub_mirror_event('quiz_ended', {
-                'room_code': self.room_code,
-                'game_key': 'where',
-                'message': 'Quiz has ended. Thank you for participating!',
-                'final_scores': final_scores
-            })
+        ended = await self.end_quiz_db(quiz.id)
+        if not ended.get('success'):
+            await self.send(text_data=json.dumps({'type': 'error', 'message': 'Quiz could not be ended.'}))
+            return
+
+        final_scores = await self.get_final_scores(hub_session)
+        end_payload = {
+            'type': 'quiz_ended',
+            'message': 'Where is this? Quiz has ended. Thank you for participating!',
+            'status': 'completed',
+            'quiz_id': quiz.id,
+            'room_code': self.room_code,
+            'can_start_questions': False,
+            'can_answer': False,
+            'final_scores': final_scores
+        }
+        await self.send(text_data=json.dumps(end_payload))
+        if not ended.get('ended'):
+            return
+
+        await self.channel_layer.group_send(
+            self.room_group_name,
+            end_payload
+        )
+        await self.hub_mirror_event('game_ended', {
+            'room_code': self.room_code,
+            'game_key': 'where',
+            'title': quiz.title,
+            'message': 'Quiz has ended. Thank you for participating!',
+            'final_scores': final_scores
+        }, hub_session)
 
     async def handle_admin_set_inactive(self, data):
         """Pause the quiz without clearing its current progress."""
@@ -296,17 +367,39 @@ class WhereConsumer(AsyncWebsocketConsumer):
                 }
             )
 
+    async def handle_admin_set_scoring_mode(self, data):
+        quiz = await self.get_quiz()
+        if not quiz:
+            return
+        scoring_mode = (data.get('scoring_mode') or '').strip()
+        updated = await self.set_scoring_mode_if_waiting(quiz.id, scoring_mode)
+        if not updated:
+            await self.send(text_data=json.dumps({
+                'type': 'error',
+                'message': 'Scoring mode can only be changed before the quiz starts.'
+            }))
+            return
+        await self.channel_layer.group_send(
+            self.room_group_name,
+            {
+                'type': 'scoring_mode_updated',
+                'scoring_mode': 'rank' if scoring_mode == 'rank' else 'zones',
+            }
+        )
+
     async def handle_participant_submit_answer(self, data):
         """Handle participant submitting their location answer"""
         participant_name = data.get('participant_name')
         session_code = data.get('hub_session')
+        x_norm = data.get('x_norm')
+        y_norm = data.get('y_norm')
         latitude = data.get('latitude')
         longitude = data.get('longitude')
         time_taken = data.get('time_taken', 0)
 
         # Save the answer
         answer = await self.save_participant_answer(
-            participant_name, session_code, latitude, longitude, time_taken
+            participant_name, session_code, x_norm, y_norm, latitude, longitude, time_taken
         )
         
         if answer:
@@ -314,14 +407,9 @@ class WhereConsumer(AsyncWebsocketConsumer):
             await self.send(text_data=json.dumps({
                 'type': 'answer_submitted',
                 'message': 'Answer submitted successfully',
-                'points_earned': answer['points_earned'],
                 'is_tutorial_round': answer['is_tutorial_round'],
-                'distance_km': answer['distance_km'],
-                'formatted_distance': answer['formatted_distance'],
-                'accuracy_percentage': answer['accuracy_percentage'],
-                'accuracy_category': answer['accuracy_category'],
-                'correct_latitude': answer['correct_latitude'],
-                'correct_longitude': answer['correct_longitude']
+                'x_norm': answer['x_norm'],
+                'y_norm': answer['y_norm']
             }))
 
             # Broadcast to admin dashboard (live answers)
@@ -331,12 +419,9 @@ class WhereConsumer(AsyncWebsocketConsumer):
                     'type': 'participant_answered',
                     'answer': {
                         'participant_name': participant_name,
-                        'points_earned': answer['points_earned'],
                         'is_tutorial_round': answer['is_tutorial_round'],
-                        'distance_km': answer['distance_km'],
-                        'formatted_distance': answer['formatted_distance'],
-                        'accuracy_percentage': answer['accuracy_percentage'],
-                        'accuracy_category': answer['accuracy_category'],
+                        'x_norm': answer['x_norm'],
+                        'y_norm': answer['y_norm'],
                         'time_taken': time_taken
                     }
                 }
@@ -372,7 +457,7 @@ class WhereConsumer(AsyncWebsocketConsumer):
                 }))
                 tutorial_payload = await self.get_tutorial_payload(
                     quiz.id,
-                    hub_session,
+                    session_code,
                     participant_name=participant_name,
                 )
                 if tutorial_payload:
@@ -425,7 +510,8 @@ class WhereConsumer(AsyncWebsocketConsumer):
         """Send quiz started message"""
         await self.send(text_data=json.dumps({
             'type': 'quiz_started',
-            'message': event['message']
+            'message': event['message'],
+            'timestamp': event.get('timestamp'),
         }))
 
     async def tutorial_start(self, event):
@@ -485,7 +571,13 @@ class WhereConsumer(AsyncWebsocketConsumer):
         """Send question ended message"""
         await self.send(text_data=json.dumps({
             'type': 'question_ended',
-            'message': event['message']
+            'message': event['message'],
+            'is_tutorial_round': event.get('is_tutorial_round', False),
+            'question': event.get('question'),
+            'correct_location': event.get('correct_location'),
+            'answers': event.get('answers', []),
+            'scoring_mode': event.get('scoring_mode'),
+            'zone_scoring': event.get('zone_scoring'),
         }))
 
     async def quiz_ended(self, event):
@@ -493,6 +585,11 @@ class WhereConsumer(AsyncWebsocketConsumer):
         await self.send(text_data=json.dumps({
             'type': 'quiz_ended',
             'message': event['message'],
+            'status': event.get('status', 'completed'),
+            'quiz_id': event.get('quiz_id'),
+            'room_code': event.get('room_code'),
+            'can_start_questions': event.get('can_start_questions', False),
+            'can_answer': event.get('can_answer', False),
             'final_scores': event.get('final_scores', [])
         }))
 
@@ -516,6 +613,12 @@ class WhereConsumer(AsyncWebsocketConsumer):
             'participant': event['participant']
         }))
 
+    async def scoring_mode_updated(self, event):
+        await self.send(text_data=json.dumps({
+            'type': 'scoring_mode_updated',
+            'scoring_mode': event.get('scoring_mode'),
+        }))
+
     # Database operations
     @database_sync_to_async
     def get_current_question_data(self):
@@ -529,7 +632,9 @@ class WhereConsumer(AsyncWebsocketConsumer):
                 'id': question.id,
                 'question_text': question.question_text,
                 'time_limit': question.time_limit,
-                'points': question.points,
+                'points': question.get_max_points_for_mode(quiz.get_effective_scoring_mode()),
+                'scoring_mode': quiz.get_effective_scoring_mode(),
+                'map_type': question.map_type,
                 'hint_text': question.hint_text,
                 'image_url': question.image.url if question.image else None,
             }
@@ -627,12 +732,10 @@ class WhereConsumer(AsyncWebsocketConsumer):
             return None
 
     @database_sync_to_async
-    def start_quiz_db(self, quiz_id):
+    def start_quiz_db(self, quiz_id, reset_runtime=True):
         try:
             quiz = WhereQuiz.objects.get(id=quiz_id)
-            quiz.status = 'active'
-            quiz.started_at = timezone.now()
-            quiz.save()
+            quiz.start_quiz(reset_runtime=reset_runtime)
         except WhereQuiz.DoesNotExist:
             pass
 
@@ -640,12 +743,18 @@ class WhereConsumer(AsyncWebsocketConsumer):
     def end_quiz_db(self, quiz_id):
         try:
             quiz = WhereQuiz.objects.get(id=quiz_id)
-            quiz.status = 'completed'
-            quiz.ended_at = timezone.now()
-            quiz.current_question = None
-            quiz.save()
+            if quiz.status == 'completed' and quiz.ended_at:
+                return {'success': True, 'ended': False}
+            if hasattr(quiz, 'session'):
+                quiz.session.end_current_question()
+            else:
+                quiz.current_question = None
+                quiz.question_start_time = None
+                quiz.save(update_fields=['current_question', 'question_start_time', 'updated_at'])
+            ended = quiz.end_quiz('completed')
+            return {'success': True, 'ended': ended}
         except WhereQuiz.DoesNotExist:
-            pass
+            return {'success': False, 'ended': False}
 
     @database_sync_to_async
     def set_quiz_inactive_db(self, quiz_id):
@@ -655,6 +764,20 @@ class WhereConsumer(AsyncWebsocketConsumer):
             quiz.save(update_fields=['status'])
         except WhereQuiz.DoesNotExist:
             pass
+
+    @database_sync_to_async
+    def set_scoring_mode_if_waiting(self, quiz_id, scoring_mode):
+        if scoring_mode not in ('zones', 'rank'):
+            return False
+        try:
+            quiz = WhereQuiz.objects.get(id=quiz_id)
+        except WhereQuiz.DoesNotExist:
+            return False
+        if quiz.status != 'waiting':
+            return False
+        quiz.scoring_mode = scoring_mode
+        quiz.save(update_fields=['scoring_mode'])
+        return True
 
     @database_sync_to_async
     def send_question_db(self, quiz_id, question_id, custom_time_limit=None):
@@ -691,7 +814,114 @@ class WhereConsumer(AsyncWebsocketConsumer):
         }
 
     @database_sync_to_async
-    def save_participant_answer(self, participant_name, hub_session_code, latitude, longitude, time_taken):
+    def get_participant_count_for_quiz(self, quiz_id, hub_session_code=None):
+        try:
+            quiz = WhereQuiz.objects.get(id=quiz_id)
+        except WhereQuiz.DoesNotExist:
+            return 0
+        return quiz.get_participant_count(hub_session_code)
+
+    @database_sync_to_async
+    def get_question_start_points(self, quiz_id, question_id, hub_session_code=None, is_tutorial_round=False):
+        if is_tutorial_round:
+            return 0
+        try:
+            quiz = WhereQuiz.objects.get(id=quiz_id)
+            question = WhereQuestion.objects.get(id=question_id)
+        except (WhereQuiz.DoesNotExist, WhereQuestion.DoesNotExist):
+            return 0
+        return question.get_max_points_for_mode(
+            quiz.get_effective_scoring_mode(),
+            quiz.get_participant_count(hub_session_code),
+        )
+
+    @database_sync_to_async
+    def finalize_current_question(self, quiz_id, hub_session_code=None, is_tutorial_round=False):
+        try:
+            quiz = WhereQuiz.objects.select_related('current_question').get(id=quiz_id)
+        except WhereQuiz.DoesNotExist:
+            return {}
+
+        question = quiz.current_question
+        if not question:
+            return {}
+
+        answers_qs = WhereAnswer.objects.filter(quiz=quiz, question=question).select_related('participant')
+        if hub_session_code:
+            answers_qs = answers_qs.filter(participant__hub_session_code=hub_session_code)
+        answers = list(answers_qs.order_by('distance_km', 'submitted_at', 'id'))
+
+        scoring_mode = quiz.get_effective_scoring_mode()
+        if is_tutorial_round:
+            for answer in answers:
+                changed_fields = []
+                if answer.points_earned != 0:
+                    answer.points_earned = 0
+                    changed_fields.append('points_earned')
+                if changed_fields:
+                    changed_fields.append('updated_at')
+                    answer.save(update_fields=changed_fields)
+        elif scoring_mode == 'rank':
+            participant_count = max(quiz.get_participant_count(hub_session_code), len(answers))
+            previous_distance = None
+            previous_rank = 0
+            for index, answer in enumerate(answers, start=1):
+                rounded_distance = round(float(answer.distance_km or 0), 6)
+                if previous_distance is None or rounded_distance != previous_distance:
+                    previous_rank = index
+                    previous_distance = rounded_distance
+                answer.rank_position = previous_rank
+                answer.scoring_mode = 'rank'
+                answer.points_earned = max(1, participant_count - previous_rank + 1)
+                answer.zone_label = ''
+                answer.save(update_fields=['rank_position', 'scoring_mode', 'points_earned', 'zone_label', 'updated_at'])
+        else:
+            for answer in answers:
+                zone = question.get_zone_for_distance(answer.distance_km)
+                answer.rank_position = None
+                answer.scoring_mode = 'zones'
+                answer.points_earned = int(zone['points']) if zone else 0
+                answer.zone_label = zone['label'] if zone else ''
+                answer.save(update_fields=['rank_position', 'scoring_mode', 'points_earned', 'zone_label', 'updated_at'])
+
+        correct_norm = question.get_correct_norm()
+        return {
+            'question': {
+                'id': question.id,
+                'question_text': question.question_text,
+                'explanation': question.explanation,
+                'map_type': question.map_type,
+            },
+            'correct_location': {
+                'latitude': question.correct_latitude,
+                'longitude': question.correct_longitude,
+                **(correct_norm or {}),
+            },
+            'scoring_mode': scoring_mode,
+            'zone_scoring': question.get_zone_reveal_data() if scoring_mode == 'zones' else None,
+            'answers': [
+                {
+                    'participant_name': answer.participant.name,
+                    'participant_id': answer.participant_id,
+                    'x_norm': answer.x_norm,
+                    'y_norm': answer.y_norm,
+                    'user_latitude': answer.user_latitude,
+                    'user_longitude': answer.user_longitude,
+                    'distance_km': answer.distance_km,
+                    'formatted_distance': answer.get_formatted_distance(),
+                    'accuracy_percentage': answer.accuracy_percentage,
+                    'accuracy_category': answer.get_accuracy_category(),
+                    'points_earned': answer.points_earned,
+                    'rank_position': answer.rank_position,
+                    'zone_label': answer.zone_label,
+                    'time_taken': answer.time_taken,
+                }
+                for answer in answers
+            ],
+        }
+
+    @database_sync_to_async
+    def save_participant_answer(self, participant_name, hub_session_code, x_norm, y_norm, latitude, longitude, time_taken):
         try:
             quiz = WhereQuiz.objects.get(room_code=self.room_code)
             participant = quiz.participants.get(name=participant_name, hub_session_code=hub_session_code)
@@ -710,16 +940,25 @@ class WhereConsumer(AsyncWebsocketConsumer):
             
             if existing_answer:
                 return None  # Already answered
-            
+
+            answer_kwargs = {
+                'quiz': quiz,
+                'participant': participant,
+                'question': quiz.current_question,
+                'time_taken': time_taken,
+            }
+            if x_norm is not None and y_norm is not None:
+                answer_kwargs['x_norm'] = float(x_norm)
+                answer_kwargs['y_norm'] = float(y_norm)
+                # Model.save recalculates latitude/longitude from normalized Web-Mercator coordinates.
+                answer_kwargs['user_latitude'] = 0
+                answer_kwargs['user_longitude'] = 0
+            else:
+                answer_kwargs['user_latitude'] = float(latitude)
+                answer_kwargs['user_longitude'] = float(longitude)
+
             # Create new answer
-            answer = WhereAnswer.objects.create(
-                quiz=quiz,
-                participant=participant,
-                question=quiz.current_question,
-                user_latitude=float(latitude),
-                user_longitude=float(longitude),
-                time_taken=time_taken
-            )
+            answer = WhereAnswer.objects.create(**answer_kwargs)
             is_tutorial_answer = is_unit_tutorial_question(
                 'where',
                 self.room_code,
@@ -731,14 +970,9 @@ class WhereConsumer(AsyncWebsocketConsumer):
                 answer.save(update_fields=['points_earned', 'updated_at'])
             
             return {
-                'points_earned': answer.points_earned,
                 'is_tutorial_round': is_tutorial_answer,
-                'distance_km': answer.distance_km,
-                'formatted_distance': answer.get_formatted_distance(),
-                'accuracy_percentage': answer.accuracy_percentage,
-                'accuracy_category': answer.get_accuracy_category(),
-                'correct_latitude': quiz.current_question.correct_latitude,
-                'correct_longitude': quiz.current_question.correct_longitude
+                'x_norm': answer.x_norm,
+                'y_norm': answer.y_norm,
             }
             
         except (WhereQuiz.DoesNotExist, WhereParticipant.DoesNotExist, ValueError, TypeError):
@@ -755,22 +989,22 @@ class WhereConsumer(AsyncWebsocketConsumer):
             pass
 
     @database_sync_to_async
-    def get_final_scores(self):
+    def get_final_scores(self, session_code=None):
         try:
             quiz = WhereQuiz.objects.get(room_code=self.room_code)
-            # Filter by hub session code if available via HubGameStep
-            try:
-                qs = HubGameStep.objects.select_related('session').filter(game_key='where', room_code=self.room_code)
-                active = qs.filter(session__ended_at__isnull=True).order_by('-id').first()
-                step = active or qs.order_by('-id').first()
-                session_code = step.session.code if step else None
-            except Exception:
-                session_code = None
+            if not session_code:
+                try:
+                    qs = HubGameStep.objects.select_related('session').filter(game_key='where', room_code=self.room_code)
+                    active = qs.filter(session__ended_at__isnull=True).order_by('-id').first()
+                    step = active or qs.order_by('-id').first()
+                    session_code = step.session.code if step else None
+                except Exception:
+                    session_code = None
 
             qs = quiz.participants
             if session_code:
                 qs = qs.filter(hub_session_code=session_code)
-            return list(qs.values('name', 'total_score'))
+            return list(qs.order_by('name').values('name', 'total_score'))
         except WhereQuiz.DoesNotExist:
             return []
 
@@ -785,8 +1019,8 @@ class WhereConsumer(AsyncWebsocketConsumer):
         except Exception:
             return None
 
-    async def hub_mirror_event(self, event_type: str, payload: dict):
-        session_code = await self._get_hub_session_code_for_room()
+    async def hub_mirror_event(self, event_type: str, payload: dict, session_code=None):
+        session_code = session_code or await self._get_hub_session_code_for_room()
         if not session_code:
             return
         group_name = f'hub_{session_code}'

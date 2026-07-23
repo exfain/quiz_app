@@ -1,11 +1,12 @@
 import json
+from pathlib import Path
 from unittest.mock import patch
 
 from asgiref.sync import async_to_sync
 from channels.layers import InMemoryChannelLayer
 from django.contrib.auth.models import User
 from django.core.files.uploadedfile import SimpleUploadedFile
-from django.test import Client, TestCase, TransactionTestCase
+from django.test import Client, SimpleTestCase, TestCase, TransactionTestCase
 from django.urls import reverse
 from django.utils import timezone
 
@@ -18,6 +19,9 @@ from .models import (
     WhoThatSession,
 )
 from .consumers import WhoThatConsumer
+
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 class FakeChannelLayer:
@@ -266,6 +270,38 @@ class WhoThatPlayTextCleanupTests(TestCase):
         self.assertNotContains(response, "Alternative spellings and nicknames are often accepted")
         self.assertContains(response, "Einloggen")
 
+    def test_waiting_screen_is_minimal_without_participant_count(self):
+        host = User.objects.create_user(
+            username="host_waiting_texts",
+            password="pw123456",
+            is_staff=True,
+        )
+        quiz = WhoThatQuiz.objects.create(
+            creator=host,
+            status="waiting",
+        )
+        WhoThatSession.objects.create(quiz=quiz)
+        participant = WhoThatParticipant.objects.create(
+            quiz=quiz,
+            name="PlayerWaiting",
+            hub_session_code=None,
+        )
+
+        response = self.client.get(
+            reverse("who_is_that:play", args=[quiz.room_code, participant.name])
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'id="waitingQuizState"', html=False)
+        self.assertNotContains(response, "Waiting for Photo Quiz to Start")
+        self.assertNotContains(
+            response,
+            "Get ready to identify famous people! The quiz host will start the session shortly.",
+        )
+        self.assertNotContains(response, 'class="participants-count"', html=False)
+        self.assertNotContains(response, '<span id="waitingParticipantCount"', html=False)
+        self.assertNotContains(response, "participants joined")
+
 
 class WhoThatRevealScreenTests(TestCase):
     def _image_file(self, name="person.jpg"):
@@ -307,6 +343,43 @@ class WhoThatRevealScreenTests(TestCase):
         self.assertContains(response, 'id="correctAnswerPhotoDisplay"', html=False)
         self.assertContains(response, 'id="answerResultIcon"', html=False)
         self.assertContains(response, "Your Answer")
+        self.assertContains(response, 'class="answer-display who-that-reveal-answer"', html=False)
+        self.assertContains(response, 'class="comparison-display who-that-reveal-comparison"', html=False)
+
+
+class WhoThatVhsLayoutTests(SimpleTestCase):
+    def test_vhs_states_use_scoped_layout_and_single_reveal_hierarchy(self):
+        template = (REPO_ROOT / "templates/who_is_that/play.html").read_text(encoding="utf-8")
+        vhs_css = (REPO_ROOT / "static/themes/vhs/vhs.css").read_text(encoding="utf-8")
+
+        self.assertEqual(template.count('class="who-that-interaction-stack"'), 1)
+        self.assertIn("vhs-who-that-submit", template)
+        self.assertIn("who-that-submitted-answer-label", template)
+        self.assertIn("who-that-submitted-answer-value", template)
+        self.assertIn("who-that-reveal-comparison", template)
+        self.assertEqual(template.count('id="correctAnswerDisplay"'), 1)
+
+        scope = 'html[data-participant-theme="vhs"] body.who-that-play-page'
+        self.assertIn(f"{scope} .vhs-theme-shell", vhs_css)
+        self.assertIn("#questionState .input-icon", vhs_css)
+        self.assertIn("#questionState .who-that-interaction-stack", vhs_css)
+        self.assertIn("#answerSubmittedState .who-that-submitted-waiting", vhs_css)
+        self.assertIn("#answerSubmittedState .who-that-submitted-answer-value", vhs_css)
+        self.assertIn("#correctAnswerState .vhs-reveal-correct-value", vhs_css)
+        self.assertIn(
+            "#correctAnswerState :is(.vhs-reveal-vs, .vhs-reveal-duplicate, #performanceBadge)",
+            vhs_css,
+        )
+        self.assertIn("@media (max-width: 1000px)", vhs_css)
+
+    def test_shared_vhs_state_sync_localizes_labels_without_changing_other_themes(self):
+        widget = (REPO_ROOT / "templates/includes/accessibility_widget.html").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("setReversibleVhsText(heading, 'DIE RICHTIGE ANTWORT IST')", widget)
+        self.assertIn("setReversibleVhsText(answerLabel, 'GEGEBENE ANTWORT')", widget)
+        self.assertIn("setReversibleVhsText(waiting, 'Warte auf die nächste Runde...')", widget)
 
 
 class WhoThatSubmitStateTests(TestCase):

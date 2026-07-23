@@ -88,6 +88,9 @@ class HubSession(SyncBase):
         from clue_rush.models import ClueRushGame
         from sorting_ladder.models import SortingLadderGame
         from wer_weiss_mehr.models import WerWeissMehrGame
+        from buzzer.models import BuzzerGame
+        from host_points.models import HostPointsGame
+        from wann_war_das.models import WannWarDasGame
 
         return {
             'quiz': QuizGameModel,
@@ -100,6 +103,9 @@ class HubSession(SyncBase):
             'clue_rush': ClueRushGame,
             'sorting_ladder': SortingLadderGame,
             'wer_weiss_mehr': WerWeissMehrGame,
+            'buzzer': BuzzerGame,
+            'host_points': HostPointsGame,
+            'wann_war_das': WannWarDasGame,
         }
 
     @classmethod
@@ -152,6 +158,24 @@ class HubSession(SyncBase):
         number = max(int(game_number or 1), 1)
         weight = 1 + (float(self.weighting_step) * (number - 1))
         return min(weight, float(self.weighting_cap))
+
+    def get_next_planned_step(self):
+        """Return the first configured game that has not completed in this session."""
+        if self.ended_at:
+            return None
+
+        model_map = self._get_game_model_map()
+        for step in self.steps.order_by('order', 'id'):
+            model = model_map.get(step.game_key)
+            game = model.objects.filter(room_code=step.room_code).first() if model and step.room_code else None
+            if getattr(game, 'status', None) == 'completed':
+                continue
+            return step
+        return None
+
+    def get_next_game_number(self):
+        step = self.get_next_planned_step()
+        return step.order + 1 if step else None
 
     def has_started_game(self):
         model_map = self._get_game_model_map()
@@ -335,6 +359,9 @@ class HubGameStep(SyncBase):
         ('blackjack', 'Black Jack Quiz'),
         ('sorting_ladder', 'Sorting Ladder'),
         ('clue_rush', 'Clue Rush'),
+        ('buzzer', 'Buzzer'),
+        ('host_points', 'Host-Punktevergabe'),
+        ('wann_war_das', 'Wann war das?'),
         ('wer_weiss_mehr', 'Wer weiß mehr?'),
     ]
     session = models.ForeignKey(HubSession, related_name='steps', on_delete=models.CASCADE)
@@ -349,6 +376,36 @@ class HubGameStep(SyncBase):
 
     def __str__(self):
         return f"{self.order}: {self.get_game_key_display()} ({self.session.code})"
+
+
+class HubReadinessCheck(SyncBase):
+    session = models.ForeignKey(HubSession, related_name='readiness_checks', on_delete=models.CASCADE)
+    active = models.BooleanField(default=True)
+    started_at = models.DateTimeField(default=timezone.now)
+    ended_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ['-started_at']
+
+    def __str__(self):
+        return f"Bereitschaft {self.session.code} ({'aktiv' if self.active else 'beendet'})"
+
+
+class HubReadinessParticipant(SyncBase):
+    readiness_check = models.ForeignKey(HubReadinessCheck, related_name='participant_states', on_delete=models.CASCADE)
+    participant = models.ForeignKey(HubParticipant, related_name='readiness_states', on_delete=models.CASCADE)
+    ready_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        unique_together = ('readiness_check', 'participant')
+        ordering = ['ready_at', 'participant__joined_at', 'participant__nickname']
+
+    @property
+    def is_ready(self):
+        return self.ready_at is not None
+
+    def __str__(self):
+        return f"{self.participant.nickname}: {'Bereit' if self.is_ready else 'Noch nicht bereit'}"
 
 
 class GameVote(models.Model):

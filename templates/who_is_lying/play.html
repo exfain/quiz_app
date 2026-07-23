@@ -32,6 +32,7 @@
                             {{ quiz.room_code }}
                         </div> -->
                         <h1 class="quiz-title">{{ quiz.title }}</h1>
+                        {% include 'includes/_session_game_number.html' with game_key='who' room_code=quiz.room_code %}
                     </div>
                     <div class="participant-info">
                         <div class="participant-avatar">
@@ -55,28 +56,14 @@
                         <!-- Waiting State -->
                         <div id="waitingQuizState" class="game-state {% if quiz.status != 'waiting' %}d-none{% endif %}">
                             <div class="waiting-card">
-                                <div class="waiting-animation">
-                                    <div class="pulse-ring"></div>
-                                    <div class="pulse-ring delay-1"></div>
-                                    <div class="pulse-ring delay-2"></div>
-                                    <i data-lucide="user-search"></i>
-                                </div>
-                                <h2>Waiting for Who is Lying? Quiz to Start</h2>
-                                <p>Get ready to detect lies! The quiz host will start the session shortly.</p>
-                                <div class="participants-count">
-                                    <i data-lucide="users"></i>
-                                    <span id="waitingParticipantCount">{{ participant_count }}</span> participants joined
-                                </div>
+                                {% include 'includes/_participant_start_waiting.html' with waiting_game_title=quiz.title %}
                             </div>
                         </div>
 
                         <div id="waitingQuestionState" class="game-state d-none">
                             <div class="waiting-card">
                                 <div class="waiting-animation">
-                                    <div class="pulse-ring"></div>
-                                    <div class="pulse-ring delay-1"></div>
-                                    <div class="pulse-ring delay-2"></div>
-                                    <i data-lucide="clock"></i>
+                                    <div class="qa-wait-loader" aria-hidden="true"></div>
                                 </div>
                                 <h2>Waiting for Next Question</h2>
                                 <p>Get ready for the next challenge!</p>
@@ -95,6 +82,13 @@
                                         <div class="timer-circle" id="playerTimerCircle">
                                             <span id="playerTimeLeft">60</span>
                                         </div>
+                                        <span
+                                            id="playerSetTimeLeft"
+                                            data-vhs-timer-key=""
+                                            data-vhs-timer-maximum=""
+                                            hidden
+                                            aria-hidden="true"
+                                        >0</span>
                                     </div>
                                 </div>
 
@@ -114,12 +108,36 @@
                                         </div>
 
                                         <div class="current-person-card text-center" id="currentPersonCard">
-                                            <div class="person-name" id="currentPersonName">-</div>
-                                            <button class="btn btn-danger btn-lg mt-3" id="accuseLiarBtn">lügt</button>
+                                            <div class="who-person-name-panel">
+                                                <div
+                                                    class="who-person-switch-timer"
+                                                    id="personSwitchTimer"
+                                                    role="progressbar"
+                                                    aria-label="Zeit bis zum Namenswechsel"
+                                                    aria-valuemin="0"
+                                                    aria-valuemax="100"
+                                                    aria-valuenow="0"
+                                                >
+                                                    <span class="who-person-switch-timer__fill" aria-hidden="true"></span>
+                                                </div>
+                                                <div class="person-name" id="currentPersonName">-</div>
+                                            </div>
+
+                                            <div class="who-person-actions">
+                                                <button
+                                                    class="btn btn-danger btn-lg mt-3 vhs-who-liar-button"
+                                                    id="accuseLiarBtn"
+                                                    type="button"
+                                                    aria-pressed="false"
+                                                >lügt</button>
+                                            </div>
                                         </div>
 
-                                        <div class="selection-summary">
-                                            <div class="summary-text" id="personProgressText">Person 1/1</div>
+                                        <div class="selection-summary who-person-position">
+                                            <div class="summary-text" id="personProgressText">
+                                                <span id="personProgressDefault">Person 1/1</span>
+                                                <span class="who-person-position__vhs" id="personProgressVhs">1 von 1</span>
+                                            </div>
                                         </div>
                                     </div>
                                 </div>
@@ -127,40 +145,67 @@
                         </div>
 
                         <!-- Answer Submitted State -->
-                        <div id="answerSubmittedState" class="game-state d-none">
-                            <div class="submitted-card">
+                        <div
+                            id="whoSetEvaluatingState"
+                            class="game-state who-set-evaluating-state d-none"
+                            role="status"
+                            aria-live="polite"
+                        >
+                            <div class="who-set-evaluating-panel">SET WIRD AUSGEWERTET...</div>
+                        </div>
+
+                        <div
+                            id="answerSubmittedState"
+                            class="game-state d-none"
+                            data-who-set-result-ready="false"
+                        >
+                            <div class="submitted-card who-set-ended-card">
                                 <div class="submitted-animation">
                                     <div class="check-animation">
                                         <i data-lucide="check-circle" class="check-icon"></i>
                                     </div>
                                 </div>
-                                <h2>Frage #<span id="completedQuestionNumber">1</span> beendet.</h2>
-                                <p>Warte auf die n&auml;chste Frage...</p>
-                                <div class="submitted-details">
-                                    <div class="score-breakdown">
-                                        <div class="score-item">
-                                            <span class="score-label">Correct Identifications:</span>
-                                            <span class="score-value" id="correctIdentifications">0</span>
+                                <h2 class="who-set-ended-title">
+                                    <span class="who-set-ended-title__default">Frage #<span id="completedQuestionNumber">1</span> beendet.</span>
+                                    <span class="who-set-ended-title__vhs">SET BEENDET</span>
+                                </h2>
+                                <p class="who-set-ended-waiting">
+                                    <span class="who-set-ended-waiting__default">Warte auf die n&auml;chste Frage...</span>
+                                    <span class="who-set-ended-waiting__vhs">Warte auf die n&auml;chste Runde...</span>
+                                </p>
+                                <div class="submitted-details who-set-summary">
+                                    <div class="score-breakdown who-set-summary__metrics">
+                                        <div class="score-item who-set-summary__metric">
+                                            <span class="score-label who-set-summary__metric-label">Correct Identifications:</span>
+                                            <span class="score-value who-set-summary__metric-value" id="correctIdentifications">0</span>
                                         </div>
-                                        <div class="score-item">
-                                            <span class="score-label">Points Earned:</span>
-                                            <span class="score-value" id="pointsEarned">0</span>
+                                        <div class="score-item who-set-summary__metric">
+                                            <span class="score-label who-set-summary__metric-label">Points Earned:</span>
+                                            <span class="score-value who-set-summary__metric-value" id="pointsEarned">0</span>
                                         </div>
                                     </div>
                                     
                                     <!-- Results Breakdown -->
-                                    <div class="results-breakdown" id="resultsBreakdown">
+                                    <div class="results-breakdown who-set-summary__groups" id="resultsBreakdown">
                                         <div class="breakdown-section correct-liars" id="correctLiarsSection" style="display: none;">
                                             <h6><i data-lucide="check-circle"></i> Correctly Identified Liars</h6>
                                             <div class="people-tags" id="correctLiarsTags"></div>
                                         </div>
-                                        <div class="breakdown-section missed-liars" id="missedLiarsSection" style="display: none;">
-                                            <h6><i data-lucide="eye-off"></i> Missed Liars</h6>
-                                            <div class="people-tags" id="missedLiarsTags"></div>
+                                        <div class="breakdown-section missed-liars who-set-summary__group" id="missedLiarsSection" style="display: none;">
+                                            <h6 class="who-set-summary__group-title">
+                                                <i data-lucide="eye-off"></i>
+                                                <span class="who-set-summary__group-title-default">Missed Liars</span>
+                                                <span class="who-set-summary__group-title-vhs">NICHT ERKANNTE L&Uuml;GNER</span>
+                                            </h6>
+                                            <div class="people-tags who-set-summary__group-values" id="missedLiarsTags"></div>
                                         </div>
-                                        <div class="breakdown-section false-accusations" id="falseAccusationsSection" style="display: none;">
-                                            <h6><i data-lucide="x-circle"></i> False Accusations</h6>
-                                            <div class="people-tags" id="falseAccusationsTags"></div>
+                                        <div class="breakdown-section false-accusations who-set-summary__group" id="falseAccusationsSection" style="display: none;">
+                                            <h6 class="who-set-summary__group-title">
+                                                <i data-lucide="x-circle"></i>
+                                                <span class="who-set-summary__group-title-default">False Accusations</span>
+                                                <span class="who-set-summary__group-title-vhs">FALSCHE BESCHULDIGUNGEN</span>
+                                            </h6>
+                                            <div class="people-tags who-set-summary__group-values" id="falseAccusationsTags"></div>
                                         </div>
                                         <div class="breakdown-section correct-truth" id="correctTruthSection" style="display: none;">
                                             <h6><i data-lucide="user-check"></i> Correctly Identified Truth Tellers</h6>
@@ -172,7 +217,7 @@
                         </div>
 
                         <div id="setRevealState" class="game-state d-none">
-                            <div class="submitted-card reveal-card">
+                            <div class="submitted-card reveal-card who-reveal-default">
                                 <div class="reveal-header">
                                     <div>
                                         <h2 class="mb-1">Set-Auflösung</h2>
@@ -189,6 +234,25 @@
                                 </div>
                                 <div class="reveal-list" id="setRevealList"></div>
                             </div>
+                            <section class="who-reveal-vhs" aria-labelledby="whoRevealCorrectValue">
+                                <div class="who-reveal-vhs__icon" aria-hidden="true">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                                        <path d="M20 6 9 17l-5-5"></path>
+                                    </svg>
+                                </div>
+                                <p class="who-reveal-vhs__label">DIE RICHTIGE ANTWORT IST</p>
+                                <h2 class="who-reveal-vhs__correct" id="whoRevealCorrectValue">-</h2>
+                                <div class="who-reveal-vhs__details">
+                                    <section class="who-reveal-vhs__panel who-reveal-vhs__panel--answer">
+                                        <span class="who-reveal-vhs__panel-label">GEGEBENE ANTWORT</span>
+                                        <div class="who-reveal-vhs__panel-value" id="whoRevealGivenValue">-</div>
+                                    </section>
+                                    <section class="who-reveal-vhs__panel who-reveal-vhs__panel--prompt">
+                                        <span class="who-reveal-vhs__panel-label">BEHAUPTUNG</span>
+                                        <div class="who-reveal-vhs__panel-value" id="whoRevealPromptValue">-</div>
+                                    </section>
+                                </div>
+                            </section>
                         </div>
 
                         <!-- Quiz Ended State -->
@@ -678,6 +742,16 @@
             color: var(--text-primary);
         }
 
+        .who-person-position__vhs {
+            display: none;
+        }
+
+        .who-set-ended-title__vhs,
+        .who-set-ended-waiting__vhs,
+        .who-set-summary__group-title-vhs {
+            display: none;
+        }
+
         .liars-text {
             color: var(--error-600);
             font-weight: 600;
@@ -775,6 +849,10 @@
 
         .reveal-card {
             max-width: 980px;
+        }
+
+        .who-reveal-vhs {
+            display: none;
         }
 
         .reveal-header {
@@ -1193,6 +1271,7 @@
 
     {% include 'includes/_hub_return_to_lobby_player.html' %}
     {% include 'includes/_game_tutorial_overlay.html' %}
+    {% include 'includes/_session_game_start_intro.html' %}
 <script>
         document.addEventListener('DOMContentLoaded', function() {
             lucide.createIcons();
@@ -1275,6 +1354,7 @@
                 }
 
                 handleWebSocketMessage(data) {
+                    window.sessionGameStartIntro?.handleState(data);
                     switch(data.type) {
                         case 'quiz_started':
                             this.onQuizStarted();
@@ -1355,11 +1435,14 @@
                     const peopleCount = Array.isArray(question?.people) ? question.people.length : this.peopleSequence.length;
                     const timePerPerson = parseInt(question?.time_per_person || question?.time_limit || this.currentTimePerPerson, 10) || 0;
                     const startedAtMs = this.parseServerTimestamp(question?.question_started_at);
+                    const endsAtMs = this.parseServerTimestamp(question?.question_end_time);
+                    const nowMs = this.getSynchronizedNowMs();
 
                     if (!peopleCount || !timePerPerson) {
                         return {
                             currentPersonIndex: 0,
                             currentPersonTimeLeft: 0,
+                            totalTimeLeft: 0,
                             questionComplete: false,
                         };
                     }
@@ -1369,19 +1452,28 @@
                             ? Number(question.current_person_index)
                             : this.currentPersonPosition;
                         const fallbackTimeLeft = parseInt(question?.current_person_time_left || timePerPerson, 10) || timePerPerson;
+                        const currentPersonIndex = Math.max(0, Math.min(fallbackIndex, peopleCount - 1));
+                        const totalTimeLeft = endsAtMs === null
+                            ? Math.max(((peopleCount - currentPersonIndex - 1) * timePerPerson) + fallbackTimeLeft, 0)
+                            : Math.max(Math.ceil((endsAtMs - nowMs) / 1000), 0);
                         return {
-                            currentPersonIndex: Math.max(0, Math.min(fallbackIndex, peopleCount - 1)),
+                            currentPersonIndex,
                             currentPersonTimeLeft: fallbackTimeLeft,
+                            totalTimeLeft,
                             questionComplete: false,
                         };
                     }
 
-                    const elapsedSeconds = Math.max(0, (this.getSynchronizedNowMs() - startedAtMs) / 1000);
+                    const elapsedSeconds = Math.max(0, (nowMs - startedAtMs) / 1000);
                     const totalDuration = timePerPerson * peopleCount;
+                    const totalTimeLeft = endsAtMs === null
+                        ? Math.max(Math.ceil(totalDuration - elapsedSeconds), 0)
+                        : Math.max(Math.ceil((endsAtMs - nowMs) / 1000), 0);
                     if (elapsedSeconds >= totalDuration) {
                         return {
                             currentPersonIndex: peopleCount - 1,
                             currentPersonTimeLeft: 0,
+                            totalTimeLeft: 0,
                             questionComplete: true,
                         };
                     }
@@ -1393,6 +1485,7 @@
                     return {
                         currentPersonIndex,
                         currentPersonTimeLeft,
+                        totalTimeLeft,
                         questionComplete: false,
                     };
                 }
@@ -1412,6 +1505,7 @@
                     this.currentPersonPosition = Number(question?.current_person_index || 0) || 0;
                     this.questionHasEnded = false;
                     this.currentSetResult = null;
+                    this.setSetResultReady(false);
                     
                     this.loadQuestion(question);
                     this.showState('questionState');
@@ -1426,6 +1520,12 @@
                         this.submitAnswer();
                         return;
                     }
+
+                    if (this.isVhsTheme()) {
+                        this.showVhsSetEndedState();
+                        return;
+                    }
+
                     this.showRevealState();
                 }
 
@@ -1479,17 +1579,26 @@
                     const current = this.peopleSequence[this.currentPersonPosition];
                     const nameEl = document.getElementById('currentPersonName');
                     const progressEl = document.getElementById('personProgressText');
+                    const progressDefaultEl = document.getElementById('personProgressDefault');
+                    const progressVhsEl = document.getElementById('personProgressVhs');
                     const accuseBtn = document.getElementById('accuseLiarBtn');
-                    if (!nameEl || !progressEl || !accuseBtn) return;
+                    if (!nameEl || !progressEl || !progressDefaultEl || !progressVhsEl || !accuseBtn) return;
                     if (!current) {
                         nameEl.textContent = '-';
-                        progressEl.textContent = 'Person 0/0';
+                        progressDefaultEl.textContent = 'Person 0/0';
+                        progressVhsEl.textContent = '0 von 0';
                         accuseBtn.disabled = true;
+                        accuseBtn.classList.remove('is-selected');
+                        accuseBtn.setAttribute('aria-pressed', 'false');
                         return;
                     }
                     nameEl.textContent = current.name;
-                    progressEl.textContent = `Person ${this.currentPersonPosition + 1}/${this.peopleSequence.length}`;
-                    accuseBtn.disabled = this.selectedPeople.has(current.id);
+                    progressDefaultEl.textContent = `Person ${this.currentPersonPosition + 1}/${this.peopleSequence.length}`;
+                    progressVhsEl.textContent = `${this.currentPersonPosition + 1} von ${this.peopleSequence.length}`;
+                    const isSelected = this.selectedPeople.has(current.id);
+                    accuseBtn.disabled = isSelected;
+                    accuseBtn.classList.toggle('is-selected', isSelected);
+                    accuseBtn.setAttribute('aria-pressed', isSelected ? 'true' : 'false');
                 }
 
                 accuseCurrentPerson() {
@@ -1497,8 +1606,7 @@
                     const current = this.peopleSequence[this.currentPersonPosition];
                     if (!current) return;
                     this.selectedPeople.add(current.id);
-                    const accuseBtn = document.getElementById('accuseLiarBtn');
-                    if (accuseBtn) accuseBtn.disabled = true;
+                    this.showCurrentPerson();
                 }
 
                 startQuestionTimer(question) {
@@ -1506,15 +1614,42 @@
                     this.syncServerClock(question?.server_now);
                     this.currentTimePerPerson = parseInt(question?.time_per_person || question?.time_limit || this.currentTimePerPerson, 10) || this.currentTimePerPerson;
                     const timerElement = document.getElementById('playerTimeLeft');
+                    const totalTimerElement = document.getElementById('playerSetTimeLeft');
                     const circleElement = document.getElementById('playerTimerCircle');
                     const submittedTimerElement = document.getElementById('playerTimeLeftSubmitted');
                     const submittedCircleElement = document.getElementById('playerTimerCircleSubmitted');
+                    const personSwitchTimer = document.getElementById('personSwitchTimer');
+
+                    if (totalTimerElement) {
+                        const peopleCount = Array.isArray(question?.people) ? question.people.length : 0;
+                        const initialSetDuration = Math.max(1, peopleCount * this.currentTimePerPerson);
+                        const setTimerKey = `${question?.id || this.currentQuestionIndex || 'active'}:${question?.question_started_at || ''}`;
+                        totalTimerElement.dataset.vhsTimerKey = setTimerKey;
+                        totalTimerElement.dataset.vhsTimerMaximum = String(initialSetDuration);
+                    }
 
                     const renderTimerState = () => {
                         const timerState = this.getQuestionTimerState(question);
                         this.currentPersonPosition = timerState.currentPersonIndex;
                         this.showCurrentPerson();
                         timerElement.textContent = timerState.currentPersonTimeLeft;
+                        if (totalTimerElement) totalTimerElement.textContent = timerState.totalTimeLeft;
+                        if (personSwitchTimer) {
+                            const duration = Math.max(1, this.currentTimePerPerson);
+                            const remaining = Math.max(0, Math.min(duration, timerState.currentPersonTimeLeft));
+                            const progress = Math.max(0, Math.min(1, 1 - (remaining / duration)));
+                            const personIndex = String(timerState.currentPersonIndex);
+                            const personChanged = personSwitchTimer.dataset.personIndex !== personIndex;
+                            if (personChanged) personSwitchTimer.classList.add('is-resetting');
+                            personSwitchTimer.dataset.personIndex = personIndex;
+                            personSwitchTimer.style.setProperty('--who-person-progress', progress);
+                            personSwitchTimer.setAttribute('aria-valuenow', String(Math.round(progress * 100)));
+                            personSwitchTimer.setAttribute('aria-valuetext', `${remaining} Sekunden verbleibend`);
+                            if (personChanged) {
+                                void personSwitchTimer.offsetWidth;
+                                personSwitchTimer.classList.remove('is-resetting');
+                            }
+                        }
                         if (submittedTimerElement) {
                             submittedTimerElement.textContent = timerState.currentPersonTimeLeft;
                         }
@@ -1567,29 +1702,61 @@
                     }));
                     
                     this.hasAnswered = true;
-                    
+
                     if (!this.questionHasEnded) {
-                        // Show submitted state after a brief delay
-                        setTimeout(() => {
-                            this.showState('answerSubmittedState');
-                        }, 500);
+                        if (this.isVhsTheme()) {
+                            this.setSetResultReady(false);
+                            this.showState('whoSetEvaluatingState');
+                        } else {
+                            // Preserve the established submitted transition outside VHS.
+                            setTimeout(() => {
+                                this.showState('answerSubmittedState');
+                            }, 500);
+                        }
                     }
                 }
 
                 onAnswerSubmitted(data) {
                     this.currentSetResult = data;
-                    // Update submitted state with results
-                    document.getElementById('correctIdentifications').textContent = data.correct_identifications;
-                    document.getElementById('pointsEarned').textContent = data.points_earned;
+                    this.renderSetResult(data);
                     if (!data.is_tutorial_round) {
                         this.pushScoreHistory(parseInt(data.points_earned || 0, 10) || 0);
                     }
-                    
-                    // Show detailed breakdown
-                    this.showResultsBreakdown(data.analysis);
-                    if (this.questionHasEnded) {
+
+                    if (this.isVhsTheme()) {
+                        this.showVhsSetEndedState();
+                    } else if (this.questionHasEnded) {
                         this.showRevealState();
                     }
+                }
+
+                isVhsTheme() {
+                    return document.documentElement.dataset.participantTheme === 'vhs';
+                }
+
+                setSetResultReady(ready) {
+                    const state = document.getElementById('answerSubmittedState');
+                    if (state) {
+                        state.dataset.whoSetResultReady = ready ? 'true' : 'false';
+                    }
+                }
+
+                showVhsSetEndedState() {
+                    if (!this.currentSetResult) return;
+                    this.showState('answerSubmittedState');
+                }
+
+                renderSetResult(data) {
+                    const correctIdentifications = document.getElementById('correctIdentifications');
+                    const pointsEarned = document.getElementById('pointsEarned');
+                    if (correctIdentifications) {
+                        correctIdentifications.textContent = String(data.correct_identifications ?? 0);
+                    }
+                    if (pointsEarned) {
+                        pointsEarned.textContent = String(data.points_earned ?? 0);
+                    }
+                    this.showResultsBreakdown(data.analysis || {});
+                    this.setSetResultReady(true);
                 }
 
                 readJsonScript(elementId, fallbackValue) {
@@ -1687,34 +1854,6 @@
                     if (waiting) {
                         try { lucide.createIcons(); } catch (e) { /* ignore */ }
                     }
-                }
-
-                showRevealState() {
-                    if (!this.currentSetResult) return;
-
-                    const revealList = document.getElementById('setRevealList');
-                    const revealPoints = document.getElementById('revealSetPoints');
-                    const revealStatement = document.getElementById('revealStatementText');
-                    if (!revealList || !revealPoints || !revealStatement) return;
-
-                    const personResults = Array.isArray(this.currentSetResult.person_results)
-                        ? this.currentSetResult.person_results
-                        : [];
-
-                    revealStatement.textContent = this.currentQuestionStatement || 'Auflösung des gerade gespielten Sets';
-                    revealPoints.textContent = this.formatPoints(this.currentSetResult.points_earned);
-                    revealPoints.className = `reveal-total-value ${this.getPointsClass(this.currentSetResult.points_earned)}`;
-
-                    revealList.innerHTML = personResults.map(person => `
-                        <div class="reveal-row">
-                            <div class="reveal-person-name">${this.escapeHtml(person.name)}</div>
-                            <div><span class="reveal-chip ${person.is_lying ? 'liar' : 'truth'}">${person.is_lying ? 'lügt' : 'lügt nicht'}</span></div>
-                            <div><span class="reveal-chip ${person.was_selected ? 'selected' : 'idle'}">${person.was_selected ? 'gedrückt' : 'nicht gedrückt'}</span></div>
-                            <div class="reveal-points ${this.getPointsClass(person.points_effect)}">${this.formatPoints(person.points_effect)}</div>
-                        </div>
-                    `).join('');
-
-                    this.showState('setRevealState');
                 }
 
                 pushScoreHistory(points) {
@@ -1843,7 +1982,7 @@
             }
 
             WhoPlayer.prototype.showRevealState = function() {
-                if (!this.currentSetResult) return;
+                if (!this.currentSetResult || !this.questionHasEnded) return;
 
                 const revealList = document.getElementById('setRevealList');
                 const revealPoints = document.getElementById('revealSetPoints');
@@ -1879,7 +2018,29 @@
                     `;
                 }).join('');
 
+                const correctValue = document.getElementById('whoRevealCorrectValue');
+                const givenValue = document.getElementById('whoRevealGivenValue');
+                const promptValue = document.getElementById('whoRevealPromptValue');
+                const liarNames = personResults.filter(person => person.is_lying).map(person => person.name);
+                const selectedNames = personResults.filter(person => person.was_selected).map(person => person.name);
+                if (correctValue) correctValue.textContent = this.formatWhoRevealAnswer(liarNames);
+                if (givenValue) givenValue.textContent = this.formatWhoRevealAnswer(selectedNames);
+                if (promptValue) promptValue.textContent = this.currentQuestionStatement || '-';
+
                 this.showState('setRevealState');
+            };
+
+            WhoPlayer.prototype.formatWhoRevealAnswer = function(value) {
+                if (Array.isArray(value)) {
+                    return value.length ? value.join(' \u00b7 ') : 'Keine';
+                }
+                if (typeof value === 'boolean') {
+                    return value ? 'Stimmt' : 'Stimmt nicht';
+                }
+                const normalized = String(value ?? '').trim().toLowerCase();
+                if (normalized === 'true') return 'Stimmt';
+                if (normalized === 'false') return 'Stimmt nicht';
+                return String(value ?? '');
             };
 
             // Initialize Who Player
@@ -2023,6 +2184,6 @@
         });
     </script>
   {% include 'includes/_leaderboard_overlay.html' %}
-  {% include 'includes/accessibility_widget.html' %}
+  {% include 'includes/accessibility_widget.html' with participant_options_menu=True %}
 </body>
 </html>

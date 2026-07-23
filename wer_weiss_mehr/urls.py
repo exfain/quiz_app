@@ -9,6 +9,7 @@ urlpatterns = [
     path('check-room/<str:room_code>/', views.check_room_code, name='check_room'),
     path('start/<str:room_code>/', views.start_game, name='start_game'),
     path('start-set/<str:room_code>/', views.start_game_set, name='start_game_set'),
+    path('skip-tutorial-set/<str:room_code>/', views.skip_tutorial_set_view, name='skip_tutorial_set'),
     path('end-round/<str:room_code>/', views.end_round, name='end_round'),
     path('next-round/<str:room_code>/', views.next_round, name='next_round'),
     path('finish-set/<str:room_code>/', views.finish_current_set, name='finish_current_set'),

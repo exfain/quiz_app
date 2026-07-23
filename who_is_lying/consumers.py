@@ -1,4 +1,5 @@
 import json
+import logging
 from channels.generic.websocket import AsyncWebsocketConsumer
 from channels.db import database_sync_to_async
 from django.utils import timezone
@@ -32,10 +33,14 @@ from games_hub.unit_tutorial_runtime import (
 )
 
 
+logger = logging.getLogger(__name__)
+
+
 class WhoConsumer(AsyncWebsocketConsumer):
     async def connect(self):
         self.room_code = self.scope['url_route']['kwargs']['room_code']
         self.room_group_name = f'who_{self.room_code}'
+        self.who_participant_id = None
 
         # Join room group
         await self.channel_layer.group_add(
@@ -44,6 +49,14 @@ class WhoConsumer(AsyncWebsocketConsumer):
         )
 
         await self.accept()
+        logger.info(
+            'Who game socket connected',
+            extra={
+                'who_room_code': self.room_code,
+                'who_channel_name': self.channel_name,
+                'game_connected_at': timezone.now().isoformat(),
+            },
+        )
 
         # Send connection confirmation
         await self.send(text_data=json.dumps({
@@ -52,6 +65,16 @@ class WhoConsumer(AsyncWebsocketConsumer):
         }))
 
     async def disconnect(self, close_code):
+        logger.info(
+            'Who game socket disconnected',
+            extra={
+                'who_room_code': self.room_code,
+                'who_participant_id': self.who_participant_id,
+                'who_channel_name': self.channel_name,
+                'game_disconnected_at': timezone.now().isoformat(),
+                'close_code': close_code,
+            },
+        )
         # Leave room group
         await self.channel_layer.group_discard(
             self.room_group_name,
@@ -103,6 +126,17 @@ class WhoConsumer(AsyncWebsocketConsumer):
             self.room_code,
         )
         if not lobby_ready.get('allowed', True):
+            logger.warning(
+                'Who game start rejected by lobby presence guard',
+                extra={
+                    'who_room_code': self.room_code,
+                    'not_in_lobby_count': lobby_ready.get('not_in_lobby_count', 0),
+                    'participants_not_in_lobby': [
+                        entry.get('name')
+                        for entry in lobby_ready.get('participants_not_in_lobby', [])
+                    ],
+                },
+            )
             await self.send(text_data=json.dumps({
                 'type': 'participants_not_in_lobby',
                 'message': lobby_ready.get('message') or 'Noch nicht alle Teilnehmer sind in der Lobby.',
@@ -377,7 +411,17 @@ class WhoConsumer(AsyncWebsocketConsumer):
         participant = await self.get_participant_by_name(participant_name, hub_session)
         
         if participant:
+            self.who_participant_id = participant['id']
             await self.mark_participant_active(participant['id'])
+            logger.info(
+                'Who participant game presence activated',
+                extra={
+                    'who_room_code': self.room_code,
+                    'who_participant_id': participant['id'],
+                    'hub_session_code': hub_session,
+                    'game_connected_at': timezone.now().isoformat(),
+                },
+            )
             
             # Broadcast to admin
             await self.channel_layer.group_send(

@@ -1,0 +1,9 @@
+<div class="waiting-animation qa-start-waiting-animation">
+    <div class="qa-wait-loader-frame">
+        <div class="qa-wait-loader" aria-hidden="true"></div>
+    </div>
+</div>
+<h2 class="qa-start-waiting-title"{% if waiting_title_id %} id="{{ waiting_title_id }}"{% endif %}>
+    <span class="qa-game-title-font qa-start-waiting-game-name">{{ waiting_game_title|default:"Das Spiel" }}</span>
+    <span class="qa-start-waiting-subtitle">beginnt gleich!</span>
+</h2>

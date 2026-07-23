@@ -2,8 +2,9 @@ import asyncio
 import json
 from channels.generic.websocket import AsyncWebsocketConsumer
 from channels.db import database_sync_to_async
+from django.db import transaction
 from django.utils import timezone
-from .models import AssignQuiz, AssignParticipant, AssignQuestion, AssignAnswer
+from .models import AssignQuiz, AssignParticipant, AssignQuestion, AssignAnswer, AssignSession
 from .scoreboard import build_participant_progress_history, build_question_scoreboard
 from games_hub.active_game_guard import resolve_session_game_activation_for_room
 from games_hub.lobby_return_flow import ensure_session_players_ready_for_game_start_for_room
@@ -44,6 +45,8 @@ class AssignConsumer(AsyncWebsocketConsumer):
     _effective_time_limits: dict[str, int] = {}
     # Tracks eliminated participants per room (stable participant keys, not channels)
     _eliminated_participants: dict[str, set] = {}
+    # Keeps the authoritative elimination cause available across reconnects.
+    _elimination_reasons: dict[str, dict[str, str]] = {}
     # Tracks original right-item indices that were correctly matched per room
     _room_matched_originals: dict[str, set] = {}
     # Tracks solved left->right pairs per room so completed matches survive round transitions
@@ -265,8 +268,10 @@ class AssignConsumer(AsyncWebsocketConsumer):
                 return
 
         await self.set_tutorial_active_db(quiz.id, False)
-        # Update quiz with new question
-        await self.update_quiz_question(quiz, question)
+        set_state = await self.begin_set_db(quiz.id, question.id)
+        if not set_state['started']:
+            return
+        set_number = set_state['set_number']
 
         # Reset submission tracking for this room
         for key in list(self.__class__._round_submissions):
@@ -281,6 +286,7 @@ class AssignConsumer(AsyncWebsocketConsumer):
         self.__class__._auto_advancing.discard(self.room_code)
         # Eliminierte Teilnehmer für neue Frage zurücksetzen
         self.__class__._eliminated_participants[self.room_code] = set()
+        self.__class__._elimination_reasons[self.room_code] = {}
         # Verwendete rechte Items für neue Frage zurücksetzen
         self.__class__._room_matched_originals[self.room_code] = set()
         self.__class__._room_solved_matches[self.room_code] = {}
@@ -291,8 +297,7 @@ class AssignConsumer(AsyncWebsocketConsumer):
         self.__class__._effective_time_limits[self.room_code] = effective_time_limit
 
         # Runden-Index zurücksetzen und erste Runde senden
-        await self.reset_round_index(quiz.id)
-        question_payload = self.build_round_payload(question, 0, effective_time_limit)
+        question_payload = self.build_round_payload(question, 0, effective_time_limit, set_number)
         question_payload['is_tutorial_round'] = is_tutorial_round
         question_payload['points'] = 0 if is_tutorial_round else question_payload.get('points')
         await self.channel_layer.group_send(
@@ -310,6 +315,7 @@ class AssignConsumer(AsyncWebsocketConsumer):
         if quiz:
             hub_session = data.get('hub_session') or data.get('hub_session_code') or await self._get_hub_session_code_for_room()
             unit_tutorial = await self.finish_current_unit_tutorial(hub_session)
+            await self.set_question_active_db(quiz.id, False)
             await self.clear_current_question(quiz.id)
 
             await self.channel_layer.group_send(
@@ -337,6 +343,7 @@ class AssignConsumer(AsyncWebsocketConsumer):
 
         question = quiz.current_question
         current_round = await self.get_current_round_index(quiz.id)
+        set_number = await self.get_current_set_number(quiz.id)
 
         # Kurze Gnadenfrist für in-flight participant_log_round Nachrichten
         # (wichtig bei Timer-Ablauf: Client onTimeUp + Admin next_round feuern fast gleichzeitig).
@@ -345,10 +352,11 @@ class AssignConsumer(AsyncWebsocketConsumer):
         # Nach der Gnadenfrist erneut prüfen, damit wir keine falsche Runde auswerten,
         # falls bereits ein anderer Trigger weitergeschaltet hat.
         latest_round = await self.get_current_round_index(quiz.id)
-        if latest_round != current_round:
+        latest_set_number = await self.get_current_set_number(quiz.id)
+        if latest_round != current_round or latest_set_number != set_number:
             return
 
-        await self.evaluate_current_round(quiz, current_round)
+        await self.evaluate_current_round(quiz, current_round, set_number)
         total_rounds = len(question.correct_matches or {})
 
         # Nächsten Runden-Index ermitteln
@@ -359,12 +367,14 @@ class AssignConsumer(AsyncWebsocketConsumer):
             # Frage bleibt aktiv, damit Teilnehmer ihre letzte Antwort noch per
             # participant_check_round einreichen können (auto-submit im Client).
             await self.reset_round_index(quiz.id)
+            await self.set_question_active_db(quiz.id, False)
             await self.channel_layer.group_send(
                 self.room_group_name,
                 {
                     'type': 'question_rounds_complete',
                     'message': 'Alle Zuordnungen abgeschlossen!',
                     'solved_pairs': self.get_solved_pairs_snapshot(question),
+                    'set_number': set_number,
                 }
             )
         else:
@@ -372,16 +382,19 @@ class AssignConsumer(AsyncWebsocketConsumer):
                 question,
                 new_round_index,
                 self.__class__._effective_time_limits.get(self.room_code, quiz.current_question.time_limit),
+                set_number,
             )
 
             # Keine rechten Items mehr → alle Zuordnungen abgeschlossen, auf Admin-Auflösung warten
             if not round_payload['right_items']:
+                await self.set_question_active_db(quiz.id, False)
                 await self.channel_layer.group_send(
                     self.room_group_name,
                     {
                         'type': 'question_rounds_complete',
                         'message': 'Alle Zuordnungen abgeschlossen!',
                         'solved_pairs': round_payload['solved_pairs'],
+                        'set_number': set_number,
                     }
                 )
                 return
@@ -397,6 +410,7 @@ class AssignConsumer(AsyncWebsocketConsumer):
                     'all_right_items': round_payload['all_right_items'],
                     'solved_pairs': round_payload['solved_pairs'],
                     'time_limit': round_payload['time_limit'],
+                    'set_number': set_number,
                 }
             )
             await self.broadcast_round_log_status_for_round(new_round_index)
@@ -405,6 +419,7 @@ class AssignConsumer(AsyncWebsocketConsumer):
         """Handle admin ending the quiz"""
         quiz = await self.get_quiz()
         if quiz:
+            await self.set_question_active_db(quiz.id, False)
             await self.end_quiz_db(quiz.id)
             # Collect final scores
             final_scores = await self.get_final_scores()
@@ -477,10 +492,42 @@ class AssignConsumer(AsyncWebsocketConsumer):
             normalized_match[str(normalized_left_index)] = chosen_right_pos
         return normalized_left_index, normalized_match
 
+    async def reject_ineligible_round_action(self):
+        participant_name = self.__class__._channel_participants.get(self.channel_name)
+        hub_session = self.__class__._channel_hub_sessions.get(self.channel_name)
+        state = await self.get_participant_set_state(participant_name, hub_session)
+        if not state.get('authorized'):
+            await self.send(text_data=json.dumps({
+                'type': 'error',
+                'message': 'Teilnahme für diese Spielinstanz nicht bestätigt.',
+            }))
+            return True
+
+        elimination_reason = state.get('elimination_reason')
+        if not elimination_reason:
+            return False
+
+        participant_key = self.get_participant_key_for_channel(self.channel_name)
+        self.__class__._eliminated_participants.setdefault(self.room_code, set()).add(participant_key)
+        self.__class__._elimination_reasons.setdefault(self.room_code, {})[
+            participant_key
+        ] = elimination_reason
+        await self.send(text_data=json.dumps({
+            'type': 'round_checked',
+            'is_correct': False,
+            'round_index': await self.get_current_round_index_by_room(),
+            'eliminated': True,
+            'elimination_reason': elimination_reason,
+            'set_number': state.get('set_number'),
+        }))
+        return True
+
     async def handle_participant_update_selection(self, data):
         """Store participant's temporary current selection for this round."""
         quiz = await self.get_quiz()
         if not quiz or quiz.status != 'active':
+            return
+        if await self.reject_ineligible_round_action():
             return
         participant_key = self.get_participant_key_for_channel(self.channel_name)
         if participant_key in self.__class__._eliminated_participants.get(self.room_code, set()):
@@ -503,6 +550,8 @@ class AssignConsumer(AsyncWebsocketConsumer):
         """Participant explicitly logs/finalizes answer for this round."""
         quiz = await self.get_quiz()
         if not quiz or quiz.status != 'active':
+            return
+        if await self.reject_ineligible_round_action():
             return
         participant_key = self.get_participant_key_for_channel(self.channel_name)
         if participant_key in self.__class__._eliminated_participants.get(self.room_code, set()):
@@ -536,6 +585,17 @@ class AssignConsumer(AsyncWebsocketConsumer):
         user_matches = data.get('user_matches', {})
         time_taken = data.get('time_taken', 0)
         question_id = data.get('question_id')
+
+        mapped_name = self.__class__._channel_participants.get(self.channel_name)
+        mapped_hub_session = self.__class__._channel_hub_sessions.get(self.channel_name)
+        if participant_name != mapped_name or (hub_session or '') != (mapped_hub_session or ''):
+            await self.send(text_data=json.dumps({
+                'type': 'error',
+                'message': 'Teilnehmeridentität stimmt nicht mit der Verbindung überein.',
+            }))
+            return
+        if await self.reject_ineligible_round_action():
+            return
 
         answer = await self.save_participant_answer(
             participant_name, hub_session, user_matches, time_taken, question_id
@@ -620,6 +680,27 @@ class AssignConsumer(AsyncWebsocketConsumer):
                     'type': 'quiz_started',
                     'message': 'Quiz is already in progress'
                 }))
+                participant_key = self.get_participant_key_for_channel(self.channel_name)
+                participant_state = await self.get_participant_set_state(
+                    participant['name'],
+                    hub_session,
+                )
+                elimination_reason = participant_state.get('elimination_reason')
+                if elimination_reason:
+                    set_number = participant_state.get('set_number', 0)
+                    self.__class__._eliminated_participants.setdefault(self.room_code, set()).add(participant_key)
+                    self.__class__._elimination_reasons.setdefault(self.room_code, {})[
+                        participant_key
+                    ] = elimination_reason
+                    await self.send(text_data=json.dumps({
+                        'type': 'round_checked',
+                        'is_correct': False,
+                        'round_index': await self.get_current_round_index(quiz.id),
+                        'eliminated': True,
+                        'elimination_reason': elimination_reason,
+                        'set_number': set_number,
+                    }))
+                    return
                 tutorial_payload = await self.get_tutorial_payload(
                     quiz.id,
                     hub_session,
@@ -634,16 +715,19 @@ class AssignConsumer(AsyncWebsocketConsumer):
                 round_index = 0
                 if quiz.current_question:
                     round_index = await self.get_current_round_index(quiz.id)
-                    question_payload = self.build_round_payload(
-                        quiz.current_question,
-                        round_index,
-                        self.__class__._effective_time_limits.get(self.room_code, quiz.current_question.time_limit),
-                    )
-                    if round_index < question_payload['total_rounds']:
-                        await self.send(text_data=json.dumps({
-                            'type': 'question_started',
-                            'question': question_payload
-                        }))
+                    if await self.is_question_active_db(quiz.id):
+                        set_number = await self.get_current_set_number(quiz.id)
+                        question_payload = self.build_round_payload(
+                            quiz.current_question,
+                            round_index,
+                            self.__class__._effective_time_limits.get(self.room_code, quiz.current_question.time_limit),
+                            set_number,
+                        )
+                        if round_index < question_payload['total_rounds']:
+                            await self.send(text_data=json.dumps({
+                                'type': 'question_started',
+                                'question': question_payload
+                            }))
                 await self.broadcast_round_log_status_for_round(round_index)
 
     async def handle_tutorial_completed(self, data):
@@ -700,6 +784,7 @@ class AssignConsumer(AsyncWebsocketConsumer):
             'type': 'question_rounds_complete',
             'message': event['message'],
             'solved_pairs': event.get('solved_pairs', []),
+            'set_number': event.get('set_number'),
         }))
 
     async def show_solution(self, event):
@@ -809,6 +894,7 @@ class AssignConsumer(AsyncWebsocketConsumer):
             'all_right_items': event.get('all_right_items', []),
             'solved_pairs': event.get('solved_pairs', []),
             'time_limit': event.get('time_limit', 60),
+            'set_number': event.get('set_number'),
         }))
 
     async def participant_answered(self, event):
@@ -844,6 +930,8 @@ class AssignConsumer(AsyncWebsocketConsumer):
             'is_correct': event.get('is_correct'),
             'round_index': event.get('round_index'),
             'eliminated': event.get('eliminated'),
+            'elimination_reason': event.get('elimination_reason'),
+            'set_number': event.get('set_number'),
         }))
 
     # Database operations
@@ -998,6 +1086,127 @@ class AssignConsumer(AsyncWebsocketConsumer):
         quiz.save()
 
     @database_sync_to_async
+    def begin_set_db(self, quiz_id, question_id):
+        """Start one authoritative set generation and reset only prior-set eligibility."""
+        with transaction.atomic():
+            quiz = AssignQuiz.objects.select_for_update().get(id=quiz_id)
+            session, _ = AssignSession.objects.select_for_update().get_or_create(quiz_id=quiz_id)
+            if session.is_question_active and quiz.current_question_id == question_id:
+                return {
+                    'set_number': session.current_question_number,
+                    'started': False,
+                }
+
+            quiz.current_question_id = question_id
+            quiz.question_start_time = timezone.now()
+            quiz.save(update_fields=['current_question', 'question_start_time'])
+            session.current_question_number += 1
+            session.current_round_index = 0
+            session.is_question_active = True
+            session.save(update_fields=[
+                'current_question_number',
+                'current_round_index',
+                'is_question_active',
+                'updated_at',
+            ])
+            AssignParticipant.objects.filter(quiz_id=quiz_id).update(
+                eliminated_set_number=None,
+                elimination_reason='',
+            )
+            return {
+                'set_number': session.current_question_number,
+                'started': True,
+            }
+
+    @database_sync_to_async
+    def get_current_set_number(self, quiz_id):
+        return AssignSession.objects.filter(quiz_id=quiz_id).values_list(
+            'current_question_number',
+            flat=True,
+        ).first() or 0
+
+    @database_sync_to_async
+    def get_current_round_index_by_room(self):
+        return AssignSession.objects.filter(quiz__room_code=self.room_code).values_list(
+            'current_round_index',
+            flat=True,
+        ).first() or 0
+
+    @database_sync_to_async
+    def get_participant_set_state(self, participant_name, hub_session):
+        try:
+            quiz = AssignQuiz.objects.select_related('session').get(room_code=self.room_code)
+            participant = quiz.participants.get(
+                name=participant_name,
+                hub_session_code=hub_session,
+            )
+        except (AssignQuiz.DoesNotExist, AssignParticipant.DoesNotExist):
+            return {'authorized': False, 'set_number': 0, 'elimination_reason': None}
+
+        set_number = quiz.session.current_question_number if hasattr(quiz, 'session') else 0
+        reason = None
+        if participant.eliminated_set_number == set_number:
+            reason = participant.elimination_reason or 'incorrect_assignment'
+        return {
+            'authorized': True,
+            'set_number': set_number,
+            'elimination_reason': reason,
+        }
+
+    @database_sync_to_async
+    def mark_participant_eliminated_for_set(
+        self,
+        quiz_id,
+        question_id,
+        set_number,
+        participant_name,
+        hub_session,
+        reason,
+    ):
+        if not participant_name:
+            return False
+        with transaction.atomic():
+            quiz = AssignQuiz.objects.select_for_update().filter(id=quiz_id).first()
+            session, _ = AssignSession.objects.select_for_update().get_or_create(quiz_id=quiz_id)
+            if (
+                not quiz
+                or quiz.current_question_id != question_id
+                or session.current_question_number != set_number
+            ):
+                return False
+            try:
+                participant = AssignParticipant.objects.select_for_update().get(
+                    quiz_id=quiz_id,
+                    name=participant_name,
+                    hub_session_code=hub_session,
+                )
+            except AssignParticipant.DoesNotExist:
+                return False
+            if participant.eliminated_set_number != set_number:
+                participant.eliminated_set_number = set_number
+                participant.elimination_reason = reason
+                participant.save(update_fields=[
+                    'eliminated_set_number',
+                    'elimination_reason',
+                    'updated_at',
+                ])
+            return True
+
+    @database_sync_to_async
+    def get_persisted_eliminated_keys(self):
+        try:
+            quiz = AssignQuiz.objects.select_related('session').get(room_code=self.room_code)
+        except AssignQuiz.DoesNotExist:
+            return set()
+        set_number = quiz.session.current_question_number if hasattr(quiz, 'session') else 0
+        return {
+            f"{(hub_session or '').strip().lower()}::{name.strip().lower()}"
+            for name, hub_session in quiz.participants.filter(
+                eliminated_set_number=set_number,
+            ).values_list('name', 'hub_session_code')
+        }
+
+    @database_sync_to_async
     def clear_current_question(self, quiz_id):
         try:
             quiz = AssignQuiz.objects.get(id=quiz_id)
@@ -1006,6 +1215,22 @@ class AssignConsumer(AsyncWebsocketConsumer):
             quiz.save()
         except AssignQuiz.DoesNotExist:
             pass
+
+    @database_sync_to_async
+    def set_question_active_db(self, quiz_id, is_active):
+        from .models import AssignSession
+        session, _ = AssignSession.objects.get_or_create(quiz_id=quiz_id)
+        if session.is_question_active != is_active:
+            session.is_question_active = is_active
+            session.save(update_fields=['is_question_active'])
+
+    @database_sync_to_async
+    def is_question_active_db(self, quiz_id):
+        from .models import AssignSession
+        return AssignSession.objects.filter(
+            quiz_id=quiz_id,
+            is_question_active=True,
+        ).exists()
 
     def _get_item_text(self, item):
         if isinstance(item, dict):
@@ -1055,12 +1280,12 @@ class AssignConsumer(AsyncWebsocketConsumer):
             })
         return solved_pairs
 
-    def build_round_payload(self, question, round_index: int, time_limit: int):
+    def build_round_payload(self, question, round_index: int, time_limit: int, set_number=None):
         randomized = question.get_randomized_items(room_code=self.room_code)
         left_items = randomized['left_items']
         total_rounds = len(question.correct_matches or {})
         current_left_item = left_items[round_index] if 0 <= round_index < total_rounds else None
-        return {
+        payload = {
             'id': question.id,
             'question_text': question.question_text,
             'time_limit': time_limit,
@@ -1073,6 +1298,9 @@ class AssignConsumer(AsyncWebsocketConsumer):
             'total_rounds': total_rounds,
             'current_left_item': current_left_item,
         }
+        if set_number is not None:
+            payload['set_number'] = set_number
+        return payload
 
     @database_sync_to_async
     def get_round_right_items(self, question, round_index=None):
@@ -1173,7 +1401,8 @@ class AssignConsumer(AsyncWebsocketConsumer):
 
     async def get_relevant_active_channels(self):
         channels = self.__class__._participant_channels.get(self.room_code, set())
-        eliminated = self.__class__._eliminated_participants.get(self.room_code, set())
+        eliminated = self.__class__._eliminated_participants.setdefault(self.room_code, set())
+        eliminated.update(await self.get_persisted_eliminated_keys())
         active_channels = {
             channel for channel in channels
             if self.get_participant_key_for_channel(channel) not in eliminated
@@ -1230,8 +1459,10 @@ class AssignConsumer(AsyncWebsocketConsumer):
             }
         )
 
-    async def evaluate_current_round(self, quiz, round_index: int):
+    async def evaluate_current_round(self, quiz, round_index: int, set_number=None):
         """Evaluate this round once (at round end), not at login time."""
+        if set_number is None:
+            set_number = await self.get_current_set_number(quiz.id)
         key = (self.room_code, round_index)
         active_channels = await self.get_relevant_active_channels()
         round_selections = self.__class__._round_selections.get(key, {})
@@ -1242,10 +1473,26 @@ class AssignConsumer(AsyncWebsocketConsumer):
             left_item_index = selection.get('left_item_index', round_index)
             user_match = selection.get('user_match', {}) or {}
             is_correct, original_right_idx = await self.check_round_answer(quiz.current_question, left_item_index, user_match)
+            elimination_reason = None if is_correct else (
+                'incorrect_assignment' if user_match else 'no_assignment'
+            )
 
             if not is_correct:
                 participant_key = self.get_participant_key_for_channel(channel)
+                persisted = await self.mark_participant_eliminated_for_set(
+                    quiz.id,
+                    quiz.current_question_id,
+                    set_number,
+                    self.__class__._channel_participants.get(channel),
+                    self.__class__._channel_hub_sessions.get(channel),
+                    elimination_reason,
+                )
+                if not persisted:
+                    continue
                 self.__class__._eliminated_participants.setdefault(self.room_code, set()).add(participant_key)
+                self.__class__._elimination_reasons.setdefault(self.room_code, {})[
+                    participant_key
+                ] = elimination_reason
             elif original_right_idx is not None:
                 self.__class__._room_solved_matches.setdefault(self.room_code, {})[int(left_item_index)] = int(original_right_idx)
                 self.__class__._room_matched_originals.setdefault(self.room_code, set()).add(original_right_idx)
@@ -1271,6 +1518,8 @@ class AssignConsumer(AsyncWebsocketConsumer):
                     'is_correct': is_correct,
                     'round_index': round_index,
                     'eliminated': not is_correct,
+                    'elimination_reason': elimination_reason,
+                    'set_number': set_number,
                 }
             )
 
@@ -1307,11 +1556,30 @@ class AssignConsumer(AsyncWebsocketConsumer):
 
     @database_sync_to_async
     def save_participant_answer(self, participant_name, hub_session, user_matches, time_taken, question_id=None):
+        with transaction.atomic():
+            return self._save_participant_answer(
+                participant_name,
+                hub_session,
+                user_matches,
+                time_taken,
+                question_id,
+            )
+
+    def _save_participant_answer(self, participant_name, hub_session, user_matches, time_taken, question_id=None):
         """Konvertiert shuffled Positionen → Original-Indizes und speichert AssignAnswer."""
         try:
-            quiz = AssignQuiz.objects.select_related('current_question').get(room_code=self.room_code)
-            participant = quiz.participants.get(name=participant_name, hub_session_code=hub_session)
+            quiz = AssignQuiz.objects.select_for_update().select_related(
+                'current_question',
+            ).get(room_code=self.room_code)
+            session, _ = AssignSession.objects.select_for_update().get_or_create(quiz=quiz)
+            participant = AssignParticipant.objects.select_for_update().get(
+                quiz=quiz,
+                name=participant_name,
+                hub_session_code=hub_session,
+            )
             if quiz.status != 'active':
+                return None
+            if participant.eliminated_set_number == session.current_question_number:
                 return None
 
             # Frage per question_id nachschlagen (bevorzugt), Fallback auf current_question

@@ -1,0 +1,439 @@
+<section
+  id="sessionGameStartIntro"
+  class="session-game-start-intro vhs-game-intro-screen"
+  data-vhs-game-intro
+  data-game-id=""
+  data-game-number=""
+  data-game-name=""
+  data-participant-name="{{ participant.name|default:'' }}"
+  hidden
+  aria-live="polite"
+  role="status"
+>
+  <div class="session-game-start-intro__frame">
+    <header class="vhs-game-intro-header vhs-game-intro-only" aria-hidden="true">
+      <span class="vhs-game-intro-app" data-vhs-intro-app></span>
+      <span class="vhs-game-intro-rec">
+        <span class="vhs-game-intro-rec__dot"></span>
+        REC · LIVE
+      </span>
+    </header>
+
+    <div class="session-game-start-intro__card vhs-game-intro-content">
+      <div class="vhs-game-intro-copy">
+        <div
+          class="session-game-start-intro__eyebrow vhs-game-intro-number"
+          id="sessionGameStartIntroNumber"
+          data-vhs-intro-number
+        >Spiel</div>
+
+        <div class="vhs-interference" data-vhs-interference>
+          <div class="vhs-interference__stack">
+            <h1
+              class="session-game-start-intro__title vhs-interference__layer vhs-interference__layer--main"
+              id="sessionGameStartIntroTitle"
+              data-vhs-intro-layer="main"
+            >Spiel startet</h1>
+            <span
+              class="vhs-interference__layer vhs-interference__layer--red"
+              data-vhs-intro-layer="red"
+              aria-hidden="true"
+            ></span>
+            <span
+              class="vhs-interference__layer vhs-interference__layer--green"
+              data-vhs-intro-layer="green"
+              aria-hidden="true"
+            ></span>
+            <span
+              class="vhs-interference__layer vhs-interference__layer--blue"
+              data-vhs-intro-layer="blue"
+              aria-hidden="true"
+            ></span>
+            <span
+              class="vhs-interference__layer vhs-interference__layer--glow"
+              data-vhs-intro-layer="glow"
+              aria-hidden="true"
+            ></span>
+          </div>
+
+          <div
+            class="vhs-interference__scanlines"
+            data-vhs-intro-scanlines
+            aria-hidden="true"
+          ></div>
+        </div>
+      </div>
+      <p class="session-game-start-intro__text">Gleich geht es los. Warte auf die erste Frage, Runde oder Aufgabe.</p>
+    </div>
+
+    <footer class="vhs-game-intro-footer vhs-game-intro-only" aria-hidden="true">
+      <span id="sessionGameStartIntroParticipant">LIVE</span>
+    </footer>
+  </div>
+</section>
+
+<style>
+  .session-game-start-intro {
+    position: fixed;
+    inset: 0;
+    z-index: 1750;
+    display: grid;
+    place-items: center;
+    padding: 1.25rem;
+    background:
+      radial-gradient(circle at 20% 15%, rgba(34, 211, 238, .26), transparent 34%),
+      radial-gradient(circle at 80% 20%, rgba(245, 158, 11, .26), transparent 32%),
+      linear-gradient(135deg, rgba(15, 23, 42, .96), rgba(30, 41, 59, .94));
+    color: #f8fafc;
+    opacity: 1;
+    transition: opacity .18s ease;
+  }
+
+  .session-game-start-intro[hidden] {
+    display: none;
+  }
+
+  .session-game-start-intro__frame,
+  .vhs-game-intro-copy,
+  .vhs-interference,
+  .vhs-interference__stack {
+    display: contents;
+  }
+
+  .vhs-game-intro-only,
+  .vhs-interference__layer:not(.vhs-interference__layer--main),
+  .vhs-interference__scanlines {
+    display: none;
+  }
+
+  .session-game-start-intro.is-hiding {
+    opacity: 0;
+  }
+
+  .session-game-start-intro__card {
+    width: min(92vw, 620px);
+    border: 1px solid rgba(226, 232, 240, .22);
+    border-radius: 28px;
+    padding: clamp(1.75rem, 5vw, 3rem);
+    text-align: center;
+    background: rgba(15, 23, 42, .72);
+    box-shadow: 0 32px 90px rgba(0, 0, 0, .42);
+    backdrop-filter: blur(14px);
+  }
+
+  .session-game-start-intro__eyebrow {
+    margin-bottom: .65rem;
+    text-transform: uppercase;
+    letter-spacing: .16em;
+    font-size: .86rem;
+    font-weight: 800;
+    color: #67e8f9;
+  }
+
+  .session-game-start-intro__title {
+    margin: 0;
+    font-size: clamp(2rem, 8vw, 4.6rem);
+    line-height: 1;
+    font-weight: 900;
+  }
+
+  .session-game-start-intro__text {
+    margin: 1rem auto 0;
+    max-width: 34rem;
+    color: #cbd5e1;
+    font-size: clamp(1rem, 2.6vw, 1.25rem);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .session-game-start-intro {
+      transition: none;
+    }
+  }
+</style>
+
+<script>
+function initializeVhsGameIntro(options = {}) {
+  const root = options.root instanceof Element
+    ? options.root
+    : document.querySelector('[data-vhs-game-intro]');
+
+  if (!root) return null;
+
+  const rawGameNumber = options.gameNumber ?? root.dataset.gameNumber ?? '';
+  const rawGameName = options.gameName ?? root.dataset.gameName ?? '';
+  const rawGameId = options.gameId ?? root.dataset.gameId ?? `${rawGameNumber}:${rawGameName}`;
+  const gameNumber = String(rawGameNumber).trim();
+  const gameName = String(rawGameName).trim().toLocaleUpperCase('de-DE');
+  const gameKey = String(rawGameId).trim();
+
+  if (!gameName) {
+    console.warn('[VHS intro] Kein Spielname für den Intro-Screen verfügbar.');
+    return null;
+  }
+
+  const numberElement = root.querySelector('[data-vhs-intro-number]');
+  const layerElements = root.querySelectorAll('[data-vhs-intro-layer]');
+  const scanlineContainer = root.querySelector('[data-vhs-intro-scanlines]');
+
+  if (!numberElement || layerElements.length !== 5 || !scanlineContainer) {
+    console.warn('[VHS intro] Die erwartete Intro-Struktur ist unvollständig.', {
+      numberElement,
+      layerCount: layerElements.length,
+      scanlineContainer,
+    });
+    return null;
+  }
+
+  numberElement.textContent = gameNumber ? `SPIEL ${gameNumber}` : 'SPIEL';
+  layerElements.forEach(element => {
+    element.textContent = gameName;
+  });
+
+  const normalizedLength = gameName.replace(/\s+/g, ' ').length;
+  const interference = root.querySelector('[data-vhs-interference]');
+  if (interference) {
+    interference.classList.remove('vhs-interference--long', 'vhs-interference--very-long');
+    if (normalizedLength >= 23) {
+      interference.classList.add('vhs-interference--very-long');
+    } else if (normalizedLength >= 13) {
+      interference.classList.add('vhs-interference--long');
+    }
+  }
+
+  if (scanlineContainer.querySelectorAll('.vhs-interference__scanline').length !== 10) {
+    scanlineContainer.replaceChildren();
+    const fragment = document.createDocumentFragment();
+    for (let index = 0; index < 10; index += 1) {
+      const scanline = document.createElement('span');
+      scanline.className = 'vhs-interference__scanline';
+      scanline.setAttribute('aria-hidden', 'true');
+      fragment.appendChild(scanline);
+    }
+    scanlineContainer.appendChild(fragment);
+  }
+
+  const previousGameKey = root.dataset.vhsIntroGameKey;
+  const mustRestart = previousGameKey !== gameKey || root.dataset.vhsIntroInitialized !== 'true';
+  root.dataset.vhsIntroGameKey = gameKey;
+  root.dataset.vhsIntroInitialized = 'true';
+
+  if (mustRestart) {
+    root.classList.remove('is-vhs-intro-playing');
+    void root.offsetWidth;
+    root.classList.add('is-vhs-intro-playing');
+  }
+
+  return {
+    root,
+    gameKey,
+    destroy() {
+      root.classList.remove('is-vhs-intro-playing');
+      delete root.dataset.vhsIntroInitialized;
+      delete root.dataset.vhsIntroGameKey;
+    },
+  };
+}
+
+(function () {
+  const INTRO_PREVIOUS_DURATION_MS = 5000;
+  const INTRO_DURATION_EXTENSION_MS = 3000;
+  const INTRO_DISPLAY_DURATION_MS = INTRO_PREVIOUS_DURATION_MS + INTRO_DURATION_EXTENSION_MS;
+  const params = new URLSearchParams(window.location.search);
+  const shouldShow = params.get('game_start_intro') === '1';
+  const gameNumber = params.get('game_start_order') || '';
+  const gameTitle = params.get('game_start_title') || 'Spiel startet';
+  const storageKey = [
+    'session-game-start-intro',
+    window.location.pathname,
+    params.get('hub_session') || '',
+    params.get('game_start_room') || '',
+    params.get('game_start_nonce') || '',
+  ].join(':');
+  let hideTimer = null;
+  let visible = false;
+  let cancelled = false;
+  let vhsIntroController = null;
+  const introOverlay = document.getElementById('sessionGameStartIntro');
+  const introOriginalParent = introOverlay?.parentNode || null;
+  const introOriginalNextSibling = introOverlay?.nextSibling || null;
+
+  function mountVhsIntro(overlay) {
+    if (document.documentElement.dataset.participantTheme !== 'vhs') return;
+    const shell = document.querySelector('.vhs-theme-shell');
+    if (shell && overlay.parentNode !== shell) shell.appendChild(overlay);
+  }
+
+  function restoreIntroMount(overlay) {
+    if (!overlay || !introOriginalParent || overlay.parentNode === introOriginalParent) return;
+    if (introOriginalNextSibling?.parentNode === introOriginalParent) {
+      introOriginalParent.insertBefore(overlay, introOriginalNextSibling);
+    } else {
+      introOriginalParent.appendChild(overlay);
+    }
+  }
+
+  function getAppName() {
+    const explicitName = document.querySelector('[data-app-name]')?.textContent?.trim();
+    if (explicitName) return explicitName;
+    const titleMatch = document.title.match(/-\s*([^-]+)$/);
+    return titleMatch?.[1]?.replace(/\s+Admin$/i, '').trim() || 'QuizMaster';
+  }
+
+  function setIntroChrome(overlay) {
+    const appElement = overlay.querySelector('[data-vhs-intro-app]');
+    const participantElement = document.getElementById('sessionGameStartIntroParticipant');
+    const normalizedParticipant = String(overlay?.dataset.participantName || '').trim();
+    appElement.textContent = getAppName();
+    participantElement.textContent = normalizedParticipant ? `LIVE · ${normalizedParticipant}` : 'LIVE';
+  }
+
+  function setDefaultIntroText() {
+    const numberEl = document.getElementById('sessionGameStartIntroNumber');
+    const titleEl = document.getElementById('sessionGameStartIntroTitle');
+    const normalizedTitle = String(gameTitle || '').trim() || 'Spiel startet';
+    numberEl.textContent = gameNumber ? `Spiel ${gameNumber}` : 'Spiel';
+    titleEl.textContent = normalizedTitle;
+  }
+
+  function clearVhsIntroState(overlay) {
+    document.documentElement.classList.remove('is-session-game-intro-active');
+    vhsIntroController?.destroy();
+    vhsIntroController = null;
+    if (overlay) overlay.classList.remove('is-vhs-intro-playing');
+  }
+
+  function removeIntroParams() {
+    if (!shouldShow) return;
+    const cleanParams = new URLSearchParams(window.location.search);
+    [
+      'game_start_intro',
+      'game_start_order',
+      'game_start_title',
+      'game_start_room',
+      'game_start_key',
+      'game_start_nonce',
+    ].forEach(key => cleanParams.delete(key));
+    const query = cleanParams.toString();
+    const cleanUrl = `${window.location.pathname}${query ? `?${query}` : ''}${window.location.hash}`;
+    window.history.replaceState(window.history.state, document.title, cleanUrl);
+  }
+
+  function elementIsVisible(element) {
+    if (!element || element.hidden || element.classList.contains('d-none')) return false;
+    const style = window.getComputedStyle(element);
+    if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+    const rect = element.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+  }
+
+  function hasActiveGameplayDom() {
+    const activeSelectors = [
+      '#questionState:not(.d-none)',
+      '#questionArea:not(.d-none)',
+      '#answerArea:not(.d-none)',
+      '#revealArea:not(.d-none)',
+      '#roundResultState:not(.d-none)',
+      '#finalOrderState:not(.d-none)',
+      '#solutionState:not(.d-none)',
+      '#correctAnswerState:not(.d-none)',
+      '#buzzButton:not(:disabled)',
+    ];
+    return activeSelectors.some(selector => elementIsVisible(document.querySelector(selector)));
+  }
+
+  function hide() {
+    cancelled = true;
+    const overlay = document.getElementById('sessionGameStartIntro');
+    clearVhsIntroState(overlay);
+    if (!overlay || !visible) return;
+    visible = false;
+    if (hideTimer) window.clearTimeout(hideTimer);
+    hideTimer = null;
+    overlay.classList.add('is-hiding');
+    window.setTimeout(() => {
+      overlay.hidden = true;
+      overlay.classList.remove('is-hiding');
+      restoreIntroMount(overlay);
+    }, window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : 180);
+  }
+
+  function isActivePayload(payload) {
+    if (!payload || typeof payload !== 'object') return false;
+    const type = payload.type || payload.event_type || '';
+    const activeTypes = new Set([
+      'question_started',
+      'round_started',
+      'set_started',
+      'round_advanced',
+      'round_checked',
+      'question_ended',
+      'show_solution',
+      'buzz_accepted',
+      'buzzer_opened',
+    ]);
+    if (activeTypes.has(type)) return true;
+
+    const phase = payload.phase || payload.question_state || payload.round_state || '';
+    if (['active', 'revealed', 'round_active', 'review', 'set_completed', 'question_active'].includes(phase)) {
+      return true;
+    }
+
+    if (payload.question || payload.current_question || payload.active_question) return true;
+    if (payload.can_buzz || payload.round?.current_buzz_participant) return true;
+    if (type === 'buzzer_state' && Number(payload.round?.number || 0) > 0) return true;
+    if (type === 'host_points_state' && Number(payload.round?.number || 0) > 1) return true;
+    if (payload.participant_state?.can_answer) return true;
+    return false;
+  }
+
+  function handleState(payload) {
+    if (isActivePayload(payload)) hide();
+  }
+
+  function show() {
+    const overlay = document.getElementById('sessionGameStartIntro');
+    if (!overlay || cancelled || hasActiveGameplayDom()) return;
+    mountVhsIntro(overlay);
+    setIntroChrome(overlay);
+    overlay.dataset.gameId = [params.get('game_start_key'), params.get('game_start_room')]
+      .filter(Boolean)
+      .join(':') || storageKey;
+    overlay.dataset.gameNumber = gameNumber;
+    overlay.dataset.gameName = gameTitle;
+    if (document.documentElement.dataset.participantTheme === 'vhs') {
+      vhsIntroController = initializeVhsGameIntro({
+        root: overlay,
+        gameId: overlay.dataset.gameId,
+        gameNumber,
+        gameName: gameTitle,
+      });
+    } else {
+      setDefaultIntroText();
+    }
+    document.documentElement.classList.add('is-session-game-intro-active');
+    overlay.hidden = false;
+    overlay.classList.remove('is-hiding');
+    visible = true;
+    try { sessionStorage.setItem(storageKey, 'shown'); } catch (_) {}
+    hideTimer = window.setTimeout(hide, INTRO_DISPLAY_DURATION_MS);
+  }
+
+  window.sessionGameStartIntro = {
+    hide,
+    handleState,
+  };
+
+  removeIntroParams();
+  if (!shouldShow) return;
+
+  let alreadyShown = false;
+  try { alreadyShown = sessionStorage.getItem(storageKey) === 'shown'; } catch (_) {}
+  if (alreadyShown) return;
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', show, { once: true });
+  } else {
+    show();
+  }
+})();
+</script>

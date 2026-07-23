@@ -1,3 +1,4053 @@
+{% load static %}
+{% if participant_options_menu %}
+<!-- Participant Options Menu -->
+<style>
+  @font-face {
+    font-family: "QA Arcade Heading";
+    src: url("/static/fonts/ka1.ttf") format("truetype");
+    font-style: normal;
+    font-weight: 400;
+    font-display: swap;
+  }
+
+  @font-face {
+    font-family: "QA Arcade Text";
+    src: url("/static/fonts/RETROTECH.ttf") format("truetype");
+    font-style: normal;
+    font-weight: 400;
+    font-display: swap;
+  }
+
+  #participant-options-menu-root {
+    --participant-options-surface: rgba(255, 255, 255, 0.96);
+    --participant-options-text: #111827;
+    --participant-options-muted: #4b5563;
+    --participant-options-accent: #111827;
+    position: fixed;
+    right: 1rem;
+    bottom: 1rem;
+    z-index: 99999;
+    font-family: var(--font-family-sans, system-ui, sans-serif);
+  }
+
+  #participant-options-menu-root,
+  #participant-options-menu-root *,
+  #participant-options-menu-root option {
+    font-weight: 400 !important;
+  }
+
+  html {
+    font-size: var(--participant-root-font-size, 16px);
+  }
+
+  html[data-participant-theme="standard"],
+  html[data-participant-theme="arcade"] {
+    --participant-theme-background: var(--app-background, #d0d6b4);
+    --participant-theme-text: #000;
+    --participant-accent-color: #a3a88d;
+    --participant-accent-color-2: #f24b3d;
+    --participant-options-surface: rgba(255, 255, 255, 0.96);
+    --participant-options-text: #111827;
+    --participant-options-muted: #4b5563;
+    --participant-options-accent: #111827;
+  }
+
+  html[data-participant-theme="standard"] {
+    --participant-heading-font: var(--font-family-game-title, "Cinematografica", system-ui, sans-serif);
+    --participant-body-font: var(--font-family-sans, "Walkway Condensed", system-ui, sans-serif);
+  }
+
+  html[data-participant-theme="arcade"] {
+    --participant-heading-font: "QA Arcade Heading", sans-serif;
+    --participant-body-font: "QA Arcade Text", monospace;
+    --font-family-game-title: var(--participant-heading-font);
+    --font-family-sans: var(--participant-body-font);
+    --arcade-scanline-color: rgba(0, 0, 0, 0.16);
+    --arcade-scanline-highlight: rgba(255, 255, 255, 0.025);
+    --arcade-scanline-spacing: 4px;
+    --arcade-vignette-strength: rgba(0, 0, 0, 0.18);
+  }
+
+  body.quiz-play-page,
+  body.estimation-play-page,
+  body.where-play-page,
+  body.who-that-play-page,
+  body.assign-play-page,
+  body.blackjack-play-page,
+  body.who-play-page {
+    color: #000;
+    font-size: 1.5rem;
+    font-family: var(--participant-body-font, var(--font-family-sans, "Walkway Condensed", system-ui, sans-serif));
+  }
+
+  html[data-participant-theme="arcade"] body,
+  html[data-participant-theme="arcade"] button,
+  html[data-participant-theme="arcade"] input,
+  html[data-participant-theme="arcade"] select,
+  html[data-participant-theme="arcade"] textarea,
+  html[data-participant-theme="arcade"] table,
+  html[data-participant-theme="arcade"] .btn,
+  html[data-participant-theme="arcade"] .participant-name,
+  html[data-participant-theme="arcade"] .session-game-number,
+  html[data-participant-theme="arcade"] .qa-start-waiting-subtitle,
+  html[data-participant-theme="arcade"] .qa-local-start-subtitle,
+  html[data-participant-theme="arcade"] .wwm-start-subtitle,
+  html[data-participant-theme="arcade"] .score-box,
+  html[data-participant-theme="arcade"] .scorebox,
+  html[data-participant-theme="arcade"] .score-history-box,
+  html[data-participant-theme="arcade"] #participant-options-menu-root {
+    font-family: var(--participant-body-font, "QA Arcade Text", monospace) !important;
+  }
+
+  .quiz-title,
+  .qa-game-title-font {
+    font-family: var(--participant-heading-font, var(--font-family-game-title, "Cinematografica", system-ui, sans-serif)) !important;
+    color: var(--participant-theme-text, #000) !important;
+    font-size: clamp(3.2rem, 8vw, 5.6rem) !important;
+    font-weight: 400 !important;
+    line-height: 0.9;
+    overflow-wrap: anywhere;
+  }
+
+  html[data-participant-theme="arcade"] .session-game-start-intro__title,
+  html[data-participant-theme="arcade"] .ended-card > h1,
+  html[data-participant-theme="arcade"] .ended-card > h2,
+  html[data-participant-theme="arcade"] .end-screen h1,
+  html[data-participant-theme="arcade"] .end-screen h2 {
+    font-family: var(--participant-heading-font, "QA Arcade Heading", sans-serif) !important;
+  }
+
+  .quiz-info,
+  .wwm-header > div:first-child,
+  .buzzer-card .text-start,
+  .points-card .text-start,
+  .game-card > .d-flex > div:first-child {
+    text-align: center !important;
+  }
+
+  .quiz-header {
+    padding: 0.45rem 0 0.2rem !important;
+    background: transparent !important;
+    border-bottom: 0 !important;
+    box-shadow: none !important;
+    position: relative !important;
+    top: auto !important;
+    z-index: 50;
+  }
+
+  .quiz-header .container {
+    max-width: none;
+  }
+
+  .quiz-header .header-content {
+    display: grid !important;
+    grid-template-columns: minmax(2.5rem, 1fr) minmax(0, auto) minmax(2.5rem, 1fr);
+    align-items: center;
+    min-height: 0;
+    column-gap: 0.5rem;
+    row-gap: 0.16rem;
+    justify-content: initial;
+    position: relative;
+  }
+
+  .quiz-header .quiz-info {
+    display: flex !important;
+    flex-direction: column !important;
+    align-items: center !important;
+    gap: 0.05rem;
+    grid-column: 2;
+    grid-row: 1;
+    justify-self: center;
+    min-width: 0;
+    max-width: min(38rem, calc(100vw - 8rem));
+    padding: 0.58rem 1.35rem 0.66rem;
+    border: 2px solid var(--participant-theme-text, #000);
+    border-radius: 999px;
+    background: var(--participant-effective-accent-color, var(--participant-accent-color, #a3a88d));
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--participant-theme-text, #000) 18%, transparent);
+    text-align: center !important;
+  }
+
+  .quiz-header .quiz-title {
+    display: block;
+    margin: 0 !important;
+    font-size: clamp(1.75rem, 5.4vw, 3.05rem) !important;
+    line-height: 0.9;
+  }
+
+  .quiz-header .participant-info {
+    grid-column: 2;
+    grid-row: 2;
+    justify-self: center;
+    position: static;
+    display: block !important;
+    width: auto;
+    max-width: min(24rem, calc(100vw - 8rem));
+    gap: 0;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    color: var(--participant-theme-text, #000) !important;
+    overflow: visible;
+  }
+
+  .quiz-header .participant-avatar {
+    display: none !important;
+  }
+
+  .quiz-header .participant-details {
+    display: block;
+    min-width: 0;
+    text-align: center;
+  }
+
+  .participant-name {
+    display: block;
+    color: var(--participant-theme-text, #000) !important;
+    font-size: clamp(0.9rem, 1.55vw, 1.08rem) !important;
+    font-weight: 700;
+    line-height: 1.05;
+    max-width: min(24rem, calc(100vw - 8rem));
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .session-game-number {
+    display: block !important;
+    width: 100%;
+    font-size: clamp(1rem, 2.45vw, 1.42rem) !important;
+    color: var(--participant-theme-text, #000) !important;
+    line-height: 1.1;
+    margin-top: 0.04rem !important;
+  }
+
+  .qa-start-waiting-subtitle,
+  .qa-local-start-subtitle,
+  .wwm-start-subtitle {
+    font-family: var(--participant-body-font, var(--font-family-sans, "Walkway Condensed", system-ui, sans-serif)) !important;
+    font-size: clamp(1.5rem, 3.8vw, 2.2rem) !important;
+    color: var(--participant-theme-text, #000) !important;
+    margin-top: 0.25rem !important;
+  }
+
+  .waiting-card,
+  .question-card,
+  .submitted-card,
+  .ended-card,
+  .correct-answer-card,
+  .busted-card,
+  .buzzer-card,
+  .points-card,
+  .game-card,
+  .wwm-card {
+    --participant-frame-color: var(--participant-theme-text, #000);
+    --participant-frame-gap-color: var(--participant-theme-background, #d0d6b4);
+    position: relative;
+    background-color: var(--participant-theme-background, #d0d6b4) !important;
+    background-image: none !important;
+    border: 3px solid var(--participant-frame-color) !important;
+    box-shadow:
+      0 0 0 1px var(--participant-frame-gap-color),
+      0 0 0 4px var(--participant-frame-color),
+      0 0 0 5px var(--participant-frame-gap-color),
+      0 0 0 8px var(--participant-frame-color) !important;
+    color: var(--participant-theme-text, #111827) !important;
+    overflow: hidden;
+  }
+
+  .waiting-card > *,
+  .question-card > *,
+  .submitted-card > *,
+  .ended-card > *,
+  .correct-answer-card > *,
+  .busted-card > *,
+  .buzzer-card > *,
+  .points-card > *,
+  .game-card > *,
+  .wwm-card > * {
+    position: relative;
+    z-index: 1;
+  }
+
+  .waiting-card::before,
+  .question-card::before,
+  .submitted-card::before,
+  .ended-card::before,
+  .correct-answer-card::before,
+  .busted-card::before,
+  .buzzer-card::before,
+  .points-card::before,
+  .game-card::before,
+  .wwm-card::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: 0;
+    pointer-events: none;
+    background-image: var(--app-noise-overlay, url("/static/neutral_transparent_noise_overlay_512.png"));
+    background-repeat: repeat;
+    opacity: .32;
+  }
+
+  body.quiz-play-page .question-header,
+  body.assign-play-page .question-header,
+  body.where-play-page .question-header,
+  body.who-that-play-page .question-header,
+  body.who-play-page .question-header,
+  body.blackjack-play-page .question-header,
+  .wwm-card .timer-box,
+  .buzzer-card .status-pill,
+  .points-card #gameArea .metric,
+  .game-card #questionArea .metric {
+    background: var(--participant-effective-accent-color, var(--participant-accent-color, #a3a88d));
+    border-color: var(--participant-effective-text-color, var(--participant-theme-text, currentColor));
+    color: var(--participant-effective-text-color, var(--participant-theme-text, currentColor));
+  }
+
+  body.quiz-play-page .question-header .question-number,
+  body.assign-play-page .question-header .question-number,
+  body.where-play-page .question-header .question-number,
+  body.where-play-page .question-header .question-meta,
+  body.where-play-page .question-header .question-meta *,
+  body.who-that-play-page .question-header .question-number,
+  body.who-that-play-page .question-header .question-meta,
+  body.who-that-play-page .question-header .question-meta *,
+  body.who-play-page .question-header .question-number,
+  body.blackjack-play-page .question-header .question-number {
+    color: inherit !important;
+  }
+
+  body.quiz-play-page .question-header .timer-circle:not(.warning):not(.danger),
+  body.assign-play-page .question-header .timer-circle:not(.warning):not(.danger),
+  body.where-play-page .question-header .timer-circle:not(.warning):not(.danger),
+  body.who-that-play-page .question-header .timer-circle:not(.warning):not(.danger),
+  body.who-play-page .question-header .timer-circle:not(.warning):not(.danger),
+  body.blackjack-play-page .question-header .timer-circle:not(.warning):not(.danger) {
+    border-color: currentColor;
+    color: inherit;
+  }
+
+  .submit-answer,
+  #logRoundBtn,
+  .wwm-card #submitBtn,
+  .game-card #submitBtn {
+    width: auto !important;
+    min-width: min(100%, 9rem);
+    max-width: 100%;
+    display: inline-flex !important;
+    align-items: center;
+    justify-content: center;
+    gap: 0.4rem;
+    margin-left: auto;
+    margin-right: auto;
+    padding: 0.72rem 1.35rem !important;
+    border-color: var(--participant-effective-text-color, var(--participant-theme-text, currentColor)) !important;
+    background: var(--participant-effective-accent-color, var(--participant-accent-color, #a3a88d)) !important;
+    color: var(--participant-effective-text-color, var(--participant-theme-text, currentColor)) !important;
+    box-shadow: none;
+  }
+
+  .submit-answer > svg,
+  #logRoundBtn > svg,
+  .wwm-card #submitBtn > svg,
+  .game-card #submitBtn > svg {
+    display: none !important;
+  }
+
+  html[data-participant-colors-applied="true"] {
+    --bg-primary: var(--participant-effective-bg-color);
+    --bg-secondary: var(--participant-effective-bg-color);
+    --text-primary: var(--participant-effective-text-color);
+    --text-secondary: var(--participant-effective-text-color);
+    --text-muted: var(--participant-effective-text-color);
+    --bs-body-bg: var(--participant-effective-bg-color);
+    --bs-body-color: var(--participant-effective-text-color);
+    --bs-secondary-color: var(--participant-effective-text-color);
+    --bs-tertiary-color: var(--participant-effective-text-color);
+  }
+
+  html[data-participant-colors-applied="true"] body {
+    background: var(--participant-effective-bg-color) !important;
+    color: var(--participant-effective-text-color) !important;
+  }
+
+  html[data-participant-colors-applied="true"] body::before {
+    opacity: .32;
+  }
+
+  html[data-participant-colors-applied="true"] .waiting-card,
+  html[data-participant-colors-applied="true"] .question-card,
+  html[data-participant-colors-applied="true"] .submitted-card,
+  html[data-participant-colors-applied="true"] .ended-card,
+  html[data-participant-colors-applied="true"] .correct-answer-card,
+  html[data-participant-colors-applied="true"] .busted-card,
+  html[data-participant-colors-applied="true"] .buzzer-card,
+  html[data-participant-colors-applied="true"] .points-card,
+  html[data-participant-colors-applied="true"] .game-card,
+  html[data-participant-colors-applied="true"] .wwm-card {
+    --participant-frame-color: var(--participant-effective-text-color);
+    --participant-frame-gap-color: var(--participant-effective-bg-color);
+    background-color: var(--participant-effective-bg-color) !important;
+    background-image: none !important;
+    border-color: var(--participant-frame-color) !important;
+    color: var(--participant-effective-text-color) !important;
+  }
+
+  html[data-participant-colors-applied="true"] .quiz-header .participant-info {
+    color: var(--participant-effective-text-color) !important;
+  }
+
+  html[data-participant-colors-applied="true"] .quiz-header .quiz-info {
+    border-color: var(--participant-effective-text-color);
+    background: var(--participant-effective-accent-color);
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--participant-effective-text-color) 18%, transparent);
+  }
+
+  html[data-participant-colors-applied="true"] .quiz-title,
+  html[data-participant-colors-applied="true"] .qa-game-title-font,
+  html[data-participant-colors-applied="true"] .participant-name,
+  html[data-participant-colors-applied="true"] .session-game-number,
+  html[data-participant-colors-applied="true"] .qa-start-waiting-subtitle,
+  html[data-participant-colors-applied="true"] .qa-local-start-subtitle,
+  html[data-participant-colors-applied="true"] .wwm-start-subtitle {
+    color: var(--participant-effective-text-color) !important;
+  }
+
+  html[data-participant-high-contrast="true"] body::before {
+    opacity: 0;
+  }
+
+  html[data-participant-high-contrast="true"] .waiting-card,
+  html[data-participant-high-contrast="true"] .question-card,
+  html[data-participant-high-contrast="true"] .submitted-card,
+  html[data-participant-high-contrast="true"] .ended-card,
+  html[data-participant-high-contrast="true"] .correct-answer-card,
+  html[data-participant-high-contrast="true"] .busted-card,
+  html[data-participant-high-contrast="true"] .buzzer-card,
+  html[data-participant-high-contrast="true"] .points-card,
+  html[data-participant-high-contrast="true"] .game-card,
+  html[data-participant-high-contrast="true"] .wwm-card {
+    background-image: none !important;
+  }
+
+  html[data-participant-high-contrast="true"] .waiting-card::before,
+  html[data-participant-high-contrast="true"] .question-card::before,
+  html[data-participant-high-contrast="true"] .submitted-card::before,
+  html[data-participant-high-contrast="true"] .ended-card::before,
+  html[data-participant-high-contrast="true"] .correct-answer-card::before,
+  html[data-participant-high-contrast="true"] .busted-card::before,
+  html[data-participant-high-contrast="true"] .buzzer-card::before,
+  html[data-participant-high-contrast="true"] .points-card::before,
+  html[data-participant-high-contrast="true"] .game-card::before,
+  html[data-participant-high-contrast="true"] .wwm-card::before {
+    opacity: 0;
+  }
+
+  html[data-participant-theme="arcade"] body::before {
+    background-image:
+      radial-gradient(
+        ellipse at center,
+        transparent 60%,
+        var(--arcade-vignette-strength) 100%
+      ),
+      repeating-linear-gradient(
+        to bottom,
+        var(--arcade-scanline-color) 0,
+        var(--arcade-scanline-color) 1px,
+        var(--arcade-scanline-highlight) 1px,
+        transparent var(--arcade-scanline-spacing)
+      ) !important;
+    background-size: 100% 100%, 100% var(--arcade-scanline-spacing) !important;
+    background-repeat: no-repeat, repeat !important;
+    opacity: 1 !important;
+    pointer-events: none;
+    z-index: 99998;
+  }
+
+  html[data-participant-theme="arcade"] .waiting-card::before,
+  html[data-participant-theme="arcade"] .question-card::before,
+  html[data-participant-theme="arcade"] .submitted-card::before,
+  html[data-participant-theme="arcade"] .ended-card::before,
+  html[data-participant-theme="arcade"] .correct-answer-card::before,
+  html[data-participant-theme="arcade"] .busted-card::before,
+  html[data-participant-theme="arcade"] .buzzer-card::before,
+  html[data-participant-theme="arcade"] .points-card::before,
+  html[data-participant-theme="arcade"] .game-card::before,
+  html[data-participant-theme="arcade"] .wwm-card::before {
+    background-image: none !important;
+    opacity: 0 !important;
+  }
+
+  html[data-participant-theme="arcade"][data-participant-high-contrast="true"] body::before {
+    background-image: none !important;
+    opacity: 0 !important;
+  }
+
+  html[data-participant-theme="arcade"] :where(
+    .quiz-header .quiz-info,
+    .waiting-card,
+    .question-card,
+    .submitted-card,
+    .ended-card,
+    .correct-answer-card,
+    .busted-card,
+    .buzzer-card,
+    .points-card,
+    .game-card,
+    .wwm-card,
+    .question-header,
+    .answer-option,
+    .ladder-row,
+    .left-items,
+    .drop-zones,
+    .matched-panel,
+    .draggable-item,
+    .drop-zone,
+    .dropped-item,
+    .score-box,
+    .scorebox,
+    .score-history-box,
+    .qa-score-widget__toggle,
+    .qa-score-widget__panel,
+    .table-responsive,
+    .submit-answer,
+    #logRoundBtn,
+    .btn
+  ) {
+    --arcade-frame-color: var(--participant-effective-text-color, var(--participant-theme-text, #000));
+    border-color: var(--arcade-frame-color) !important;
+    border-radius: 0 !important;
+    box-shadow:
+      2px 0 0 var(--arcade-frame-color),
+      -2px 0 0 var(--arcade-frame-color),
+      0 2px 0 var(--arcade-frame-color),
+      0 -2px 0 var(--arcade-frame-color) !important;
+  }
+
+  .qa-theme-button-shell {
+    position: relative;
+    display: inline-grid;
+    max-width: 100%;
+    isolation: isolate;
+    vertical-align: middle;
+  }
+
+  .qa-theme-button-shell--block {
+    display: grid;
+    width: 100%;
+  }
+
+  .qa-theme-button-shell--centered {
+    display: grid;
+    width: max-content;
+    margin-inline: auto;
+  }
+
+  .qa-theme-button-shell:has(> .qa-theme-button.d-none),
+  .qa-theme-button-shell:has(> .qa-theme-button[hidden]) {
+    display: none !important;
+  }
+
+  .qa-theme-button-shell > .qa-theme-button {
+    grid-area: 1 / 1;
+    max-width: 100%;
+  }
+
+  .qa-theme-button-shell > .qa-theme-button.mb-2 {
+    margin-bottom: 0 !important;
+  }
+
+  .qa-theme-button-shell:has(> .qa-theme-button.mb-2) {
+    margin-bottom: 0.5rem;
+  }
+
+  .qa-theme-button-shell > .qa-theme-button.m-3 {
+    margin: 0 !important;
+  }
+
+  .qa-theme-button-shell:has(> .qa-theme-button.m-3) {
+    margin: 1rem;
+  }
+
+  .qa-theme-button > .qa-theme-button__label,
+  .qa-theme-button > :not(.qa-theme-button__label) {
+    position: relative;
+    z-index: 3;
+  }
+
+  html[data-participant-theme="standard"] {
+    --participant-button-clicked-color: color-mix(
+      in srgb,
+      var(--participant-effective-accent-color, var(--participant-accent-color, #a3a88d)) 72%,
+      var(--participant-effective-text-color, var(--participant-theme-text, #000)) 28%
+    );
+  }
+
+  html[data-participant-theme="standard"] .qa-theme-button-shell::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border: 4px solid var(--participant-effective-text-color, var(--participant-theme-text, #000));
+    border-radius: var(--qa-theme-button-radius, var(--border-radius-lg, 0.75rem));
+    pointer-events: none;
+    z-index: 5;
+    --qa-theme-frame-depth: calc(var(--qa-theme-button-radius, var(--border-radius-lg, 0.75rem)) + 4px);
+    -webkit-mask:
+      linear-gradient(#000 0 0) top left / 0 var(--qa-theme-frame-depth) no-repeat,
+      linear-gradient(#000 0 0) bottom left / 0 var(--qa-theme-frame-depth) no-repeat,
+      linear-gradient(#000 0 0) top left / var(--qa-theme-frame-depth) 0 no-repeat,
+      linear-gradient(#000 0 0) top right / var(--qa-theme-frame-depth) 0 no-repeat;
+    mask:
+      linear-gradient(#000 0 0) top left / 0 var(--qa-theme-frame-depth) no-repeat,
+      linear-gradient(#000 0 0) bottom left / 0 var(--qa-theme-frame-depth) no-repeat,
+      linear-gradient(#000 0 0) top left / var(--qa-theme-frame-depth) 0 no-repeat,
+      linear-gradient(#000 0 0) top right / var(--qa-theme-frame-depth) 0 no-repeat;
+    transition: -webkit-mask-size 0.34s ease, mask-size 0.34s ease;
+  }
+
+  html[data-participant-theme="standard"]
+    .qa-theme-button-shell:not(:has(> .qa-theme-button:disabled))
+    :is(.qa-theme-button:not([aria-disabled="true"]):not(.disabled)) {
+    position: relative;
+    isolation: isolate;
+  }
+
+  html[data-participant-theme="standard"]
+    .qa-theme-button-shell:not(:has(> .qa-theme-button:disabled)):not(:has(> .qa-theme-button[aria-disabled="true"])):not(:has(> .qa-theme-button.disabled)):hover::after,
+  html[data-participant-theme="standard"]
+    .qa-theme-button-shell:not(:has(> .qa-theme-button:disabled)):not(:has(> .qa-theme-button[aria-disabled="true"])):not(:has(> .qa-theme-button.disabled)):focus-within::after,
+  html[data-participant-theme="standard"]
+    .qa-theme-button-shell:has(> .answer-option.is-theme-clicked)::after {
+    -webkit-mask-size:
+      100% var(--qa-theme-frame-depth),
+      100% var(--qa-theme-frame-depth),
+      var(--qa-theme-frame-depth) 100%,
+      var(--qa-theme-frame-depth) 100%;
+    mask-size:
+      100% var(--qa-theme-frame-depth),
+      100% var(--qa-theme-frame-depth),
+      var(--qa-theme-frame-depth) 100%,
+      var(--qa-theme-frame-depth) 100%;
+  }
+
+  html[data-participant-theme="standard"] .qa-theme-button.answer-option,
+  html[data-participant-theme="standard"] .qa-theme-button.answer-option:is(:hover, :focus-visible, .selected) {
+    color: #000 !important;
+    border-color: var(--participant-effective-text-color, var(--participant-theme-text, #000)) !important;
+    box-shadow: none !important;
+  }
+
+  html[data-participant-theme="standard"] .qa-theme-button.answer-option.selected,
+  html[data-participant-theme="standard"] .qa-theme-button.answer-option.selected .option-text {
+    font-weight: 700;
+  }
+
+  html[data-participant-theme="standard"] .qa-theme-button.answer-option.selected:not(.correct):not(.incorrect):not(.is-correct):not(.is-incorrect) {
+    background: var(--participant-button-clicked-color) !important;
+  }
+
+  html[data-participant-theme="standard"] .qa-theme-button.answer-option:focus-visible {
+    outline: 3px solid var(--participant-effective-text-color, var(--participant-theme-text, #000));
+    outline-offset: 3px;
+  }
+
+  html[data-participant-theme="standard"]
+    .qa-theme-button:not(:disabled):not([aria-disabled="true"]):not(.disabled):not(.selected):not(.correct):not(.incorrect):not(.is-correct):not(.is-incorrect):not(.correct-answer):not(.wrong-answer) {
+    background: var(--participant-button-clicked-color) !important;
+  }
+
+  html[data-participant-theme="standard"]
+    .qa-theme-button:not(:disabled):not([aria-disabled="true"]):not(.disabled):not(.loading)::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: 1;
+    pointer-events: none;
+    border-radius: inherit;
+    background: var(--participant-effective-accent-color, var(--participant-accent-color, #a3a88d));
+    -webkit-mask-image: url("/static/nature-sprite.png");
+    mask-image: url("/static/nature-sprite.png");
+    -webkit-mask-size: 2300% 100%;
+    mask-size: 2300% 100%;
+    -webkit-mask-position: 0 0;
+    mask-position: 0 0;
+    animation: qa-standard-button-mask-close 0.7s steps(22) forwards;
+  }
+
+  html[data-participant-theme="standard"]
+    .qa-theme-button.is-theme-clicked:not(:disabled):not([aria-disabled="true"]):not(.disabled):not(.loading)::before {
+    animation: qa-standard-button-mask-open 0.7s steps(22) forwards;
+  }
+
+  html[data-participant-theme="standard"]
+    .qa-theme-button:is(.selected, .correct, .incorrect, .is-correct, .is-incorrect, .correct-answer, .wrong-answer):not(.is-theme-clicked)::before {
+    content: none;
+  }
+
+  @keyframes qa-standard-button-mask-open {
+    from {
+      -webkit-mask-position: 0 0;
+      mask-position: 0 0;
+    }
+    to {
+      -webkit-mask-position: 100% 0;
+      mask-position: 100% 0;
+    }
+  }
+
+  @keyframes qa-standard-button-mask-close {
+    from {
+      -webkit-mask-position: 100% 0;
+      mask-position: 100% 0;
+    }
+    to {
+      -webkit-mask-position: 0 0;
+      mask-position: 0 0;
+    }
+  }
+
+  html[data-participant-theme="arcade"] .qa-theme-button-shell::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: 0;
+    pointer-events: none;
+    background: #000;
+  }
+
+  html[data-participant-theme="arcade"] .qa-theme-button {
+    position: relative;
+    z-index: 1;
+    isolation: isolate;
+    border-radius: 0;
+    overflow: hidden;
+    box-shadow: none !important;
+    transition: transform 90ms steps(2, end);
+  }
+
+  html[data-participant-theme="arcade"] .qa-theme-button.answer-option,
+  html[data-participant-theme="arcade"] .qa-theme-button.answer-option:is(:hover, :focus-visible, .selected, .active) {
+    color: var(--participant-effective-text-color, var(--participant-theme-text, #000)) !important;
+    border-color: var(--participant-effective-text-color, var(--participant-theme-text, #000)) !important;
+    box-shadow: none !important;
+  }
+
+  html[data-participant-theme="arcade"]
+    .qa-theme-button-shell:not(:has(> .qa-theme-button:disabled)):not(:has(> .qa-theme-button[aria-disabled="true"])):not(:has(> .qa-theme-button.disabled)):hover
+    > .qa-theme-button {
+    transform: translate(-2px, -2px);
+  }
+
+  html[data-participant-theme="arcade"]
+    .qa-theme-button-shell:hover > .qa-theme-button:active {
+    transform: translate(0, 0);
+  }
+
+  html[data-participant-theme="arcade"] .qa-theme-button:focus-visible {
+    outline: 3px solid var(--participant-effective-text-color, var(--participant-theme-text, #000));
+    outline-offset: 3px;
+  }
+
+  html[data-participant-theme="arcade"] .qa-theme-button--answer:not(.loading)::before,
+  html[data-participant-theme="arcade"] .qa-theme-button--answer:not(.loading)::after {
+    content: "";
+    position: absolute;
+    inset: -16%;
+    z-index: 1;
+    -webkit-mask-repeat: repeat;
+    mask-repeat: repeat;
+    -webkit-mask-size: 32px 32px;
+    mask-size: 32px 32px;
+    transition: transform 420ms steps(10, end);
+    pointer-events: none;
+  }
+
+  html[data-participant-theme="arcade"] .qa-theme-button--answer:not(.loading)::before {
+    background-color: var(--participant-effective-accent-color-2, var(--participant-accent-color-2, #f24b3d));
+    -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='32' viewBox='0 0 32 32' shape-rendering='crispEdges'%3E%3Cg fill='%23000'%3E%3Crect x='0' y='0' width='16' height='4'/%3E%3Crect x='4' y='4' width='16' height='4'/%3E%3Crect x='8' y='8' width='16' height='4'/%3E%3Crect x='12' y='12' width='16' height='4'/%3E%3Crect x='16' y='16' width='16' height='4'/%3E%3Crect x='20' y='20' width='16' height='4'/%3E%3Crect x='24' y='24' width='16' height='4'/%3E%3Crect x='28' y='28' width='16' height='4'/%3E%3Crect x='-12' y='4' width='16' height='4'/%3E%3Crect x='-8' y='8' width='16' height='4'/%3E%3Crect x='-4' y='12' width='16' height='4'/%3E%3C/g%3E%3C/svg%3E");
+    mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='32' viewBox='0 0 32 32' shape-rendering='crispEdges'%3E%3Cg fill='%23000'%3E%3Crect x='0' y='0' width='16' height='4'/%3E%3Crect x='4' y='4' width='16' height='4'/%3E%3Crect x='8' y='8' width='16' height='4'/%3E%3Crect x='12' y='12' width='16' height='4'/%3E%3Crect x='16' y='16' width='16' height='4'/%3E%3Crect x='20' y='20' width='16' height='4'/%3E%3Crect x='24' y='24' width='16' height='4'/%3E%3Crect x='28' y='28' width='16' height='4'/%3E%3Crect x='-12' y='4' width='16' height='4'/%3E%3Crect x='-8' y='8' width='16' height='4'/%3E%3Crect x='-4' y='12' width='16' height='4'/%3E%3C/g%3E%3C/svg%3E");
+    transform: translate(-118%, -118%);
+  }
+
+  html[data-participant-theme="arcade"] .qa-theme-button--answer:not(.loading)::after {
+    background-color: var(--participant-effective-accent-color, var(--participant-accent-color, #a3a88d));
+    -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='32' viewBox='0 0 32 32' shape-rendering='crispEdges'%3E%3Cg fill='%23000'%3E%3Crect x='16' y='0' width='16' height='4'/%3E%3Crect x='20' y='4' width='16' height='4'/%3E%3Crect x='24' y='8' width='16' height='4'/%3E%3Crect x='28' y='12' width='16' height='4'/%3E%3Crect x='0' y='16' width='16' height='4'/%3E%3Crect x='4' y='20' width='16' height='4'/%3E%3Crect x='8' y='24' width='16' height='4'/%3E%3Crect x='12' y='28' width='16' height='4'/%3E%3Crect x='-12' y='20' width='16' height='4'/%3E%3Crect x='-8' y='24' width='16' height='4'/%3E%3Crect x='-4' y='28' width='16' height='4'/%3E%3C/g%3E%3C/svg%3E");
+    mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='32' viewBox='0 0 32 32' shape-rendering='crispEdges'%3E%3Cg fill='%23000'%3E%3Crect x='16' y='0' width='16' height='4'/%3E%3Crect x='20' y='4' width='16' height='4'/%3E%3Crect x='24' y='8' width='16' height='4'/%3E%3Crect x='28' y='12' width='16' height='4'/%3E%3Crect x='0' y='16' width='16' height='4'/%3E%3Crect x='4' y='20' width='16' height='4'/%3E%3Crect x='8' y='24' width='16' height='4'/%3E%3Crect x='12' y='28' width='16' height='4'/%3E%3Crect x='-12' y='20' width='16' height='4'/%3E%3Crect x='-8' y='24' width='16' height='4'/%3E%3Crect x='-4' y='28' width='16' height='4'/%3E%3C/g%3E%3C/svg%3E");
+    transform: translate(118%, 118%);
+  }
+
+  html[data-participant-theme="arcade"] .qa-theme-button--answer.is-theme-clicked:not(.loading)::before,
+  html[data-participant-theme="arcade"] .qa-theme-button--answer.is-theme-clicked:not(.loading)::after,
+  html[data-participant-theme="arcade"] .qa-theme-button--answer.is-selected:not(.loading)::before,
+  html[data-participant-theme="arcade"] .qa-theme-button--answer.is-selected:not(.loading)::after {
+    transform: translate(0, 0);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .qa-theme-button,
+    .qa-theme-button::before,
+    .qa-theme-button::after,
+    .qa-theme-button-shell::after {
+      animation-duration: 0.001ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.001ms !important;
+    }
+
+    html[data-participant-theme="arcade"] .qa-theme-button-shell:hover > .qa-theme-button {
+      transform: none;
+    }
+  }
+
+  .score-box,
+  .scorebox,
+  .score-history-box,
+  .score-box *,
+  .scorebox *,
+  .score-history-box *,
+  .score-value,
+  .score-label,
+  .score-history-total,
+  .score-box__badge,
+  .score-box__value,
+  .score-box__separator,
+  .score-box__empty,
+  .blackjack-score-total,
+  .blackjack-score-earned,
+  .clue-history-points {
+    font-family: var(--participant-body-font, var(--font-family-sans, "Walkway Condensed", system-ui, sans-serif)) !important;
+  }
+
+  .qa-participant-stage {
+    --qa-participant-stage-width: 100%;
+    position: relative;
+    display: grid !important;
+    grid-template-columns: minmax(0, var(--qa-participant-stage-width)) !important;
+    justify-content: center !important;
+    align-items: start !important;
+    width: 100%;
+    min-width: 0;
+    margin-inline: 0 !important;
+  }
+
+  .qa-participant-stage__content {
+    grid-column: 1 !important;
+    width: 100% !important;
+    min-width: 0;
+    max-width: 100% !important;
+    margin-inline: 0 !important;
+  }
+
+  .qa-participant-stage__aux {
+    grid-column: 1;
+    width: 100% !important;
+    min-width: 0;
+  }
+
+  @media (min-width: 992px) {
+    .qa-participant-stage:has(> .qa-participant-stage__content.col-lg-8) {
+      --qa-participant-stage-width: 66.666667%;
+    }
+
+    .qa-participant-stage:has(> .qa-participant-stage__content.col-lg-8)
+      > .qa-participant-stage__aux {
+      position: absolute !important;
+      inset-inline-end: 0;
+      top: 0;
+      width: 33.333333% !important;
+    }
+
+    .who-that-play-layout.qa-participant-stage {
+      --qa-participant-stage-width: calc(100% - 220px - 1.5rem);
+    }
+  }
+
+  @media (min-width: 1200px) {
+    .qa-participant-stage:has(> .qa-participant-stage__content.col-xl-9) {
+      --qa-participant-stage-width: 75%;
+    }
+
+    .qa-participant-stage:has(> .qa-participant-stage__content.col-xl-9)
+      > .qa-participant-stage__aux {
+      position: absolute !important;
+      inset-inline-end: 0;
+      top: 0;
+      width: 25% !important;
+    }
+
+    .assign-play-layout.qa-participant-stage {
+      --qa-participant-stage-width: calc(100% - 260px - 1.5rem);
+    }
+  }
+
+  .qa-score-widget {
+    position: fixed;
+    z-index: 9000;
+    width: auto;
+    max-width: calc(100vw - 2rem);
+    color: var(--participant-effective-text-color, var(--participant-theme-text, #000));
+    font-family: var(--participant-body-font, var(--font-family-sans, "Walkway Condensed", system-ui, sans-serif));
+    pointer-events: auto;
+  }
+
+  .qa-score-widget--bottom-left {
+    left: max(1rem, env(safe-area-inset-left));
+    bottom: max(1rem, env(safe-area-inset-bottom));
+  }
+
+  .qa-score-widget--top-left {
+    left: max(1rem, env(safe-area-inset-left));
+    top: max(1rem, env(safe-area-inset-top));
+  }
+
+  .qa-score-widget--top-right {
+    right: max(1rem, env(safe-area-inset-right));
+    top: max(1rem, env(safe-area-inset-top));
+  }
+
+  .qa-score-widget--bottom-right {
+    right: max(1rem, env(safe-area-inset-right));
+    bottom: calc(max(1rem, env(safe-area-inset-bottom)) + 4.25rem);
+  }
+
+  .qa-score-widget__toggle {
+    position: relative;
+    z-index: 2;
+    border: 2px solid var(--participant-effective-text-color, var(--participant-theme-text, #000));
+    border-radius: 999px;
+    background: var(--participant-effective-accent-color, var(--participant-accent-color, #a3a88d));
+    color: var(--participant-effective-text-color, var(--participant-theme-text, #000));
+    box-shadow: 0 14px 34px rgba(0, 0, 0, 0.16);
+    cursor: pointer;
+    font: inherit;
+    font-weight: 800;
+    line-height: 1;
+    padding: 0.48rem 0.85rem;
+  }
+
+  .qa-score-widget__body {
+    position: absolute;
+    z-index: 1;
+    width: max-content;
+    min-width: 0;
+    max-width: min(16rem, calc(100vw - 2rem));
+    max-height: min(60vh, 28rem);
+    overflow: auto;
+    margin: 0;
+  }
+
+  .qa-score-widget--bottom-left .qa-score-widget__body {
+    left: 0;
+    bottom: calc(100% + 0.45rem);
+  }
+
+  .qa-score-widget--top-left .qa-score-widget__body {
+    left: 0;
+    top: calc(100% + 0.45rem);
+  }
+
+  .qa-score-widget--top-right .qa-score-widget__body {
+    right: 0;
+    top: calc(100% + 0.45rem);
+  }
+
+  .qa-score-widget--bottom-right .qa-score-widget__body {
+    right: 0;
+    bottom: calc(100% + 0.45rem);
+  }
+
+  .qa-score-widget.is-collapsed .qa-score-widget__body {
+    display: none;
+  }
+
+  .qa-score-widget .score-box,
+  .qa-score-widget .scorebox,
+  .qa-score-widget .score-card,
+  .qa-score-widget .metric {
+    position: static !important;
+    inset: auto !important;
+    width: auto !important;
+    max-width: none !important;
+    margin: 0 !important;
+  }
+
+  .qa-score-widget .score-box,
+  .qa-score-widget .scorebox {
+    max-height: none !important;
+  }
+
+  .qa-score-widget .score-box__title,
+  .qa-score-widget .scorebox > .fw-bold:first-child,
+  .qa-score-widget .score-history-box > h6:first-child,
+  .qa-score-widget .where-score-box > h6:first-child,
+  .qa-score-widget .quiz-score-box > h6:first-child,
+  .qa-score-widget .clue-history-box > h6:first-child,
+  .qa-score-widget .sorting-history-box > h6:first-child,
+  .qa-score-widget .who-that-status-box > h6:first-child {
+    display: none !important;
+  }
+
+  #participant-options-toggle {
+    width: 2.75rem;
+    height: 2.75rem;
+    border: 0;
+    border-radius: 999px;
+    background: var(--participant-options-accent);
+    color: #fff;
+    display: grid;
+    place-items: center;
+    box-shadow: 0 12px 30px rgba(0, 0, 0, 0.22);
+    cursor: pointer;
+    line-height: 1;
+  }
+
+  #participant-options-toggle:hover,
+  #participant-options-toggle:focus {
+    background: rgba(17, 24, 39, 1);
+  }
+
+  #participant-options-toggle:focus {
+    outline: 3px solid rgba(37, 99, 235, 0.45);
+    outline-offset: 2px;
+  }
+
+  .participant-options-shell {
+    position: absolute;
+    right: 0;
+    bottom: calc(100% + 0.75rem);
+    width: min(19rem, calc(100vw - 2rem));
+    display: none;
+    background: var(--participant-options-surface);
+    color: var(--participant-options-text);
+    border: 1px solid rgba(17, 24, 39, 0.14);
+    border-radius: 1rem;
+    box-shadow: 0 22px 60px rgba(15, 23, 42, 0.24);
+    overflow: hidden;
+    backdrop-filter: blur(10px);
+  }
+
+  #participant-options-menu-root.is-open .participant-options-shell {
+    display: block;
+  }
+
+  .participant-options-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    padding: 0.8rem 0.9rem;
+    border-bottom: 1px solid rgba(17, 24, 39, 0.12);
+  }
+
+  .participant-options-close {
+    border: 0;
+    background: transparent;
+    color: var(--participant-options-muted);
+    width: 2rem;
+    height: 2rem;
+    border-radius: 999px;
+    font-size: 1.4rem;
+    line-height: 1;
+    cursor: pointer;
+  }
+
+  .participant-options-close:hover,
+  .participant-options-close:focus {
+    background: rgba(17, 24, 39, 0.08);
+  }
+
+  .participant-options-body {
+    padding: 0.75rem;
+  }
+
+  .participant-options-item {
+    width: 100%;
+    border: 0;
+    border-radius: 0.75rem;
+    background: var(--participant-options-accent);
+    color: #fff;
+    text-align: left;
+    padding: 0.75rem 0.85rem;
+    font-weight: 700;
+    cursor: pointer;
+  }
+
+  .participant-options-item:hover,
+  .participant-options-item:focus {
+    background: #1f2937;
+  }
+
+  .participant-options-panel {
+    margin-top: 0.75rem;
+    padding: 0.85rem;
+    border-radius: 0.85rem;
+    background: #f3f4f6;
+    color: #374151;
+  }
+
+  .participant-options-panel[hidden] {
+    display: none;
+  }
+
+  .participant-options-control {
+    display: grid;
+    gap: 0.45rem;
+    margin-top: 0.8rem;
+  }
+
+  .participant-options-control:first-of-type {
+    margin-top: 0;
+  }
+
+  .participant-options-control label,
+  .participant-options-control-label {
+    color: var(--participant-options-text);
+    font-weight: 700;
+  }
+
+  .participant-options-control-hint {
+    color: var(--participant-options-muted);
+    font-size: 0.9rem;
+  }
+
+  .participant-options-check {
+    display: flex;
+    align-items: center;
+    gap: 0.55rem;
+    color: var(--participant-options-text);
+    font-weight: 700;
+  }
+
+  .participant-options-check input {
+    width: 1rem;
+    height: 1rem;
+    accent-color: var(--participant-options-accent);
+  }
+
+  .participant-color-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 2.5rem);
+    gap: 0.7rem;
+    align-items: center;
+    justify-content: start;
+    overflow: visible;
+  }
+
+  .participant-color-field {
+    position: relative;
+    display: block;
+    width: 2.5rem;
+    height: 2.5rem;
+    color: var(--participant-options-text);
+  }
+
+  .participant-color-field-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+
+  .participant-color-field input[type="color"] {
+    display: block;
+    width: 2.5rem;
+    height: 2.5rem;
+    border: 2px solid var(--participant-options-text);
+    border-radius: 50%;
+    background: transparent;
+    padding: 0.18rem;
+    overflow: hidden;
+    cursor: pointer;
+  }
+
+  .participant-color-field input[type="color"]::-webkit-color-swatch-wrapper {
+    padding: 0;
+  }
+
+  .participant-color-field input[type="color"]::-webkit-color-swatch,
+  .participant-color-field input[type="color"]::-moz-color-swatch {
+    border: 0;
+    border-radius: 50%;
+  }
+
+  .participant-color-field input[type="color"]:focus-visible {
+    outline: 3px solid var(--participant-options-accent);
+    outline-offset: 3px;
+  }
+
+  .participant-color-tooltip {
+    position: absolute;
+    left: 50%;
+    bottom: calc(100% + 0.5rem);
+    z-index: 2;
+    padding: 0.25rem 0.45rem;
+    border-radius: 0.35rem;
+    background: var(--participant-options-accent);
+    color: #fff;
+    font-family: var(--participant-body-font, var(--font-family-sans, system-ui, sans-serif));
+    font-size: 0.82rem;
+    font-weight: 400;
+    line-height: 1;
+    white-space: nowrap;
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+    transform: translate(-50%, 0.2rem);
+    transition: opacity 120ms ease, transform 120ms ease, visibility 120ms ease;
+  }
+
+  .participant-color-field:hover .participant-color-tooltip,
+  .participant-color-field:focus-within .participant-color-tooltip,
+  .participant-color-field:active .participant-color-tooltip {
+    opacity: 1;
+    visibility: visible;
+    transform: translate(-50%, 0);
+  }
+
+  .participant-color-field.is-disabled {
+    opacity: 0.5;
+  }
+
+  .participant-color-field.is-disabled input[type="color"] {
+    cursor: not-allowed;
+  }
+
+  .participant-font-size-controls {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+  }
+
+  .participant-font-size-controls button,
+  .participant-interface-reset {
+    border: 0;
+    border-radius: 999px;
+    background: var(--participant-options-accent);
+    color: #fff;
+    cursor: pointer;
+    font-weight: 800;
+  }
+
+  .participant-font-size-controls button {
+    width: 2.1rem;
+    height: 2.1rem;
+    line-height: 1;
+  }
+
+  .participant-font-size-controls output {
+    min-width: 4rem;
+    text-align: center;
+    color: var(--participant-options-text);
+    font-weight: 800;
+  }
+
+  .participant-theme-select,
+  .participant-score-position-select {
+    width: 100%;
+    border: 1px solid rgba(17, 24, 39, 0.18);
+    border-radius: 0.65rem;
+    background: #fff;
+    color: var(--participant-options-text);
+    padding: 0.55rem 0.65rem;
+  }
+
+  .participant-interface-reset {
+    margin-top: 1rem;
+    padding: 0.6rem 0.85rem;
+  }
+
+  .participant-options-panel p,
+  .participant-options-panel small {
+    margin: 0;
+    color: var(--participant-options-muted);
+    font-size: 0.95rem;
+  }
+
+  .qa-wait-loader-stage,
+  .waiting-animation:has(.qa-arcade-wait-loader),
+  .qa-wait-loader-frame:has(.qa-arcade-wait-loader) {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .qa-wait-loader-frame:has(.qa-arcade-wait-loader) {
+    width: 96px;
+    min-height: 82px;
+  }
+
+/* ============================================================
+   Arcade waiting-loader collection
+   Exactly 10 theme-specific loaders
+   ============================================================ */
+
+.qa-arcade-wait-loader,
+.qa-arcade-wait-loader::before,
+.qa-arcade-wait-loader::after {
+  box-sizing: border-box;
+}
+
+.qa-arcade-wait-loader {
+  flex: 0 0 auto;
+}
+
+/* ------------------------------------------------------------
+   Arcade Loader 01
+   ------------------------------------------------------------ */
+
+.qa-arcade-wait-loader-01 {
+  width: 45px;
+  height: 30px;
+  animation: qa-arcade-loader-01 2s infinite linear;
+}
+
+@keyframes qa-arcade-loader-01 {
+  0%,
+  25% {
+    background:
+      linear-gradient(#e50021 0 0)
+      50% 0 / 66% 100% no-repeat;
+  }
+
+  25.1%,
+  50% {
+    background:
+      linear-gradient(#004ce4 0 0)
+      0 0 / 100% 50% no-repeat,
+      linear-gradient(#004ce4 0 0)
+      0 0 / 33% 100% no-repeat;
+  }
+
+  50.1%,
+  75% {
+    background:
+      linear-gradient(#00e622 0 0)
+      100% 0 / 66% 50% no-repeat,
+      linear-gradient(#00e622 0 0)
+      0 100% / 66% 50% no-repeat;
+  }
+
+  75.1%,
+  100% {
+    background:
+      linear-gradient(#9d0be6 0 0)
+      0 100% / 100% 50% no-repeat,
+      linear-gradient(#9d0be6 0 0)
+      50% 0 / 33% 50% no-repeat;
+  }
+}
+
+/* ------------------------------------------------------------
+   Arcade Loader 02
+   ------------------------------------------------------------ */
+
+.qa-arcade-wait-loader-02 {
+  width: 45px;
+  height: 30px;
+  background:
+    linear-gradient(#004ce4 0 0) 0 100% / 100% 50%,
+    linear-gradient(#004ce4 0 0) 0 0 / calc(100% / 3) 100%;
+  background-repeat: no-repeat;
+  position: relative;
+  clip-path: inset(-100% 0 0 0);
+  animation: qa-arcade-loader-02-main 2s infinite steps(4);
+}
+
+.qa-arcade-wait-loader-02::before,
+.qa-arcade-wait-loader-02::after {
+  content: "";
+  position: absolute;
+  inset: -50% 0 50%;
+  background:
+    linear-gradient(#00e622 0 0)
+    0 0 / calc(2 * 100% / 3) 50%,
+    linear-gradient(#00e622 0 0)
+    100% 100% / calc(2 * 100% / 3) 50%;
+  background-repeat: no-repeat;
+  animation: inherit;
+  animation-name: qa-arcade-loader-02-before;
+}
+
+.qa-arcade-wait-loader-02::after {
+  inset: -100% 0 100%;
+  background:
+    linear-gradient(#e50021 0 0)
+    0 0 / 100% 50%,
+    linear-gradient(#e50021 0 0)
+    100% 0 / calc(100% / 3) 100%;
+  background-repeat: no-repeat;
+  animation-name: qa-arcade-loader-02-after;
+}
+
+@keyframes qa-arcade-loader-02-main {
+  0% {
+    transform: translateY(-250%);
+    clip-path: inset(100% 0 0 0);
+  }
+
+  25%,
+  100% {
+    transform: translateY(0);
+    clip-path: inset(-100% 0 0 0);
+  }
+}
+
+@keyframes qa-arcade-loader-02-before {
+  0%,
+  25% {
+    transform: translateY(-250%);
+  }
+
+  50%,
+  100% {
+    transform: translateY(0);
+  }
+}
+
+@keyframes qa-arcade-loader-02-after {
+  0%,
+  50% {
+    transform: translateY(-250%);
+  }
+
+  75%,
+  100% {
+    transform: translateY(0);
+  }
+}
+
+/* ------------------------------------------------------------
+   Arcade Loader 03
+   ------------------------------------------------------------ */
+
+.qa-arcade-wait-loader-03 {
+  width: 80px;
+  height: 70px;
+  border: 5px solid #000;
+  padding: 0 8px;
+  background:
+    linear-gradient(#fff 0 0) 0 0 / 8px 20px,
+    linear-gradient(#fff 0 0) 100% 0 / 8px 20px,
+    radial-gradient(farthest-side, #fff 90%, #0000)
+    0 5px / 8px 8px content-box,
+    #000;
+  background-repeat: no-repeat;
+  animation: qa-arcade-loader-03 2s infinite linear;
+}
+
+@keyframes qa-arcade-loader-03 {
+  25% {
+    background-position:
+      0 0,
+      100% 100%,
+      100% calc(100% - 5px);
+  }
+
+  50% {
+    background-position:
+      0 100%,
+      100% 100%,
+      0 calc(100% - 5px);
+  }
+
+  75% {
+    background-position:
+      0 100%,
+      100% 0,
+      100% 5px;
+  }
+}
+
+/* ------------------------------------------------------------
+   Arcade Loader 04
+   ------------------------------------------------------------ */
+
+.qa-arcade-wait-loader-04 {
+  width: 50px;
+  aspect-ratio: 1;
+  border-radius: 50%;
+  background:
+    radial-gradient(farthest-side, #000 98%, #0000)
+    55% 20% / 8px 8px no-repeat,
+    #ffcc00;
+  box-shadow:
+    2px -6px 12px 0 inset rgba(0, 0, 0, 0.7);
+  animation:
+    qa-arcade-loader-04 0.5s infinite steps(5) alternate;
+}
+
+@keyframes qa-arcade-loader-04 {
+  0% {
+    clip-path:
+      polygon(
+        50% 50%,
+        100% 0,
+        100% 0,
+        0 0,
+        0 100%,
+        100% 100%,
+        100% 100%
+      );
+  }
+
+  100% {
+    clip-path:
+      polygon(
+        50% 50%,
+        100% 65%,
+        100% 0,
+        0 0,
+        0 100%,
+        100% 100%,
+        100% 35%
+      );
+  }
+}
+
+/* ------------------------------------------------------------
+   Arcade Loader 05
+   ------------------------------------------------------------ */
+
+.qa-arcade-wait-loader-05 {
+  width: 90px;
+  height: 24px;
+  padding: 2px 0;
+  display: flex;
+  background:
+    linear-gradient(#000 0 0)
+    0 0 / 0% 100% no-repeat,
+    radial-gradient(circle 3px, #eeee89 90%, #0000)
+    0 0 / 20% 100%,
+    #000;
+  overflow: hidden;
+  animation:
+    qa-arcade-loader-05-background 3s infinite steps(6);
+}
+
+.qa-arcade-wait-loader-05::before {
+  content: "";
+  width: 20px;
+  flex: 0 0 20px;
+  transform: translate(-100%);
+  border-radius: 50%;
+  background: #ffff2d;
+  animation:
+    qa-arcade-loader-05-mouth
+      0.25s 0.153s infinite steps(5) alternate,
+    qa-arcade-loader-05-move
+      3s infinite linear;
+}
+
+@keyframes qa-arcade-loader-05-mouth {
+  0% {
+    clip-path:
+      polygon(
+        50% 50%,
+        100% 0,
+        100% 0,
+        0 0,
+        0 100%,
+        100% 100%,
+        100% 100%
+      );
+  }
+
+  100% {
+    clip-path:
+      polygon(
+        50% 50%,
+        100% 65%,
+        100% 0,
+        0 0,
+        0 100%,
+        100% 100%,
+        100% 35%
+      );
+  }
+}
+
+@keyframes qa-arcade-loader-05-move {
+  100% {
+    transform: translate(90px);
+  }
+}
+
+@keyframes qa-arcade-loader-05-background {
+  100% {
+    background-size:
+      120% 100%,
+      20% 100%;
+  }
+}
+
+/* ------------------------------------------------------------
+   Arcade Loader 06
+   ------------------------------------------------------------ */
+
+.qa-arcade-wait-loader-06 {
+  width: 80px;
+  height: 60px;
+  background:
+    linear-gradient(#fff 0 0)
+    left / calc(50% - 15px) 8px no-repeat,
+    linear-gradient(#fff 0 0)
+    right / calc(50% - 15px) 8px no-repeat,
+    conic-gradient(
+      from 135deg at top,
+      #0000,
+      red 1deg 90deg,
+      #0000 91deg
+    )
+    bottom / 14px 8px repeat-x,
+    #000;
+  border-bottom: 2px solid red;
+  position: relative;
+  overflow: hidden;
+  animation:
+    qa-arcade-loader-06-background
+    1s infinite linear;
+}
+
+.qa-arcade-wait-loader-06::before {
+  content: "";
+  position: absolute;
+  width: 10px;
+  height: 14px;
+  background: lightblue;
+  left: -5px;
+  animation:
+    qa-arcade-loader-06-jump
+      2s infinite cubic-bezier(0, 100, 1, 100),
+    qa-arcade-loader-06-move
+      2s infinite linear;
+}
+
+@keyframes qa-arcade-loader-06-background {
+  50% {
+    background-position:
+      left,
+      right,
+      bottom -2px left -4px;
+  }
+}
+
+@keyframes qa-arcade-loader-06-jump {
+  0%,
+  27% {
+    bottom: calc(50% + 4px);
+  }
+
+  65%,
+  100% {
+    bottom: calc(50% + 4.1px);
+  }
+}
+
+@keyframes qa-arcade-loader-06-move {
+  100% {
+    left: 100%;
+  }
+}
+
+/* ------------------------------------------------------------
+   Arcade Loader 07
+   ------------------------------------------------------------ */
+
+.qa-arcade-wait-loader-07 {
+  width: 70px;
+  height: 50px;
+  background:
+    conic-gradient(
+      from 135deg at top,
+      #0000,
+      #fff 1deg 90deg,
+      #0000 91deg
+    )
+    right -20px bottom 8px / 18px 9px,
+    linear-gradient(#fff 0 0)
+    bottom / 100% 8px,
+    #000;
+  background-repeat: no-repeat;
+  border-bottom: 8px solid #000;
+  position: relative;
+  animation:
+    qa-arcade-loader-07-background
+    2s infinite linear;
+}
+
+.qa-arcade-wait-loader-07::before {
+  content: "";
+  position: absolute;
+  width: 10px;
+  height: 14px;
+  background: lightblue;
+  left: 10px;
+  animation:
+    qa-arcade-loader-07-jump
+    2s infinite cubic-bezier(0, 200, 1, 200);
+}
+
+@keyframes qa-arcade-loader-07-background {
+  100% {
+    background-position:
+      left -20px bottom 8px,
+      bottom;
+  }
+}
+
+@keyframes qa-arcade-loader-07-jump {
+  0%,
+  50% {
+    bottom: 8px;
+  }
+
+  90%,
+  100% {
+    bottom: 8.1px;
+  }
+}
+
+/* ------------------------------------------------------------
+   Arcade Loader 08
+   Visible text intentionally remains "Loading"
+   ------------------------------------------------------------ */
+
+.qa-arcade-wait-loader-08 {
+  width: fit-content;
+  font-size: 17px;
+  font-family: monospace;
+  line-height: 1.4;
+  font-weight: bold;
+  --qa-arcade-loader-08-color:
+    no-repeat linear-gradient(#000 0 0);
+  background:
+    var(--qa-arcade-loader-08-color),
+    var(--qa-arcade-loader-08-color),
+    var(--qa-arcade-loader-08-color),
+    var(--qa-arcade-loader-08-color),
+    var(--qa-arcade-loader-08-color),
+    var(--qa-arcade-loader-08-color),
+    var(--qa-arcade-loader-08-color);
+  background-size: calc(1ch + 1px) 100%;
+  border-bottom: 10px solid #0000;
+  position: relative;
+  clip-path: inset(-20px 0);
+  animation:
+    qa-arcade-loader-08-text
+    3s infinite linear;
+}
+
+.qa-arcade-wait-loader-08::before {
+  content: "Loading";
+}
+
+.qa-arcade-wait-loader-08::after {
+  content: "";
+  position: absolute;
+  width: 10px;
+  height: 14px;
+  background: #25adda;
+  left: -10px;
+  bottom: 100%;
+  animation:
+    qa-arcade-loader-08-character
+    3s infinite linear;
+}
+
+@keyframes qa-arcade-loader-08-text {
+  0%,
+  12.5% {
+    background-position:
+      calc(0 * 100% / 6) 0,
+      calc(1 * 100% / 6) 0,
+      calc(2 * 100% / 6) 0,
+      calc(3 * 100% / 6) 0,
+      calc(4 * 100% / 6) 0,
+      calc(5 * 100% / 6) 0,
+      calc(6 * 100% / 6) 0;
+  }
+
+  25% {
+    background-position:
+      calc(0 * 100% / 6) 40px,
+      calc(1 * 100% / 6) 0,
+      calc(2 * 100% / 6) 0,
+      calc(3 * 100% / 6) 0,
+      calc(4 * 100% / 6) 0,
+      calc(5 * 100% / 6) 0,
+      calc(6 * 100% / 6) 0;
+  }
+
+  37.5% {
+    background-position:
+      calc(0 * 100% / 6) 40px,
+      calc(1 * 100% / 6) 40px,
+      calc(2 * 100% / 6) 0,
+      calc(3 * 100% / 6) 0,
+      calc(4 * 100% / 6) 0,
+      calc(5 * 100% / 6) 0,
+      calc(6 * 100% / 6) 0;
+  }
+
+  50% {
+    background-position:
+      calc(0 * 100% / 6) 40px,
+      calc(1 * 100% / 6) 40px,
+      calc(2 * 100% / 6) 40px,
+      calc(3 * 100% / 6) 0,
+      calc(4 * 100% / 6) 0,
+      calc(5 * 100% / 6) 0,
+      calc(6 * 100% / 6) 0;
+  }
+
+  62.5% {
+    background-position:
+      calc(0 * 100% / 6) 40px,
+      calc(1 * 100% / 6) 40px,
+      calc(2 * 100% / 6) 40px,
+      calc(3 * 100% / 6) 40px,
+      calc(4 * 100% / 6) 0,
+      calc(5 * 100% / 6) 0,
+      calc(6 * 100% / 6) 0;
+  }
+
+  75% {
+    background-position:
+      calc(0 * 100% / 6) 40px,
+      calc(1 * 100% / 6) 40px,
+      calc(2 * 100% / 6) 40px,
+      calc(3 * 100% / 6) 40px,
+      calc(4 * 100% / 6) 40px,
+      calc(5 * 100% / 6) 0,
+      calc(6 * 100% / 6) 0;
+  }
+
+  87.4% {
+    background-position:
+      calc(0 * 100% / 6) 40px,
+      calc(1 * 100% / 6) 40px,
+      calc(2 * 100% / 6) 40px,
+      calc(3 * 100% / 6) 40px,
+      calc(4 * 100% / 6) 40px,
+      calc(5 * 100% / 6) 40px,
+      calc(6 * 100% / 6) 0;
+  }
+
+  100% {
+    background-position:
+      calc(0 * 100% / 6) 40px,
+      calc(1 * 100% / 6) 40px,
+      calc(2 * 100% / 6) 40px,
+      calc(3 * 100% / 6) 40px,
+      calc(4 * 100% / 6) 40px,
+      calc(5 * 100% / 6) 40px,
+      calc(6 * 100% / 6) 40px;
+  }
+}
+
+@keyframes qa-arcade-loader-08-character {
+  100% {
+    left: 115%;
+  }
+}
+
+/* ------------------------------------------------------------
+   Arcade Loader 09
+   Visible text intentionally remains "Loading"
+   ------------------------------------------------------------ */
+
+.qa-arcade-wait-loader-09 {
+  width: fit-content;
+  font-size: 17px;
+  font-family: monospace;
+  line-height: 1.4;
+  font-weight: bold;
+  background:
+    linear-gradient(#000 0 0) left,
+    linear-gradient(#000 0 0) right;
+  background-repeat: no-repeat;
+  border-right: 5px solid #0000;
+  border-left: 5px solid #0000;
+  background-origin: border-box;
+  position: relative;
+  animation:
+    qa-arcade-loader-09-text
+    2s infinite;
+}
+
+.qa-arcade-wait-loader-09::before {
+  content: "Loading";
+}
+
+.qa-arcade-wait-loader-09::after {
+  content: "";
+  position: absolute;
+  top: 100%;
+  left: 0;
+  width: 22px;
+  height: 60px;
+  background:
+    linear-gradient(
+      90deg,
+      #000 4px,
+      #0000 0 calc(100% - 4px),
+      #000 0
+    )
+    bottom / 22px 20px,
+    linear-gradient(
+      90deg,
+      red 4px,
+      #0000 0 calc(100% - 4px),
+      red 0
+    )
+    bottom 10px left 0 / 22px 6px,
+    linear-gradient(#000 0 0)
+    bottom 3px left 0 / 22px 8px,
+    linear-gradient(#000 0 0)
+    bottom 0 left 50% / 8px 16px;
+  background-repeat: no-repeat;
+  animation:
+    qa-arcade-loader-09-character
+    2s infinite;
+}
+
+@keyframes qa-arcade-loader-09-text {
+  0%,
+  25% {
+    background-size: 50% 100%;
+  }
+
+  25.1%,
+  75% {
+    background-size:
+      0 0,
+      50% 100%;
+  }
+
+  75.1%,
+  100% {
+    background-size:
+      0 0,
+      0 0;
+  }
+}
+
+@keyframes qa-arcade-loader-09-character {
+  25% {
+    background-position:
+      bottom,
+      bottom 54px left 0,
+      bottom 3px left 0,
+      bottom 0 left 50%;
+    left: 0;
+  }
+
+  25.1% {
+    background-position:
+      bottom,
+      bottom 10px left 0,
+      bottom 3px left 0,
+      bottom 0 left 50%;
+    left: 0;
+  }
+
+  50% {
+    background-position:
+      bottom,
+      bottom 10px left 0,
+      bottom 3px left 0,
+      bottom 0 left 50%;
+    left: calc(100% - 22px);
+  }
+
+  75% {
+    background-position:
+      bottom,
+      bottom 54px left 0,
+      bottom 3px left 0,
+      bottom 0 left 50%;
+    left: calc(100% - 22px);
+  }
+
+  75.1% {
+    background-position:
+      bottom,
+      bottom 10px left 0,
+      bottom 3px left 0,
+      bottom 0 left 50%;
+    left: calc(100% - 22px);
+  }
+}
+
+/* ------------------------------------------------------------
+   Arcade Loader 10
+   Visible text intentionally remains "Loading"
+   ------------------------------------------------------------ */
+
+.qa-arcade-wait-loader-10 {
+  width: fit-content;
+  font-size: 17px;
+  font-family: monospace;
+  line-height: 1.4;
+  font-weight: bold;
+  padding: 30px 2px 50px;
+  background:
+    linear-gradient(#000 0 0)
+    0 0 / 100% 100% content-box padding-box no-repeat;
+  position: relative;
+  overflow: hidden;
+  animation:
+    qa-arcade-loader-10-background
+    2s infinite cubic-bezier(1, 175, 0.5, 175);
+}
+
+.qa-arcade-wait-loader-10::before {
+  content: "Loading";
+  display: inline-block;
+  animation:
+    qa-arcade-loader-10-text
+    2s infinite;
+}
+
+.qa-arcade-wait-loader-10::after {
+  content: "";
+  position: absolute;
+  width: 34px;
+  height: 28px;
+  top: 110%;
+  left: calc(50% - 16px);
+  background:
+    linear-gradient(
+      90deg,
+      #0000 12px,
+      #f92033 0 22px,
+      #0000 0 26px,
+      #fdc98d 0 32px,
+      #0000
+    )
+    bottom 26px left 50%,
+    linear-gradient(
+      90deg,
+      #0000 10px,
+      #f92033 0 28px,
+      #fdc98d 0 32px,
+      #0000 0
+    )
+    bottom 24px left 50%,
+    linear-gradient(
+      90deg,
+      #0000 10px,
+      #643700 0 16px,
+      #fdc98d 0 20px,
+      #000 0 22px,
+      #fdc98d 0 24px,
+      #000 0 26px,
+      #f92033 0 32px,
+      #0000 0
+    )
+    bottom 22px left 50%,
+    linear-gradient(
+      90deg,
+      #0000 8px,
+      #643700 0 10px,
+      #fdc98d 0 12px,
+      #643700 0 14px,
+      #fdc98d 0 20px,
+      #000 0 22px,
+      #fdc98d 0 28px,
+      #f92033 0 32px,
+      #0000 0
+    )
+    bottom 20px left 50%,
+    linear-gradient(
+      90deg,
+      #0000 8px,
+      #643700 0 10px,
+      #fdc98d 0 12px,
+      #643700 0 16px,
+      #fdc98d 0 22px,
+      #000 0 24px,
+      #fdc98d 0 30px,
+      #f92033 0 32px,
+      #0000 0
+    )
+    bottom 18px left 50%,
+    linear-gradient(
+      90deg,
+      #0000 8px,
+      #643700 0 12px,
+      #fdc98d 0 20px,
+      #000 0 28px,
+      #f92033 0 30px,
+      #0000 0
+    )
+    bottom 16px left 50%,
+    linear-gradient(
+      90deg,
+      #0000 12px,
+      #fdc98d 0 26px,
+      #f92033 0 30px,
+      #0000 0
+    )
+    bottom 14px left 50%,
+    linear-gradient(
+      90deg,
+      #fdc98d 6px,
+      #f92033 0 14px,
+      #222a87 0 16px,
+      #f92033 0 22px,
+      #222a87 0 24px,
+      #f92033 0 28px,
+      #0000 0 32px,
+      #643700 0
+    )
+    bottom 12px left 50%,
+    linear-gradient(
+      90deg,
+      #fdc98d 6px,
+      #f92033 0 16px,
+      #222a87 0 18px,
+      #f92033 0 24px,
+      #f92033 0 26px,
+      #0000 0 30px,
+      #643700 0
+    )
+    bottom 10px left 50%,
+    linear-gradient(
+      90deg,
+      #0000 10px,
+      #f92033 0 16px,
+      #222a87 0 24px,
+      #feee49 0 26px,
+      #222a87 0 30px,
+      #643700 0
+    )
+    bottom 8px left 50%,
+    linear-gradient(
+      90deg,
+      #0000 12px,
+      #222a87 0 18px,
+      #feee49 0 20px,
+      #222a87 0 30px,
+      #643700 0
+    )
+    bottom 6px left 50%,
+    linear-gradient(
+      90deg,
+      #0000 8px,
+      #643700 0 12px,
+      #222a87 0 30px,
+      #643700 0
+    )
+    bottom 4px left 50%,
+    linear-gradient(
+      90deg,
+      #0000 6px,
+      #643700 0 14px,
+      #222a87 0 26px,
+      #0000 0
+    )
+    bottom 2px left 50%,
+    linear-gradient(
+      90deg,
+      #0000 6px,
+      #643700 0 10px,
+      #0000 0
+    )
+    bottom 0 left 50%;
+  background-size: 34px 2px;
+  background-repeat: no-repeat;
+  animation:
+    qa-arcade-loader-10-character
+    2s infinite cubic-bezier(1, 175, 0.5, 175);
+}
+
+@keyframes qa-arcade-loader-10-background {
+  0%,
+  30% {
+    background-position: 0 0;
+  }
+
+  50%,
+  100% {
+    background-position: 0 -0.1px;
+  }
+}
+
+@keyframes qa-arcade-loader-10-character {
+  50%,
+  100% {
+    top: 109.5%;
+  }
+}
+
+@keyframes qa-arcade-loader-10-text {
+  0%,
+  30% {
+    transform: translateY(0);
+  }
+
+  80%,
+  100% {
+    transform: translateY(-260%);
+  }
+}
+
+html[data-participant-theme="arcade"] .qa-arcade-wait-loader-08::before,
+html[data-participant-theme="arcade"] .qa-arcade-wait-loader-09::before,
+html[data-participant-theme="arcade"] .qa-arcade-wait-loader-10::before {
+  color: #000;
+  -webkit-text-fill-color: #000;
+}
+
+/* ------------------------------------------------------------
+   Reduced motion
+   ------------------------------------------------------------ */
+
+@media (prefers-reduced-motion: reduce) {
+  .qa-arcade-wait-loader,
+  .qa-arcade-wait-loader::before,
+  .qa-arcade-wait-loader::after {
+    animation: none !important;
+  }
+}
+
+  @media (max-width: 480px) {
+    .quiz-header .header-content {
+      grid-template-columns: 1fr;
+      min-height: auto;
+      row-gap: 0.14rem;
+      padding-block: 0.35rem;
+    }
+
+    .quiz-header .quiz-info,
+    .quiz-header .participant-info {
+      grid-column: 1;
+      justify-self: center;
+      text-align: center;
+    }
+
+    .participant-name {
+      font-size: clamp(0.82rem, 3.1vw, 1rem) !important;
+      max-width: min(18rem, 86vw);
+    }
+
+    #participant-options-menu-root {
+      right: 0.75rem;
+      bottom: 0.75rem;
+    }
+
+    #participant-options-toggle {
+      width: 2.55rem;
+      height: 2.55rem;
+    }
+
+    .participant-options-shell {
+      width: min(18rem, calc(100vw - 1.5rem));
+    }
+  }
+</style>
+<link rel="stylesheet" href="{% static 'themes/vhs/vhs.css' %}">
+
+<div id="participant-options-menu-root">
+  <button id="participant-options-toggle" type="button" aria-label="Optionen öffnen" aria-expanded="false" aria-controls="participant-options-menu">
+    &#9881;
+  </button>
+  <div id="participant-options-menu" class="participant-options-shell" role="dialog" aria-label="Teilnehmeroptionen">
+    <div class="participant-options-header">
+      <span>Optionen</span>
+      <button class="participant-options-close" type="button" aria-label="Optionen schließen">&times;</button>
+    </div>
+    <div class="participant-options-body">
+      <button class="participant-options-item" type="button" data-participant-options-panel="interface" aria-expanded="false" aria-controls="participant-options-interface-panel">Interface</button>
+      <section class="participant-options-panel" id="participant-options-interface-panel" hidden>
+        <div class="participant-options-control">
+          <div class="participant-options-control-label">Schriftgröße</div>
+          <div class="participant-font-size-controls" aria-label="Schriftgröße">
+            <button id="participant-font-size-decrease" type="button" aria-label="Schriftgröße verringern">−</button>
+            <output id="participant-font-size-value" aria-live="polite">100 %</output>
+            <button id="participant-font-size-increase" type="button" aria-label="Schriftgröße erhöhen">+</button>
+          </div>
+        </div>
+        <div class="participant-options-control">
+          <label for="participant-theme-select">Theme</label>
+          <select class="participant-theme-select" id="participant-theme-select">
+            <option value="standard">Standard</option>
+            <option value="arcade">Arcade</option>
+            <option value="vhs">VHS</option>
+          </select>
+        </div>
+        <div class="participant-options-control">
+          <label for="participant-score-position-select">Punkteanzeige</label>
+          <select class="participant-score-position-select" id="participant-score-position-select">
+            <option value="bottom-left">links unten</option>
+            <option value="top-left">links oben</option>
+            <option value="top-right">rechts oben</option>
+            <option value="bottom-right">rechts unten</option>
+          </select>
+          <small class="participant-score-position-vhs-hint" hidden>Im VHS-Theme fest positioniert</small>
+        </div>
+        <div class="participant-options-control">
+          <label class="participant-options-check" for="participant-custom-colors-enabled">
+            <input id="participant-custom-colors-enabled" type="checkbox">
+            Eigene Farben
+          </label>
+          <div class="participant-color-grid">
+            <label class="participant-color-field" for="participant-background-color">
+              <span class="participant-color-field-label">Hintergrund</span>
+              <input id="participant-background-color" type="color" value="#d0d6b4" aria-label="Hintergrund" disabled>
+              <span class="participant-color-tooltip" aria-hidden="true">Hintergrund</span>
+            </label>
+            <label class="participant-color-field" for="participant-text-color">
+              <span class="participant-color-field-label">Schrift</span>
+              <input id="participant-text-color" type="color" value="#111827" aria-label="Schrift" disabled>
+              <span class="participant-color-tooltip" aria-hidden="true">Schrift</span>
+            </label>
+            <label class="participant-color-field" for="participant-accent-color">
+              <span class="participant-color-field-label">Akzentfarbe 1</span>
+              <input id="participant-accent-color" type="color" value="#a3a88d" aria-label="Akzentfarbe 1" disabled>
+              <span class="participant-color-tooltip" aria-hidden="true">Akzentfarbe 1</span>
+            </label>
+            <label class="participant-color-field" for="participant-accent-color-2">
+              <span class="participant-color-field-label">Akzentfarbe 2</span>
+              <input id="participant-accent-color-2" type="color" value="#f24b3d" aria-label="Akzentfarbe 2" disabled>
+              <span class="participant-color-tooltip" aria-hidden="true">Akzentfarbe 2</span>
+            </label>
+          </div>
+        </div>
+        <div class="participant-options-control">
+          <label class="participant-options-check" for="participant-high-contrast">
+            <input id="participant-high-contrast" type="checkbox">
+            Hoher Kontrast
+          </label>
+          <label class="participant-options-check" for="participant-invert-colors">
+            <input id="participant-invert-colors" type="checkbox">
+            Invertieren
+          </label>
+        </div>
+        <button class="participant-interface-reset" id="participant-interface-reset" type="button">Zurücksetzen</button>
+      </section>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  var LS_THEME = 'participant_interface_theme';
+  var DEFAULT_THEME = 'standard';
+  var ARCADE_THEME = 'arcade';
+  var VHS_THEME = 'vhs';
+  var standardLoaderVariants = [
+    '',
+    'qa-wait-loader-01',
+    'qa-wait-loader-03',
+    'qa-wait-loader-04',
+    'qa-wait-loader-05',
+    'qa-wait-loader-06',
+    'qa-wait-loader-07',
+    'qa-wait-loader-08',
+    'qa-wait-loader-09',
+    'qa-wait-loader-10',
+    'qa-wait-loader-11',
+    'qa-wait-loader-12',
+    'qa-wait-loader-14',
+    'qa-wait-loader-15',
+    'qa-wait-loader-16',
+    'qa-wait-loader-17',
+    'qa-wait-loader-18',
+    'qa-wait-loader-19'
+  ];
+  var arcadeLoaderVariants = [
+    'qa-arcade-wait-loader-01',
+    'qa-arcade-wait-loader-02',
+    'qa-arcade-wait-loader-03',
+    'qa-arcade-wait-loader-04',
+    'qa-arcade-wait-loader-05',
+    'qa-arcade-wait-loader-06',
+    'qa-arcade-wait-loader-07',
+    'qa-arcade-wait-loader-08',
+    'qa-arcade-wait-loader-09',
+    'qa-arcade-wait-loader-10'
+  ];
+  var waitLoaderSelector = '.qa-wait-loader, .qa-arcade-wait-loader';
+
+  function readStoredTheme() {
+    try {
+      return window.localStorage.getItem(LS_THEME);
+    } catch (error) {
+      return null;
+    }
+  }
+
+  function getActiveTheme() {
+    var datasetTheme = document.documentElement.dataset.participantTheme;
+    var storedTheme = readStoredTheme();
+    if ([DEFAULT_THEME, ARCADE_THEME, VHS_THEME].indexOf(datasetTheme) !== -1) return datasetTheme;
+    return [ARCADE_THEME, VHS_THEME].indexOf(storedTheme) !== -1 ? storedTheme : DEFAULT_THEME;
+  }
+
+  function clearWaitLoaderVariantClasses(loader) {
+    Array.from(loader.classList).forEach(function (className) {
+      var isLayoutClass = className === 'qa-wait-loader-stage' || className === 'qa-wait-loader-frame';
+      if (
+        !isLayoutClass
+        && (
+          className.startsWith('qa-wait-loader-')
+          || className.startsWith('qa-arcade-wait-loader-')
+          || className.startsWith('qa-hypnotic-loader-')
+          || className.startsWith('qa-hypnotic-wait-loader-')
+        )
+      ) {
+        loader.classList.remove(className);
+      }
+    });
+    loader.classList.remove('qa-wait-loader', 'qa-arcade-wait-loader', 'loader');
+  }
+
+  function applyRandomLoaderVariant(loader, force) {
+    if (!loader || loader.nodeType !== 1 || !loader.matches(waitLoaderSelector)) return;
+    var activeTheme = getActiveTheme();
+    if (
+      !force
+      && loader.dataset.qaWaitLoaderVariantApplied === 'true'
+      && loader.dataset.qaWaitLoaderTheme === activeTheme
+    ) {
+      return;
+    }
+
+    clearWaitLoaderVariantClasses(loader);
+
+    if (activeTheme === ARCADE_THEME) {
+      var arcadeVariant = arcadeLoaderVariants[Math.floor(Math.random() * arcadeLoaderVariants.length)];
+      loader.classList.add('qa-arcade-wait-loader', arcadeVariant);
+    } else {
+      var standardVariant = standardLoaderVariants[Math.floor(Math.random() * standardLoaderVariants.length)];
+      loader.classList.add('qa-wait-loader');
+      if (standardVariant) loader.classList.add(standardVariant);
+    }
+
+    loader.dataset.qaWaitLoaderTheme = activeTheme;
+    loader.dataset.qaWaitLoaderVariantApplied = 'true';
+  }
+
+  function applyRandomLoaderVariants(root, force) {
+    if (!root || root.nodeType !== 1) return;
+    applyRandomLoaderVariant(root, force);
+    root.querySelectorAll(waitLoaderSelector).forEach(function (loader) {
+      applyRandomLoaderVariant(loader, force);
+    });
+  }
+
+  function refreshWaitLoaders() {
+    applyRandomLoaderVariants(document.body, true);
+  }
+
+  window.qaParticipantWaitLoaders = {
+    applyAll: refreshWaitLoaders
+  };
+
+  function initRandomWaitLoaders() {
+    applyRandomLoaderVariants(document.body, false);
+    if (!('MutationObserver' in window)) return;
+    new MutationObserver(function (mutations) {
+      mutations.forEach(function (mutation) {
+        mutation.addedNodes.forEach(function (node) {
+          applyRandomLoaderVariants(node, false);
+        });
+      });
+    }).observe(document.body, { childList: true, subtree: true });
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initRandomWaitLoaders, { once: true });
+  } else {
+    initRandomWaitLoaders();
+  }
+}());
+</script>
+
+<script>
+(function () {
+  var root = document.getElementById('participant-options-menu-root');
+  if (!root) return;
+
+  var toggle = document.getElementById('participant-options-toggle');
+  var menu = document.getElementById('participant-options-menu');
+  var closeButton = root.querySelector('.participant-options-close');
+  var interfaceButton = root.querySelector('[data-participant-options-panel="interface"]');
+  var interfacePanel = document.getElementById('participant-options-interface-panel');
+  var fontDecrease = document.getElementById('participant-font-size-decrease');
+  var fontIncrease = document.getElementById('participant-font-size-increase');
+  var fontValue = document.getElementById('participant-font-size-value');
+  var themeSelect = document.getElementById('participant-theme-select');
+  var scorePositionSelect = document.getElementById('participant-score-position-select');
+  var scorePositionVhsHint = root.querySelector('.participant-score-position-vhs-hint');
+  var customColorsToggle = document.getElementById('participant-custom-colors-enabled');
+  var backgroundColorInput = document.getElementById('participant-background-color');
+  var textColorInput = document.getElementById('participant-text-color');
+  var accentColorInput = document.getElementById('participant-accent-color');
+  var accentColor2Input = document.getElementById('participant-accent-color-2');
+  var highContrastToggle = document.getElementById('participant-high-contrast');
+  var invertColorsToggle = document.getElementById('participant-invert-colors');
+  var resetButton = document.getElementById('participant-interface-reset');
+  var LS_FONT_SCALE = 'participant_interface_font_scale';
+  var LS_THEME = 'participant_interface_theme';
+  var LS_SCORE_POSITION = 'participant_interface_score_position';
+  var LS_SCORE_COLLAPSED = 'participant_interface_score_collapsed';
+  var LS_CUSTOM_COLORS_ENABLED = 'participant_interface_custom_colors_enabled';
+  var LS_BACKGROUND_COLOR = 'participant_interface_background_color';
+  var LS_TEXT_COLOR = 'participant_interface_text_color';
+  var LS_ACCENT_COLOR = 'participant_interface_accent_color';
+  var LS_ACCENT_COLOR_2 = 'participant_interface_accent_color_2';
+  var LS_HIGH_CONTRAST = 'participant_interface_high_contrast';
+  var LS_INVERT_COLORS = 'participant_interface_invert_colors';
+  var DEFAULT_FONT_SCALE = 1;
+  var MIN_FONT_SCALE = 0.85;
+  var MAX_FONT_SCALE = 1.3;
+  var FONT_SCALE_STEP = 0.05;
+  var DEFAULT_THEME = 'standard';
+  var THEMES = ['standard', 'arcade', 'vhs'];
+  var DEFAULT_SCORE_POSITION = 'bottom-left';
+  var SCORE_POSITIONS = ['bottom-left', 'top-left', 'top-right', 'bottom-right'];
+  var DEFAULT_BACKGROUND_COLOR = '#d0d6b4';
+  var DEFAULT_TEXT_COLOR = '#111827';
+  var DEFAULT_ACCENT_COLOR = '#a3a88d';
+  var DEFAULT_ACCENT_COLOR_2 = '#f24b3d';
+  var scoreWidget = null;
+  var scoreWidgetButton = null;
+  var vhsThemeShell = null;
+  var vhsThemeObserver = null;
+  var vhsSyncFrame = null;
+  var vhsTimerMaximum = 0;
+  var vhsTimerQuestionKey = '';
+  var vhsRemovedEndscreenNodes = [];
+  var vhsRemovedLobbyHeading = null;
+  var actionThemeClickTimers = new WeakMap();
+  var themeButtonSelector = 'button.btn, button.submit-answer, button.buzzer-button, button.tut-btn, .answer-option';
+  var themeButtonExcludedSelector = [
+    '#participant-options-menu-root',
+    '.qa-score-widget',
+    '.modal',
+    '[role="dialog"]',
+    '.slot-clear-btn',
+    '#resetRoundBtn',
+    '[draggable="true"]',
+    '.draggable-item',
+    '.drop-zone',
+    '.ladder-row',
+    '.ladder-slot-row',
+    '.triangle-container',
+    '.answer-card'
+  ].join(', ');
+
+  function getStoredValue(key) {
+    try {
+      return window.localStorage.getItem(key);
+    } catch (error) {
+      return null;
+    }
+  }
+
+  function setStoredValue(key, value) {
+    try {
+      window.localStorage.setItem(key, value);
+    } catch (error) {
+      return;
+    }
+  }
+
+  function removeStoredValue(key) {
+    try {
+      window.localStorage.removeItem(key);
+    } catch (error) {
+      return;
+    }
+  }
+
+  function readStoredBoolean(key) {
+    return getStoredValue(key) === '1';
+  }
+
+  function setStoredBoolean(key, value) {
+    setStoredValue(key, value ? '1' : '0');
+  }
+
+  function normalizeHexColor(value, fallback) {
+    var normalized = String(value || '').trim().toLowerCase();
+    if (/^#[0-9a-f]{6}$/.test(normalized)) return normalized;
+    return fallback;
+  }
+
+  function invertHexColor(value) {
+    var normalized = normalizeHexColor(value, DEFAULT_BACKGROUND_COLOR);
+    var raw = normalized.slice(1);
+    var inverted = raw.match(/.{2}/g).map(function (part) {
+      return (255 - parseInt(part, 16)).toString(16).padStart(2, '0');
+    }).join('');
+    return '#' + inverted;
+  }
+
+  function getThemeColor(variableName, fallback) {
+    var value = window.getComputedStyle(document.documentElement).getPropertyValue(variableName);
+    return normalizeHexColor(value, fallback);
+  }
+
+  function clampFontScale(value) {
+    return Math.min(MAX_FONT_SCALE, Math.max(MIN_FONT_SCALE, value));
+  }
+
+  function readFontScale() {
+    var stored = parseFloat(getStoredValue(LS_FONT_SCALE));
+    if (!Number.isFinite(stored)) return DEFAULT_FONT_SCALE;
+    return clampFontScale(stored);
+  }
+
+  function applyFontScale(scale) {
+    var normalized = clampFontScale(scale);
+    document.documentElement.style.setProperty('--participant-font-scale', normalized.toFixed(2));
+    document.documentElement.style.setProperty('--participant-root-font-size', (16 * normalized).toFixed(2) + 'px');
+    if (fontValue) fontValue.textContent = Math.round(normalized * 100) + ' %';
+    return normalized;
+  }
+
+  function saveFontScale(scale) {
+    var normalized = applyFontScale(scale);
+    setStoredValue(LS_FONT_SCALE, normalized.toFixed(2));
+  }
+
+  function readTheme() {
+    var stored = getStoredValue(LS_THEME);
+    return THEMES.indexOf(stored) === -1 ? DEFAULT_THEME : stored;
+  }
+
+  function isVhsElementVisible(element) {
+    return !!element
+      && !element.hidden
+      && !element.closest('.d-none, [hidden]');
+  }
+
+  function setVhsText(element, value) {
+    if (element && element.textContent !== value) element.textContent = value;
+  }
+
+  function setReversibleVhsText(element, value) {
+    if (!element) return;
+    if (!Object.prototype.hasOwnProperty.call(element.dataset, 'vhsOriginalText')) {
+      element.dataset.vhsOriginalText = element.textContent;
+    }
+    setVhsText(element, value);
+  }
+
+  function detachVhsEndscreenNode(element) {
+    if (!element || !element.parentNode) return;
+    var placeholder = document.createComment('vhs-endscreen-node');
+    element.parentNode.replaceChild(placeholder, element);
+    vhsRemovedEndscreenNodes.push({element: element, placeholder: placeholder});
+  }
+
+  function restoreVhsEndscreen() {
+    document.querySelectorAll('[data-vhs-endscreen-original-html]').forEach(function (element) {
+      element.innerHTML = element.dataset.vhsEndscreenOriginalHtml;
+      delete element.dataset.vhsEndscreenOriginalHtml;
+    });
+    document.querySelectorAll('[data-vhs-original-text]').forEach(function (element) {
+      element.textContent = element.dataset.vhsOriginalText;
+      delete element.dataset.vhsOriginalText;
+    });
+    vhsRemovedEndscreenNodes.forEach(function (entry) {
+      if (entry.placeholder.parentNode) entry.placeholder.parentNode.replaceChild(entry.element, entry.placeholder);
+    });
+    vhsRemovedEndscreenNodes = [];
+    document.querySelectorAll([
+      '.vhs-end-screen',
+      '.vhs-final-score-wrap',
+      '.vhs-final-score',
+      '.vhs-final-score-value',
+      '.vhs-final-score-label',
+      '.vhs-results-panel',
+      '.vhs-results-meta',
+      '.vhs-results-actions',
+      '.vhs-lobby-return'
+    ].join(', ')).forEach(function (element) {
+      element.classList.remove(
+        'vhs-end-screen',
+        'vhs-final-score-wrap',
+        'vhs-final-score',
+        'vhs-final-score-value',
+        'vhs-final-score-label',
+        'vhs-results-panel',
+        'vhs-results-meta',
+        'vhs-results-actions',
+        'vhs-lobby-return'
+      );
+    });
+  }
+
+  function restoreVhsSubmittedState() {
+    document.querySelectorAll('[data-vhs-submitted-generated="true"]').forEach(function (element) {
+      element.remove();
+    });
+    document.querySelectorAll([
+      '.vhs-answer-submitted-card',
+      '.vhs-answer-submitted-icon',
+      '.vhs-answer-submitted-waiting',
+      '.vhs-submitted-answer-panel',
+      '.vhs-submitted-answer-source'
+    ].join(', ')).forEach(function (element) {
+      element.classList.remove(
+        'vhs-answer-submitted-card',
+        'vhs-answer-submitted-icon',
+        'vhs-answer-submitted-waiting',
+        'vhs-submitted-answer-panel',
+        'vhs-submitted-answer-source'
+      );
+    });
+  }
+
+  function formatVhsRevealAnswer(value, questionType) {
+    var text = String(value == null ? '' : value).trim();
+    var normalizedType = String(questionType || '').trim().toLowerCase();
+    var normalizedValue = text.toLowerCase();
+    var isTrueFalse = ['true_false', 'true-false', 'boolean', 'bool'].includes(normalizedType);
+    if (isTrueFalse && (normalizedValue === 'true' || normalizedValue === '1')) return 'Stimmt';
+    if (isTrueFalse && (normalizedValue === 'false' || normalizedValue === '0')) return 'Stimmt nicht';
+    return text
+      .replace(/\s*\|\s*/g, ' · ')
+      .replace(/Künstler\s*:/gi, 'Kuenstler:');
+  }
+
+  function getVhsPromptLabel(questionType, gameType) {
+    var values = [questionType, gameType]
+      .filter(Boolean)
+      .map(function (value) { return String(value).trim().toLowerCase(); });
+    if (values.some(function (value) {
+      return ['true_false', 'true-false', 'boolean', 'bool'].some(function (type) {
+        return value === type || value.indexOf(type) !== -1;
+      });
+    })) return 'BEHAUPTUNG';
+    if (values.some(function (value) {
+      return ['sorting_ladder', 'sorting-ladder', 'sorting', 'sort', 'ordering', 'assignment', 'assign'].some(function (type) {
+        return value === type || value.indexOf(type) !== -1;
+      });
+    })) return 'AUFGABE';
+    return 'FRAGE';
+  }
+
+  function restoreVhsRevealState() {
+    document.querySelectorAll('.vhs-reveal-card [data-vhs-original-text]').forEach(function (element) {
+      element.textContent = element.dataset.vhsOriginalText;
+      delete element.dataset.vhsOriginalText;
+    });
+    document.querySelectorAll([
+      '.vhs-reveal-card',
+      '.vhs-reveal-hero',
+      '.vhs-reveal-icon',
+      '.vhs-reveal-label',
+      '.vhs-reveal-correct-value',
+      '.vhs-reveal-details',
+      '.vhs-reveal-answer-panel',
+      '.vhs-reveal-panel-label',
+      '.vhs-reveal-panel-value',
+      '.vhs-reveal-prompt-panel',
+      '.vhs-reveal-duplicate',
+      '.vhs-reveal-vs'
+    ].join(', ')).forEach(function (element) {
+      element.classList.remove(
+        'vhs-reveal-card',
+        'vhs-reveal-hero',
+        'vhs-reveal-icon',
+        'vhs-reveal-label',
+        'vhs-reveal-correct-value',
+        'vhs-reveal-details',
+        'vhs-reveal-answer-panel',
+        'vhs-reveal-panel-label',
+        'vhs-reveal-panel-value',
+        'vhs-reveal-prompt-panel',
+        'vhs-reveal-duplicate',
+        'vhs-reveal-vs'
+      );
+    });
+  }
+
+  function syncVhsRevealState(shell) {
+    var state = Array.from(shell.querySelectorAll('#correctAnswerState'))
+      .find(isVhsElementVisible);
+    if (!state) {
+      restoreVhsRevealState();
+      return;
+    }
+    var card = state.querySelector(':scope > .correct-answer-card');
+    if (!card) return;
+    var questionType = state.dataset.vhsRevealQuestionType || '';
+    var gameType = state.dataset.vhsRevealGameType || '';
+    card.classList.add('vhs-reveal-card');
+
+    var hero = card.querySelector(':scope > .answer-reveal');
+    if (hero) hero.classList.add('vhs-reveal-hero');
+    var icon = hero && hero.querySelector('.reveal-icon');
+    if (icon) icon.classList.add('vhs-reveal-icon');
+    var heading = hero && hero.querySelector(':scope > h2');
+    if (heading) {
+      heading.classList.add('vhs-reveal-label');
+      setReversibleVhsText(heading, 'DIE RICHTIGE ANTWORT IST');
+    }
+    var correctValue = hero && hero.querySelector('#correctAnswerDisplay');
+    if (correctValue) {
+      correctValue.classList.add('vhs-reveal-correct-value');
+      if (!Object.prototype.hasOwnProperty.call(correctValue.dataset, 'vhsOriginalText')) {
+        correctValue.dataset.vhsOriginalText = correctValue.textContent;
+      }
+      setVhsText(correctValue, formatVhsRevealAnswer(correctValue.dataset.vhsOriginalText, questionType));
+    }
+
+    var details = card.querySelector(':scope > .comparison-display');
+    if (details) details.classList.add('vhs-reveal-details');
+    var answerPanel = details && details.querySelector(':scope > .comparison-item:first-child');
+    if (answerPanel) answerPanel.classList.add('vhs-reveal-answer-panel');
+    var answerLabel = answerPanel && answerPanel.querySelector('.comparison-label');
+    if (answerLabel) {
+      answerLabel.classList.add('vhs-reveal-panel-label');
+      setReversibleVhsText(answerLabel, 'GEGEBENE ANTWORT');
+    }
+    var answerValue = answerPanel && answerPanel.querySelector('#userAnswerDisplay');
+    if (answerValue) {
+      answerValue.classList.add('vhs-reveal-panel-value');
+      if (!Object.prototype.hasOwnProperty.call(answerValue.dataset, 'vhsOriginalText')) {
+        answerValue.dataset.vhsOriginalText = answerValue.textContent;
+      }
+      setVhsText(answerValue, formatVhsRevealAnswer(answerValue.dataset.vhsOriginalText, questionType));
+    }
+
+    var versus = details && details.querySelector(':scope > .comparison-vs');
+    if (versus) versus.classList.add('vhs-reveal-vs');
+    var duplicate = details && details.querySelector(':scope > .comparison-item:last-child');
+    if (duplicate && duplicate !== answerPanel) duplicate.classList.add('vhs-reveal-duplicate');
+
+    var promptPanel = card.querySelector(':scope > .revealed-question');
+    if (promptPanel) promptPanel.classList.add('vhs-reveal-prompt-panel');
+    var promptLabel = promptPanel && promptPanel.querySelector('.revealed-question-label');
+    if (promptLabel) {
+      promptLabel.classList.add('vhs-reveal-panel-label');
+      setReversibleVhsText(promptLabel, getVhsPromptLabel(questionType, gameType));
+    }
+    var promptValue = promptPanel && promptPanel.querySelector('.revealed-question-text');
+    if (promptValue) promptValue.classList.add('vhs-reveal-panel-value');
+  }
+
+  function syncVhsSubmittedState(shell) {
+    var card = Array.from(shell.querySelectorAll('#answerSubmittedState .submitted-card'))
+      .find(isVhsElementVisible);
+    if (!card) return;
+    card.classList.add('vhs-answer-submitted-card');
+
+    var icon = card.querySelector('.check-icon');
+    if (icon) icon.classList.add('vhs-answer-submitted-icon');
+    if (document.body.classList.contains('who-play-page')) return;
+    var heading = card.querySelector(':scope > h2');
+    setReversibleVhsText(heading, 'ANTWORT EINGELOGGT!');
+    var waiting = card.querySelector(':scope > p');
+    if (waiting) {
+      waiting.classList.add('vhs-answer-submitted-waiting');
+      setReversibleVhsText(waiting, 'Warte auf die nächste Runde...');
+    }
+
+    var panel = card.querySelector(':scope > .submitted-details');
+    var answerSource = panel && panel.querySelector(':scope > .submitted-answer');
+    var timeSource = panel && panel.querySelector(':scope > .submitted-time');
+    var answerText = answerSource && answerSource.querySelector('#submittedAnswerText');
+    var timeText = timeSource && timeSource.querySelector('#submittedTime');
+    if (!panel || !answerText || !timeText) return;
+
+    panel.classList.add('vhs-submitted-answer-panel');
+    answerSource.classList.add('vhs-submitted-answer-source');
+    timeSource.classList.add('vhs-submitted-answer-source');
+
+    var sourceText = answerText.textContent.trim();
+    var values = panel.querySelector(':scope > .vhs-submitted-answer-values');
+    if (!values || values.dataset.vhsSourceText !== sourceText) {
+      if (values) values.remove();
+      values = document.createElement('div');
+      values.className = 'vhs-submitted-answer-values';
+      values.dataset.vhsSubmittedGenerated = 'true';
+      values.dataset.vhsSourceText = sourceText;
+
+      var parts = sourceText ? sourceText.split(/\s*\|\s*/) : [];
+      parts.forEach(function (part, index) {
+        var separatorIndex = part.indexOf(':');
+        var label = separatorIndex >= 0 ? part.slice(0, separatorIndex).trim() : 'Antwort';
+        var value = separatorIndex >= 0 ? part.slice(separatorIndex + 1).trim() : part.trim();
+        if (/^titel$/i.test(label)) label = 'Titel';
+        if (/^k(?:ü|ue)nstler$/i.test(label)) label = 'Kuenstler';
+
+        if (index > 0) {
+          var separator = document.createElement('span');
+          separator.className = 'vhs-submitted-answer-separator';
+          separator.textContent = '·';
+          values.appendChild(separator);
+        }
+        var entry = document.createElement('span');
+        entry.className = 'vhs-submitted-answer-value';
+        entry.append(document.createTextNode(label + ': '));
+        var strong = document.createElement('strong');
+        strong.textContent = value;
+        entry.appendChild(strong);
+        values.appendChild(entry);
+      });
+      var title = panel.querySelector(':scope > .vhs-submitted-answer-title');
+      panel.insertBefore(values, title ? title.nextSibling : panel.firstChild);
+    }
+
+    if (!panel.querySelector(':scope > .vhs-submitted-answer-title')) {
+      var title = document.createElement('div');
+      title.className = 'vhs-submitted-answer-title';
+      title.dataset.vhsSubmittedGenerated = 'true';
+      title.textContent = 'Eingeloggte Antwort';
+      panel.prepend(title);
+    }
+
+    var time = panel.querySelector(':scope > .vhs-submitted-answer-time');
+    if (!time) {
+      time = document.createElement('div');
+      time.className = 'vhs-submitted-answer-time';
+      time.dataset.vhsSubmittedGenerated = 'true';
+      panel.appendChild(time);
+    }
+    setVhsText(time, 'Eingeloggt nach ' + timeText.textContent.trim() + ' Sekunden');
+  }
+
+  function syncVhsEndscreen(shell) {
+    var card = Array.from(shell.querySelectorAll('#quizEndedState .ended-card, .end-screen, .ended-card'))
+      .find(isVhsElementVisible);
+    if (!card) return;
+    card.classList.add('vhs-end-screen');
+
+    var heading = card.querySelector(':scope > h1, :scope > h2');
+    setReversibleVhsText(heading, 'SPIEL BEENDET');
+
+    Array.from(card.children).forEach(function (child) {
+      if (child.tagName === 'P') detachVhsEndscreenNode(child);
+    });
+
+    var finalScoreWrap = card.querySelector(':scope > .final-score, :scope > .estimation-ended-score');
+    if (finalScoreWrap) {
+      finalScoreWrap.classList.add('vhs-final-score-wrap');
+      var finalScore = finalScoreWrap.querySelector('.score-circle') || finalScoreWrap;
+      var value = finalScore.querySelector('.score-value');
+      var label = finalScore.querySelector('.score-label');
+      finalScore.classList.add('vhs-final-score');
+      if (value) value.classList.add('vhs-final-score-value');
+      if (label) {
+        label.classList.add('vhs-final-score-label');
+        setReversibleVhsText(label, 'PUNKTE');
+      }
+    }
+
+    card.querySelectorAll('.post-game-results-card').forEach(function (panel) {
+      panel.classList.add('vhs-results-panel');
+      panel.querySelectorAll('.post-game-results-content > h3').forEach(detachVhsEndscreenNode);
+      panel.querySelectorAll('.post-game-results-meta').forEach(function (meta) {
+        meta.classList.add('vhs-results-meta');
+        if (!Object.prototype.hasOwnProperty.call(meta.dataset, 'vhsEndscreenOriginalHtml')) {
+          var values = Array.from(meta.children).map(function (item) {
+            return item.textContent.trim();
+          });
+          var gameLabel = values.slice(0, 2).filter(Boolean).join(' ');
+          var gameNumber = values.find(function (value) {
+            return /^Spiel\s+/i.test(value);
+          }) || '';
+          meta.dataset.vhsEndscreenOriginalHtml = meta.innerHTML;
+          setVhsText(meta, [gameLabel, gameNumber].filter(Boolean).join(' \u00b7 '));
+        }
+      });
+    });
+
+    var lobbyButton = card.querySelector('#returnToLobbyBtn');
+    if (lobbyButton) {
+      lobbyButton.classList.add('vhs-lobby-return');
+      var actions = lobbyButton.closest('.results-actions, .quiz-actions');
+      if (actions) actions.classList.add('vhs-results-actions');
+    }
+  }
+
+  function restoreVhsLobby() {
+    if (vhsRemovedLobbyHeading && vhsRemovedLobbyHeading.placeholder.parentNode) {
+      vhsRemovedLobbyHeading.placeholder.parentNode.replaceChild(
+        vhsRemovedLobbyHeading.element,
+        vhsRemovedLobbyHeading.placeholder
+      );
+    }
+    vhsRemovedLobbyHeading = null;
+    document.querySelectorAll('.vhs-lobby-next').forEach(function (element) { element.remove(); });
+    document.querySelectorAll([
+      '.vhs-lobby-root',
+      '.vhs-lobby-status-panel',
+      '.vhs-lobby-status-content',
+      '.vhs-lobby-status-label',
+      '.vhs-lobby-status-copy',
+      '.vhs-lobby-status-count',
+      '.vhs-lobby-ready-button',
+      '.vhs-lobby-share',
+      '.vhs-lobby-share-label',
+      '.vhs-lobby-share-value'
+    ].join(', ')).forEach(function (element) {
+      element.classList.remove(
+        'vhs-lobby-root',
+        'vhs-lobby-status-panel',
+        'vhs-lobby-status-content',
+        'vhs-lobby-status-label',
+        'vhs-lobby-status-copy',
+        'vhs-lobby-status-count',
+        'vhs-lobby-ready-button',
+        'vhs-lobby-share',
+        'vhs-lobby-share-label',
+        'vhs-lobby-share-value'
+      );
+    });
+  }
+
+  function syncVhsLobby(shell) {
+    var lobbyRoot = shell.querySelector('[data-participant-lobby]');
+    if (!lobbyRoot) return;
+    shell.classList.add('vhs-lobby-shell');
+    lobbyRoot.classList.add('vhs-lobby-root');
+
+    var appName = shell.querySelector('.vhs-theme-app');
+    var lobbyName = (lobbyRoot.dataset.lobbyName || '').trim();
+    if (appName && lobbyName) setVhsText(appName, 'Lobby · ' + lobbyName);
+
+    var originalHeading = lobbyRoot.querySelector('[data-participant-lobby-heading]');
+    if (originalHeading && !vhsRemovedLobbyHeading) {
+      var placeholder = document.createComment('vhs-lobby-heading');
+      originalHeading.parentNode.replaceChild(placeholder, originalHeading);
+      vhsRemovedLobbyHeading = {element: originalHeading, placeholder: placeholder};
+    }
+
+    var next = lobbyRoot.querySelector(':scope > .vhs-lobby-next');
+    if (!next) {
+      next = document.createElement('div');
+      next.className = 'vhs-lobby-next';
+      var nextLabel = document.createElement('span');
+      nextLabel.className = 'vhs-lobby-next-label';
+      nextLabel.textContent = 'Als nächstes:';
+      var nextGame = document.createElement('strong');
+      nextGame.className = 'vhs-lobby-next-game';
+      next.append(nextLabel, nextGame);
+      lobbyRoot.prepend(next);
+    }
+    var nextGameNumber = (lobbyRoot.dataset.vhsNextGameNumber || '').trim();
+    var nextGameState = (lobbyRoot.dataset.vhsNextGameState || '').trim();
+    setVhsText(
+      next.querySelector('.vhs-lobby-next-game'),
+      nextGameNumber
+        ? 'SPIEL ' + nextGameNumber
+        : (nextGameState === 'complete' ? 'KEINE WEITEREN SPIELE' : 'WARTEN AUF SPIELSTART')
+    );
+
+    var statusPanel = lobbyRoot.querySelector('[data-participant-lobby-status]');
+    if (statusPanel) statusPanel.classList.add('vhs-lobby-status-panel');
+    var statusContent = statusPanel && statusPanel.querySelector('.lobby-top');
+    if (statusContent) statusContent.classList.add('vhs-lobby-status-content');
+    var statusLabel = statusPanel && statusPanel.querySelector('[data-participant-lobby-status-label]');
+    if (statusLabel) statusLabel.classList.add('vhs-lobby-status-label');
+    var statusCopy = statusPanel && statusPanel.querySelector('[data-participant-lobby-status-copy]');
+    if (statusCopy) statusCopy.classList.add('vhs-lobby-status-copy');
+    var statusCount = statusPanel && statusPanel.querySelector('[data-participant-lobby-status-count]');
+    if (statusCount) statusCount.classList.add('vhs-lobby-status-copy', 'vhs-lobby-status-count');
+    var readyButton = statusPanel && statusPanel.querySelector('#readyCheckInBtn');
+    if (readyButton) readyButton.classList.add('vhs-lobby-ready-button');
+
+    var share = lobbyRoot.querySelector('[data-participant-lobby-share]');
+    if (share) share.classList.add('vhs-lobby-share');
+    var shareLabel = share && share.querySelector('[data-participant-lobby-share-label]');
+    if (shareLabel) {
+      shareLabel.classList.add('vhs-lobby-share-label');
+      setReversibleVhsText(shareLabel, 'LOBBY-LINK');
+    }
+    var shareValue = share && share.querySelector('[data-participant-lobby-share-value]');
+    if (shareValue) shareValue.classList.add('vhs-lobby-share-value');
+  }
+
+  function findVhsPageRoot() {
+    return document.querySelector(
+      'body > .play-container, body > .result-container, body > main, body > .container, body > .game-container, body > .wwm-container'
+    );
+  }
+
+  function createVhsThemeChrome(shell) {
+    var header = document.createElement('header');
+    header.className = 'vhs-theme-header';
+    header.dataset.vhsGenerated = 'true';
+
+    var appName = document.createElement('div');
+    appName.className = 'vhs-theme-app';
+    var titleParts = document.title.split(' - ');
+    appName.textContent = (titleParts[titleParts.length - 1] || 'APPNAME').trim() || 'APPNAME';
+
+    var rec = document.createElement('div');
+    rec.className = 'vhs-theme-rec';
+    var recDot = document.createElement('span');
+    recDot.className = 'vhs-theme-rec-dot';
+    var recText = document.createElement('span');
+    recText.className = 'vhs-theme-rec-text';
+    recText.textContent = 'REC · LIVE';
+    rec.append(recDot, recText);
+    header.append(appName, rec);
+
+    var footer = document.createElement('footer');
+    footer.className = 'vhs-theme-footer';
+    footer.dataset.vhsGenerated = 'true';
+    var participant = document.createElement('span');
+    participant.className = 'vhs-theme-participant';
+    participant.textContent = 'LIVE';
+    var timer = document.createElement('div');
+    timer.className = 'vhs-theme-timer';
+    timer.hidden = true;
+    var track = document.createElement('div');
+    track.className = 'vhs-theme-timer-track';
+    track.setAttribute('aria-label', 'Verbleibende Zeit');
+    var fill = document.createElement('span');
+    fill.className = 'vhs-theme-timer-fill';
+    track.appendChild(fill);
+    var time = document.createElement('span');
+    time.className = 'vhs-theme-time';
+    time.textContent = '00:00:00';
+    timer.append(track, time);
+    footer.append(participant, timer);
+
+    shell.prepend(header);
+    shell.appendChild(footer);
+  }
+
+  function restoreVhsQuestions() {
+    document.querySelectorAll('[data-vhs-full-question]').forEach(function (question) {
+      question.textContent = question.dataset.vhsFullQuestion;
+      delete question.dataset.vhsFullQuestion;
+    });
+  }
+
+  function syncVhsLegacyLabels(shell) {
+    var translations = {
+      'Waiting\x20for\x20Next\x20Question': 'WARTE AUF DIE NÄCHSTE RUNDE',
+      'Waiting for other players...': 'Warte auf die anderen Teilnehmer...',
+      'Waiting for other participants...': 'Warte auf die anderen Teilnehmer...',
+      'Waiting for other participants and the next question...': 'Warte auf die nächste Runde...',
+      'Waiting for the other participants...': 'Warte auf die anderen Teilnehmer...',
+      'Waiting for the other participants before the answer is revealed.': 'Warte auf die Auflösung...',
+      'Waiting for next round...': 'Warte auf die nächste Runde...',
+      'Get ready for the next challenge!': 'Mach dich bereit für die nächste Aufgabe!',
+      'Answer Submitted!': 'ANTWORT EINGELOGGT!',
+      'Estimate Submitted!': 'ANTWORT EINGELOGGT!',
+      'Your Estimate:': 'EINGELOGGTE ANTWORT',
+      'Your estimate:': 'EINGELOGGTE ANTWORT',
+      'Correct Answer Revealed!': 'DIE RICHTIGE ANTWORT IST',
+      'Your Answer': 'GEGEBENE ANTWORT',
+      'Your Answer:': 'GEGEBENE ANTWORT',
+      'Correct Answer': 'RICHTIGE ANTWORT',
+      'Correct Answer:': 'RICHTIGE ANTWORT',
+      'Question': 'FRAGE',
+      'Question:': 'FRAGE',
+      'Points': 'PUNKTE',
+      'Points\x20Earned:': 'ERZIELTE PUNKTE',
+      'Correct Matches:': 'RICHTIGE ZUORDNUNGEN',
+      'Correct Identifications:': 'RICHTIGE ERKENNUNGEN',
+      'Accuracy:': 'GENAUIGKEIT',
+      'Accuracy': 'GENAUIGKEIT',
+      'Accuracy Rate': 'TREFFERQUOTE',
+      'Correct Answers': 'RICHTIGE ANTWORTEN',
+      'Photos Answered': 'BEANTWORTETE FOTOS',
+      'Rank': 'RANG',
+      'Detailed Results': 'DETAILERGEBNISSE',
+      'Session Results': 'SESSIONERGEBNIS',
+      'Round Result': 'RUNDENERGEBNIS',
+      'Correct Order': 'RICHTIGE REIHENFOLGE',
+      'No photo available': 'Kein Foto verfügbar',
+      'Also accepts:': 'EBENFALLS GÜLTIG:',
+      'Good Try!': 'GUTER VERSUCH',
+      'Set Complete!': 'SET BEENDET',
+      'All Sets Summary': 'ALLE SETS',
+      'Awarded Points': 'VERGEBENE PUNKTE',
+      'Awarded Points:': 'VERGEBENE PUNKTE',
+      'Points Total': 'GESAMTPUNKTE',
+      'Current Set Stars': 'AKTUELLE SET-STERNE',
+      'Set Points': 'SET-PUNKTE',
+      'Stars This Question:': 'STERNE DIESER FRAGE',
+      'Stars This Set:': 'STERNE DIESES SETS',
+      'Stars Calculation:': 'STERNBERECHNUNG',
+      'Set Stars': 'SET-STERNE',
+      'Last Set': 'LETZTES SET',
+      'Playing': 'AKTIV',
+      'New': 'NEU',
+      'points': 'PUNKTE',
+      'rounds survived': 'ÜBERSTANDENE RUNDEN',
+      'Clear Selection': 'AUSWAHL LÖSCHEN',
+      'No location selected': 'Kein Ort ausgewählt',
+      'Distance from target': 'ENTFERNUNG ZUM ZIEL',
+      'Points earned': 'ERZIELTE PUNKTE',
+      'Location Submitted!': 'ORT EINGELOGGT!',
+      'Quiz Completed!': 'SPIEL BEENDET',
+      'Photo Quiz Completed!': 'SPIEL BEENDET',
+      'Drag & Drop Quiz Completed!': 'SPIEL BEENDET',
+      'Location Quiz Completed!': 'SPIEL BEENDET'
+    };
+    shell.querySelectorAll('h1, h2, h3, h4, h5, h6, p, span, div, label, button').forEach(function (element) {
+      if (element.children.length) return;
+      var original = element.textContent.trim();
+      if (Object.prototype.hasOwnProperty.call(translations, original)) {
+        setReversibleVhsText(element, translations[original]);
+      }
+    });
+
+    var placeholders = {
+      "Type the person's name...": 'Name eingeben...',
+      'Enter whole number...': 'Ganze Zahl eingeben...'
+    };
+    shell.querySelectorAll('input[placeholder], textarea[placeholder]').forEach(function (field) {
+      var placeholder = field.getAttribute('placeholder');
+      if (!Object.prototype.hasOwnProperty.call(placeholders, placeholder)) return;
+      if (!Object.prototype.hasOwnProperty.call(field.dataset, 'vhsOriginalPlaceholder')) {
+        field.dataset.vhsOriginalPlaceholder = placeholder;
+      }
+      field.setAttribute('placeholder', placeholders[placeholder]);
+    });
+  }
+
+  function restoreVhsLegacyLabels() {
+    document.querySelectorAll('[data-vhs-original-placeholder]').forEach(function (field) {
+      field.setAttribute('placeholder', field.dataset.vhsOriginalPlaceholder);
+      delete field.dataset.vhsOriginalPlaceholder;
+    });
+  }
+
+  function teardownVhsTheme() {
+    if (!vhsThemeShell && !vhsThemeObserver) return;
+    if (vhsSyncFrame !== null) window.cancelAnimationFrame(vhsSyncFrame);
+    vhsSyncFrame = null;
+    if (vhsThemeObserver) vhsThemeObserver.disconnect();
+    vhsThemeObserver = null;
+    restoreVhsQuestions();
+    restoreVhsLobby();
+    restoreVhsSubmittedState();
+    restoreVhsRevealState();
+    restoreVhsEndscreen();
+    restoreVhsLegacyLabels();
+    document.querySelectorAll('.vhs-question-kicker').forEach(function (kicker) { kicker.remove(); });
+
+    if (scoreWidget) {
+      if (scoreWidgetButton) scoreWidgetButton.textContent = 'Punkte';
+      scoreWidget.querySelectorAll('.vhs-score-title').forEach(function (title) { title.remove(); });
+      scoreWidget.querySelectorAll('.score-box__list').forEach(function (list) {
+        list.style.removeProperty('--vhs-score-columns');
+        list.style.removeProperty('--vhs-score-rows');
+        list.querySelectorAll(':scope > .vhs-points-column').forEach(function (column) {
+          column.replaceWith.apply(column, Array.from(column.children));
+        });
+      });
+      scoreWidget.querySelectorAll('[data-vhs-original-html]').forEach(function (element) {
+        element.innerHTML = element.dataset.vhsOriginalHtml;
+        delete element.dataset.vhsOriginalHtml;
+      });
+      scoreWidget.querySelectorAll('.vhs-points-panel, .vhs-points-list, .vhs-points-row, .vhs-points-round, .vhs-points-value, .vhs-points-fraction, .vhs-points-unit').forEach(function (element) {
+        element.classList.remove('vhs-points-panel', 'vhs-points-list', 'vhs-points-row', 'vhs-points-round', 'vhs-points-value', 'vhs-points-fraction', 'vhs-points-unit');
+      });
+      document.body.appendChild(scoreWidget);
+    }
+    if (scorePositionSelect) scorePositionSelect.disabled = false;
+    if (scorePositionVhsHint) scorePositionVhsHint.hidden = true;
+
+    if (vhsThemeShell && vhsThemeShell.parentNode) {
+      var shellParent = vhsThemeShell.parentNode;
+      Array.from(vhsThemeShell.children).forEach(function (child) {
+        if (child.dataset.vhsGenerated === 'true' || child === scoreWidget) return;
+        shellParent.insertBefore(child, vhsThemeShell);
+      });
+      vhsThemeShell.remove();
+    }
+    vhsThemeShell = null;
+    vhsTimerMaximum = 0;
+    vhsTimerQuestionKey = '';
+    applyScoreWidgetPosition(readScorePosition());
+  }
+
+  function formatVhsTimer(seconds) {
+    var wholeSeconds = Math.max(0, Math.ceil(seconds));
+    var hours = Math.floor(wholeSeconds / 3600);
+    var minutes = Math.floor((wholeSeconds % 3600) / 60);
+    var remainingSeconds = wholeSeconds % 60;
+    return [hours, minutes, remainingSeconds].map(function (part) {
+      return String(part).padStart(2, '0');
+    }).join(':');
+  }
+
+  function parseVhsTimerValue(value) {
+    var normalized = String(value || '').trim();
+    if (!normalized) return null;
+    if (normalized.indexOf(':') !== -1) {
+      var parts = normalized.split(':').map(Number);
+      if (parts.some(Number.isNaN)) return null;
+      return parts.reduce(function (total, part) { return total * 60 + part; }, 0);
+    }
+    var match = normalized.match(/-?\d+(?:\.\d+)?/);
+    return match ? Math.max(0, Number(match[0])) : null;
+  }
+
+  function getVisibleVhsElement(selector) {
+    return Array.from(document.querySelectorAll(selector)).find(isVhsElementVisible) || null;
+  }
+
+  function syncVhsQuestion(shell, gameMeta) {
+    var question = getVisibleVhsElement([
+      '#questionState #questionText',
+      '#questionState .question-text',
+      '#questionArea .question-text',
+      '#questionArea [data-question-text]',
+      '.game-state:not(.d-none) .question-text'
+    ].join(', '));
+    shell.querySelectorAll('.vhs-question-kicker').forEach(function (kicker) {
+      setVhsText(kicker, gameMeta);
+    });
+    if (!question || question.querySelector(':scope > .vhs-question-lead')) return;
+
+    var originalQuestion = question.textContent;
+    var fullQuestion = originalQuestion.replace(/\s+/g, ' ').trim();
+    if (!fullQuestion) return;
+    question.dataset.vhsFullQuestion = originalQuestion;
+
+    var firstWhitespace = fullQuestion.search(/\s/);
+    var firstWord = firstWhitespace === -1 ? fullQuestion : fullQuestion.slice(0, firstWhitespace);
+    var remainingQuestion = firstWhitespace === -1 ? '' : fullQuestion.slice(firstWhitespace).trimStart();
+    var lead = document.createElement('span');
+    lead.className = 'vhs-question-lead';
+    lead.textContent = firstWord.toLocaleUpperCase('de-DE');
+    var body = document.createElement('span');
+    body.className = 'vhs-question-body';
+    body.textContent = remainingQuestion;
+    question.replaceChildren(lead, body);
+
+    var questionContent = question.closest('.question-content');
+    if (questionContent && !questionContent.querySelector(':scope > .vhs-question-kicker')) {
+      var kicker = document.createElement('p');
+      kicker.className = 'vhs-question-kicker';
+      kicker.textContent = gameMeta;
+      questionContent.insertBefore(kicker, question);
+    }
+  }
+
+  function syncVhsScoreWidget(shell) {
+    var widget = ensureScoreWidget();
+    if (!widget) return;
+    var shortAnswerResponse = Array.from(shell.querySelectorAll('.quick-quiz-response-area'))
+      .find(function (response) {
+        return isVhsElementVisible(response) && response.querySelector('.quick-quiz-short-answer-form');
+      });
+    var estimationResponse = Array.from(shell.querySelectorAll('#questionState .estimation-interaction-area'))
+      .find(isVhsElementVisible);
+    var assignResponse = Array.from(shell.querySelectorAll('#questionState .assign-workspace'))
+      .find(isVhsElementVisible);
+    var revealState = Array.from(shell.querySelectorAll('#correctAnswerState'))
+      .find(isVhsElementVisible);
+    if (shortAnswerResponse) {
+      if (widget.parentNode !== shortAnswerResponse.parentNode || widget.nextSibling !== shortAnswerResponse) {
+        shortAnswerResponse.parentNode.insertBefore(widget, shortAnswerResponse);
+      }
+    } else if (estimationResponse) {
+      if (widget.parentNode !== estimationResponse.parentNode || widget.nextSibling !== estimationResponse) {
+        estimationResponse.parentNode.insertBefore(widget, estimationResponse);
+      }
+    } else if (assignResponse) {
+      if (widget.parentNode !== assignResponse.parentNode || widget.nextSibling !== assignResponse) {
+        assignResponse.parentNode.insertBefore(widget, assignResponse);
+      }
+    } else if (revealState) {
+      if (widget.parentNode !== revealState.parentNode || widget.nextSibling !== revealState) {
+        revealState.parentNode.insertBefore(widget, revealState);
+      }
+    } else if (widget.parentNode !== shell) {
+      shell.insertBefore(widget, shell.querySelector('.vhs-theme-footer'));
+    }
+    if (scoreWidgetButton) setVhsText(scoreWidgetButton, 'P');
+    if (scorePositionSelect) scorePositionSelect.disabled = true;
+    if (scorePositionVhsHint) scorePositionVhsHint.hidden = false;
+
+    var panel = widget.querySelector('.qa-score-widget__body');
+    if (panel) panel.classList.add('vhs-points-panel');
+    if (panel && !panel.querySelector(':scope > .vhs-score-title')) {
+      var title = document.createElement('p');
+      title.className = 'vhs-score-title vhs-points-panel-title';
+      title.textContent = 'PUNKTE PRO RUNDE';
+      panel.prepend(title);
+    }
+    var list = widget.querySelector('.score-box__list');
+    if (!list) return;
+    list.classList.add('vhs-points-list');
+    var rows = Array.from(list.querySelectorAll('.score-box__row'));
+    rows.forEach(function (row) {
+      row.classList.add('vhs-points-row');
+      var round = row.querySelector('.score-box__badge');
+      var value = row.querySelector('.score-box__value');
+      if (round) {
+        round.classList.add('vhs-points-round');
+        if (round.dataset.vhsRoundNumber) setReversibleVhsText(round, round.dataset.vhsRoundNumber);
+      }
+      if (value) {
+        value.classList.add('vhs-points-value');
+        if (!Object.prototype.hasOwnProperty.call(value.dataset, 'vhsOriginalHtml')) {
+          value.dataset.vhsOriginalHtml = value.innerHTML;
+        }
+        var rawMaxPoints = row.dataset.maxPoints;
+        var rawEarnedPoints = row.dataset.pointsEarned;
+        var maxPoints = rawMaxPoints === undefined || rawMaxPoints === '' ? null : Number(rawMaxPoints);
+        var earnedPoints = rawEarnedPoints === undefined || rawEarnedPoints === '' ? null : Number(rawEarnedPoints);
+        var existingText = value.textContent.trim();
+        var isPending = rawEarnedPoints === ''
+          || row.classList.contains('is-upcoming')
+          || row.classList.contains('is-pending')
+          || Boolean(value.querySelector('.score-box__empty'));
+        if (!Number.isFinite(maxPoints) || maxPoints <= 0) {
+          var existingScore = existingText.match(/^(-?\d+(?:\.\d+)?)\s*\/\s*(\d+(?:\.\d+)?)$/);
+          if (existingScore) {
+            earnedPoints = Number(existingScore[1]);
+            maxPoints = Number(existingScore[2]);
+          }
+          var existingPendingScore = existingText.match(/^_+\s*\/\s*(\d+(?:\.\d+)?)$/);
+          if (existingPendingScore) {
+            maxPoints = Number(existingPendingScore[1]);
+            isPending = true;
+          }
+        }
+        var hasKnownMaxPoints = Number.isFinite(maxPoints) && maxPoints > 0;
+        if (hasKnownMaxPoints || Number.isFinite(earnedPoints) || isPending) {
+          var fractionText = (Number.isFinite(earnedPoints) ? earnedPoints : '_')
+            + '/'
+            + (hasKnownMaxPoints ? maxPoints : '_');
+          var existingFraction = value.querySelector(':scope > .vhs-points-fraction');
+          var existingUnit = value.querySelector(':scope > .vhs-points-unit');
+          if (!existingFraction || !existingUnit || existingFraction.textContent !== fractionText) {
+            var fraction = document.createElement('span');
+            fraction.className = 'vhs-points-fraction';
+            fraction.textContent = fractionText;
+            var unit = document.createElement('span');
+            unit.className = 'vhs-points-unit';
+            unit.textContent = 'P';
+            value.replaceChildren(fraction, unit);
+          }
+        }
+      }
+    });
+    var roundCount = rows.length;
+    var columnCount = roundCount <= 3 ? 1 : (roundCount <= 6 ? 2 : 3);
+    var rowCount = Math.max(1, Math.ceil(roundCount / columnCount));
+    list.style.setProperty('--vhs-score-columns', columnCount);
+    list.style.setProperty('--vhs-score-rows', rowCount);
+    var existingColumns = Array.from(list.querySelectorAll(':scope > .vhs-points-column'));
+    var columnsAreCurrent = existingColumns.length === columnCount
+      && existingColumns.every(function (column, columnIndex) {
+        var expectedRows = rows.slice(columnIndex * rowCount, Math.min((columnIndex + 1) * rowCount, roundCount));
+        return expectedRows.length === column.children.length
+          && expectedRows.every(function (row, rowIndex) { return column.children[rowIndex] === row; });
+      });
+    if (!columnsAreCurrent && roundCount) {
+      var fragment = document.createDocumentFragment();
+      for (var columnIndex = 0; columnIndex < columnCount; columnIndex += 1) {
+        var column = document.createElement('div');
+        column.className = 'vhs-points-column';
+        rows.slice(columnIndex * rowCount, Math.min((columnIndex + 1) * rowCount, roundCount)).forEach(function (row) {
+          column.appendChild(row);
+        });
+        fragment.appendChild(column);
+      }
+      list.replaceChildren(fragment);
+    }
+  }
+
+  function syncVhsPresentation() {
+    if (!vhsThemeShell || document.documentElement.dataset.participantTheme !== 'vhs') return;
+    var shell = vhsThemeShell;
+    var title = shell.querySelector('.quiz-title, .qa-game-title-font, .game-title');
+    var gameNumber = shell.querySelector('.session-game-number');
+    var gameTitleText = title ? title.textContent.replace(/\s+/g, ' ').trim().toLocaleUpperCase('de-DE') : '';
+    var gameNumberText = gameNumber ? gameNumber.textContent.replace(/\s+/g, ' ').trim().toLocaleUpperCase('de-DE') : '';
+    var gameMeta = [gameTitleText, gameNumberText].filter(Boolean).join(' · ');
+    syncVhsScoreWidget(shell);
+    syncVhsLobby(shell);
+
+    var currentQuestion = getVisibleVhsElement('#currentQuestionNumber, [data-current-question-number]');
+    var currentQuestionText = currentQuestion
+      ? (currentQuestion.dataset.currentQuestionNumber || currentQuestion.textContent).trim()
+      : '';
+    var scoreRows = shell.querySelectorAll('.score-box__row').length;
+    var recText = shell.querySelector('.vhs-theme-rec-text');
+    if (recText) {
+      var currentNumber = parseInt(currentQuestionText, 10);
+      setVhsText(recText, Number.isFinite(currentNumber) && scoreRows > 0
+        ? 'REC · FRAGE ' + String(currentNumber).padStart(2, '0') + ' / ' + String(scoreRows).padStart(2, '0')
+        : 'REC · LIVE');
+    }
+
+    var participantName = shell.querySelector('.participant-name, [data-participant-name]');
+    var participantNameText = participantName
+      ? (participantName.dataset.participantName || participantName.textContent).trim()
+      : '';
+    var participantDisplay = shell.querySelector('.vhs-theme-participant');
+    if (participantDisplay) {
+      setVhsText(participantDisplay, participantNameText
+        ? 'LIVE · ' + participantNameText.toLocaleUpperCase('de-DE')
+        : 'LIVE');
+    }
+
+    syncVhsQuestion(shell, gameMeta);
+    syncVhsLegacyLabels(shell);
+    syncVhsSubmittedState(shell);
+    syncVhsRevealState(shell);
+    syncVhsEndscreen(shell);
+
+    var whoQuestionState = document.body.classList.contains('who-play-page')
+      ? document.querySelector('#questionState')
+      : null;
+    var timerSource = whoQuestionState && isVhsElementVisible(whoQuestionState)
+      ? document.getElementById('playerSetTimeLeft')
+      : getVisibleVhsElement([
+        '#questionState #playerTimeLeft',
+        '#answerSubmittedState #playerTimeLeftSubmitted',
+        '.game-state:not(.d-none) [data-time-left]',
+        '.game-state:not(.d-none) .time-left'
+      ].join(', '));
+    var timer = shell.querySelector('.vhs-theme-timer');
+    var timerValue = timerSource ? parseVhsTimerValue(timerSource.textContent) : null;
+    var whoTimerMaximum = timerSource && timerSource.id === 'playerSetTimeLeft'
+      ? parseVhsTimerValue(timerSource.dataset.vhsTimerMaximum)
+      : null;
+    if (timerSource && timerSource.id === 'playerSetTimeLeft' && whoTimerMaximum === null) {
+      timerValue = null;
+    }
+    if (timer && timerValue !== null) {
+      var questionKey = whoTimerMaximum !== null
+        ? String(timerSource.dataset.vhsTimerKey || 'active')
+        : (currentQuestionText || String(timerSource.id || 'active'));
+      var timerChanged = questionKey !== vhsTimerQuestionKey;
+      if (whoTimerMaximum !== null) {
+        vhsTimerQuestionKey = questionKey;
+        vhsTimerMaximum = Math.max(1, whoTimerMaximum);
+      } else if (timerChanged || timerValue > vhsTimerMaximum) {
+        vhsTimerQuestionKey = questionKey;
+        vhsTimerMaximum = Math.max(1, timerValue);
+      }
+      var timerFill = timer.querySelector('.vhs-theme-timer-fill');
+      if (whoTimerMaximum !== null && timerChanged && timerFill) {
+        timerFill.style.transition = 'none';
+      }
+      timer.hidden = false;
+      setVhsText(timer.querySelector('.vhs-theme-time'), formatVhsTimer(timerValue));
+      timer.style.setProperty('--vhs-timer-progress', Math.max(0, Math.min(1, timerValue / vhsTimerMaximum)));
+      if (whoTimerMaximum !== null && timerChanged && timerFill) {
+        void timerFill.offsetWidth;
+        timerFill.style.removeProperty('transition');
+      }
+    } else if (timer) {
+      timer.hidden = true;
+    }
+  }
+
+  function scheduleVhsSync() {
+    if (vhsSyncFrame !== null || document.documentElement.dataset.participantTheme !== 'vhs') return;
+    vhsSyncFrame = window.requestAnimationFrame(function () {
+      vhsSyncFrame = null;
+      syncVhsPresentation();
+    });
+  }
+
+  function setupVhsTheme() {
+    if (!vhsThemeShell) {
+      var pageRoot = findVhsPageRoot();
+      if (!pageRoot) return;
+      vhsThemeShell = document.createElement('div');
+      vhsThemeShell.className = 'vhs-theme-shell';
+      pageRoot.parentNode.insertBefore(vhsThemeShell, pageRoot);
+      vhsThemeShell.appendChild(pageRoot);
+      createVhsThemeChrome(vhsThemeShell);
+    }
+    syncVhsPresentation();
+    if (!vhsThemeObserver && 'MutationObserver' in window) {
+      vhsThemeObserver = new MutationObserver(scheduleVhsSync);
+      vhsThemeObserver.observe(vhsThemeShell, {
+        attributes: true,
+        attributeFilter: ['class', 'aria-expanded', 'data-participant-name', 'data-vhs-next-game-number', 'data-vhs-next-game-state', 'data-vhs-reveal-question-type', 'data-vhs-reveal-game-type'],
+        characterData: true,
+        childList: true,
+        subtree: true
+      });
+    }
+  }
+
+  function applyTheme(theme) {
+    var normalized = THEMES.indexOf(theme) === -1 ? DEFAULT_THEME : theme;
+    var previousTheme = document.documentElement.dataset.participantTheme;
+    document.documentElement.dataset.participantTheme = normalized;
+    if (normalized === 'vhs') setupVhsTheme();
+    else teardownVhsTheme();
+    document.querySelectorAll('.qa-theme-button--action').forEach(clearActionThemeButtonState);
+    syncThemeButtonGeometry(document.body);
+    if (themeSelect) themeSelect.value = normalized;
+    if (previousTheme && previousTheme !== normalized && window.qaParticipantWaitLoaders) {
+      window.qaParticipantWaitLoaders.applyAll();
+    }
+    return normalized;
+  }
+
+  function saveTheme(theme) {
+    setStoredValue(LS_THEME, applyTheme(theme));
+    applyColorPreferences();
+  }
+
+  function readScorePosition() {
+    var stored = getStoredValue(LS_SCORE_POSITION);
+    return SCORE_POSITIONS.indexOf(stored) === -1 ? DEFAULT_SCORE_POSITION : stored;
+  }
+
+  function readScoreCollapsed() {
+    return readStoredBoolean(LS_SCORE_COLLAPSED);
+  }
+
+  function findScoreElement() {
+    var scoreElements = document.querySelectorAll('.score-box, .scorebox');
+    for (var index = 0; index < scoreElements.length; index += 1) {
+      if (!scoreElements[index].closest('.qa-score-widget')) return scoreElements[index];
+    }
+    var ownScore = document.getElementById('ownScore');
+    if (!ownScore) return null;
+    return ownScore.closest('.score-card, .metric');
+  }
+
+  function configureParticipantStage(scoreElement) {
+    var stage = scoreElement.closest('.assign-play-layout, .who-that-play-layout, .row');
+    if (!stage) return;
+
+    var directChild = scoreElement;
+    while (directChild.parentElement && directChild.parentElement !== stage) {
+      directChild = directChild.parentElement;
+    }
+    if (directChild.parentElement !== stage) return;
+
+    var content = Array.from(stage.children).find(function (child) {
+      if (child === directChild) return false;
+      return child.matches('.assign-main-column, .who-that-main-column')
+        || child.querySelector('.game-state');
+    });
+    if (!content) return;
+
+    stage.classList.add('qa-participant-stage');
+    content.classList.add('qa-participant-stage__content');
+    if (directChild !== scoreElement) {
+      directChild.classList.add('qa-participant-stage__aux');
+    }
+  }
+
+  function ensureScoreWidget() {
+    if (scoreWidget) return scoreWidget;
+
+    var scoreElement = findScoreElement();
+    if (!scoreElement || scoreElement.closest('.qa-score-widget')) return null;
+
+    configureParticipantStage(scoreElement);
+
+    scoreWidget = document.createElement('aside');
+    scoreWidget.className = 'qa-score-widget';
+    scoreWidget.setAttribute('aria-label', 'Punkteanzeige');
+
+    scoreWidgetButton = document.createElement('button');
+    scoreWidgetButton.type = 'button';
+    scoreWidgetButton.className = 'qa-score-widget__toggle';
+    scoreWidgetButton.textContent = 'Punkte';
+    scoreWidgetButton.setAttribute('aria-controls', 'qa-score-widget-body');
+
+    var scoreWidgetBody = document.createElement('div');
+    scoreWidgetBody.className = 'qa-score-widget__panel qa-score-widget__body';
+    scoreWidgetBody.id = 'qa-score-widget-body';
+
+    scoreElement.parentNode.insertBefore(document.createComment('Scorebox moved to floating widget'), scoreElement);
+    scoreWidgetBody.appendChild(scoreElement);
+    scoreWidget.appendChild(scoreWidgetButton);
+    scoreWidget.appendChild(scoreWidgetBody);
+    document.body.appendChild(scoreWidget);
+
+    scoreWidgetButton.addEventListener('click', function () {
+      var collapsed = !scoreWidget.classList.contains('is-collapsed');
+      setStoredBoolean(LS_SCORE_COLLAPSED, collapsed);
+      applyScoreWidgetCollapsed(collapsed);
+    });
+
+    applyScoreWidgetPosition(readScorePosition());
+    applyScoreWidgetCollapsed(readScoreCollapsed());
+    return scoreWidget;
+  }
+
+  function applyScoreWidgetPosition(position) {
+    var normalized = SCORE_POSITIONS.indexOf(position) === -1 ? DEFAULT_SCORE_POSITION : position;
+    if (scorePositionSelect) scorePositionSelect.value = normalized;
+    if (!ensureScoreWidget()) return normalized;
+    SCORE_POSITIONS.forEach(function (scorePosition) {
+      scoreWidget.classList.toggle('qa-score-widget--' + scorePosition, scorePosition === normalized);
+    });
+    return normalized;
+  }
+
+  function saveScorePosition(position) {
+    setStoredValue(LS_SCORE_POSITION, applyScoreWidgetPosition(position));
+  }
+
+  function applyScoreWidgetCollapsed(collapsed) {
+    if (!ensureScoreWidget()) return;
+    scoreWidget.classList.toggle('is-collapsed', collapsed);
+    if (scoreWidgetButton) {
+      scoreWidgetButton.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+    }
+    var scoreWidgetBody = scoreWidget.querySelector('.qa-score-widget__body');
+    if (scoreWidgetBody) scoreWidgetBody.setAttribute('aria-hidden', collapsed ? 'true' : 'false');
+    if (document.documentElement.dataset.participantTheme === 'vhs') scheduleVhsSync();
+  }
+
+  function observeScoreWidgetTarget() {
+    if (ensureScoreWidget() || !('MutationObserver' in window)) return;
+    var observer = new MutationObserver(function () {
+      if (ensureScoreWidget()) observer.disconnect();
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+  }
+
+  function ensureThemeButtonLabel(button) {
+    if (button.querySelector(':scope > .qa-theme-button__label')) return;
+    var textNodes = Array.from(button.childNodes).filter(function (node) {
+      return node.nodeType === Node.TEXT_NODE && node.textContent.trim();
+    });
+    if (!textNodes.length) return;
+
+    var label = document.createElement('span');
+    label.className = 'qa-theme-button__label';
+    button.insertBefore(label, textNodes[0]);
+    textNodes.forEach(function (node) {
+      label.appendChild(node);
+    });
+  }
+
+  function isThemeButtonCandidate(button) {
+    if (!button || button.nodeType !== 1 || !button.matches(themeButtonSelector)) return false;
+    if (button.closest(themeButtonExcludedSelector)) return false;
+    return !button.matches('[draggable="true"], [aria-grabbed="true"], .is-dragging');
+  }
+
+  function isSelectableThemeAnswer(button) {
+    return button.matches('.answer-option, [data-qa-answer-selectable]');
+  }
+
+  function clearActionThemeButtonState(button) {
+    var timer = actionThemeClickTimers.get(button);
+    if (timer) window.clearTimeout(timer);
+    actionThemeClickTimers.delete(button);
+    button.classList.remove('is-theme-clicked', 'is-selected');
+    button.removeAttribute('aria-pressed');
+  }
+
+  function playActionThemeClick(button) {
+    if (document.documentElement.dataset.participantTheme !== 'standard') {
+      clearActionThemeButtonState(button);
+      return;
+    }
+
+    var timer = actionThemeClickTimers.get(button);
+    if (timer) window.clearTimeout(timer);
+    if (button.classList.contains('is-theme-clicked')) {
+      clearActionThemeButtonState(button);
+      return;
+    }
+
+    button.classList.add('is-theme-clicked');
+    actionThemeClickTimers.set(button, window.setTimeout(function () {
+      button.classList.remove('is-theme-clicked');
+      actionThemeClickTimers.delete(button);
+    }, 750));
+  }
+
+  function enhanceThemeButton(button) {
+    if (!isThemeButtonCandidate(button)) return;
+    var wasEnhanced = button.classList.contains('qa-theme-button');
+    var isAnswerButton = isSelectableThemeAnswer(button);
+    var buttonRadius = window.getComputedStyle(button).borderRadius;
+    button.classList.add('qa-theme-button');
+    button.classList.toggle('qa-theme-button--answer', isAnswerButton);
+    button.classList.toggle('qa-theme-button--action', !isAnswerButton);
+    if (!isAnswerButton && !wasEnhanced) clearActionThemeButtonState(button);
+    ensureThemeButtonLabel(button);
+    if (button.parentElement && button.parentElement.classList.contains('qa-theme-button-shell')) return;
+
+    var shell = document.createElement(button.tagName === 'BUTTON' ? 'span' : 'div');
+    shell.className = 'qa-theme-button-shell';
+    shell.style.setProperty('--qa-theme-button-radius', buttonRadius);
+    if (button.matches('.answer-option') || (button.classList.contains('w-100') && !button.matches('.submit-answer, #logRoundBtn, #submitBtn, #submitRoundBtn'))) {
+      shell.classList.add('qa-theme-button-shell--block');
+    }
+    if (button.matches('.submit-answer, #logRoundBtn, #submitBtn, #submitRoundBtn')) {
+      shell.classList.add('qa-theme-button-shell--centered');
+    }
+    button.parentNode.insertBefore(shell, button);
+    shell.appendChild(button);
+  }
+
+  function syncThemeButtonGeometry(rootNode) {
+    if (!rootNode) return;
+    rootNode.querySelectorAll('.qa-theme-button').forEach(function (button) {
+      var shell = button.parentElement;
+      if (!shell || !shell.classList.contains('qa-theme-button-shell')) return;
+      shell.style.setProperty('--qa-theme-button-radius', window.getComputedStyle(button).borderRadius);
+    });
+  }
+
+  function enhanceThemeButtons(rootNode) {
+    if (!rootNode || rootNode.nodeType !== 1) return;
+    enhanceThemeButton(rootNode);
+    rootNode.querySelectorAll(themeButtonSelector).forEach(enhanceThemeButton);
+  }
+
+  function observeThemeButtons() {
+    enhanceThemeButtons(document.body);
+    if (!('MutationObserver' in window)) return;
+    new MutationObserver(function (mutations) {
+      mutations.forEach(function (mutation) {
+        enhanceThemeButton(mutation.target);
+        mutation.addedNodes.forEach(enhanceThemeButtons);
+      });
+    }).observe(document.body, { childList: true, subtree: true });
+  }
+
+  function readColorPreferences() {
+    return {
+      customColorsEnabled: readStoredBoolean(LS_CUSTOM_COLORS_ENABLED),
+      backgroundColor: normalizeHexColor(getStoredValue(LS_BACKGROUND_COLOR), DEFAULT_BACKGROUND_COLOR),
+      textColor: normalizeHexColor(getStoredValue(LS_TEXT_COLOR), DEFAULT_TEXT_COLOR),
+      accentColor: normalizeHexColor(getStoredValue(LS_ACCENT_COLOR), DEFAULT_ACCENT_COLOR),
+      accentColor2: normalizeHexColor(getStoredValue(LS_ACCENT_COLOR_2), DEFAULT_ACCENT_COLOR_2),
+      highContrast: readStoredBoolean(LS_HIGH_CONTRAST),
+      invertColors: readStoredBoolean(LS_INVERT_COLORS),
+    };
+  }
+
+  function setColorInputsEnabled(enabled) {
+    backgroundColorInput.disabled = !enabled;
+    textColorInput.disabled = !enabled;
+    accentColorInput.disabled = !enabled;
+    accentColor2Input.disabled = !enabled;
+    backgroundColorInput.closest('.participant-color-field').classList.toggle('is-disabled', !enabled);
+    textColorInput.closest('.participant-color-field').classList.toggle('is-disabled', !enabled);
+    accentColorInput.closest('.participant-color-field').classList.toggle('is-disabled', !enabled);
+    accentColor2Input.closest('.participant-color-field').classList.toggle('is-disabled', !enabled);
+  }
+
+  function clearAppliedColorVariables() {
+    [
+      '--participant-bg-color',
+      '--participant-text-color',
+      '--participant-accent-color',
+      '--participant-accent-color-2',
+      '--participant-effective-bg-color',
+      '--participant-effective-text-color',
+      '--participant-effective-accent-color',
+      '--participant-effective-accent-color-2'
+    ].forEach(function (variableName) {
+      document.documentElement.style.removeProperty(variableName);
+    });
+  }
+
+  function applyColorPreferences() {
+    var preferences = readColorPreferences();
+    clearAppliedColorVariables();
+    var backgroundColor = getThemeColor('--participant-theme-background', DEFAULT_BACKGROUND_COLOR);
+    var textColor = getThemeColor('--participant-theme-text', DEFAULT_TEXT_COLOR);
+    var accentColor = getThemeColor('--participant-accent-color', DEFAULT_ACCENT_COLOR);
+    var accentColor2 = getThemeColor('--participant-accent-color-2', DEFAULT_ACCENT_COLOR_2);
+
+    customColorsToggle.checked = preferences.customColorsEnabled;
+    backgroundColorInput.value = preferences.backgroundColor;
+    textColorInput.value = preferences.textColor;
+    accentColorInput.value = preferences.accentColor;
+    accentColor2Input.value = preferences.accentColor2;
+    highContrastToggle.checked = preferences.highContrast;
+    invertColorsToggle.checked = preferences.invertColors;
+    setColorInputsEnabled(preferences.customColorsEnabled);
+
+    if (preferences.customColorsEnabled) {
+      backgroundColor = preferences.backgroundColor;
+      textColor = preferences.textColor;
+      accentColor = preferences.accentColor;
+      accentColor2 = preferences.accentColor2;
+      document.documentElement.style.setProperty('--participant-bg-color', preferences.backgroundColor);
+      document.documentElement.style.setProperty('--participant-text-color', preferences.textColor);
+      document.documentElement.style.setProperty('--participant-accent-color', preferences.accentColor);
+      document.documentElement.style.setProperty('--participant-accent-color-2', preferences.accentColor2);
+    }
+    if (preferences.highContrast) {
+      backgroundColor = '#ffffff';
+      textColor = '#000000';
+      accentColor = backgroundColor;
+      accentColor2 = textColor;
+    }
+    if (preferences.invertColors) {
+      backgroundColor = invertHexColor(backgroundColor);
+      textColor = invertHexColor(textColor);
+      accentColor = invertHexColor(accentColor);
+      accentColor2 = invertHexColor(accentColor2);
+    }
+
+    var colorsApplied = (
+      preferences.customColorsEnabled || preferences.highContrast || preferences.invertColors
+    );
+    if (colorsApplied) {
+      document.documentElement.style.setProperty('--participant-effective-bg-color', backgroundColor);
+      document.documentElement.style.setProperty('--participant-effective-text-color', textColor);
+      document.documentElement.style.setProperty('--participant-effective-accent-color', accentColor);
+      document.documentElement.style.setProperty('--participant-effective-accent-color-2', accentColor2);
+    }
+    document.documentElement.dataset.participantColorsApplied = colorsApplied ? 'true' : 'false';
+    document.documentElement.dataset.participantHighContrast = preferences.highContrast ? 'true' : 'false';
+  }
+
+  function resetInterfaceOptions() {
+    removeStoredValue(LS_FONT_SCALE);
+    removeStoredValue(LS_THEME);
+    removeStoredValue(LS_SCORE_POSITION);
+    removeStoredValue(LS_SCORE_COLLAPSED);
+    removeStoredValue(LS_CUSTOM_COLORS_ENABLED);
+    removeStoredValue(LS_BACKGROUND_COLOR);
+    removeStoredValue(LS_TEXT_COLOR);
+    removeStoredValue(LS_ACCENT_COLOR);
+    removeStoredValue(LS_ACCENT_COLOR_2);
+    removeStoredValue(LS_HIGH_CONTRAST);
+    removeStoredValue(LS_INVERT_COLORS);
+    applyFontScale(DEFAULT_FONT_SCALE);
+    applyTheme(DEFAULT_THEME);
+    applyScoreWidgetPosition(DEFAULT_SCORE_POSITION);
+    applyScoreWidgetCollapsed(false);
+    applyColorPreferences();
+  }
+
+  function setOpen(open) {
+    root.classList.toggle('is-open', open);
+    toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+    if (!open) setInterfacePanelOpen(false);
+  }
+
+  function setInterfacePanelOpen(open) {
+    if (!interfacePanel || !interfaceButton) return;
+    interfacePanel.hidden = !open;
+    interfaceButton.setAttribute('aria-expanded', open ? 'true' : 'false');
+  }
+
+  toggle.addEventListener('click', function () {
+    setOpen(!root.classList.contains('is-open'));
+  });
+
+  closeButton.addEventListener('click', function () {
+    setOpen(false);
+    toggle.focus();
+  });
+
+  interfaceButton.addEventListener('click', function () {
+    setInterfacePanelOpen(interfacePanel.hidden);
+  });
+
+  fontDecrease.addEventListener('click', function () {
+    saveFontScale(readFontScale() - FONT_SCALE_STEP);
+  });
+
+  fontIncrease.addEventListener('click', function () {
+    saveFontScale(readFontScale() + FONT_SCALE_STEP);
+  });
+
+  themeSelect.addEventListener('change', function () {
+    saveTheme(themeSelect.value);
+  });
+
+  scorePositionSelect.addEventListener('change', function () {
+    saveScorePosition(scorePositionSelect.value);
+  });
+
+  customColorsToggle.addEventListener('change', function () {
+    setStoredBoolean(LS_CUSTOM_COLORS_ENABLED, customColorsToggle.checked);
+    applyColorPreferences();
+  });
+
+  backgroundColorInput.addEventListener('input', function () {
+    if (backgroundColorInput.disabled) return;
+    setStoredValue(LS_BACKGROUND_COLOR, normalizeHexColor(backgroundColorInput.value, DEFAULT_BACKGROUND_COLOR));
+    applyColorPreferences();
+  });
+
+  textColorInput.addEventListener('input', function () {
+    if (textColorInput.disabled) return;
+    setStoredValue(LS_TEXT_COLOR, normalizeHexColor(textColorInput.value, DEFAULT_TEXT_COLOR));
+    applyColorPreferences();
+  });
+
+  accentColorInput.addEventListener('input', function () {
+    if (accentColorInput.disabled) return;
+    setStoredValue(LS_ACCENT_COLOR, normalizeHexColor(accentColorInput.value, DEFAULT_ACCENT_COLOR));
+    applyColorPreferences();
+  });
+
+  accentColor2Input.addEventListener('input', function () {
+    if (accentColor2Input.disabled) return;
+    setStoredValue(LS_ACCENT_COLOR_2, normalizeHexColor(accentColor2Input.value, DEFAULT_ACCENT_COLOR_2));
+    applyColorPreferences();
+  });
+
+  highContrastToggle.addEventListener('change', function () {
+    setStoredBoolean(LS_HIGH_CONTRAST, highContrastToggle.checked);
+    applyColorPreferences();
+  });
+
+  invertColorsToggle.addEventListener('change', function () {
+    setStoredBoolean(LS_INVERT_COLORS, invertColorsToggle.checked);
+    applyColorPreferences();
+  });
+
+  resetButton.addEventListener('click', resetInterfaceOptions);
+
+  document.addEventListener('click', function (event) {
+    var themeButton = event.target.closest && event.target.closest('.qa-theme-button');
+    if (
+      themeButton
+      && !themeButton.disabled
+      && themeButton.getAttribute('aria-disabled') !== 'true'
+      && !themeButton.classList.contains('disabled')
+      && themeButton.classList.contains('qa-theme-button--action')
+    ) {
+      playActionThemeClick(themeButton);
+    }
+    if (!root.classList.contains('is-open')) return;
+    if (root.contains(event.target)) return;
+    setOpen(false);
+  }, true);
+
+  document.addEventListener('keydown', function (event) {
+    if (event.key !== 'Escape') return;
+    if (!root.classList.contains('is-open')) return;
+    setOpen(false);
+    toggle.focus();
+  });
+
+  applyFontScale(readFontScale());
+  applyTheme(readTheme());
+  applyScoreWidgetPosition(readScorePosition());
+  applyScoreWidgetCollapsed(readScoreCollapsed());
+  observeScoreWidgetTarget();
+  observeThemeButtons();
+  applyColorPreferences();
+}());
+</script>
+{% else %}
 <!-- Accessibility Widget: font size +/- and high-contrast toggle -->
 <style>
   /* ── Widget bar ── */
@@ -194,3 +4244,4 @@
   });
 }());
 </script>
+{% endif %}

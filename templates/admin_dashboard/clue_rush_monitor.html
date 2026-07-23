@@ -5,7 +5,7 @@
 {% block page_subtitle %}Reveal clues, watch participants, and control the session{% endblock %}
 
 {% block content %}
-<div class="where-monitor-content">
+<div class="where-monitor-content host-monitor-content">
     {% include 'includes/_unit_tutorial_notice.html' %}
     <!-- Quiz Status Header -->
     <div class="quiz-status-header mb-4">
@@ -131,7 +131,7 @@
                                             <small class="text-muted d-block mb-1">Bis nächstem Hinweis</small>
                                             <input type="number" class="form-control form-control-sm question-time-input" placeholder="Time (s)" min="5" step="1" style="max-width: 120px;" value="{{ question.host_timer_seconds }}" data-default-time="{{ question.host_timer_seconds }}">
                                         </div>
-                                        <button class="btn btn-secondary send-question-btn" data-question-id="{{ question.id }}" {% if quiz.status != 'active' %}disabled title="Start the quiz to send questions"{% endif %}>
+                                        <button type="button" class="btn btn-secondary send-question-btn" data-question-id="{{ question.id }}" {% if quiz.status != 'active' %}disabled title="Start the quiz to send questions"{% endif %}>
                                             <i data-lucide="send"></i>
                                             Send Question
                                         </button>
@@ -1055,6 +1055,9 @@ document.addEventListener('DOMContentLoaded', function() {
                     window.unitTutorialNotice?.setFromPayload(data);
                     this.resetLiveResponseStateForQuestion();
                     console.log('Question started');
+                    if (data.question?.id) {
+                        this.markQuestionSent(data.question.id);
+                    }
                     location.reload();
                     break;
                     
@@ -1080,7 +1083,7 @@ document.addEventListener('DOMContentLoaded', function() {
                     console.log('Quiz ended:', data.message);
                     // Clear persisted sent state so a new session starts fresh
                     this.resetSentStates();
-                    location.reload();
+                    window.hostEndState?.apply({ message: data.message, event: data });
                     break;
 
                 case 'quiz_inactive':
@@ -1321,10 +1324,6 @@ document.addEventListener('DOMContentLoaded', function() {
                 }
 
                 this.websocket.send(JSON.stringify(payload));
-
-                // Optimistically mark as sent to prevent duplicate sends
-                this.markQuestionSent(questionId);
-                if (btn) this.updateSendButtonAsSent(btn);
             }
         }
         

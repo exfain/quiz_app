@@ -6,6 +6,9 @@ from Assign.models import AssignQuiz
 from Estimation.models import EstimationQuiz
 from QuizGame.models import Quiz as QuizGameModel
 from black_jack_quiz.models import BlackJackQuiz
+from buzzer.models import BuzzerGame
+from host_points.models import HostPointsGame
+from wann_war_das.models import WannWarDasGame
 from clue_rush.models import ClueRushGame
 from games_hub.models import HubSession
 from sorting_ladder.models import SortingLadderGame
@@ -27,6 +30,9 @@ GAME_MODELS = {
     'clue_rush': ClueRushGame,
     'sorting_ladder': SortingLadderGame,
     'wer_weiss_mehr': WerWeissMehrGame,
+    'buzzer': BuzzerGame,
+    'host_points': HostPointsGame,
+    'wann_war_das': WannWarDasGame,
 }
 
 GAME_LABELS = {
@@ -39,6 +45,9 @@ GAME_LABELS = {
     'blackjack': 'Black Jack Quiz',
     'clue_rush': 'Clue Rush',
     'sorting_ladder': 'Sorting Ladder',
+    'buzzer': 'Buzzer',
+    'host_points': 'Host-Punktevergabe',
+    'wann_war_das': 'Wann war das?',
     'wer_weiss_mehr': 'Wer weiß mehr?',
 }
 
@@ -91,6 +100,9 @@ def build_spectator_state(session):
         'assign': _serialize_assign,
         'sorting_ladder': _serialize_sorting_ladder,
         'wer_weiss_mehr': _serialize_wer_weiss_mehr,
+        'buzzer': _serialize_buzzer,
+        'host_points': _serialize_host_points,
+        'wann_war_das': _serialize_wann_war_das,
     }.get(step.game_key)
 
     payload = serializer(game, session) if serializer else {}
@@ -472,6 +484,61 @@ def _serialize_sorting_ladder(game, session):
         'timer': _timer_payload(game_session, end_attr='round_end_time'),
         'question': question_payload,
         'response_count': 0,
+    }
+
+
+def _serialize_buzzer(game, session):
+    state = game.serialize_state(session.code)
+    round_state = state.get('round') or {}
+    return {
+        'phase': 'complete' if getattr(game, 'status', None) == 'completed' else 'question',
+        'message': 'Buzzer',
+        'round': round_state,
+        'participants': state.get('participants', []),
+        'question': {
+            'text': f"Runde {round_state.get('number') or 0}",
+            'current_buzz_participant': round_state.get('current_buzz_participant'),
+            'buzzer_open': round_state.get('buzzer_open'),
+        },
+        'response_count': len(round_state.get('buzzes') or []),
+    }
+
+
+def _serialize_host_points(game, session):
+    state = game.serialize_state(session.code)
+    round_state = state.get('round') or {}
+    return {
+        'phase': 'complete' if getattr(game, 'status', None) == 'completed' else 'question',
+        'message': 'Host-Punktevergabe',
+        'round': round_state,
+        'participants': state.get('participants', []),
+        'question': {
+            'text': f"Runde {round_state.get('number') or 0}",
+            'note': 'Der Host vergibt die Punkte manuell.',
+        },
+        'response_count': 0,
+    }
+
+
+def _serialize_wann_war_das(game, session):
+    state = game.serialize_state(session.code)
+    question = state.get('question') or {}
+    timer = state.get('timer') or {}
+    return {
+        'phase': 'complete' if getattr(game, 'status', None) == 'completed' else (
+            'reveal' if state.get('question_state') == 'revealed' else 'question'
+        ),
+        'message': 'Wann war das?',
+        'timer': timer,
+        'question': {
+            'id': question.get('id'),
+            'text': question.get('question_text') or 'Warte auf Frage',
+            'current_tolerance': timer.get('current_tolerance'),
+            'current_points': timer.get('current_points'),
+            'correct_answer': question.get('formatted_correct_answer') if state.get('question_state') == 'revealed' else None,
+        },
+        'participants': state.get('participants', []),
+        'response_count': len(state.get('answers') or []),
     }
 
 

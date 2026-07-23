@@ -54,6 +54,9 @@ urlpatterns = [
 
     # Wer weiß mehr game
     path('wer-weiss-mehr/', include('wer_weiss_mehr.urls')),
+    path('buzzer/', include('buzzer.urls')),
+    path('host-points/', include('host_points.urls')),
+    path('wann-war-das/', include('wann_war_das.urls')),
 
 ]
 

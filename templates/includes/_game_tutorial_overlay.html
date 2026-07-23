@@ -49,6 +49,42 @@
     .game-tutorial-close {
         min-width: 180px;
     }
+
+    .session-readiness-overlay {
+        position: fixed;
+        inset: 0;
+        z-index: 2600;
+        display: none;
+        align-items: center;
+        justify-content: center;
+        padding: 1.25rem;
+        background: rgba(15, 23, 42, 0.72);
+    }
+
+    .session-readiness-overlay.is-visible {
+        display: flex;
+    }
+
+    .session-readiness-card {
+        width: min(100%, 420px);
+        background: #ffffff;
+        border-radius: 1.1rem;
+        padding: 1.5rem;
+        box-shadow: 0 24px 60px rgba(15, 23, 42, 0.28);
+    }
+
+    .session-readiness-card h2 {
+        margin: 0 0 0.75rem;
+        color: #0f172a;
+        font-size: 1.35rem;
+        font-weight: 700;
+    }
+
+    .session-readiness-card p {
+        margin: 0 0 1.25rem;
+        color: #334155;
+        line-height: 1.5;
+    }
 </style>
 
 <div id="gameTutorialOverlay" class="game-tutorial-overlay" aria-hidden="true">
@@ -57,6 +93,14 @@
         <h2 class="game-tutorial-title" id="gameTutorialTitle">Spielerläuterung</h2>
         <div class="game-tutorial-text" id="gameTutorialText"></div>
         <button type="button" class="btn btn-primary game-tutorial-close" id="gameTutorialCloseBtn">Okay</button>
+    </div>
+</div>
+
+<div id="sessionReadinessOverlay" class="session-readiness-overlay" aria-hidden="true">
+    <div class="session-readiness-card">
+        <h2>Bereitschaftscheck</h2>
+        <p id="sessionReadinessText">Bereitschaftscheck: Bitte bestätige, dass du bereit bist.</p>
+        <button type="button" class="btn btn-success w-100" id="sessionReadinessReadyBtn">Bereit</button>
     </div>
 </div>
 
@@ -127,6 +171,8 @@
                 'clue-rush': 'clue-rush',
                 'sorting-ladder': 'sorting-ladder',
                 'wer-weiss-mehr': 'wer-weiss-mehr',
+                buzzer: 'buzzer',
+                wann_war_das: 'wann-war-das',
             };
             const wsPath = routeMap[parts[0]];
             const roomCode = parts[2];
@@ -178,5 +224,66 @@
                 hideOverlay();
             }
         });
+
+        function getReadinessElements() {
+            return {
+                overlay: document.getElementById('sessionReadinessOverlay'),
+                text: document.getElementById('sessionReadinessText'),
+                button: document.getElementById('sessionReadinessReadyBtn'),
+            };
+        }
+
+        function renderReadinessPayload(payload) {
+            const elements = getReadinessElements();
+            if (!elements.overlay || !payload?.readiness_check) return;
+            const participants = Array.isArray(payload.readiness_participants)
+                ? payload.readiness_participants
+                : [];
+            const me = participants.find((participant) => (
+                String(participant.nickname || '').toLowerCase() === String(participantName || '').toLowerCase()
+            ));
+            const shouldShow = Boolean(payload.readiness_check.active && participantName && me && !me.ready);
+            elements.overlay.classList.toggle('is-visible', shouldShow);
+            elements.overlay.setAttribute('aria-hidden', shouldShow ? 'false' : 'true');
+            if (elements.text) {
+                elements.text.textContent = me?.ready
+                    ? 'Du bist bereit.'
+                    : 'Bereitschaftscheck: Bitte bestätige, dass du bereit bist.';
+            }
+            if (elements.button) elements.button.disabled = false;
+        }
+
+        function connectReadinessSocket() {
+            if (!hubSession || !participantName) return;
+            const scheme = window.location.protocol === 'https:' ? 'wss' : 'ws';
+            const socket = new WebSocket(`${scheme}://${window.location.host}/ws/hub/${hubSession}/`);
+            socket.onopen = function () {
+                socket.send(JSON.stringify({ type: 'get_state' }));
+            };
+            socket.onmessage = function (event) {
+                let payload = null;
+                try {
+                    payload = JSON.parse(event.data);
+                } catch (_) {
+                    return;
+                }
+                if (['state', 'readiness_started', 'readiness_participant_ready', 'readiness_ended'].includes(payload.type)) {
+                    renderReadinessPayload(payload);
+                }
+            };
+            document.addEventListener('click', function (event) {
+                if (!event.target || event.target.id !== 'sessionReadinessReadyBtn') return;
+                event.target.disabled = true;
+                socket.send(JSON.stringify({ type: 'participant_ready', nickname: participantName }));
+                const elements = getReadinessElements();
+                if (elements.text) elements.text.textContent = 'Du bist bereit.';
+                setTimeout(function () {
+                    elements.overlay?.classList.remove('is-visible');
+                    elements.overlay?.setAttribute('aria-hidden', 'true');
+                }, 350);
+            });
+        }
+
+        connectReadinessSocket();
     })();
 </script>

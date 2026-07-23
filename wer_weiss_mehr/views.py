@@ -21,7 +21,6 @@ from games_hub.unit_tutorial_runtime import (
     finish_current_unit_tutorial,
     get_unit_tutorial_state,
     prepare_unit_tutorial_runtime,
-    start_unit_tutorial_if_needed,
     validate_unit_tutorial_request,
 )
 
@@ -32,6 +31,8 @@ from .services import (
     clear_current_set,
     end_current_round,
     finish_set,
+    prepare_set_start,
+    skip_tutorial_set,
     start_set,
     start_next_round_after_review,
     store_pending_input,
@@ -298,11 +299,9 @@ def start_game_set(request, room_code):
         if force_close_tutorial_runtime('wer_weiss_mehr', quiz.room_code, hub_session, quiz):
             _broadcast_tutorial_force_close(quiz)
 
-    deactivate_tutorial_runtime('wer_weiss_mehr', quiz.room_code, hub_session, quiz)
-    unit_tutorial = start_unit_tutorial_if_needed('wer_weiss_mehr', quiz.room_code, hub_session)
-    if unit_tutorial.get('is_tutorial_round'):
-        question_id = unit_tutorial.get('tutorial_question_id')
     try:
+        unit_tutorial = prepare_set_start(quiz, question_id, hub_session_code=hub_session)
+        deactivate_tutorial_runtime('wer_weiss_mehr', quiz.room_code, hub_session, quiz)
         start_set(
             quiz,
             question_id,
@@ -323,6 +322,34 @@ def start_game_set(request, room_code):
             'question_id': question_id,
             'is_tutorial_round': bool(unit_tutorial.get('is_tutorial_round')),
         },
+    )
+    return JsonResponse(state_payload)
+
+
+@login_required
+@require_POST
+def skip_tutorial_set_view(request, room_code):
+    try:
+        data = json.loads(request.body or '{}')
+    except json.JSONDecodeError:
+        return JsonResponse({'success': False, 'error': 'Invalid request format.'}, status=400)
+
+    quiz = get_object_or_404(WerWeissMehrGame, room_code=room_code)
+    if not request.user.is_superuser and quiz.creator != request.user:
+        return JsonResponse({'success': False, 'error': 'Unauthorized'}, status=403)
+    if quiz.status != 'active' or quiz.started_at is None:
+        return JsonResponse({'success': False, 'error': 'Das Spiel wurde noch nicht gestartet.'}, status=400)
+
+    hub_session = (data.get('hub_session') or data.get('hub_session_code') or '').strip() or None
+    skip_tutorial_set(quiz, hub_session_code=hub_session)
+    quiz.refresh_from_db()
+    state_payload = build_game_state(quiz, hub_session_code=hub_session)
+    _broadcast_state_updated(quiz, hub_session)
+    _broadcast_hub_event(
+        quiz,
+        hub_session,
+        'question_ended',
+        {'is_tutorial_round': True, 'tutorial_skipped': True},
     )
     return JsonResponse(state_payload)
 
@@ -478,7 +505,7 @@ def apply_correction(request, room_code):
 
     hub_session = (data.get('hub_session') or data.get('hub_session_code') or '').strip() or None
     try:
-        apply_manual_correction(quiz, response_id, target_answer_id)
+        apply_manual_correction(quiz, response_id, target_answer_id, hub_session_code=hub_session)
     except ValueError as exc:
         return JsonResponse({'success': False, 'error': str(exc)}, status=400)
     except Exception as exc:  # pylint: disable=broad-except

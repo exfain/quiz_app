@@ -1,10 +1,14 @@
+import json
+import logging
+from urllib.parse import urlencode
+
 from django.shortcuts import render, get_object_or_404, redirect
 from django.http import JsonResponse
 from django.views.decorators.http import require_http_methods, require_POST
 from django.views.decorators.csrf import csrf_exempt
 from django.utils import timezone
 from django.db.models import Avg, Count, Q
-import json
+from django.urls import reverse
 from .models import (
     WhoQuiz,
     WhoQuestion,
@@ -13,8 +17,79 @@ from .models import (
     WhoSession,
     get_question_timer_state,
     get_recently_ended_question_id,
+    ensure_who_participant_for_hub,
 )
 from games_hub.unit_tutorial_runtime import get_scorebox_excluded_tutorial_question_ids, is_current_unit_tutorial_question
+
+
+logger = logging.getLogger(__name__)
+
+
+def _get_authorized_hub_who_context(quiz, participant_name, session_code, request=None):
+    """Resolve a current server-side hub identity; intro query values are only consistency checks."""
+    from games_hub.models import HubParticipant, HubSession
+
+    normalized_session = str(session_code or '').strip()
+    normalized_name = str(participant_name or '').strip()
+    if not normalized_session or not normalized_name or quiz.status != 'active':
+        return None
+
+    session = HubSession.objects.filter(
+        code=normalized_session,
+        is_active=True,
+        ended_at__isnull=True,
+    ).first()
+    if not session:
+        return None
+
+    ordered_steps = list(session.steps.order_by('order', 'id'))
+    if not ordered_steps:
+        return None
+    current_step_index = max(0, min(session.current_step_index, len(ordered_steps) - 1))
+    step = ordered_steps[current_step_index]
+    if step.game_key != 'who' or step.room_code != quiz.room_code:
+        return None
+
+    if request is not None:
+        requested_key = (request.GET.get('game_start_key') or '').strip()
+        requested_room = (request.GET.get('game_start_room') or '').strip()
+        if requested_key and requested_key != 'who':
+            return None
+        if requested_room and requested_room != quiz.room_code:
+            return None
+
+    hub_participant = HubParticipant.objects.filter(
+        session=session,
+        nickname=normalized_name,
+        left_permanently_at__isnull=True,
+        check_in_excluded_by_host=False,
+    ).first()
+    if not hub_participant:
+        return None
+
+    snapshots = step.participant_snapshots.all()
+    if snapshots.exists() and not snapshots.filter(
+        participant=hub_participant,
+        active_player=True,
+    ).exists():
+        return None
+
+    return session, step, hub_participant
+
+
+def _redirect_from_invalid_who_play(session_code, participant_name):
+    from games_hub.models import HubSession
+
+    if session_code and HubSession.objects.filter(code=session_code, ended_at__isnull=True).exists():
+        lobby_url = reverse('games_hub:lobby', args=[session_code])
+        query = urlencode({
+            'nickname': participant_name,
+            'who_join_error': 'Teilnahme am aktuellen Spiel konnte nicht bestaetigt werden.',
+        })
+        return redirect(f'{lobby_url}?{query}')
+    if session_code:
+        return redirect('games_hub:join_session')
+    return redirect('who_is_lying:join')
 
 
 def _get_ordered_quiz_questions(quiz, session_code=None):
@@ -179,10 +254,11 @@ def who_join_view(request):
                     'error': 'Name must be 50 characters or less.'
                 })
             
-            if len(room_code) != 4 or not room_code.isdigit():
+            room_code_length = WhoQuiz._meta.get_field('room_code').max_length
+            if len(room_code) != room_code_length:
                 return JsonResponse({
                     'success': False,
-                    'error': 'Room code must be exactly 4 digits.'
+                    'error': f'Room code must be exactly {room_code_length} characters.'
                 })
             
             # Get quiz
@@ -200,48 +276,56 @@ def who_join_view(request):
                     'success': False,
                     'error': 'This quiz is no longer accepting participants.'
                 })
-            
-            # Check participant limit (scope by session if provided)
+
             if hub_session:
-                current_count = quiz.participants.filter(hub_session_code=hub_session).count()
-            else:
-                current_count = quiz.get_participant_count()
+                hub_context = _get_authorized_hub_who_context(
+                    quiz,
+                    participant_name,
+                    hub_session,
+                )
+                if not hub_context:
+                    return JsonResponse({
+                        'success': False,
+                        'error': 'The current hub game could not authorize this participant.',
+                    }, status=403)
+
+                session, _step, hub_participant = hub_context
+                participant = ensure_who_participant_for_hub(
+                    quiz,
+                    hub_participant.nickname,
+                    session.code,
+                )
+                return JsonResponse({
+                    'success': True,
+                    'participant_id': participant.id,
+                    'quiz_status': quiz.status,
+                })
+
+            # Standalone joins retain the existing room-capacity and name checks.
+            current_count = quiz.get_participant_count()
             if current_count >= quiz.max_participants:
                 return JsonResponse({
                     'success': False,
                     'error': 'This quiz is full. Maximum participants reached.'
                 })
             
-            # Check if name is already taken in this quiz (scope by session if provided)
+            # Check if name is already taken in this standalone quiz.
             name_qs = quiz.participants.filter(name__iexact=participant_name)
-            if hub_session:
-                name_qs = name_qs.filter(hub_session_code=hub_session)
             if name_qs.exists():
                 return JsonResponse({
                     'success': False,
                     'error': 'This name is already taken in this quiz. Please choose another name.'
                 })
             
-            # Create participant (scope by session if provided)
-            if hub_session:
-                participant, created = WhoParticipant.objects.get_or_create(
-                    quiz=quiz,
-                    name=participant_name,
-                    hub_session_code=hub_session,
-                    defaults={'is_active': True}
-                )
-            else:
-                participant, created = WhoParticipant.objects.get_or_create(
-                    quiz=quiz,
-                    name=participant_name,
-                    defaults={'is_active': True}
-                )
+            participant, created = WhoParticipant.objects.get_or_create(
+                quiz=quiz,
+                name=participant_name,
+                defaults={'is_active': True}
+            )
             
             if not created:
                 # Reactivate existing participant
                 participant.is_active = True
-                if hub_session and not participant.hub_session_code:
-                    participant.hub_session_code = hub_session
                 participant.save()
             
             return JsonResponse({
@@ -255,11 +339,12 @@ def who_join_view(request):
                 'success': False,
                 'error': 'Invalid request format.'
             })
-        except Exception as e:
+        except Exception:
+            logger.exception('Who join failed unexpectedly')
             return JsonResponse({
                 'success': False,
-                'error': 'An error occurred. Please try again.' + str(e)
-            })
+                'error': 'An error occurred. Please try again.'
+            }, status=500)
 
 
 def check_room_code(request, room_code):
@@ -295,19 +380,99 @@ def check_room_code(request, room_code):
 def who_play(request, room_code, participant_name):
     """Who is lying quiz play page for participants"""
     try:
-        session_code = request.GET.get('hub_session')
-        quiz = get_object_or_404(WhoQuiz, room_code=room_code)
-        participant = get_object_or_404(
-            WhoParticipant, 
-            quiz=quiz, 
+        session_code = (request.GET.get('hub_session') or '').strip() or None
+        quiz = WhoQuiz.objects.filter(room_code=room_code).first()
+        if not quiz:
+            logger.warning(
+                'Who play rejected: room not found',
+                extra={
+                    'who_room_code': room_code,
+                    'hub_session_code': session_code,
+                    'game_start_nonce': request.GET.get('game_start_nonce'),
+                    'participant_name': participant_name,
+                },
+            )
+            return _redirect_from_invalid_who_play(session_code, participant_name)
+
+        participant = WhoParticipant.objects.filter(
+            quiz=quiz,
             name=participant_name,
-            hub_session_code=session_code
+            hub_session_code=session_code,
+        ).first()
+        has_game_start_context = any(
+            request.GET.get(key)
+            for key in (
+                'game_start_intro',
+                'game_start_key',
+                'game_start_room',
+                'game_start_nonce',
+                'game_start_order',
+            )
         )
+        from games_hub.models import HubSession
+        is_known_hub_session = bool(session_code) and HubSession.objects.filter(code=session_code).exists()
+        hub_context = None
+        if session_code and (participant is None or has_game_start_context or is_known_hub_session):
+            hub_context = _get_authorized_hub_who_context(
+                quiz,
+                participant_name,
+                session_code,
+                request=request,
+            )
+            if not hub_context:
+                logger.warning(
+                    'Who play rejected: hub game context is not current',
+                    extra={
+                        'who_quiz_id': quiz.id,
+                        'who_room_code': room_code,
+                        'who_status': quiz.status,
+                        'hub_session_code': session_code,
+                        'game_start_nonce': request.GET.get('game_start_nonce'),
+                        'game_start_order': request.GET.get('game_start_order'),
+                        'participant_name': participant_name,
+                    },
+                )
+                return _redirect_from_invalid_who_play(session_code, participant_name)
+
+        if participant is None:
+            if not hub_context:
+                logger.warning(
+                    'Who play rejected: participant binding missing',
+                    extra={
+                        'who_quiz_id': quiz.id,
+                        'who_room_code': room_code,
+                        'who_status': quiz.status,
+                        'hub_session_code': session_code,
+                        'game_start_nonce': request.GET.get('game_start_nonce'),
+                        'participant_name': participant_name,
+                    },
+                )
+                return _redirect_from_invalid_who_play(session_code, participant_name)
+
+            session, _step, hub_participant = hub_context
+            participant = ensure_who_participant_for_hub(
+                quiz,
+                hub_participant.nickname,
+                session.code,
+            )
         
-        # Mark participant as active
+        was_active = participant.is_active
         participant.is_active = True
         participant.last_activity = timezone.now()
         participant.save()
+        logger.info(
+            'Who play authorized',
+            extra={
+                'hub_session_code': session_code,
+                'hub_participant_id': hub_context[2].id if hub_context else None,
+                'who_participant_id': participant.id,
+                'who_quiz_id': quiz.id,
+                'who_room_code': room_code,
+                'game_start_nonce': request.GET.get('game_start_nonce'),
+                'participant_was_active': was_active,
+                'participant_is_active': participant.is_active,
+            },
+        )
 
         question_scoreboard, initial_progress_history, current_question_number = _build_question_scoreboard(
             quiz,

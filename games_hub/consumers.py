@@ -1,4 +1,5 @@
 import json
+import logging
 from channels.generic.websocket import AsyncWebsocketConsumer
 from channels.db import database_sync_to_async
 from django.utils import timezone
@@ -12,6 +13,12 @@ from .check_in import (
     reset_session_check_in,
     start_session_check_in,
 )
+from .readiness import (
+    end_readiness_check,
+    get_readiness_state,
+    mark_participant_ready,
+    start_readiness_check,
+)
 from QuizGame.models import Quiz as QuizGameModel
 from Assign.models import AssignQuiz
 from Estimation.models import EstimationQuiz
@@ -22,18 +29,44 @@ from black_jack_quiz.models import BlackJackQuiz
 from clue_rush.models import ClueRushGame
 from sorting_ladder.models import SortingLadderGame
 from wer_weiss_mehr.models import WerWeissMehrGame
+from buzzer.models import BuzzerGame
+from host_points.models import HostPointsGame
+from wann_war_das.models import WannWarDasGame
 from .voting import get_voting_state, submit_session_vote
+
+
+logger = logging.getLogger(__name__)
 
 
 class HubConsumer(AsyncWebsocketConsumer):
     async def connect(self):
         self.session_code = self.scope['url_route']['kwargs']['session_code']
         self.group_name = f"hub_{self.session_code}"
+        self.hub_participant_id = None
+        self.hub_participant_name = None
         await self.channel_layer.group_add(self.group_name, self.channel_name)
         await self.accept()
+        logger.info(
+            'Hub lobby socket connected',
+            extra={
+                'hub_session_code': self.session_code,
+                'hub_channel_name': self.channel_name,
+                'lobby_connected_at': timezone.now().isoformat(),
+            },
+        )
         await self.send_json({'type': 'connection_established', 'message': 'Connected to hub', 'session_code': self.session_code})
 
     async def disconnect(self, close_code):
+        logger.info(
+            'Hub lobby socket disconnected without changing participant presence',
+            extra={
+                'hub_session_code': self.session_code,
+                'hub_participant_id': self.hub_participant_id,
+                'hub_channel_name': self.channel_name,
+                'lobby_disconnected_at': timezone.now().isoformat(),
+                'close_code': close_code,
+            },
+        )
         await self.channel_layer.group_discard(self.group_name, self.channel_name)
 
     async def receive(self, text_data):
@@ -58,6 +91,8 @@ class HubConsumer(AsyncWebsocketConsumer):
             await self.handle_navigate_direct(data)
         elif msg_type == 'recall_to_lobby':
             await self.channel_layer.group_send(self.group_name, {'type': 'recall_to_lobby'})
+        elif msg_type == 'inactivate_session':
+            await self.handle_inactivate_session()
         elif msg_type == 'end_session':
             await self.handle_end_session()
         elif msg_type == 'toggle_scoreboard':
@@ -72,6 +107,12 @@ class HubConsumer(AsyncWebsocketConsumer):
             await self.handle_complete_check_in(data)
         elif msg_type == 'reset_check_in':
             await self.handle_reset_check_in()
+        elif msg_type == 'start_readiness_check':
+            await self.handle_start_readiness_check()
+        elif msg_type == 'participant_ready':
+            await self.handle_participant_ready(data)
+        elif msg_type == 'end_readiness_check':
+            await self.handle_end_readiness_check(data)
         elif msg_type == 'get_state':
             await self.send_state()
         elif msg_type == 'ping':
@@ -83,6 +124,8 @@ class HubConsumer(AsyncWebsocketConsumer):
         if not participant:
             await self.send_json({'type': 'error', 'message': 'Unable to join'})
             return
+        self.hub_participant_id = participant
+        self.hub_participant_name = nickname
         
         # Determine if there's an active game to redirect the participant
         game_key, room_code = await self.get_active_game_for_session()
@@ -170,6 +213,12 @@ class HubConsumer(AsyncWebsocketConsumer):
 
     async def session_started(self, event):
         await self.send_json({'type': 'session_started'})
+
+    async def session_inactivated(self, event):
+        await self.send_json({
+            'type': 'session_inactivated',
+            'session_code': event.get('session_code', self.session_code),
+        })
 
     async def navigate(self, event):
         await self.send_json({'type': 'navigate', 'step': event.get('step')})
@@ -279,6 +328,22 @@ class HubConsumer(AsyncWebsocketConsumer):
             HubSession.activate_exclusive(self.session_code)
         except HubSession.DoesNotExist:
             pass
+
+    @database_sync_to_async
+    def inactivate_session_db(self):
+        try:
+            session = HubSession.objects.get(code=self.session_code)
+        except HubSession.DoesNotExist:
+            return {'success': False, 'error': 'Session nicht gefunden.'}
+
+        if session.ended_at:
+            return {'success': False, 'error': 'Session ist bereits beendet.'}
+
+        if session.is_active:
+            session.is_active = False
+            session.save(update_fields=['is_active'])
+        HubSession.pause_active_games_for_session_codes([self.session_code])
+        return {'success': True}
 
     @database_sync_to_async
     def pause_games_for_inactive_sessions(self):
@@ -404,6 +469,12 @@ class HubConsumer(AsyncWebsocketConsumer):
             **(event.get('state') or {}),
         })
 
+    async def readiness_update(self, event):
+        await self.send_json({
+            'type': event.get('event_type', 'readiness_update'),
+            **(event.get('state') or {}),
+        })
+
     @database_sync_to_async
     def toggle_scoreboard_db(self):
         try:
@@ -418,6 +489,19 @@ class HubConsumer(AsyncWebsocketConsumer):
         await self.complete_games_for_session()
         await self.end_session_db()
         await self.channel_layer.group_send(self.group_name, {'type': 'session_ended'})
+
+    async def handle_inactivate_session(self):
+        result = await self.inactivate_session_db()
+        if not result.get('success'):
+            await self.send_json({
+                'type': 'error',
+                'message': result.get('error') or 'Session konnte nicht inaktiv gesetzt werden.',
+            })
+            return
+        await self.channel_layer.group_send(
+            self.group_name,
+            {'type': 'session_inactivated', 'session_code': self.session_code},
+        )
 
     async def _broadcast_check_in_result(self, result, event_type):
         if result.get('success'):
@@ -455,6 +539,48 @@ class HubConsumer(AsyncWebsocketConsumer):
     async def handle_reset_check_in(self):
         result = await self.reset_check_in_db()
         await self._broadcast_check_in_result(result, 'check_in_reset')
+
+    async def _broadcast_readiness_result(self, result, event_type):
+        if result.get('success'):
+            await self.channel_layer.group_send(
+                self.group_name,
+                {
+                    'type': 'readiness_update',
+                    'event_type': event_type,
+                    'state': {
+                        'readiness_check': result.get('readiness_check', {}),
+                        'readiness_participants': result.get('readiness_participants', []),
+                        'readiness_counts': result.get('readiness_counts', {}),
+                    },
+                },
+            )
+            return
+        if result.get('requires_confirmation'):
+            await self.send_json({
+                'type': 'readiness_end_requires_confirmation',
+                'error': result.get('error'),
+                'readiness_check': result.get('readiness_check', {}),
+                'readiness_participants': result.get('readiness_participants', []),
+                'readiness_counts': result.get('readiness_counts', {}),
+            })
+            return
+        await self.send_json({
+            'type': 'readiness_error',
+            'error': result.get('error') or 'Bereitschaftscheck fehlgeschlagen.',
+        })
+
+    async def handle_start_readiness_check(self):
+        result = await self.start_readiness_check_db()
+        await self._broadcast_readiness_result(result, 'readiness_started')
+
+    async def handle_participant_ready(self, data):
+        nickname = data.get('nickname') or data.get('participant_name')
+        result = await self.participant_ready_db(nickname)
+        await self._broadcast_readiness_result(result, 'readiness_participant_ready')
+
+    async def handle_end_readiness_check(self, data):
+        result = await self.end_readiness_check_db(force=bool(data.get('force')))
+        await self._broadcast_readiness_result(result, 'readiness_ended')
 
     @database_sync_to_async
     def get_current_step(self):
@@ -533,19 +659,48 @@ class HubConsumer(AsyncWebsocketConsumer):
             session = HubSession.objects.get(code=self.session_code)
             participants = list(session.participants.values('nickname'))
             steps = list(session.steps.values('order', 'game_key', 'room_code', 'title'))
+            next_game_number = session.get_next_game_number()
             check_in_state = get_check_in_state(session)
             voting_state = get_voting_state(session)
+            readiness_state = get_readiness_state(session)
             return {
                 'session': {'code': session.code, 'name': session.name, 'started_at': session.started_at is not None},
                 'participants': participants,
                 'steps': steps,
                 'current_step_index': session.current_step_index,
+                'next_game_number': next_game_number,
+                'next_game_complete': next_game_number is None,
                 'scoreboard_visible': session.scoreboard_visible,
                 **voting_state,
                 **check_in_state,
+                **readiness_state,
             }
         except HubSession.DoesNotExist:
             return {'error': 'session_not_found'}
+
+    @database_sync_to_async
+    def start_readiness_check_db(self):
+        try:
+            session = HubSession.objects.get(code=self.session_code)
+        except HubSession.DoesNotExist:
+            return {'success': False, 'error': 'Session nicht gefunden.'}
+        return start_readiness_check(session)
+
+    @database_sync_to_async
+    def participant_ready_db(self, nickname):
+        try:
+            session = HubSession.objects.get(code=self.session_code)
+        except HubSession.DoesNotExist:
+            return {'success': False, 'error': 'Session nicht gefunden.'}
+        return mark_participant_ready(session, nickname)
+
+    @database_sync_to_async
+    def end_readiness_check_db(self, force=False):
+        try:
+            session = HubSession.objects.get(code=self.session_code)
+        except HubSession.DoesNotExist:
+            return {'success': False, 'error': 'Session nicht gefunden.'}
+        return end_readiness_check(session, force=force)
 
     @database_sync_to_async
     def get_game_route_state(self, game_key, room_code):
@@ -561,6 +716,9 @@ class HubConsumer(AsyncWebsocketConsumer):
             'clue_rush': ClueRushGame,
             'sorting_ladder': SortingLadderGame,
             'wer_weiss_mehr': WerWeissMehrGame,
+            'buzzer': BuzzerGame,
+            'host_points': HostPointsGame,
+            'wann_war_das': WannWarDasGame,
         }
         model = model_map.get(game_key)
         if not model:
@@ -585,6 +743,9 @@ class HubConsumer(AsyncWebsocketConsumer):
             'clue_rush': ClueRushGame,
             'sorting_ladder': SortingLadderGame,
             'wer_weiss_mehr': WerWeissMehrGame,
+            'buzzer': BuzzerGame,
+            'host_points': HostPointsGame,
+            'wann_war_das': WannWarDasGame,
         }
         try:
             session = HubSession.objects.get(code=self.session_code)
@@ -624,6 +785,9 @@ class HubConsumer(AsyncWebsocketConsumer):
         ClueRushGame.objects.update(status='waiting')
         SortingLadderGame.objects.update(status='waiting')
         WerWeissMehrGame.objects.update(status='waiting')
+        BuzzerGame.objects.update(status='waiting')
+        HostPointsGame.objects.update(status='waiting')
+        WannWarDasGame.objects.update(status='waiting')
 
     def get_game_model_map(self):
         return {
@@ -637,4 +801,7 @@ class HubConsumer(AsyncWebsocketConsumer):
             'clue_rush': ClueRushGame,
             'sorting_ladder': SortingLadderGame,
             'wer_weiss_mehr': WerWeissMehrGame,
+            'buzzer': BuzzerGame,
+            'host_points': HostPointsGame,
+            'wann_war_das': WannWarDasGame,
         }

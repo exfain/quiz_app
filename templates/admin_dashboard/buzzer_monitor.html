@@ -1,0 +1,252 @@
+{% extends "admin_dashboard/base.html" %}
+
+{% block title %}Buzzer Monitor{% endblock %}
+{% block page_title %}Buzzer Monitor{% endblock %}
+{% block page_subtitle %}{{ game.title }} - {{ game.room_code }}{% endblock %}
+
+{% block content %}
+<div class="host-monitor-content">
+    <div class="host-status-bar">
+        <div>
+            <div class="host-status-label">Spiel</div>
+            <strong class="qa-game-title-font">{{ game.title }}</strong>
+        </div>
+        <div>
+            <div class="host-status-label">Typ</div>
+            <span class="badge bg-dark">Buzzer</span>
+        </div>
+        <div>
+            <div class="host-status-label">Code</div>
+            <code>{{ game.room_code }}</code>
+        </div>
+        <div>
+            <div class="host-status-label">Status</div>
+            <span id="hostGameStatus" class="badge bg-secondary">{{ game.status }}</span>
+        </div>
+        <div>
+            <div class="host-status-label">Runde</div>
+            <strong id="hostRoundNumber">{{ game.current_round_number|default:0 }}</strong>
+        </div>
+    </div>
+
+    <div class="row g-3">
+        <div class="col-lg-7">
+            <div class="card border-0 shadow-sm">
+                <div class="card-header bg-white d-flex justify-content-between align-items-center">
+                    <h5 class="mb-0">Rundensteuerung</h5>
+                    <span class="badge bg-light text-dark border" id="roundStateBadge">bereit</span>
+                </div>
+                <div class="card-body">
+                    <div class="alert alert-info d-none" id="noAvailableAlert">Keine Teilnehmer mehr buzzberechtigt.</div>
+                    <div class="mb-3">
+                        <div class="small text-muted">Antwortrecht</div>
+                        <div class="display-6" id="currentBuzzName">-</div>
+                    </div>
+                    <div class="d-flex flex-wrap gap-2">
+                        <button class="btn btn-primary {% if game.status == 'active' or game.status == 'completed' %}d-none{% endif %}" id="startGameBtn">Spiel starten</button>
+                        <button class="btn btn-outline-primary d-none" id="startRoundBtn">Runde starten</button>
+                        <button class="btn btn-success d-none" id="openBuzzerBtn">Buzzer freigeben</button>
+                        <button class="btn btn-success d-none" id="markCorrectBtn">Antwort korrekt</button>
+                        <button class="btn btn-warning d-none" id="markWrongBtn">Antwort falsch</button>
+                        <button class="btn btn-outline-secondary d-none" id="endRoundBtn">Runde beenden</button>
+                    </div>
+                    <div id="completedBanner" class="alert alert-success py-2 mb-0 {% if game.status != 'completed' %}d-none{% endif %}">Spiel beendet. Der finale Spielstand ist sichtbar.</div>
+                </div>
+            </div>
+
+            <div class="card border-0 shadow-sm mt-3">
+                <div class="card-header bg-white">
+                    <h6 class="mb-0">Buzz-Reihenfolge</h6>
+                </div>
+                <div class="card-body p-0">
+                    <div class="table-responsive">
+                        <table class="table table-sm mb-0">
+                            <thead class="table-light">
+                                <tr>
+                                    <th>#</th>
+                                    <th>Teilnehmer</th>
+                                    <th>Status</th>
+                                    <th>Zeit</th>
+                                </tr>
+                            </thead>
+                            <tbody id="buzzRows">
+                                <tr><td colspan="4" class="text-muted text-center py-3">Noch keine Buzzes</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="col-lg-5">
+            <div class="card border-0 shadow-sm mb-3">
+                <div class="card-header bg-white d-flex justify-content-between align-items-center">
+                    <h6 class="mb-0">Teilnehmer & Punkte</h6>
+                    <span class="badge bg-primary" id="participantCount">0</span>
+                </div>
+                <div class="card-body p-0">
+                    <div class="table-responsive">
+                        <table class="table table-sm mb-0">
+                            <thead class="table-light">
+                                <tr>
+                                    <th>Name</th>
+                                    <th>Punkte</th>
+                                    <th>Status</th>
+                                </tr>
+                            </thead>
+                            <tbody id="participantRows"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            {% if game.tutorial_text %}
+            <div class="card border-0 shadow-sm mb-3">
+                <div class="card-header bg-white"><h6 class="mb-0">Spielerläuterung</h6></div>
+                <div class="card-body">
+                    <div class="form-check">
+                        <input class="form-check-input" type="checkbox" id="showTutorialToggle">
+                        <label class="form-check-label" for="showTutorialToggle">Spielerläuterung anzeigen</label>
+                    </div>
+                    <div class="small text-muted mt-2" id="tutorialProgressText">Noch nicht gestartet</div>
+                </div>
+            </div>
+            {% endif %}
+
+            <div class="card border-danger shadow-sm">
+                <div class="card-body d-flex justify-content-between align-items-center">
+                    <span class="text-danger fw-semibold">Gefährliche Aktion</span>
+                    <button class="btn btn-outline-danger btn-sm" id="endGameBtn" {% if game.status != 'active' %}disabled{% endif %}>Spiel beenden</button>
+                </div>
+            </div>
+
+            <div class="card border-0 shadow-sm mt-3">
+                <div class="card-body d-flex flex-wrap gap-2">
+                    {% if hub_session %}
+                    <a class="btn btn-outline-primary btn-sm" href="/hub/lobby/{{ hub_session }}/">Zur Lobby</a>
+                    <a class="btn btn-outline-secondary btn-sm" href="/hub/monitor/{{ hub_session }}/">Zur Session-Übersicht</a>
+                    {% else %}
+                    <a class="btn btn-outline-secondary btn-sm" href="{% url 'admin_dashboard:sessions_overview' %}">Zur Session-Übersicht</a>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+const ROOM_CODE = '{{ game.room_code|escapejs }}';
+const HUB_SESSION = '{{ hub_session|escapejs }}';
+let socket = null;
+
+function send(payload) {
+    if (!socket || socket.readyState !== WebSocket.OPEN) return;
+    socket.send(JSON.stringify({ hub_session: HUB_SESSION, ...payload }));
+}
+
+function escapeHtml(value) {
+    return String(value ?? '').replace(/[&<>"']/g, ch => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+    }[ch]));
+}
+
+function renderState(data) {
+    const game = data.game || {};
+    const round = data.round || {};
+    const participants = data.participants || [];
+    document.getElementById('hostGameStatus').textContent = game.status || '-';
+    document.getElementById('hostRoundNumber').textContent = round.number || 0;
+    document.getElementById('roundStateBadge').textContent = round.buzzer_open ? 'Buzzer offen' : (round.status || 'bereit');
+    document.getElementById('currentBuzzName').textContent = round.current_buzz_participant || '-';
+    document.getElementById('participantCount').textContent = participants.length;
+    document.getElementById('completedBanner').classList.toggle('d-none', game.status !== 'completed');
+    document.getElementById('noAvailableAlert').classList.toggle('d-none', !(round.number && !round.current_buzz_participant && !round.buzzer_open && round.available_count === 0 && round.status === 'locked'));
+    renderControls(game.status, round);
+    if (game.status === 'completed') {
+        window.hostEndState?.apply({ message: 'Buzzer-Spiel beendet.', event: data });
+    }
+
+    const participantRows = document.getElementById('participantRows');
+    participantRows.innerHTML = participants.length ? participants.map(p => {
+        const status = p.has_answer_right ? 'Antwortrecht' : (p.blocked ? 'gesperrt' : (p.official ? 'buzzberechtigt' : 'nicht im Snapshot'));
+        const badge = p.has_answer_right ? 'bg-success' : (p.blocked ? 'bg-warning text-dark' : (p.official ? 'bg-light text-dark border' : 'bg-secondary'));
+        return `<tr><td>${escapeHtml(p.name)}</td><td><strong>${p.score}</strong></td><td><span class="badge ${badge}">${status}</span></td></tr>`;
+    }).join('') : '<tr><td colspan="3" class="text-muted text-center py-3">Noch keine Teilnehmer</td></tr>';
+
+    const buzzRows = document.getElementById('buzzRows');
+    const buzzes = round.buzzes || [];
+    buzzRows.innerHTML = buzzes.length ? buzzes.map(b => `
+        <tr>
+            <td>${b.sequence}</td>
+            <td>${escapeHtml(b.participant_name)}</td>
+            <td>${escapeHtml(b.status)}</td>
+            <td class="small text-muted">${escapeHtml(b.buzzed_at || '')}</td>
+        </tr>
+    `).join('') : '<tr><td colspan="4" class="text-muted text-center py-3">Noch keine Buzzes</td></tr>';
+}
+
+function renderControls(gameStatus, round) {
+    const gameActive = gameStatus === 'active';
+    const hasRound = Number(round.number || 0) > 0;
+    const roundFinished = round.status === 'answered' || round.status === 'ended';
+    const hasCurrentBuzz = !!round.current_buzz_participant;
+    const startGameBtn = document.getElementById('startGameBtn');
+    const startRoundBtn = document.getElementById('startRoundBtn');
+    const openBuzzerBtn = document.getElementById('openBuzzerBtn');
+    const markCorrectBtn = document.getElementById('markCorrectBtn');
+    const markWrongBtn = document.getElementById('markWrongBtn');
+    const endRoundBtn = document.getElementById('endRoundBtn');
+
+    startGameBtn.classList.toggle('d-none', gameActive || gameStatus === 'completed');
+    startRoundBtn.classList.toggle('d-none', !gameActive || (hasRound && !roundFinished));
+    startRoundBtn.textContent = hasRound ? 'Nächste Runde' : 'Runde starten';
+    openBuzzerBtn.classList.toggle('d-none', !gameActive || !hasRound || round.status !== 'ready');
+    markCorrectBtn.classList.toggle('d-none', !gameActive || !hasCurrentBuzz || round.status !== 'locked');
+    markWrongBtn.classList.toggle('d-none', !gameActive || !hasCurrentBuzz || round.status !== 'locked');
+    endRoundBtn.classList.toggle('d-none', !gameActive || !hasRound || roundFinished);
+    document.getElementById('endGameBtn').disabled = !gameActive;
+    const explanationToggle = document.getElementById('showTutorialToggle');
+    if (explanationToggle) explanationToggle.disabled = gameActive;
+}
+
+function connect() {
+    const scheme = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    socket = new WebSocket(`${scheme}//${window.location.host}/ws/buzzer/${ROOM_CODE}/`);
+    socket.onopen = () => send({ type: 'get_state' });
+    socket.onmessage = event => {
+        const data = JSON.parse(event.data);
+        if (data.type === 'buzzer_state') renderState(data);
+        if (data.type === 'tutorial_start') updateTutorialProgress(0, data.total || 0, false, data.participants || []);
+        if (data.type === 'tutorial_progress') updateTutorialProgress(data.completed, data.total, data.all_done, data.participants || []);
+        if (data.type === 'tutorial_ack_warning') {
+            window.showTutorialAckWarning?.(data, () => send({ type: 'admin_start_round', force_start: true }), () => {});
+        }
+        if (data.type === 'participants_not_in_lobby') alert(data.message || 'Teilnehmer sind noch im Spiel.');
+        if (data.type === 'active_game_conflict') alert(data.message || 'Ein anderes Spiel ist aktiv.');
+        if (data.type === 'error') alert(data.message || 'Fehler');
+    };
+    socket.onclose = () => setTimeout(connect, 2000);
+}
+
+function updateTutorialProgress(completed, total, allDone, participants) {
+    const el = document.getElementById('tutorialProgressText');
+    if (!el) return;
+    const open = (participants || []).filter(p => !p.completed).map(p => p.name);
+    el.textContent = `${completed || 0}/${total || 0} bestätigt` + (open.length ? ` - offen: ${open.join(', ')}` : '');
+}
+
+document.getElementById('startGameBtn').addEventListener('click', () => send({
+    type: 'admin_start_game',
+    show_tutorial: document.getElementById('showTutorialToggle')?.checked || false,
+}));
+document.getElementById('startRoundBtn').addEventListener('click', () => send({ type: 'admin_start_round' }));
+document.getElementById('openBuzzerBtn').addEventListener('click', () => send({ type: 'admin_open_buzzer' }));
+document.getElementById('markCorrectBtn').addEventListener('click', () => send({ type: 'admin_mark_correct' }));
+document.getElementById('markWrongBtn').addEventListener('click', () => send({ type: 'admin_mark_wrong' }));
+document.getElementById('endRoundBtn').addEventListener('click', () => send({ type: 'admin_end_round' }));
+document.getElementById('endGameBtn').addEventListener('click', () => {
+    if (confirm('Buzzer-Spiel beenden?')) send({ type: 'admin_end_game' });
+});
+
+connect();
+</script>
+{% endblock %}

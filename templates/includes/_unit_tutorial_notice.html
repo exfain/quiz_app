@@ -29,8 +29,6 @@
 
 <script>
 (function() {
-    if (window.unitTutorialNotice) return;
-
     function resolvePayload(payload) {
         return payload?.question || payload?.payload?.question || payload?.state?.question || payload?.game?.question || payload || {};
     }
@@ -47,6 +45,7 @@
     }
 
     window.unitTutorialNotice = {
+        ...window.unitTutorialNotice,
         show(label) {
             const box = document.getElementById('unitTutorialNotice');
             if (!box) return;

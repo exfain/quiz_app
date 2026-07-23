@@ -1,10 +1,13 @@
 from django.shortcuts import render, get_object_or_404, redirect
 from django.http import JsonResponse
+from django.urls import reverse
 from django.views.decorators.http import require_http_methods, require_POST
 from django.views.decorators.csrf import csrf_exempt
 from django.utils import timezone
 from django.db.models import Avg, Count, Q
 import json
+import math
+from urllib.parse import urlencode
 from .models import EstimationQuiz, EstimationQuestion, EstimationParticipant, EstimationAnswer, EstimationSession
 from games_hub.unit_tutorial_runtime import (
     get_scorebox_excluded_tutorial_question_ids,
@@ -12,6 +15,7 @@ from games_hub.unit_tutorial_runtime import (
     is_current_unit_tutorial_question,
     is_unit_tutorial_question,
 )
+from games_hub.models import HubGameStep
 
 
 def _get_run_tutorial_question_id(quiz, session_code=None):
@@ -170,6 +174,151 @@ def _build_question_scoreboard(quiz, participant, session_code=None):
     return scoreboard, history, current_question_number
 
 
+def _get_estimation_time_payload(quiz):
+    session = getattr(quiz, 'session', None)
+    now = timezone.now()
+    remaining_seconds = 90
+    if session and session.question_end_time:
+        remaining_seconds = max(0, math.ceil((session.question_end_time - now).total_seconds()))
+
+    elapsed_seconds = 0
+    if quiz.question_start_time:
+        elapsed_seconds = max(0, math.floor((now - quiz.question_start_time).total_seconds()))
+
+    return {
+        'time_limit': remaining_seconds,
+        'elapsed_seconds': elapsed_seconds,
+    }
+
+
+def _serialize_estimation_answer(answer):
+    if not answer:
+        return None
+    accuracy = answer.get_accuracy_percentage()
+    return {
+        'user_answer': answer.user_answer,
+        'formatted_answer': answer.get_formatted_user_answer(),
+        'points_earned': int(answer.points_earned or 0),
+        'accuracy_percentage': round(accuracy, 2),
+    }
+
+
+def _serialize_estimation_question(quiz, question, participant, session_code=None, question_number=0, max_points=0):
+    answer = EstimationAnswer.objects.filter(
+        quiz=quiz,
+        participant=participant,
+        question=question,
+    ).first()
+    payload = {
+        'id': question.id,
+        'question_text': question.question_text,
+        'unit': question.unit,
+        'unit_display': question.get_unit_display_text(),
+        'question_number': question_number or 0,
+        'max_points': max_points,
+        'hint_text': question.hint_text,
+        **_get_estimation_time_payload(quiz),
+    }
+    if answer:
+        payload['has_answered'] = True
+        payload['existing_answer'] = _serialize_estimation_answer(answer)
+    else:
+        payload['has_answered'] = False
+    return payload
+
+
+def _serialize_estimation_correct_answer(quiz, question):
+    scoring_mode = quiz.get_effective_scoring_mode()
+    return {
+        'correct_answer': question.correct_answer,
+        'formatted_answer': question.get_formatted_correct_answer(),
+        'unit': question.unit,
+        'unit_display': question.get_unit_display_text(),
+        'explanation': question.explanation,
+        'scoring_mode': scoring_mode,
+        'zone_scoring': question.get_zone_reveal_data() if scoring_mode == 'zones' else None,
+    }
+
+
+def _get_last_revealed_estimation_question(quiz, participant, session_code=None):
+    session = getattr(quiz, 'session', None)
+    if (
+        not session
+        or session.is_question_active
+        or session.current_question_number <= 0
+        or session.total_questions_sent <= 0
+    ):
+        return None, 0
+
+    ordered_questions = _get_ordered_quiz_questions(quiz, session_code)
+    index = session.current_question_number - 1
+    if 0 <= index < len(ordered_questions):
+        return ordered_questions[index], session.current_question_number
+
+    latest_answer = (
+        EstimationAnswer.objects
+        .filter(quiz=quiz)
+        .select_related('question')
+        .order_by('-submitted_at', '-id')
+        .first()
+    )
+    if latest_answer:
+        return latest_answer.question, session.current_question_number
+    return None, 0
+
+
+def _build_estimation_initial_state(quiz, participant, session_code, current_question_number, current_question_max_points):
+    state = {
+        'phase': 'waiting',
+        'quiz_status': quiz.status,
+        'participant_score': participant.total_score,
+    }
+
+    if quiz.status in ['completed', 'cancelled']:
+        state['phase'] = 'finished'
+        return state
+
+    if quiz.status != 'active':
+        return state
+
+    if quiz.current_question:
+        current_question = quiz.current_question
+        question_payload = _serialize_estimation_question(
+            quiz,
+            current_question,
+            participant,
+            session_code,
+            question_number=current_question_number or 0,
+            max_points=current_question_max_points or 0,
+        )
+        state['current_question'] = question_payload
+        state['phase'] = 'answered_waiting' if question_payload.get('has_answered') else 'answering'
+        return state
+
+    revealed_question, revealed_question_number = _get_last_revealed_estimation_question(quiz, participant, session_code)
+    if not revealed_question:
+        return state
+
+    answer = EstimationAnswer.objects.filter(
+        quiz=quiz,
+        participant=participant,
+        question=revealed_question,
+    ).first()
+    state.update({
+        'phase': 'reveal',
+        'revealed_question': {
+            'id': revealed_question.id,
+            'question_number': revealed_question_number,
+            'unit_display': revealed_question.get_unit_display_text(),
+            'max_points': _get_question_max_points_for_score_box(quiz, revealed_question, session_code),
+        },
+        'correct_answer': _serialize_estimation_correct_answer(quiz, revealed_question),
+        'participant_answer': _serialize_estimation_answer(answer),
+        'points_for_question': int(answer.points_earned or 0) if answer else 0,
+    })
+    return state
+
+
 def estimation_join_view(request):
     """Combined view for estimation quiz join page (GET) and join action (POST)"""
     if request.method == 'GET':
@@ -319,6 +468,10 @@ def estimation_play(request, room_code, participant_name):
             name=participant_name,
             hub_session_code=session_code
         )
+
+        if session_code and not participant.is_active:
+            lobby_url = reverse('games_hub:lobby', args=[session_code])
+            return redirect(f"{lobby_url}?{urlencode({'nickname': participant.name, 'return': '1'})}")
         
         # Mark participant as active
         participant.is_active = True
@@ -335,6 +488,18 @@ def estimation_play(request, room_code, participant_name):
             quiz.current_question_id
             and _get_run_tutorial_question_id(quiz, session_code) == quiz.current_question_id
         )
+        current_question_max_points = (
+            0 if is_current_tutorial else
+            _get_question_max_points_for_score_box(quiz, quiz.current_question, session_code)
+            if quiz.current_question else 0
+        )
+        estimation_initial_state = _build_estimation_initial_state(
+            quiz,
+            participant,
+            session_code,
+            current_question_number or 0,
+            current_question_max_points,
+        )
 
         context = {
             'quiz': quiz,
@@ -345,11 +510,9 @@ def estimation_play(request, room_code, participant_name):
             'initial_progress_history': initial_progress_history,
             'current_unit_is_tutorial': is_current_unit_tutorial_question('estimation', quiz.room_code, session_code, quiz.current_question_id),
             'current_question_number': current_question_number or 0,
-            'current_question_max_points': (
-                0 if is_current_tutorial else
-                _get_question_max_points_for_score_box(quiz, quiz.current_question, session_code)
-                if quiz.current_question else 0
-            ),
+            'current_question_max_points': current_question_max_points,
+            'estimation_initial_state': estimation_initial_state,
+            'initial_participant_phase': estimation_initial_state.get('phase', 'waiting'),
         }
         return render(request, 'estimation/play.html', context)
         
@@ -361,10 +524,26 @@ def estimation_result(request, room_code, participant_name):
     """Estimation quiz result page for participants"""
     try:
         quiz = get_object_or_404(EstimationQuiz, room_code=room_code)
+        session_code = request.GET.get('hub_session')
+        if not session_code:
+            session_steps = (
+                HubGameStep.objects.select_related('session')
+                .filter(game_key='estimation', room_code=room_code)
+            )
+            session_step = (
+                session_steps.filter(session__ended_at__isnull=True).order_by('-id').first()
+                or session_steps.order_by('-id').first()
+            )
+            session_code = session_step.session.code if session_step else None
+
+        participant_scope = quiz.participants.all()
+        if session_code:
+            participant_scope = participant_scope.filter(hub_session_code=session_code)
+        else:
+            participant_scope = participant_scope.filter(hub_session_code__isnull=True)
         participant = get_object_or_404(
-            EstimationParticipant, 
-            quiz=quiz, 
-            name=participant_name
+            participant_scope,
+            name=participant_name,
         )
         
         # Get participant's answers
@@ -378,10 +557,10 @@ def estimation_result(request, room_code, participant_name):
         total_score = participant.total_score
         
         # Get participant rank
-        participant_rank = participant.get_rank()
+        participant_rank = participant_scope.filter(total_score__gt=participant.total_score).count() + 1
         
         # Get leaderboard (top 10)
-        leaderboard = quiz.participants.all().order_by('-total_score', 'name')[:10]
+        leaderboard = participant_scope.order_by('-total_score', 'name')[:10]
         
         # Calculate performance insights
         average_time = None
@@ -418,7 +597,7 @@ def estimation_result(request, room_code, participant_name):
             'total_score': total_score,
             'participant_rank': participant_rank,
             'leaderboard': leaderboard,
-            'total_participants': quiz.get_participant_count(),
+            'total_participants': participant_scope.count(),
             'average_time': average_time,
             'fastest_answer': fastest_answer,
             'average_accuracy': average_accuracy,

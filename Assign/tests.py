@@ -1,12 +1,25 @@
+import json
+import os
+import time
 from pathlib import Path
 from unittest.mock import patch
+
+os.environ.setdefault('DJANGO_ALLOW_ASYNC_UNSAFE', '1')
 
 from django.test import TestCase, TransactionTestCase
 from django.contrib.auth.models import User
 from django.urls import reverse
+from django.utils import timezone
 from asgiref.sync import async_to_sync
-from .models import AssignQuiz, AssignQuestion, AssignParticipant, AssignAnswer
+from .models import AssignQuiz, AssignQuestion, AssignParticipant, AssignAnswer, AssignSession
 from .consumers import AssignConsumer
+from games_hub.models import HubGameStep, HubParticipant, HubSession
+from games_hub.playwright_e2e import install_browser_test_stubs, start_chromium_browser
+
+try:
+    from channels.testing import ChannelsLiveServerTestCase as _BrowserLiveServerTestCase
+except ImportError:
+    from django.test import LiveServerTestCase as _BrowserLiveServerTestCase
 
 
 class DummyChannelLayer:
@@ -28,6 +41,7 @@ class CheckRoundAnswerTest(TransactionTestCase):
         AssignConsumer._channel_hub_sessions = {}
         AssignConsumer._effective_time_limits = {}
         AssignConsumer._eliminated_participants = {}
+        AssignConsumer._elimination_reasons = {}
         AssignConsumer._room_matched_originals = {}
         AssignConsumer._room_solved_matches = {}
 
@@ -78,6 +92,15 @@ class CheckRoundAnswerTest(TransactionTestCase):
         AssignConsumer._channel_hub_sessions[channel_name] = self.participant.hub_session_code
         return channel_name
 
+    def _capture_consumer_send(self):
+        payloads = []
+
+        async def _capture_send(*args, **kwargs):
+            payloads.append(json.loads(kwargs['text_data']))
+
+        self.consumer.send = _capture_send
+        return payloads
+
     def _create_four_round_question(self):
         return AssignQuestion.objects.create(
             question_text='Four round flow',
@@ -121,6 +144,78 @@ class CheckRoundAnswerTest(TransactionTestCase):
             correct_matches={'0': 0, '1': 1, '2': 2, '3': 3},
             created_by=self.user,
         )
+
+    def test_rejoin_active_quiz_uses_existing_question_started_event(self):
+        self.quiz.current_question = self.question
+        self.quiz.status = 'active'
+        self.quiz.save(update_fields=['current_question', 'status'])
+        AssignSession.objects.create(quiz=self.quiz, is_question_active=True)
+
+        payloads = self._capture_consumer_send()
+
+        async_to_sync(self.consumer.handle_participant_join)({
+            'participant_name': self.participant.name,
+            'hub_session': self.participant.hub_session_code,
+        })
+
+        self.assertTrue(any(payload['type'] == 'question_started' for payload in payloads))
+        self.assertFalse(any(payload['type'] == 'assign_state' for payload in payloads))
+
+    def test_rejoin_completed_question_does_not_send_question_started(self):
+        self.quiz.current_question = self.question
+        self.quiz.status = 'active'
+        self.quiz.save(update_fields=['current_question', 'status'])
+        AssignSession.objects.create(quiz=self.quiz, is_question_active=False)
+
+        payloads = self._capture_consumer_send()
+
+        async_to_sync(self.consumer.handle_participant_join)({
+            'participant_name': self.participant.name,
+            'hub_session': self.participant.hub_session_code,
+        })
+
+        self.assertTrue(any(payload['type'] == 'quiz_started' for payload in payloads))
+        self.assertFalse(any(payload['type'] == 'question_started' for payload in payloads))
+
+    def test_rejoin_completed_quiz_does_not_reassert_old_endscreen(self):
+        self.quiz.status = 'completed'
+        self.quiz.current_question = None
+        self.quiz.save(update_fields=['status', 'current_question'])
+
+        payloads = self._capture_consumer_send()
+
+        async_to_sync(self.consumer.handle_participant_join)({
+            'participant_name': self.participant.name,
+            'hub_session': self.participant.hub_session_code,
+        })
+
+        self.assertFalse(any(payload['type'] in {'quiz_ended', 'assign_state'} for payload in payloads))
+
+    def test_question_lifecycle_updates_session_active_flag(self):
+        async_to_sync(self.consumer.handle_admin_send_question)({
+            'question_id': self.question.id,
+            'hub_session': self.participant.hub_session_code,
+        })
+
+        session = AssignSession.objects.get(quiz=self.quiz)
+        self.assertTrue(session.is_question_active)
+
+        async_to_sync(self.consumer.handle_admin_end_question)({
+            'hub_session': self.participant.hub_session_code,
+        })
+        session.refresh_from_db()
+        self.assertFalse(session.is_question_active)
+
+        async_to_sync(self.consumer.handle_admin_send_question)({
+            'question_id': self.question.id,
+            'hub_session': self.participant.hub_session_code,
+        })
+        session.refresh_from_db()
+        self.assertTrue(session.is_question_active)
+
+        async_to_sync(self.consumer.handle_admin_end_quiz)({})
+        session.refresh_from_db()
+        self.assertFalse(session.is_question_active)
 
     def test_correct_answer_round_0(self):
         """Richtige Zuordnung für Runde 0 ergibt True."""
@@ -231,6 +326,251 @@ class CheckRoundAnswerTest(TransactionTestCase):
         self.assertEqual(AssignConsumer._room_solved_matches[self.quiz.room_code], {0: 2})
         self.assertEqual(AssignConsumer._room_matched_originals[self.quiz.room_code], {2})
         self.assertNotIn((self.quiz.room_code, 0), AssignConsumer._round_selections)
+        round_checked = next(
+            message for _, message in self.consumer.channel_layer.sent
+            if message.get('type') == 'round_checked'
+        )
+        self.assertFalse(round_checked['eliminated'])
+        self.assertIsNone(round_checked['elimination_reason'])
+
+    def test_wrong_assignment_emits_authoritative_elimination_reason(self):
+        self.quiz.current_question = self.question
+        self.quiz.save(update_fields=['current_question'])
+        channel_name = self._register_active_participant_channel()
+        wrong_target = self._get_shuffled_pos_for_original(0)
+        AssignConsumer._round_selections[(self.quiz.room_code, 0)] = {
+            channel_name: {
+                'left_item_index': 0,
+                'user_match': {'0': wrong_target},
+            }
+        }
+        AssignConsumer._round_logged[(self.quiz.room_code, 0)] = {channel_name}
+
+        async_to_sync(self.consumer.evaluate_current_round)(self.quiz, 0)
+
+        round_checked = next(
+            message for _, message in self.consumer.channel_layer.sent
+            if message.get('type') == 'round_checked'
+        )
+        self.assertEqual(round_checked['elimination_reason'], 'incorrect_assignment')
+        self.assertEqual(
+            AssignConsumer._elimination_reasons[self.quiz.room_code]['sess1::alice'],
+            'incorrect_assignment',
+        )
+
+    def test_missing_assignment_emits_timeout_elimination_reason(self):
+        self.quiz.current_question = self.question
+        self.quiz.save(update_fields=['current_question'])
+        self._register_active_participant_channel()
+
+        async_to_sync(self.consumer.evaluate_current_round)(self.quiz, 0)
+
+        round_checked = next(
+            message for _, message in self.consumer.channel_layer.sent
+            if message.get('type') == 'round_checked'
+        )
+        self.assertEqual(round_checked['elimination_reason'], 'no_assignment')
+        self.assertEqual(
+            AssignConsumer._elimination_reasons[self.quiz.room_code]['sess1::alice'],
+            'no_assignment',
+        )
+
+    def test_rejoin_restores_authoritative_elimination_reason(self):
+        self.quiz.current_question = self.question
+        self.quiz.save(update_fields=['current_question'])
+        self._register_active_participant_channel()
+        AssignSession.objects.create(quiz=self.quiz, is_question_active=True)
+        async_to_sync(self.consumer.evaluate_current_round)(self.quiz, 0)
+
+        AssignConsumer._eliminated_participants = {}
+        AssignConsumer._elimination_reasons = {}
+
+        self.consumer.channel_name = 'channel-rejoin'
+        payloads = self._capture_consumer_send()
+        async_to_sync(self.consumer.handle_participant_join)({
+            'participant_name': self.participant.name,
+            'hub_session': self.participant.hub_session_code,
+        })
+
+        restored = next(payload for payload in payloads if payload['type'] == 'round_checked')
+        self.assertEqual(restored['elimination_reason'], 'no_assignment')
+        self.assertTrue(restored['eliminated'])
+        self.assertFalse(any(payload['type'] == 'question_started' for payload in payloads))
+
+    def test_elimination_survives_cache_loss_and_later_rounds_in_same_set(self):
+        self.quiz.current_question = self.question
+        self.quiz.save(update_fields=['current_question'])
+        session = AssignSession.objects.create(
+            quiz=self.quiz,
+            current_question_number=1,
+            current_round_index=0,
+            is_question_active=True,
+        )
+        channel_name = self._register_active_participant_channel()
+
+        async_to_sync(self.consumer.evaluate_current_round)(self.quiz, 0, 1)
+        self.participant.refresh_from_db()
+        self.assertEqual(self.participant.eliminated_set_number, 1)
+        self.assertEqual(self.participant.elimination_reason, 'no_assignment')
+
+        AssignConsumer._eliminated_participants = {}
+        AssignConsumer._elimination_reasons = {}
+        session.current_round_index = 3
+        session.save(update_fields=['current_round_index'])
+
+        active_channels = async_to_sync(self.consumer.get_relevant_active_channels)()
+        self.assertNotIn(channel_name, active_channels)
+
+        payloads = self._capture_consumer_send()
+        async_to_sync(self.consumer.handle_participant_update_selection)({
+            'round_index': 3,
+            'left_item_index': 2,
+            'user_match': {'2': self._get_shuffled_pos_for_original(1)},
+        })
+
+        self.assertNotIn((self.quiz.room_code, 3), AssignConsumer._round_selections)
+        self.assertEqual(payloads[-1]['type'], 'round_checked')
+        self.assertEqual(payloads[-1]['set_number'], 1)
+        self.assertTrue(payloads[-1]['eliminated'])
+
+    def test_eliminated_participant_cannot_submit_final_answer(self):
+        self.quiz.current_question = self.question
+        self.quiz.save(update_fields=['current_question'])
+        AssignSession.objects.create(
+            quiz=self.quiz,
+            current_question_number=1,
+            is_question_active=True,
+        )
+        self.participant.eliminated_set_number = 1
+        self.participant.elimination_reason = 'incorrect_assignment'
+        self.participant.save(update_fields=['eliminated_set_number', 'elimination_reason'])
+        self._register_active_participant_channel()
+        payloads = self._capture_consumer_send()
+        user_matches = {
+            left_index: self._get_shuffled_pos_for_original(original_index)
+            for left_index, original_index in self.question.correct_matches.items()
+        }
+
+        async_to_sync(self.consumer.handle_participant_submit_answer)({
+            'participant_name': self.participant.name,
+            'hub_session': self.participant.hub_session_code,
+            'question_id': self.question.id,
+            'user_matches': user_matches,
+            'time_taken': 12,
+        })
+
+        self.assertFalse(AssignAnswer.objects.filter(participant=self.participant).exists())
+        self.assertEqual([payload['type'] for payload in payloads], ['round_checked'])
+        self.assertEqual(payloads[0]['elimination_reason'], 'incorrect_assignment')
+
+    def test_new_set_resets_persisted_elimination_once(self):
+        session = AssignSession.objects.create(
+            quiz=self.quiz,
+            current_question_number=1,
+            current_round_index=2,
+            is_question_active=False,
+        )
+        self.participant.eliminated_set_number = 1
+        self.participant.elimination_reason = 'incorrect_assignment'
+        self.participant.save(update_fields=['eliminated_set_number', 'elimination_reason'])
+
+        async_to_sync(self.consumer.handle_admin_send_question)({
+            'question_id': self.question.id,
+            'hub_session': self.participant.hub_session_code,
+        })
+
+        session.refresh_from_db()
+        self.participant.refresh_from_db()
+        self.assertEqual(session.current_question_number, 2)
+        self.assertEqual(session.current_round_index, 0)
+        self.assertIsNone(self.participant.eliminated_set_number)
+        self.assertEqual(self.participant.elimination_reason, '')
+        started = next(
+            message for _, message in self.consumer.channel_layer.sent
+            if message.get('type') == 'question_started'
+        )
+        self.assertEqual(started['question']['set_number'], 2)
+
+    def test_duplicate_set_start_does_not_reactivate_eliminated_participant(self):
+        self.quiz.current_question = self.question
+        self.quiz.save(update_fields=['current_question'])
+        session = AssignSession.objects.create(
+            quiz=self.quiz,
+            current_question_number=1,
+            current_round_index=2,
+            is_question_active=True,
+        )
+        self.participant.eliminated_set_number = 1
+        self.participant.elimination_reason = 'incorrect_assignment'
+        self.participant.save(update_fields=['eliminated_set_number', 'elimination_reason'])
+
+        async_to_sync(self.consumer.handle_admin_send_question)({
+            'question_id': self.question.id,
+            'hub_session': self.participant.hub_session_code,
+        })
+
+        session.refresh_from_db()
+        self.participant.refresh_from_db()
+        self.assertEqual(session.current_question_number, 1)
+        self.assertEqual(session.current_round_index, 2)
+        self.assertEqual(self.participant.eliminated_set_number, 1)
+        self.assertEqual(self.participant.elimination_reason, 'incorrect_assignment')
+        self.assertFalse(any(
+            message.get('type') == 'question_started'
+            for _, message in self.consumer.channel_layer.sent
+        ))
+
+    def test_stale_previous_set_elimination_cannot_affect_new_set(self):
+        next_question = self._create_four_round_question()
+        self.quiz.current_question = next_question
+        self.quiz.save(update_fields=['current_question'])
+        AssignSession.objects.create(
+            quiz=self.quiz,
+            current_question_number=2,
+            current_round_index=0,
+            is_question_active=True,
+        )
+
+        persisted = async_to_sync(self.consumer.mark_participant_eliminated_for_set)(
+            self.quiz.id,
+            self.question.id,
+            1,
+            self.participant.name,
+            self.participant.hub_session_code,
+            'incorrect_assignment',
+        )
+
+        self.participant.refresh_from_db()
+        self.assertFalse(persisted)
+        self.assertIsNone(self.participant.eliminated_set_number)
+        self.assertEqual(self.participant.elimination_reason, '')
+
+    def test_only_eliminated_participant_is_filtered_from_current_set(self):
+        self.quiz.current_question = self.question
+        self.quiz.save(update_fields=['current_question'])
+        AssignSession.objects.create(
+            quiz=self.quiz,
+            current_question_number=1,
+            is_question_active=True,
+        )
+        bob = AssignParticipant.objects.create(
+            quiz=self.quiz,
+            name='Bob',
+            hub_session_code='sess1',
+        )
+        alice_channel = self._register_active_participant_channel('channel-alice')
+        bob_channel = 'channel-bob'
+        AssignConsumer._participant_channels[self.quiz.room_code].add(bob_channel)
+        AssignConsumer._channel_participants[bob_channel] = bob.name
+        AssignConsumer._channel_hub_sessions[bob_channel] = bob.hub_session_code
+        self.participant.eliminated_set_number = 1
+        self.participant.elimination_reason = 'incorrect_assignment'
+        self.participant.save(update_fields=['eliminated_set_number', 'elimination_reason'])
+
+        active_channels = async_to_sync(self.consumer.get_relevant_active_channels)()
+
+        self.assertNotIn(alice_channel, active_channels)
+        self.assertIn(bob_channel, active_channels)
 
     def test_build_round_payload_keeps_completed_pair_visible_and_open_items_filtered(self):
         """Der nächste Rundenpayload enthält gelöste Paare und nur noch offene rechte Items."""
@@ -385,11 +725,26 @@ class CheckRoundAnswerTest(TransactionTestCase):
         self.assertNotIn((self.quiz.room_code, 0), AssignConsumer._round_selections)
         self.assertNotIn(channel_name, AssignConsumer._round_logged.get((self.quiz.room_code, 0), set()))
 
+    def test_host_early_end_without_selection_uses_no_assignment_reason(self):
+        question = self._create_four_round_question()
+        self.quiz.current_question = question
+        self.quiz.save(update_fields=['current_question'])
+        self._register_active_participant_channel()
+
+        async_to_sync(self.consumer.handle_admin_next_round)({'expected_round': 0})
+
+        round_checked = next(
+            message for _, message in self.consumer.channel_layer.sent
+            if message.get('type') == 'round_checked'
+        )
+        self.assertEqual(round_checked['elimination_reason'], 'no_assignment')
+
     def test_four_round_sequence_advances_cleanly(self):
         """Vier aufeinanderfolgende Runden bleiben sequentiell und enden erst nach Runde 4."""
         question = self._create_four_round_question()
         self.quiz.current_question = question
         self.quiz.save()
+        session = AssignSession.objects.create(quiz=self.quiz, is_question_active=True)
         channel_name = self._register_active_participant_channel()
 
         expected_events = ['round_advanced', 'round_advanced', 'round_advanced', 'question_rounds_complete']
@@ -422,11 +777,15 @@ class CheckRoundAnswerTest(TransactionTestCase):
             observed_events.append(flow_event['type'])
 
             if round_index < 3:
+                session.refresh_from_db()
+                self.assertTrue(session.is_question_active)
                 self.assertEqual(flow_event['round_index'], round_index + 1)
                 self.assertEqual(flow_event['total_rounds'], 4)
                 self.assertEqual(len(flow_event['right_items']), 3 - round_index)
                 self.assertEqual(len(flow_event['solved_pairs']), round_index + 1)
             else:
+                session.refresh_from_db()
+                self.assertFalse(session.is_question_active)
                 self.assertEqual(len(flow_event['solved_pairs']), 4)
 
         self.assertEqual(observed_events, expected_events)
@@ -992,6 +1351,43 @@ class AssignPlayScoreboardViewTest(TestCase):
 
 
 class AssignTouchDragTemplateTests(TestCase):
+    def test_vhs_elimination_copy_and_reason_styles_are_scoped(self):
+        project_root = Path(__file__).resolve().parent.parent
+        template_source = (project_root / 'templates' / 'assign' / 'play.html').read_text(encoding='utf-8')
+        vhs_css = (project_root / 'static' / 'themes' / 'vhs' / 'vhs.css').read_text(encoding='utf-8')
+
+        self.assertIn("'Die vorherige Zuweisung war falsch.'", template_source)
+        self.assertIn("'Die Zeit ist abgelaufen.'", template_source)
+        self.assertNotIn('Du bist leider ausgeschieden.', template_source)
+        self.assertIn("data.elimination_reason || null", template_source)
+        self.assertIn("showEliminatedState(this.lastEliminationReason)", template_source)
+        self.assertIn('#eliminatedState .assign-elimination-message--vhs', vhs_css)
+        self.assertIn('color: #b96f65;', vhs_css)
+        self.assertIn('color: var(--vhs-muted, #9ba19c);', vhs_css)
+
+    def test_player_template_uses_standard_round_events_and_clamped_single_timer(self):
+        template_path = Path(__file__).resolve().parent.parent / 'templates' / 'assign' / 'play.html'
+        template_source = template_path.read_text(encoding='utf-8')
+
+        self.assertNotIn("case 'assign_state':", template_source)
+        self.assertNotIn('roundIsActive', template_source)
+        self.assertNotIn('allowRoundInteraction', template_source)
+        self.assertIn("case 'question_started':", template_source)
+        self.assertIn("case 'round_advanced':", template_source)
+        self.assertIn('clearInterval(this.questionTimer);', template_source)
+        self.assertIn('timeLeft = Math.max(0, timeLeft - 1);', template_source)
+        self.assertIn('div.draggable = true;', template_source)
+        self.assertIn("dropZone.addEventListener('drop'", template_source)
+
+    def test_player_template_rejects_stale_same_set_reactivation(self):
+        template_path = Path(__file__).resolve().parent.parent / 'templates' / 'assign' / 'play.html'
+        template_source = template_path.read_text(encoding='utf-8')
+
+        self.assertIn('acceptSetEvent(setNumber', template_source)
+        self.assertIn('normalizedSetNumber < this.currentSetNumber', template_source)
+        self.assertIn('normalizedSetNumber === this.currentSetNumber', template_source)
+        self.assertIn('if (!this.acceptSetEvent(question?.set_number)) return;', template_source)
+
     def test_player_template_supports_pointer_drag_for_touch_devices(self):
         template_path = Path(__file__).resolve().parent.parent / 'templates' / 'assign' / 'play.html'
         template_source = template_path.read_text(encoding='utf-8')
@@ -1007,3 +1403,380 @@ class AssignTouchDragTemplateTests(TestCase):
         self.assertIn('transition: none;', template_source)
         self.assertIn('this.handleRoundDrop(drag.leftIndex, rightIndex, dropZone, draggedText);', template_source)
         self.assertIn("if (event.pointerType === 'mouse') return;", template_source)
+
+
+class AssignReloadBrowserLiveFlowTests(_BrowserLiveServerTestCase):
+    """Real-browser diagnosis for rejoining after the final Assign round."""
+
+    TIMEOUT = 15_000
+    LONG_TIMEOUT = 35_000
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        try:
+            cls._pw, cls._browser = start_chromium_browser(headless=True)
+            cls._playwright_available = True
+        except Exception as exc:
+            cls._playwright_available = False
+            cls._playwright_error = exc
+
+    @classmethod
+    def tearDownClass(cls):
+        if getattr(cls, '_playwright_available', False):
+            cls._browser.close()
+            cls._pw.stop()
+        super().tearDownClass()
+
+    def setUp(self):
+        if not self._playwright_available:
+            self.skipTest(f'Playwright/Chromium nicht verfuegbar: {self._playwright_error}')
+
+        self.password = 'testpass123'
+        self.user = User.objects.create_superuser(
+            username='assign-reload-browser-host',
+            password=self.password,
+            email='',
+        )
+        self.first_quiz = self._create_quiz('Assign Reload 1', '8901', status='active')
+        self.completed_round_question = self._create_question(
+            self.first_quiz,
+            'Single round for reload diagnosis',
+            ['Alpha'],
+            ['One'],
+            {'0': 0},
+        )
+        self.followup_question = self._create_question(
+            self.first_quiz,
+            'Two rounds remain usable',
+            ['Beta', 'Gamma'],
+            ['Two', 'Three'],
+            {'0': 0, '1': 1},
+        )
+        self.first_quiz.question_order = [
+            self.completed_round_question.id,
+            self.followup_question.id,
+        ]
+        self.first_quiz.save(update_fields=['question_order', 'updated_at'])
+
+        self.second_quiz = self._create_quiz('Assign Reload 2', '8902', status='waiting')
+        second_question = self._create_question(
+            self.second_quiz,
+            'Second game question',
+            ['Delta'],
+            ['Four'],
+            {'0': 0},
+        )
+        self.second_quiz.question_order = [second_question.id]
+        self.second_quiz.save(update_fields=['question_order', 'updated_at'])
+
+        self.session = HubSession.objects.create(
+            code='ASGRELOAD',
+            name='Assign Reload Browser Session',
+            is_active=True,
+            started_at=timezone.now(),
+            current_step_index=0,
+            check_in_status=HubSession.CHECK_IN_COMPLETED,
+            check_in_completed_at=timezone.now(),
+            locked_participant_count=1,
+        )
+        HubGameStep.objects.create(
+            session=self.session,
+            order=0,
+            game_key='assign',
+            room_code=self.first_quiz.room_code,
+            title=self.first_quiz.title,
+        )
+        HubGameStep.objects.create(
+            session=self.session,
+            order=1,
+            game_key='assign',
+            room_code=self.second_quiz.room_code,
+            title=self.second_quiz.title,
+        )
+        HubParticipant.objects.create(
+            session=self.session,
+            nickname='Alice',
+            checked_in_at=timezone.now(),
+            scoring_eligible=True,
+        )
+        self.participant = AssignParticipant.objects.create(
+            quiz=self.first_quiz,
+            name='Alice',
+            hub_session_code=self.session.code,
+            is_active=True,
+        )
+
+        self.host_context = self._browser.new_context()
+        self.player_context = self._browser.new_context()
+        install_browser_test_stubs(self.host_context)
+        install_browser_test_stubs(self.player_context)
+        self.player_context.add_init_script(
+            f"localStorage.setItem('hub_session_code', {json.dumps(self.session.code)});"
+        )
+        self.host_page = self.host_context.new_page()
+        self.player_page = self.player_context.new_page()
+        self.browser_errors = []
+        self.websocket_urls = {'host': [], 'player': []}
+        self.websocket_frames = {
+            'host': {'sent': [], 'received': []},
+            'player': {'sent': [], 'received': []},
+        }
+        self._instrument_page('host', self.host_page)
+        self._instrument_page('player', self.player_page)
+        self._admin_login()
+
+    def tearDown(self):
+        for page in (getattr(self, 'host_page', None), getattr(self, 'player_page', None)):
+            if page:
+                page.close()
+        for context in (getattr(self, 'host_context', None), getattr(self, 'player_context', None)):
+            if context:
+                context.close()
+
+    def _create_quiz(self, title, room_code, status):
+        return AssignQuiz.objects.create(
+            title=title,
+            creator=self.user,
+            room_code=room_code,
+            status=status,
+            started_at=timezone.now() if status == 'active' else None,
+        )
+
+    def _create_question(self, quiz, text, left_items, right_items, correct_matches):
+        question = AssignQuestion.objects.create(
+            question_text=text,
+            points=10,
+            time_limit=30,
+            left_items=left_items,
+            right_items=right_items,
+            correct_matches=correct_matches,
+            created_by=self.user,
+        )
+        quiz.selected_questions.add(question)
+        return question
+
+    def _instrument_page(self, label, page):
+        page.on('console', lambda msg: self._record_console(label, msg))
+        page.on('pageerror', lambda exc: self.browser_errors.append(f'{label} pageerror: {exc}'))
+        page.on('websocket', lambda ws: self._record_websocket(label, ws))
+
+    def _record_console(self, label, msg):
+        if msg.type == 'error':
+            self.browser_errors.append(f'{label} console error: {msg.text}')
+
+    def _record_websocket(self, label, websocket):
+        self.websocket_urls[label].append(websocket.url)
+        websocket.on('framesent', lambda payload: self.websocket_frames[label]['sent'].append(str(payload)))
+        websocket.on(
+            'framereceived',
+            lambda payload: self.websocket_frames[label]['received'].append(str(payload)),
+        )
+
+    def _admin_login(self):
+        self.host_page.goto(f'{self.live_server_url}{reverse("admin_dashboard:login")}')
+        self.host_page.fill("input[name='username']", self.user.username)
+        self.host_page.fill("input[name='password']", self.password)
+        self.host_page.click("button[type='submit']")
+        self.host_page.wait_for_url(f'**{reverse("admin_dashboard:home")}**', timeout=self.TIMEOUT)
+
+    def _wait_for_ws_url(self, label, path):
+        deadline = time.time() + (self.TIMEOUT / 1000)
+        while time.time() < deadline:
+            if any(path in url for url in self.websocket_urls[label]):
+                return
+            self.player_page.wait_for_timeout(100)
+        self.fail(f'{label} did not open WebSocket {path}. URLs: {self.websocket_urls[label]}')
+
+    def _wait_for_frame(self, label, direction, needle, start_index=0):
+        deadline = time.time() + (self.LONG_TIMEOUT / 1000)
+        while time.time() < deadline:
+            frames = self.websocket_frames[label][direction][start_index:]
+            if any(needle in frame for frame in frames):
+                return
+            self.player_page.wait_for_timeout(100)
+        self.fail(
+            f'{label} did not receive {needle!r} in {direction} frames. '
+            f'Frames: {self.websocket_frames[label][direction][start_index:]}'
+        )
+
+    def _received_types_since(self, label, start_index):
+        event_types = []
+        for raw_frame in self.websocket_frames[label]['received'][start_index:]:
+            try:
+                payload = json.loads(raw_frame)
+            except (TypeError, json.JSONDecodeError):
+                continue
+            if payload.get('type'):
+                event_types.append(payload['type'])
+        return event_types
+
+    def _play_url(self, quiz, participant_name='Alice'):
+        return (
+            f'{self.live_server_url}'
+            f'{reverse("assign:play", args=[quiz.room_code, participant_name])}'
+            f'?hub_session={self.session.code}'
+        )
+
+    def _monitor_url(self, quiz):
+        return (
+            f'{self.live_server_url}'
+            f'{reverse("admin_dashboard:assign_monitor", args=[quiz.room_code])}'
+            f'?hub_session={self.session.code}'
+        )
+
+    def _correct_drop_target(self, question, left_index):
+        quiz = question.quizzes.first()
+        randomized = question.get_randomized_items(room_code=quiz.room_code)
+        correct_original = int(question.correct_matches[str(left_index)])
+        for shuffled_position, original_position in randomized['position_to_original'].items():
+            if int(original_position) == correct_original:
+                return int(shuffled_position)
+        self.fail(f'No shuffled target for question={question.id}, left={left_index}')
+
+    def _drag_and_log(self, question, left_index=0):
+        target_index = self._correct_drop_target(question, left_index)
+        source = self.player_page.locator(f'.draggable-item[data-left-index="{left_index}"]')
+        target = self.player_page.locator(f'.drop-zone[data-right-index="{target_index}"]')
+        source.drag_to(target)
+        self.player_page.wait_for_selector('#logRoundBtn:not(.d-none)', timeout=self.TIMEOUT)
+        self.player_page.click('#logRoundBtn')
+
+    def _assert_no_browser_errors(self):
+        relevant_errors = [
+            error for error in self.browser_errors
+            if (
+                'favicon.ico' not in error
+                and 'ERR_NETWORK_ACCESS_DENIED' not in error
+                and '404' not in error
+                and 'Join failed, falling back to play URL' not in error
+            )
+        ]
+        self.assertEqual(relevant_errors, [])
+
+    def test_reload_after_completed_round_does_not_reactivate_it(self):
+        self.host_page.goto(self._monitor_url(self.first_quiz))
+        self.host_page.wait_for_function('() => !!window.adminGameMonitor', timeout=self.TIMEOUT)
+        self.player_page.goto(self._play_url(self.first_quiz))
+        self.player_page.wait_for_selector('#questionState', state='attached', timeout=self.TIMEOUT)
+        self._wait_for_ws_url('host', f'/ws/assign/{self.first_quiz.room_code}/')
+        self._wait_for_ws_url('player', f'/ws/assign/{self.first_quiz.room_code}/')
+        self._wait_for_ws_url('player', f'/ws/hub/{self.session.code}/')
+
+        self.host_page.click(
+            f'.send-question-btn[data-question-id="{self.completed_round_question.id}"]'
+        )
+        self._wait_for_frame('player', 'received', 'question_started')
+        self.player_page.wait_for_selector('#questionState:not(.d-none)', timeout=self.TIMEOUT)
+        self.player_page.wait_for_selector('.draggable-item[draggable="true"]', timeout=self.TIMEOUT)
+        active_timer = int(self.player_page.locator('#playerTimeLeft').inner_text())
+        self.assertGreater(active_timer, 0)
+
+        self._drag_and_log(self.completed_round_question)
+        self._wait_for_frame('player', 'received', 'question_rounds_complete')
+        self.first_quiz.session.refresh_from_db()
+        self.assertFalse(self.first_quiz.session.is_question_active)
+        self.player_page.wait_for_selector('.draggable-item[draggable="false"]', timeout=self.TIMEOUT)
+        stopped_timer_before = int(self.player_page.locator('#playerTimeLeft').inner_text())
+        self.player_page.wait_for_timeout(1200)
+        stopped_timer_after = int(self.player_page.locator('#playerTimeLeft').inner_text())
+        self.assertEqual(stopped_timer_before, stopped_timer_after)
+
+        reload_frame_start = len(self.websocket_frames['player']['received'])
+        submit_count_before_reload = sum(
+            'participant_log_round' in frame
+            for frame in self.websocket_frames['player']['sent']
+        )
+        self.player_page.reload()
+        self._wait_for_frame('player', 'received', 'connection_established', reload_frame_start)
+        self.player_page.wait_for_timeout(1500)
+
+        reload_types = self._received_types_since('player', reload_frame_start)
+        self.assertIn('quiz_started', reload_types)
+        self.assertNotIn('question_started', reload_types)
+        question_restarted = 'question_started' in reload_types
+        question_visible = self.player_page.locator('#questionState:not(.d-none)').count() == 1
+        drag_reenabled = self.player_page.locator('.draggable-item[draggable="true"]').count() > 0
+        timer_after_reload = int(self.player_page.locator('#playerTimeLeft').inner_text())
+        self.player_page.wait_for_timeout(1200)
+        timer_later = int(self.player_page.locator('#playerTimeLeft').inner_text())
+        timer_restarted = timer_after_reload > 0 and timer_later < timer_after_reload
+        submit_count_after_reload = sum(
+            'participant_log_round' in frame
+            for frame in self.websocket_frames['player']['sent']
+        )
+        self.assertEqual(submit_count_before_reload, submit_count_after_reload)
+
+        end_question_start = len(self.websocket_frames['player']['received'])
+        self.host_page.click('#endQuestionBtn')
+        self._wait_for_frame('player', 'received', 'question_ended', end_question_start)
+
+        followup_start = len(self.websocket_frames['player']['received'])
+        self.host_page.click(f'.send-question-btn[data-question-id="{self.followup_question.id}"]')
+        self._wait_for_frame('player', 'received', 'question_started', followup_start)
+        self.first_quiz.session.refresh_from_db()
+        self.assertTrue(self.first_quiz.session.is_question_active)
+        self.player_page.wait_for_selector('.draggable-item[draggable="true"]', timeout=self.TIMEOUT)
+        self.assertGreater(int(self.player_page.locator('#playerTimeLeft').inner_text()), 0)
+
+        next_round_start = len(self.websocket_frames['player']['received'])
+        self._drag_and_log(self.followup_question, left_index=0)
+        self._wait_for_frame('player', 'received', 'round_advanced', next_round_start)
+        self.first_quiz.session.refresh_from_db()
+        self.assertTrue(self.first_quiz.session.is_question_active)
+        self.player_page.wait_for_selector(
+            '.draggable-item[data-left-index="1"][draggable="true"]',
+            timeout=self.TIMEOUT,
+        )
+        self.assertGreater(int(self.player_page.locator('#playerTimeLeft').inner_text()), 0)
+
+        self.host_page.once('dialog', lambda dialog: dialog.accept())
+        self.host_page.click('#endQuizBtn')
+        self._wait_for_frame('player', 'received', 'quiz_ended')
+        self.first_quiz.session.refresh_from_db()
+        self.assertFalse(self.first_quiz.session.is_question_active)
+        self.player_page.wait_for_selector('#quizEndedState:not(.d-none)', timeout=self.TIMEOUT)
+
+        self.host_page.goto(f'{self.live_server_url}{reverse("games_hub:monitor", args=[self.session.code])}')
+        self.host_page.click('[data-session-panel-target="checkInPanel"]')
+        self.host_page.wait_for_selector('#recallLobbyBtn', timeout=self.TIMEOUT)
+        recall_frame_start = len(self.websocket_frames['player']['received'])
+        self.host_page.click('#recallLobbyBtn')
+        self.host_page.wait_for_function(
+            "() => document.querySelector('#lobbyReturnGuardNames')?.textContent.includes('Alice')",
+            timeout=self.TIMEOUT,
+        )
+        recall_primary = self.host_page.locator('#lobbyReturnGuardPrimaryBtn')
+        recall_primary.dispatch_event('click')
+        self._wait_for_frame(
+            'player', 'received', 'lobby_return_countdown_started', recall_frame_start
+        )
+        recall_primary.dispatch_event('click')
+        self._wait_for_frame('player', 'received', 'players_recalled_to_lobby', recall_frame_start)
+        self.player_page.wait_for_url(f'**/hub/lobby/{self.session.code}/**', timeout=self.LONG_TIMEOUT)
+
+        self.host_page.goto(self._monitor_url(self.second_quiz))
+        self.host_page.wait_for_selector('#startQuizBtn:not([disabled])', timeout=self.TIMEOUT)
+        self.host_page.click('#startQuizBtn')
+        self.player_page.wait_for_url(
+            f'**/assign/play/{self.second_quiz.room_code}/Alice/**',
+            timeout=self.LONG_TIMEOUT,
+        )
+        self.player_page.reload()
+        self.player_page.wait_for_url(
+            f'**/assign/play/{self.second_quiz.room_code}/Alice/**',
+            timeout=self.TIMEOUT,
+        )
+        self._assert_no_browser_errors()
+
+        diagnostics = {
+            'reload_event_types': reload_types,
+            'question_visible': question_visible,
+            'timer_after_reload': timer_after_reload,
+            'timer_later': timer_later,
+            'drag_reenabled': drag_reenabled,
+        }
+        self.assertFalse(
+            question_restarted or question_visible or timer_restarted or drag_reenabled,
+            f'Completed Assign round was reactivated after reload: {diagnostics}',
+        )

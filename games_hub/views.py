@@ -1,6 +1,7 @@
 import random
 import string
 import json
+import logging
 from django.shortcuts import render, redirect, get_object_or_404
 from django.views.decorators.http import require_http_methods, require_POST
 from django.db.models import Max
@@ -47,6 +48,12 @@ from where_is_this.models import WhereQuiz, WhereParticipant, WhereQuestion
 from who_is_lying.models import WhoQuiz, WhoParticipant, WhoQuestion
 from who_is_that.models import WhoThatQuiz, WhoThatParticipant, WhoThatQuestion
 from black_jack_quiz.models import BlackJackQuiz, BlackJackParticipant, BlackJackQuestion
+from buzzer.models import BuzzerGame, BuzzerParticipant
+from host_points.models import HostPointsGame, HostPointsParticipant
+from wann_war_das.models import WannWarDasGame, WannWarDasParticipant, WannWarDasQuestion
+
+
+logger = logging.getLogger(__name__)
 
 
 def gen_code(length=6):
@@ -119,6 +126,9 @@ def create_session(request):
             'clue_rush':      ClueRushGame,
             'sorting_ladder': SortingLadderGame,
             'wer_weiss_mehr': WerWeissMehrGame,
+            'buzzer':         BuzzerGame,
+            'host_points':    HostPointsGame,
+            'wann_war_das':   WannWarDasGame,
         }
 
         for order, entry in enumerate(games_ordered):
@@ -159,6 +169,9 @@ def _get_game_instances():
         ('blackjack',      BlackJackQuiz,      'Black Jack',      'spade'),
         ('clue_rush',      ClueRushGame,       'Clue Rush',       'zap'),
         ('sorting_ladder', SortingLadderGame,  'Sorting Ladder',  'list-ordered'),
+        ('buzzer',         BuzzerGame,         'Buzzer',          'radio-tower'),
+        ('host_points',    HostPointsGame,     'Host-Punktevergabe', 'clipboard-list'),
+        ('wann_war_das',   WannWarDasGame,    'Wann war das?',   'calendar-clock'),
         ('wer_weiss_mehr', WerWeissMehrGame,   'Wer weiß mehr?', 'layers'),
     ]
     games = []
@@ -266,6 +279,9 @@ def _legacy_get_leaderboard_data(session):
             'where': (WhereQuiz, WhereParticipant, 'Where is This?'),
             'blackjack': (BlackJackQuiz, BlackJackParticipant, 'Black Jack'),
             'sorting_ladder': (SortingLadderGame, SortingLadderParticipant, 'Sorting Ladder'),
+            'buzzer': (BuzzerGame, BuzzerParticipant, 'Buzzer'),
+            'host_points': (HostPointsGame, HostPointsParticipant, 'Host-Punktevergabe'),
+            'wann_war_das': (WannWarDasGame, WannWarDasParticipant, 'Wann war das?'),
             'wer_weiss_mehr': (WerWeissMehrGame, WerWeissMehrParticipant, 'Wer weiß mehr?'),
         }
         
@@ -501,6 +517,9 @@ def get_leaderboard_data(session, participant_count_override=None):
             'where': (WhereQuiz, WhereParticipant, 'Where is This?'),
             'blackjack': (BlackJackQuiz, BlackJackParticipant, 'Black Jack'),
             'sorting_ladder': (SortingLadderGame, SortingLadderParticipant, 'Sorting Ladder'),
+            'buzzer': (BuzzerGame, BuzzerParticipant, 'Buzzer'),
+            'host_points': (HostPointsGame, HostPointsParticipant, 'Host-Punktevergabe'),
+            'wann_war_das': (WannWarDasGame, WannWarDasParticipant, 'Wann war das?'),
             'wer_weiss_mehr': (WerWeissMehrGame, WerWeissMehrParticipant, 'Wer weiss mehr?'),
         }
 
@@ -673,6 +692,63 @@ def get_leaderboard_data(session, participant_count_override=None):
                 participant_count_override=participant_count_override,
             ),
         },
+    }
+
+
+def get_participant_leaderboard_data(session, participant_name):
+    """Return the authoritative leaderboard reduced to one participant and neighbours."""
+    leaderboard = get_leaderboard_data(session)
+    current_hub_participant = (
+        session.get_official_participants()
+        .filter(nickname=(participant_name or '').strip())
+        .only('id')
+        .first()
+    )
+    current_hub_participant_id = current_hub_participant.id if current_hub_participant else None
+    ranked_participants = []
+
+    for index, participant in enumerate(leaderboard.get('participants', []), start=1):
+        row = dict(participant)
+        row['rank'] = index
+        row['is_current_participant'] = (
+            current_hub_participant_id is not None
+            and row.get('hub_participant_id') == current_hub_participant_id
+        )
+        ranked_participants.append(row)
+
+    current_index = next(
+        (index for index, row in enumerate(ranked_participants) if row['is_current_participant']),
+        None,
+    )
+    completed_games = [
+        game for game in leaderboard.get('games', [])
+        if game.get('status') == 'completed'
+    ]
+
+    if current_index is None:
+        logger.warning(
+            'Participant missing from lobby leaderboard',
+            extra={
+                'hub_session_code': session.code,
+                'participant_name': participant_name,
+            },
+        )
+        return {
+            **leaderboard,
+            'games': completed_games,
+            'participants': [],
+            'participant_found': False,
+            'personalized': True,
+        }
+
+    start = max(0, current_index - 1)
+    end = min(len(ranked_participants), current_index + 2)
+    return {
+        **leaderboard,
+        'games': completed_games,
+        'participants': ranked_participants[start:end],
+        'participant_found': True,
+        'personalized': True,
     }
 
 
@@ -941,10 +1017,14 @@ def session_leaderboard_api(request, session_code):
         participant_count_override, override_error = _get_participant_count_override(request)
         if override_error:
             return JsonResponse({'error': override_error}, status=400)
-        data = get_leaderboard_data(
-            session,
-            participant_count_override=participant_count_override,
-        )
+        participant_name = (request.GET.get('participant_name') or '').strip()
+        if participant_name:
+            data = get_participant_leaderboard_data(session, participant_name)
+        else:
+            data = get_leaderboard_data(
+                session,
+                participant_count_override=participant_count_override,
+            )
         return JsonResponse(data)
     except HubSession.DoesNotExist:
         return JsonResponse({'error': 'Session not found'}, status=404)
@@ -989,11 +1069,13 @@ def post_game_results_api(request, session_code):
 def lobby(request, session_code: str):
     session = get_object_or_404(HubSession, code=session_code)
     participants = HubParticipant.objects.filter(session=session)
+    next_game_number = session.get_next_game_number()
     
     return render(request, 'hub/lobby.html', {
         'session_code': session_code,
         'session_name': session.name or session_code,
-        'participants': list(participants.values('id', 'nickname'))
+        'participants': list(participants.values('id', 'nickname')),
+        'next_game_number': next_game_number,
     })
 
 def session_leaderboard(request, session_code: str):
@@ -1034,6 +1116,9 @@ def monitor(request, session_code: str):
         'who_that':       WhoThatQuiz,
         'blackjack':      BlackJackQuiz,
         'wer_weiss_mehr': WerWeissMehrGame,
+        'buzzer': BuzzerGame,
+        'host_points': HostPointsGame,
+        'wann_war_das': WannWarDasGame,
     }
     for step in steps:
         model = _game_model_map.get(step.game_key)
@@ -1043,10 +1128,7 @@ def monitor(request, session_code: str):
         else:
             step.game_status = None
 
-    next_planned_step = next(
-        (step for step in steps if getattr(step, 'game_status', None) != 'completed'),
-        None,
-    )
+    next_planned_step = session.get_next_planned_step()
 
     # Gather waiting games grouped by type for the current user
     user = request.user
@@ -1061,6 +1143,9 @@ def monitor(request, session_code: str):
         'blackjack': BlackJackQuiz.objects.filter(status='waiting', creator=user).values('title', 'room_code'),
         'sorting_ladder': SortingLadderGame.objects.filter(status='waiting', creator=user).values('title', 'room_code'),
         'wer_weiss_mehr': WerWeissMehrGame.objects.filter(status='waiting', creator=user).values('title', 'room_code'),
+        'buzzer': BuzzerGame.objects.filter(status='waiting', creator=user).values('title', 'room_code'),
+        'host_points': HostPointsGame.objects.filter(status='waiting', creator=user).values('title', 'room_code'),
+        'wann_war_das': WannWarDasGame.objects.filter(status='waiting', creator=user).values('title', 'room_code'),
     }
 
     # All lobby participants for the right column
@@ -1125,6 +1210,9 @@ def add_step_to_session(request, session_code):
         'where': WhereQuiz, 'who': WhoQuiz, 'who_that': WhoThatQuiz,
         'blackjack': BlackJackQuiz, 'sorting_ladder': SortingLadderGame, 'clue_rush': ClueRushGame,
         'wer_weiss_mehr': WerWeissMehrGame,
+        'buzzer': BuzzerGame,
+        'host_points': HostPointsGame,
+        'wann_war_das': WannWarDasGame,
     }
 
     if game_ids:
@@ -1198,6 +1286,8 @@ def add_step_to_session(request, session_code):
 
 def _assign_questions_to_quiz(game_key: str, room_code: str, question_ids: list):
     """Assign selected question IDs to a newly created quiz via selected_questions."""
+    if game_key in {'buzzer', 'host_points'}:
+        return
     from QuizGame.models import QuizQuestion
     from Assign.models import AssignQuestion
     from Estimation.models import EstimationQuestion
@@ -1208,6 +1298,7 @@ def _assign_questions_to_quiz(game_key: str, room_code: str, question_ids: list)
     from sorting_ladder.models import SortingQuestion
     from clue_rush.models import ClueQuestion
     from wer_weiss_mehr.models import WerWeissMehrQuestion
+    from wann_war_das.models import WannWarDasQuestion
 
     quiz_model_map = {
         'quiz':           (QuizGameModel,      QuizQuestion),
@@ -1220,6 +1311,7 @@ def _assign_questions_to_quiz(game_key: str, room_code: str, question_ids: list)
         'sorting_ladder': (SortingLadderGame,  SortingQuestion),
         'clue_rush':      (ClueRushGame,       ClueQuestion),
         'wer_weiss_mehr': (WerWeissMehrGame,   WerWeissMehrQuestion),
+        'wann_war_das':   (WannWarDasGame,     WannWarDasQuestion),
     }
     entry = quiz_model_map.get(game_key)
     if not entry:
@@ -1266,6 +1358,15 @@ def auto_create_game_quiz(game_key: str, user, title: str):
         if game_key == 'wer_weiss_mehr':
             obj = WerWeissMehrGame.objects.create(creator=user, title=title)
             return obj.room_code
+        if game_key == 'buzzer':
+            obj = BuzzerGame.objects.create(creator=user, title=title)
+            return obj.room_code
+        if game_key == 'host_points':
+            obj = HostPointsGame.objects.create(creator=user, title=title)
+            return obj.room_code
+        if game_key == 'wann_war_das':
+            obj = WannWarDasGame.objects.create(creator=user, title=title)
+            return obj.room_code
     except Exception:
         return None
     return None
@@ -1274,6 +1375,8 @@ def auto_create_game_quiz(game_key: str, user, title: str):
 @login_required
 def get_available_questions(request, game_key):
     """Return available questions for a given game type."""
+    if game_key in {'buzzer', 'host_points'}:
+        return JsonResponse({'questions': []})
     from QuizGame.models import QuizQuestion
     from Assign.models import AssignQuestion
     from Estimation.models import EstimationQuestion
@@ -1283,6 +1386,7 @@ def get_available_questions(request, game_key):
     from black_jack_quiz.models import BlackJackQuestion
     from sorting_ladder.models import SortingQuestion
     from clue_rush.models import ClueQuestion
+    from wann_war_das.models import WannWarDasQuestion
 
     config = {
         'quiz':           (QuizQuestion,       'question_text'),
@@ -1295,6 +1399,7 @@ def get_available_questions(request, game_key):
         'sorting_ladder': (SortingQuestion,     'question_text'),
         'clue_rush':      (ClueQuestion,        'question_text'),
         'wer_weiss_mehr': (WerWeissMehrQuestion, 'question_text'),
+        'wann_war_das':   (WannWarDasQuestion,   'question_text'),
     }
     entry = config.get(game_key)
     if not entry:
@@ -1316,6 +1421,9 @@ def get_game_instances(request, game_key):
         'where': WhereQuiz, 'who': WhoQuiz, 'who_that': WhoThatQuiz,
         'blackjack': BlackJackQuiz, 'sorting_ladder': SortingLadderGame, 'clue_rush': ClueRushGame,
         'wer_weiss_mehr': WerWeissMehrGame,
+        'buzzer': BuzzerGame,
+        'host_points': HostPointsGame,
+        'wann_war_das': WannWarDasGame,
     }
     model = model_map.get(game_key)
     if not model:
@@ -1328,7 +1436,7 @@ def get_game_instances(request, game_key):
                 'title': g.title,
                 'internal_description': getattr(g, 'internal_description', ''),
                 'room_code': g.room_code,
-                'q_count': g.selected_questions.count(),
+                'q_count': g.selected_questions.count() if hasattr(g, 'selected_questions') else 0,
             }
             for g in instances
         ]

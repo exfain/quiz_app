@@ -32,6 +32,7 @@
                             {{ quiz.room_code }}
                         </div> -->
                         <h1 class="quiz-title">{{ quiz.title }}</h1>
+                        {% include 'includes/_session_game_number.html' with game_key='estimation' room_code=quiz.room_code %}
                     </div>
                     <div class="participant-info">
                         <div class="participant-avatar">
@@ -53,30 +54,16 @@
                 <div class="row justify-content-center">
                     <div class="col-lg-8">
                         <!-- Waiting State -->
-                        <div id="waitingQuizState" class="game-state {% if quiz.status != 'waiting' %}d-none{% endif %}">
+                        <div id="waitingQuizState" class="game-state {% if initial_participant_phase != 'waiting' %}d-none{% endif %}">
                             <div class="waiting-card">
-                                <div class="waiting-animation">
-                                    <div class="pulse-ring"></div>
-                                    <div class="pulse-ring delay-1"></div>
-                                    <div class="pulse-ring delay-2"></div>
-                                    <i data-lucide="calculator"></i>
-                                </div>
-                                <h2>Waiting for Estimation Quiz to Start</h2>
-                                <p>Get ready to make your best estimates! The quiz host will start the session shortly.</p>
-                                <div class="participants-count">
-                                    <i data-lucide="users"></i>
-                                    <span id="waitingParticipantCount">{{ participant_count }}</span> participants joined
-                                </div>
+                                {% include 'includes/_participant_start_waiting.html' with waiting_game_title=quiz.title %}
                             </div>
                         </div>
 
                         <div id="waitingQuestionState" class="game-state d-none">
                             <div class="waiting-card">
                                 <div class="waiting-animation">
-                                    <div class="pulse-ring"></div>
-                                    <div class="pulse-ring delay-1"></div>
-                                    <div class="pulse-ring delay-2"></div>
-                                    <i data-lucide="clock"></i>
+                                    <div class="qa-wait-loader" aria-hidden="true"></div>
                                 </div>
                                 <h2>Waiting for Next Question</h2>
                                 <p>Get ready for the next challenge!</p>
@@ -84,11 +71,11 @@
                         </div>
 
                         <!-- Question State -->
-                        <div id="questionState" class="game-state {% if not quiz.current_question %}d-none{% endif %}">
-                            <div class="question-card">
+                        <div id="questionState" class="game-state {% if initial_participant_phase != 'answering' and initial_participant_phase != 'answered_waiting' %}d-none{% endif %}">
+                            <div class="question-card qa-active-answer-card estimation-answer-card">
                                 <!-- Question Header -->
                                 <div class="question-header">
-                                    <div class="question-number">
+                                    <div class="question-number d-none" aria-hidden="true">
                                         Question <span id="currentQuestionNumber">1</span>
                                     </div>
                                     <div class="question-timer">
@@ -114,39 +101,35 @@
                                         <div class="hint-text" id="hintText"></div>
                                     </div>
 
-                                    <!-- Answer Input Interface -->
-                                    <div class="answer-interface" id="answerInterface">
-                                        <div class="answer-input-container">
-                                            <label for="estimateInput" class="answer-label">Your Estimate:</label>
-                                            <div class="input-with-unit">
-                                                <input type="number" 
-                                                       class="form-control estimate-input" 
-                                                       id="estimateInput" 
-                                                       placeholder="Enter your estimate..." 
-                                                       step="any"
-                                                       autocomplete="off">
-                                                <span class="unit-display{% if not quiz.current_question or not quiz.current_question.get_unit_display_text %} d-none{% endif %}" id="unitDisplay">{% if quiz.current_question %}{{ quiz.current_question.get_unit_display_text }}{% endif %}</span>
-                                            </div>
-                                            <div class="input-help">
-                                                <i data-lucide="info"></i>
-                                                <span>Enter numbers only. Decimals are allowed.</span>
+                                    <div class="estimation-interaction-area">
+                                        <!-- Answer Input Interface -->
+                                        <div class="answer-interface" id="answerInterface">
+                                            <div class="answer-input-container">
+                                                <div class="input-with-unit">
+                                                    <input type="number"
+                                                           class="form-control estimate-input"
+                                                           id="estimateInput"
+                                                           placeholder="Antwort"
+                                                           step="any"
+                                                           autocomplete="off">
+                                                    <span class="unit-display{% if not quiz.current_question or not quiz.current_question.get_unit_display_text %} d-none{% endif %}" id="unitDisplay">{% if quiz.current_question %}{{ quiz.current_question.get_unit_display_text }}{% endif %}</span>
+                                                </div>
                                             </div>
                                         </div>
-                                    </div>
 
-                                    <!-- Submit Button -->
-                                    <button class="btn btn-primary btn-lg w-100 submit-answer" id="submitAnswerBtn" disabled>
-                                        <i data-lucide="send"></i>
-                                        Submit Estimate
-                                    </button>
+                                        <!-- Submit Button -->
+                                        <button class="btn btn-lg submit-answer vhs-action-button" id="submitAnswerBtn" aria-pressed="false" disabled>
+                                            Einloggen
+                                        </button>
 
-                                    <div class="zone-submit-feedback d-none" id="zoneSubmitFeedback">
-                                        <div class="zone-submit-answer">
-                                            Your estimate:
-                                            <strong id="zoneSubmittedEstimate">-</strong>
-                                        </div>
-                                        <div class="zone-submit-waiting">
-                                            Waiting for the other participants...
+                                        <div class="zone-submit-feedback d-none" id="zoneSubmitFeedback">
+                                            <div class="zone-submit-answer">
+                                                <span class="zone-submit-label">Your estimate:</span>
+                                                <strong id="zoneSubmittedEstimate">-</strong>
+                                            </div>
+                                            <div class="zone-submit-waiting">
+                                                Waiting for the other participants...
+                                            </div>
                                         </div>
                                     </div>
                                 </div>
@@ -188,36 +171,32 @@
                         </div>
 
                         <!-- Show Correct Answer State -->
-                        <div id="correctAnswerState" class="game-state d-none">
+                        <div id="correctAnswerState" class="game-state {% if initial_participant_phase != 'reveal' %}d-none{% endif %}">
                             <div class="correct-answer-card">
-                                <div class="answer-reveal">
-                                    <div class="reveal-icon">
-                                        <i data-lucide="target"></i>
-                                    </div>
-                                    <h2>Correct Answer Revealed!</h2>
-                                    <div class="answer-display">
-                                        <span class="answer-value" id="correctAnswerDisplay">-</span>
-                                    </div>
-                                </div>
-                                
                                 <div class="comparison-display">
                                     <div class="comparison-item">
-                                        <div class="comparison-label">Your Estimate</div>
+                                        <div class="comparison-label">Schätzung</div>
                                         <div class="comparison-value user-estimate" id="userEstimateDisplay">-</div>
                                     </div>
                                     <div class="comparison-vs">VS</div>
                                     <div class="comparison-item">
-                                        <div class="comparison-label">Correct Answer</div>
+                                        <div class="comparison-label">Korrekte Antwort</div>
                                         <div class="comparison-value correct-answer" id="correctAnswerComparison">-</div>
                                     </div>
                                 </div>
                                 
                                 <div class="performance-summary">
                                     <div class="performance-badge" id="performanceBadge">
-                                        <span class="performance-text">Good Estimate!</span>
+                                        <span class="performance-text">
+                                            <span class="performance-points">0 Punkte</span>
+                                            <span class="performance-deviation">Abweichung: -</span>
+                                        </span>
                                     </div>
                                     <div class="rank-results-card" id="rankResultsCard" style="display: none;">
-                                        <div class="rank-results-title">Ranking for this question</div>
+                                        <div class="rank-results-title">
+                                            <span class="rank-results-title__default">Ranking for this question</span>
+                                            <span class="rank-results-title__vhs">RANGLISTE DIESER FRAGE</span>
+                                        </div>
                                         <div class="rank-results-list" id="rankResultsList"></div>
                                     </div>
                                     <div class="zone-explanation-card" id="zoneExplanationCard" style="display: none;">
@@ -230,18 +209,12 @@
                         </div>
 
                         <!-- Quiz Ended State -->
-                        <div id="quizEndedState" class="game-state d-none">
+                        <div id="quizEndedState" class="game-state {% if initial_participant_phase != 'finished' %}d-none{% endif %}">
                             <div class="ended-card">
-                                <div class="ended-animation">
-                                    <i data-lucide="trophy" class="trophy-icon"></i>
-                                </div>
-                                <h2>Estimation Quiz Completed!</h2>
-                                <p>Great job with all those estimates!</p>
-                                <div class="final-score">
-                                    <div class="score-circle">
-                                        <span class="score-value">{{ participant.total_score }}</span>
-                                        <span class="score-label">points</span>
-                                    </div>
+                                <h2 class="estimation-ended-title qa-game-title-font">{{ quiz.title }} beendet!</h2>
+                                <div class="estimation-ended-score" aria-live="polite">
+                                    <span class="score-value">{{ participant.total_score }}</span>
+                                    <span class="score-label">{% if participant.total_score == 1 %}Punkt{% else %}Punkte{% endif %}</span>
                                 </div>
                                 {% with post_game_game_key="estimation" %}
                                     {% include 'includes/_post_game_results.html' %}
@@ -304,6 +277,7 @@
     {{ question_scoreboard|json_script:"estimationQuestionScoreboardData" }}
     {{ initial_progress_history|json_script:"estimationInitialProgressData" }}
     {{ current_question_number|json_script:"estimationCurrentQuestionNumber" }}
+    {{ estimation_initial_state|json_script:"estimationInitialState" }}
 
     <!-- Bootstrap JS -->
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
@@ -536,11 +510,11 @@
 
         .question-header {
             display: flex;
-            justify-content: space-between;
+            justify-content: flex-end;
             align-items: center;
-            padding: 1.5rem 2rem;
-            background: linear-gradient(135deg, var(--primary-50) 0%, var(--secondary-50) 100%);
-            border-bottom: 1px solid var(--border-color);
+            padding: 1.25rem 1.5rem 0;
+            background: transparent;
+            border-bottom: 0;
         }
 
         .question-number {
@@ -581,16 +555,20 @@
         }
 
         .question-content {
-            padding: 2rem;
+            padding: 1rem 2.25rem 2.5rem;
         }
 
         .question-text {
-            font-size: 1.375rem;
+            font-size: clamp(2rem, 4.5vw, 3rem);
             font-weight: 600;
             color: var(--text-primary);
-            line-height: 1.6;
-            margin-bottom: 2rem;
+            line-height: 1.25;
+            margin-bottom: 2.25rem;
             text-align: center;
+        }
+
+        .qa-active-answer-card {
+            font-size: clamp(1.2rem, 2.2vw, 1.45rem);
         }
 
         /* Hint Display */
@@ -619,12 +597,16 @@
         }
 
         /* Answer Interface */
+        .estimation-interaction-area {
+            display: contents;
+        }
+
         .answer-interface {
             margin-bottom: 2rem;
         }
 
         .answer-input-container {
-            max-width: 400px;
+            max-width: 520px;
             margin: 0 auto;
         }
 
@@ -644,8 +626,8 @@
         }
 
         .estimate-input {
-            height: 70px;
-            font-size: 1.5rem;
+            height: 78px;
+            font-size: clamp(1.8rem, 4vw, 2.4rem);
             font-weight: 600;
             text-align: center;
             border: 3px solid var(--border-color);
@@ -656,13 +638,13 @@
         }
 
         .estimate-input:focus {
-            border-color: var(--color-primary);
-            box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.1);
+            border-color: var(--participant-effective-accent-color, var(--participant-accent-color, var(--color-primary)));
+            box-shadow: 0 0 0 4px color-mix(in srgb, var(--participant-effective-accent-color, var(--participant-accent-color, var(--color-primary))) 22%, transparent);
             outline: none;
         }
 
         .unit-display {
-            font-size: 1.125rem;
+            font-size: clamp(1.35rem, 2.6vw, 1.8rem);
             font-weight: 600;
             color: var(--text-primary);
             pointer-events: none;
@@ -671,7 +653,7 @@
             justify-content: center;
             flex-shrink: 0;
             min-width: 72px;
-            height: 70px;
+            height: 78px;
             padding: 0 1rem;
             border: 1px solid var(--border-color);
             border-radius: var(--border-radius-lg);
@@ -729,6 +711,11 @@
             margin-bottom: 0.75rem;
         }
 
+        .rank-results-title__vhs,
+        .rank-result-points__vhs {
+            display: none;
+        }
+
         .rank-results-list {
             display: flex;
             flex-direction: column;
@@ -771,10 +758,28 @@
 
         /* Submit Button */
         .submit-answer {
-            height: 60px;
-            font-size: 1.125rem;
-            font-weight: 600;
+            display: block;
+            width: fit-content;
+            min-width: 10rem;
+            max-width: 100%;
+            height: auto;
+            margin: 1.5rem auto 0;
+            padding: 0.85rem 1.75rem;
+            border-color: var(--participant-effective-accent-color, var(--participant-accent-color, var(--color-primary)));
+            background: var(--participant-effective-accent-color, var(--participant-accent-color, var(--color-primary)));
+            color: var(--participant-effective-text-color, var(--participant-theme-text, #000));
+            font-size: clamp(1.35rem, 2.7vw, 1.75rem);
+            font-weight: 700;
+            line-height: 1.1;
             transition: all var(--transition-fast);
+        }
+
+        .submit-answer:hover,
+        .submit-answer:focus {
+            border-color: var(--participant-effective-accent-color, var(--participant-accent-color, var(--color-primary)));
+            background: var(--participant-effective-accent-color, var(--participant-accent-color, var(--color-primary)));
+            color: var(--participant-effective-text-color, var(--participant-theme-text, #000));
+            filter: brightness(0.96);
         }
 
         .submit-answer:disabled {
@@ -891,56 +896,21 @@
             background: var(--bg-primary);
             border-radius: var(--border-radius-xl);
             box-shadow: var(--shadow-lg);
-            padding: 2rem;
+            padding: 2.25rem;
             text-align: center;
-        }
-
-        .answer-reveal {
-            margin-bottom: 2rem;
-        }
-
-        .reveal-icon {
-            width: 80px;
-            height: 80px;
-            margin: 0 auto 1rem;
-            background: linear-gradient(135deg, var(--primary-500) 0%, var(--primary-600) 100%);
-            border-radius: 50%;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            animation: bounce 1s ease-out;
-        }
-
-        .reveal-icon i {
-            width: 40px;
-            height: 40px;
-            color: var(--text-white);
-        }
-
-        @keyframes bounce {
-            0% { transform: scale(0); }
-            50% { transform: scale(1.1); }
-            100% { transform: scale(1); }
-        }
-
-        .answer-display {
-            margin: 1.5rem 0;
-        }
-
-        .answer-value {
-            font-size: 2.5rem;
-            font-weight: 700;
-            color: var(--color-success);
+            font-size: clamp(1.15rem, 2.1vw, 1.35rem);
         }
 
         .comparison-display {
             display: flex;
             align-items: center;
             justify-content: space-between;
-            margin: 2rem 0;
-            padding: 1.5rem;
-            background: var(--bg-secondary);
+            gap: 1rem;
+            margin: 0 0 2rem;
+            padding: 1.35rem 1.5rem;
+            background: var(--participant-effective-accent-color, var(--participant-accent-color, var(--bg-secondary)));
             border-radius: var(--border-radius-lg);
+            color: var(--participant-effective-text-color, var(--participant-theme-text, var(--text-primary)));
         }
 
         .comparison-item {
@@ -949,31 +919,34 @@
         }
 
         .comparison-label {
-            font-size: 0.875rem;
-            color: var(--text-muted);
+            font-size: clamp(1.05rem, 2vw, 1.25rem);
+            color: currentColor;
             margin-bottom: 0.5rem;
             text-transform: uppercase;
-            letter-spacing: 0.5px;
+            letter-spacing: 0.04em;
+            opacity: 0.82;
         }
 
         .comparison-value {
-            font-size: 1.5rem;
+            font-size: clamp(1.65rem, 3.4vw, 2.25rem);
             font-weight: 700;
+            color: currentColor;
         }
 
         .comparison-value.user-estimate {
-            color: var(--color-primary);
+            color: currentColor;
         }
 
         .comparison-value.correct-answer {
-            color: var(--color-success);
+            color: currentColor;
         }
 
         .comparison-vs {
-            font-size: 1rem;
+            font-size: clamp(1rem, 2vw, 1.25rem);
             font-weight: 700;
-            color: var(--text-muted);
+            color: currentColor;
             margin: 0 1rem;
+            opacity: 0.7;
         }
 
         .performance-summary {
@@ -982,10 +955,31 @@
 
         .performance-badge {
             display: inline-block;
-            padding: 0.75rem 1.5rem;
+            padding: 0.95rem 1.6rem;
             border-radius: var(--border-radius-xl);
             font-weight: 600;
             margin-bottom: 1rem;
+            min-width: min(100%, 16rem);
+            text-align: center;
+        }
+
+        .performance-text {
+            display: grid;
+            gap: 0.2rem;
+        }
+
+        .performance-points {
+            display: block;
+            font-size: clamp(1.55rem, 3vw, 2.05rem);
+            font-weight: 800;
+            line-height: 1.05;
+        }
+
+        .performance-deviation {
+            display: block;
+            font-size: clamp(1.1rem, 2.1vw, 1.35rem);
+            font-weight: 600;
+            line-height: 1.15;
         }
 
         .performance-badge.excellent {
@@ -1010,18 +1004,20 @@
 
         .zone-explanation-card {
             margin: 0 auto 1rem;
-            max-width: 560px;
-            padding: 1rem 1.125rem;
+            max-width: 640px;
+            padding: 1.15rem 1.25rem;
             border-radius: var(--border-radius-lg);
-            background: var(--bg-secondary);
-            border: 1px solid var(--secondary-200);
+            background: var(--participant-effective-accent-color, var(--participant-accent-color, var(--bg-secondary)));
+            border: 2px solid currentColor;
+            color: var(--participant-effective-text-color, var(--participant-theme-text, var(--text-primary)));
             text-align: left;
         }
 
         .zone-explanation-summary {
-            font-size: 0.95rem;
+            display: none;
+            font-size: 1rem;
             font-weight: 600;
-            color: var(--text-primary);
+            color: currentColor;
             margin-bottom: 0.75rem;
             line-height: 1.5;
         }
@@ -1036,15 +1032,16 @@
             align-items: center;
             justify-content: space-between;
             gap: 1rem;
-            padding: 0.65rem 0.8rem;
+            padding: 0.75rem 0.9rem;
             border-radius: var(--border-radius-md);
-            background: var(--bg-primary);
+            background: rgba(255, 255, 255, 0.2);
             border: 1px solid transparent;
+            color: currentColor;
         }
 
         .zone-range-row.active {
-            border-color: var(--primary-300);
-            background: var(--primary-50);
+            border-color: currentColor;
+            background: rgba(255, 255, 255, 0.28);
         }
 
         .zone-range-row.outside {
@@ -1059,22 +1056,23 @@
         }
 
         .zone-range-title {
-            font-size: 0.95rem;
+            font-size: clamp(1.1rem, 2vw, 1.3rem);
             font-weight: 700;
-            color: var(--text-primary);
+            color: currentColor;
         }
 
         .zone-range-label {
-            font-size: 0.875rem;
-            color: var(--text-secondary);
+            font-size: clamp(0.98rem, 1.7vw, 1.12rem);
+            color: currentColor;
             line-height: 1.4;
+            opacity: 0.92;
         }
 
         .zone-range-points {
             flex-shrink: 0;
-            font-size: 0.95rem;
+            font-size: clamp(1.05rem, 1.9vw, 1.22rem);
             font-weight: 700;
-            color: var(--text-primary);
+            color: currentColor;
         }
 
         .explanation-text {
@@ -1086,64 +1084,64 @@
         /* Quiz Ended State */
         .ended-card {
             text-align: center;
-            padding: 3rem 2rem;
-            background: var(--bg-primary);
-            border-radius: var(--border-radius-xl);
-            box-shadow: var(--shadow-lg);
+            padding: clamp(1.5rem, 4vw, 2.25rem);
+            background: transparent;
+            color: var(--participant-effective-text-color, var(--participant-theme-text, #000));
+            font-family: var(--font-family-sans, "Walkway Condensed", system-ui, sans-serif);
         }
 
-        .ended-animation {
-            margin-bottom: 2rem;
+        .estimation-ended-title {
+            margin: 0;
+            color: currentColor;
+            font-size: clamp(2.4rem, 8vw, 4rem);
+            font-weight: 400;
+            line-height: 0.95;
+            letter-spacing: 0.02em;
         }
 
-        .trophy-icon {
-            width: 80px;
-            height: 80px;
-            color: var(--warning-500);
-            animation: trophy 1s ease-out;
-        }
-
-        @keyframes trophy {
-            0% { transform: scale(0) rotate(-180deg); opacity: 0; }
-            50% { transform: scale(1.1) rotate(-10deg); opacity: 1; }
-            100% { transform: scale(1) rotate(0deg); opacity: 1; }
-        }
-
-        .final-score {
-            margin: 2rem 0;
-        }
-
-        .score-circle {
-            width: 120px;
-            height: 120px;
-            margin: 0 auto;
-            border: 4px solid var(--color-success);
-            border-radius: 50%;
+        .estimation-ended-score {
             display: flex;
-            flex-direction: column;
             align-items: center;
             justify-content: center;
-            background: linear-gradient(135deg, var(--success-50) 0%, var(--success-100) 100%);
+            gap: 0.5rem;
+            margin: 0.75rem auto 1.15rem;
+            color: currentColor;
+            font-family: var(--font-family-sans, "Walkway Condensed", system-ui, sans-serif);
+            font-size: clamp(1.55rem, 4vw, 2.1rem);
+            line-height: 1;
         }
 
-        .score-value {
-            font-size: 2rem;
+        .estimation-ended-score .score-value,
+        .estimation-ended-score .score-label {
+            color: currentColor;
             font-weight: 700;
-            color: var(--success-700);
         }
 
-        .score-label {
-            font-size: 0.875rem;
-            color: var(--success-600);
-            font-weight: 500;
+        .estimation-ended-score .score-label {
+            font-size: 0.82em;
         }
 
-        .quiz-actions {
+        #quizEndedState .quiz-actions {
             display: flex;
             flex-direction: column;
             gap: 1rem;
-            max-width: 300px;
-            margin: 0 auto;
+            align-items: center;
+            max-width: none;
+            margin: 1.1rem auto 0;
+        }
+
+        #quizEndedState .quiz-actions .btn {
+            border: 2px solid currentColor;
+            background: var(--participant-effective-accent-color, var(--participant-accent-color, #A3A88D));
+            color: var(--participant-effective-text-color, var(--participant-theme-text, #000));
+            font-family: var(--font-family-sans, "Walkway Condensed", system-ui, sans-serif);
+            font-size: clamp(1.15rem, 2.5vw, 1.45rem);
+            font-weight: 700;
+            padding: 0.7rem 1.15rem;
+        }
+
+        #quizEndedState .quiz-actions .btn svg {
+            display: none;
         }
 
         /* Connection Status */
@@ -1185,18 +1183,18 @@
             }
 
             .question-header {
-                padding: 1rem 1.5rem;
+                padding: 1rem 1.25rem 0;
             }
 
             .question-content {
-                padding: 1.5rem;
+                padding: 0.85rem 1.5rem 2rem;
             }
 
             .question-text {
-                font-size: 1.25rem;
+                font-size: clamp(1.75rem, 7vw, 2.45rem);
             }
 
-            .quiz-actions {
+            #quizEndedState .quiz-actions {
                 max-width: 100%;
             }
 
@@ -1225,8 +1223,15 @@
             }
 
             .estimate-input {
+                font-size: 1.6rem;
+                height: 66px;
+            }
+
+            .unit-display {
+                height: 66px;
+                min-width: 58px;
                 font-size: 1.25rem;
-                height: 60px;
+                padding: 0 0.75rem;
             }
 
             .timer-circle {
@@ -1239,6 +1244,7 @@
 
     {% include 'includes/_hub_return_to_lobby_player.html' %}
     {% include 'includes/_game_tutorial_overlay.html' %}
+    {% include 'includes/_session_game_start_intro.html' %}
 <script>
         document.addEventListener('DOMContentLoaded', function() {
             lucide.createIcons();
@@ -1263,6 +1269,8 @@
                     this.scoreHistory = this.readJsonScript('estimationInitialProgressData', []);
                     this.scoreboardQuestions = this.readJsonScript('estimationQuestionScoreboardData', []);
                     this.currentQuestionIndex = Number(this.readJsonScript('estimationCurrentQuestionNumber', 0)) || 0;
+                    this.initialState = this.readJsonScript('estimationInitialState', {phase: 'waiting'});
+                    this.currentStateId = null;
                     
                     this.init();
                 }
@@ -1271,12 +1279,7 @@
                     this.connectWebSocket();
                     this.bindEvents();
                     this.renderScoreHistory();
-                    
-                    // Start timer if there's an active question
-                    {% if quiz.current_question %}
-                        this.startQuestionTimer(90); // Default 90 seconds
-                        this.loadCurrentQuestion();
-                    {% endif %}
+                    this.hydrateInitialState();
                 }
 
                 connectWebSocket() {
@@ -1316,9 +1319,10 @@
                 }
 
                 handleWebSocketMessage(data) {
+                    window.sessionGameStartIntro?.handleState(data);
                     switch(data.type) {
                         case 'quiz_started':
-                            this.onQuizStarted();
+                            this.onQuizStarted(data);
                             break;
 
                         case 'tutorial_start':
@@ -1422,12 +1426,21 @@
                 }
 
                 applyEvaluatedPendingAnswer(answer) {
-                    if (!answer) return;
+                    if (!answer) {
+                        this.hasAnswered = false;
+                        this.lastSubmittedNumericAnswer = null;
+                        this.lastPointsEarned = 0;
+                        this.lastAccuracyPercentage = 0;
+                        document.getElementById('submittedEstimate').textContent = '-';
+                        document.getElementById('pointsEarned').textContent = '0';
+                        document.getElementById('accuracyPercent').textContent = '0%';
+                        return;
+                    }
 
                     const numericAnswer = Number(answer.user_answer);
                     const numericPoints = parseInt(answer.points_earned || 0, 10) || 0;
                     const numericAccuracy = parseFloat(answer.accuracy_percentage) || 0;
-                    const formattedAnswer = `${answer.user_answer}${this.currentUnit ? ' ' + this.currentUnit : ''}`;
+                    const formattedAnswer = answer.formatted_answer || `${answer.user_answer}${this.currentUnit ? ' ' + this.currentUnit : ''}`;
 
                     this.hasAnswered = true;
                     this.lastSubmittedNumericAnswer = Number.isFinite(numericAnswer) ? numericAnswer : null;
@@ -1478,13 +1491,36 @@
                     return this.scoreboardQuestions.find((question) => Number(question?.id) === numericQuestionId) || null;
                 }
 
-                onQuizStarted() {
+                onQuizStarted(data = {}) {
+                    if (['questionState', 'answerSubmittedState'].includes(this.currentStateId)) {
+                        return;
+                    }
+                    if (data.resume_existing && ['correctAnswerState', 'quizEndedState'].includes(this.currentStateId)) {
+                        return;
+                    }
+                    clearInterval(this.questionTimer);
+                    this.hasAnswered = false;
+                    this.currentQuestionId = null;
+                    this.currentQuestionIsTutorial = false;
+                    this.currentQuestionMaxPoints = 0;
+                    this.lastPointsEarned = 0;
+                    this.lastSubmittedNumericAnswer = null;
+                    this.lastAccuracyPercentage = 0;
+                    const estimateInput = document.getElementById('estimateInput');
+                    if (estimateInput) estimateInput.value = '';
+                    const submitButton = document.getElementById('submitAnswerBtn');
+                    if (submitButton) {
+                        submitButton.disabled = true;
+                        submitButton.classList.remove('loading');
+                        submitButton.setAttribute('aria-pressed', 'false');
+                    }
                     this.showState('waitingQuizState');
                 }
 
                 onQuestionStarted(question) {
                     this.hasAnswered = false;
-                    this.questionStartTime = Date.now();
+                    const elapsedSeconds = Number(question?.elapsed_seconds || 0);
+                    this.questionStartTime = Date.now() - (Number.isFinite(elapsedSeconds) ? elapsedSeconds * 1000 : 0);
                     this.currentQuestionIsTutorial = !!question?.is_tutorial_round;
                     this.currentQuestionId = this.currentQuestionIsTutorial ? null : (Number(question.id) || null);
                     this.currentUnit = question.unit_display || '';
@@ -1504,8 +1540,20 @@
                     if (qn) qn.textContent = this.currentQuestionIndex;
                     
                     this.loadQuestion(question);
-                    this.startQuestionTimer(question.time_limit || 90);
+                    const timeLimit = Number(question.time_limit);
+                    this.startQuestionTimer(Number.isFinite(timeLimit) ? Math.max(0, timeLimit) : 90);
                     if (!this.currentQuestionIsTutorial) this.renderScoreHistory();
+
+                    if (question?.has_answered && question?.existing_answer) {
+                        this.applyEvaluatedPendingAnswer(question.existing_answer);
+                        this.showSubmittedWaitingState(
+                            question.existing_answer.formatted_answer || question.existing_answer.user_answer,
+                            {formatted: true}
+                        );
+                        this.showState('questionState');
+                        return;
+                    }
+
                     this.showState('questionState');
                     
                     // Focus on input
@@ -1515,6 +1563,13 @@
                 }
 
                 onQuestionEnded(data) {
+                    if (
+                        !this.currentQuestionIsTutorial
+                        && (!this.currentQuestionId || !['questionState', 'answerSubmittedState'].includes(this.currentStateId))
+                    ) {
+                        console.warn('Ignoring stale question_ended without an active estimation question.');
+                        return;
+                    }
                     clearInterval(this.questionTimer);
 
                     if (!this.currentQuestionIsTutorial && !this.hasAnswered) {
@@ -1542,12 +1597,57 @@
                         if (data && Array.isArray(data.final_scores)) {
                             const me = data.final_scores.find(p => p.name === this.participantName);
                             if (me && typeof me.total_score === 'number') {
-                                const scoreEl = document.querySelector('#quizEndedState .score-value');
-                                if (scoreEl) scoreEl.textContent = me.total_score;
+                                this.updateFinalScore(me.total_score);
                             }
                         }
                     } catch (e) { console.warn('Unable to update final score:', e); }
                     this.showState('quizEndedState');
+                }
+
+                hydrateInitialState() {
+                    const phase = this.initialState?.phase || 'waiting';
+
+                    if (phase === 'finished') {
+                        this.updateFinalScore(this.initialState.participant_score);
+                        this.showState('quizEndedState');
+                        return;
+                    }
+
+                    if ((phase === 'answering' || phase === 'answered_waiting') && this.initialState.current_question) {
+                        this.onQuestionStarted(this.initialState.current_question);
+                        return;
+                    }
+
+                    if (phase === 'reveal') {
+                        this.hydrateRevealState(this.initialState);
+                        return;
+                    }
+
+                    if (phase !== 'waiting') {
+                        console.warn('Unknown estimation participant phase; falling back to waiting:', phase);
+                    }
+                    this.showState('waitingQuizState');
+                }
+
+                hydrateRevealState(state) {
+                    clearInterval(this.questionTimer);
+                    const answer = state.participant_answer || null;
+                    const revealedQuestion = state.revealed_question || {};
+
+                    this.currentQuestionId = Number(revealedQuestion.id) || null;
+                    this.currentQuestionIndex = Number(revealedQuestion.question_number || this.currentQuestionIndex) || this.currentQuestionIndex;
+                    this.currentQuestionMaxPoints = parseInt(revealedQuestion.max_points || 0, 10) || 0;
+                    this.currentUnit = revealedQuestion.unit_display || state.correct_answer?.unit_display || '';
+                    this.applyEvaluatedPendingAnswer(answer);
+                    this.showCorrectAnswer(state.correct_answer, state.points_for_question || 0, null);
+                }
+
+                updateFinalScore(score) {
+                    if (typeof score !== 'number') return;
+                    const scoreEl = document.querySelector('#quizEndedState .score-value');
+                    if (scoreEl) scoreEl.textContent = score;
+                    const scoreLabelEl = document.querySelector('#quizEndedState .score-label');
+                    if (scoreLabelEl) scoreLabelEl.textContent = Number(score) === 1 ? 'Punkt' : 'Punkte';
                 }
 
                 loadCurrentQuestion() {
@@ -1600,6 +1700,7 @@
                     submitBtn.disabled = true;
                     submitBtn.classList.remove('d-none');
                     submitBtn.classList.remove('loading');
+                    submitBtn.setAttribute('aria-pressed', 'false');
 
                     const zoneSubmitFeedback = document.getElementById('zoneSubmitFeedback');
                     const zoneSubmittedEstimate = document.getElementById('zoneSubmittedEstimate');
@@ -1614,6 +1715,7 @@
                 }
 
                 startQuestionTimer(timeLimit) {
+                    clearInterval(this.questionTimer);
                     let timeLeft = timeLimit;
                     const timerElement = document.getElementById('playerTimeLeft');
                     const circleElement = document.getElementById('playerTimerCircle');
@@ -1661,6 +1763,7 @@
                     estimateInput.disabled = true;
                     const submitBtn = document.getElementById('submitAnswerBtn');
                     submitBtn.classList.add('loading');
+                    submitBtn.setAttribute('aria-pressed', 'true');
                     
                     // Send answer via WebSocket
                     this.websocket.send(JSON.stringify({
@@ -1699,16 +1802,23 @@
                     this.lastAccuracyPercentage = parseFloat(data.accuracy_percentage) || 0;
                 }
 
-                showSubmittedWaitingState(userAnswer) {
+                showSubmittedWaitingState(userAnswer, options = {}) {
                     const zoneSubmitFeedback = document.getElementById('zoneSubmitFeedback');
                     const zoneSubmittedEstimate = document.getElementById('zoneSubmittedEstimate');
                     const submitBtn = document.getElementById('submitAnswerBtn');
+                    const estimateInput = document.getElementById('estimateInput');
+                    const displayAnswer = options.formatted
+                        ? (userAnswer || '-')
+                        : userAnswer + (this.currentUnit ? ' ' + this.currentUnit : '');
 
                     if (zoneSubmittedEstimate) {
-                        zoneSubmittedEstimate.textContent = userAnswer + (this.currentUnit ? ' ' + this.currentUnit : '');
+                        zoneSubmittedEstimate.textContent = displayAnswer;
                     }
                     if (zoneSubmitFeedback) {
                         zoneSubmitFeedback.classList.remove('d-none');
+                    }
+                    if (estimateInput) {
+                        estimateInput.disabled = true;
                     }
                     if (submitBtn) {
                         submitBtn.classList.add('d-none');
@@ -1728,7 +1838,8 @@
                 }
 
                 showCorrectAnswer(correctAnswerData, pointsForQuestion = 0, rankResults = null) {
-                    document.getElementById('correctAnswerDisplay').textContent = correctAnswerData?.formatted_answer || '-';
+                    const correctAnswerDisplay = document.getElementById('correctAnswerDisplay');
+                    if (correctAnswerDisplay) correctAnswerDisplay.textContent = correctAnswerData?.formatted_answer || '-';
                     document.getElementById('userEstimateDisplay').textContent = this.hasAnswered
                         ? document.getElementById('submittedEstimate').textContent
                         : '-';
@@ -1746,31 +1857,50 @@
                     
                     const performanceBadge = document.getElementById('performanceBadge');
                     const performanceText = performanceBadge.querySelector('.performance-text');
+                    const deviationPercentage = this.getDeviationPercentage(correctAnswerData);
 
                     if (correctAnswerData?.scoring_mode === 'rank' && Array.isArray(rankResults)) {
-                        const ownRankResult = rankResults.find(r => r.participant_name === this.participantName);
-                        const ownRankPosition = ownRankResult?.rank_position || '-';
                         performanceBadge.className = 'performance-badge good';
-                        performanceText.textContent = `Rank #${ownRankPosition} (${pointsForQuestion} pts)`;
                     } else {
                         const accuracy = parseFloat(document.getElementById('accuracyPercent').textContent);
 
                         if (accuracy >= 95) {
                             performanceBadge.className = 'performance-badge excellent';
-                            performanceText.textContent = `Excellent Estimate! (${pointsForQuestion} pts)`;
                         } else if (accuracy >= 80) {
                             performanceBadge.className = 'performance-badge good';
-                            performanceText.textContent = `Great Estimate! (${pointsForQuestion} pts)`;
                         } else if (accuracy >= 60) {
                             performanceBadge.className = 'performance-badge fair';
-                            performanceText.textContent = `Good Try! (${pointsForQuestion} pts)`;
                         } else {
                             performanceBadge.className = 'performance-badge poor';
-                            performanceText.textContent = `Keep Practicing! (${pointsForQuestion} pts)`;
                         }
                     }
+                    performanceText.innerHTML = `
+                        <span class="performance-points">${this.formatPointLabel(pointsForQuestion)}</span>
+                        <span class="performance-deviation">Abweichung: ${this.formatDeviationLabel(deviationPercentage)}</span>
+                    `;
                     
                     this.showState('correctAnswerState');
+                }
+
+                formatPointLabel(points) {
+                    const numericPoints = parseInt(points || 0, 10) || 0;
+                    return numericPoints === 1 ? '1 Punkt' : `${numericPoints} Punkte`;
+                }
+
+                getDeviationPercentage(correctAnswerData) {
+                    const correctAnswer = Number(correctAnswerData?.correct_answer);
+                    if (!this.hasAnswered || !Number.isFinite(this.lastSubmittedNumericAnswer) || !Number.isFinite(correctAnswer)) {
+                        return null;
+                    }
+                    if (correctAnswer === 0) {
+                        return this.lastSubmittedNumericAnswer === 0 ? 0 : null;
+                    }
+                    return Math.abs((this.lastSubmittedNumericAnswer - correctAnswer) / Math.abs(correctAnswer)) * 100;
+                }
+
+                formatDeviationLabel(deviationPercentage) {
+                    if (!Number.isFinite(deviationPercentage)) return '-';
+                    return `${this.formatRevealPercentage(deviationPercentage)}%`;
                 }
 
                 renderRankResults(rankResults) {
@@ -1790,7 +1920,10 @@
                             <div class="rank-result-row${isSelf ? ' is-self' : ''}">
                                 <div class="rank-result-position">#${result.rank_position}</div>
                                 <div class="rank-result-name">${this.escapeHtml(result.participant_name)}</div>
-                                <div class="rank-result-points">${result.points_earned} pts</div>
+                                <div class="rank-result-points">
+                                    <span class="rank-result-points__default">${result.points_earned} pts</span>
+                                    <span class="rank-result-points__vhs">${this.formatPointLabel(result.points_earned)}</span>
+                                </div>
                             </div>
                         `;
                     });
@@ -1852,37 +1985,23 @@
                         }) || null;
                     }
 
-                    if (zoneScoring.special_case === 'exact_zero') {
-                        if (!hasSubmittedEstimate) {
-                            zoneSummary.textContent = `Only an exact 0 scores here. Any other estimate earns ${zoneScoring.outside_points || 0} pts.`;
-                        } else if (matchedZone) {
-                            zoneSummary.textContent = `Your estimate was exactly 0, so it earned ${pointsForQuestion} pts.`;
-                        } else {
-                            zoneSummary.textContent = `Only an exact 0 scores here. Your estimate earned ${zoneScoring.outside_points || 0} pts.`;
-                        }
-                    } else if (!hasSubmittedEstimate) {
-                        zoneSummary.textContent = `Zone mode gives fewer points the farther the estimate is from the correct answer.`;
-                    } else if (matchedZone) {
-                        zoneSummary.textContent = `Your estimate was ${this.formatRevealPercentage(deviationPercentage)}% away, so it landed in Zone ${matchedZone.zone_number} for ${pointsForQuestion} pts.`;
-                    } else {
-                        zoneSummary.textContent = `Your estimate was ${this.formatRevealPercentage(deviationPercentage)}% away, so it landed outside all scoring zones for ${zoneScoring.outside_points || 0} pts.`;
-                    }
+                    zoneSummary.textContent = '';
 
                     const zoneRows = zones.map(zone => {
                         const isActive = matchedZone && Number(matchedZone.zone_number) === Number(zone.zone_number);
                         const title = zoneScoring.special_case === 'exact_zero'
                             ? `Zone ${zone.zone_number}`
-                            : `Zone ${zone.zone_number}: ${this.formatRevealPercentage(zone.min_percentage)}%-${this.formatRevealPercentage(zone.max_percentage)}% away`;
+                            : `Zone ${zone.zone_number}: ${this.formatRevealPercentage(zone.min_percentage)}%-${this.formatRevealPercentage(zone.max_percentage)}% Abweichung`;
                         const label = zoneScoring.special_case === 'exact_zero'
-                            ? 'Exact answer of 0 only'
-                            : `Approx. values: ${zone.absolute_range_display || '-'}`;
+                            ? 'Nur exakt 0'
+                            : `Wertebereich: ${zone.absolute_range_display || '-'}`;
                         return `
                             <div class="zone-range-row${isActive ? ' active' : ''}">
                                 <div class="zone-range-meta">
                                     <div class="zone-range-title">${title}</div>
                                     <div class="zone-range-label">${label}</div>
                                 </div>
-                                <div class="zone-range-points">${zone.points} pts</div>
+                                <div class="zone-range-points">${this.formatPointLabel(zone.points)}</div>
                             </div>
                         `;
                     });
@@ -1891,10 +2010,10 @@
                     zoneRows.push(`
                         <div class="zone-range-row outside${outsideActive ? ' active' : ''}">
                             <div class="zone-range-meta">
-                                <div class="zone-range-title">Outside all zones</div>
-                                <div class="zone-range-label">Farther away than the last scoring band</div>
+                                <div class="zone-range-title">Außerhalb aller Zonen</div>
+                                <div class="zone-range-label">Mehr Abweichung als die letzte Punktezone</div>
                             </div>
-                            <div class="zone-range-points">${zoneScoring.outside_points || 0} pts</div>
+                            <div class="zone-range-points">${this.formatPointLabel(zoneScoring.outside_points || 0)}</div>
                         </div>
                     `);
 
@@ -2008,6 +2127,7 @@
                     const targetState = document.getElementById(stateId);
                     if (targetState) {
                         targetState.classList.remove('d-none');
+                        this.currentStateId = stateId;
                     }
                 }
 
@@ -2037,6 +2157,10 @@
                 participantName: '{{ participant.name|escapejs }}',
                 csrfToken: '{{ csrf_token }}',
             });
+            const returnToLobbyButton = document.getElementById('returnToLobbyBtn');
+            if (returnToLobbyButton) {
+                returnToLobbyButton.textContent = '\u2190 Zur Lobby zur\u00fcckkehren';
+            }
 
             // Minimal Hub listener for centralized navigation
             (function() {
@@ -2167,6 +2291,6 @@
         });
     </script>
   {% include 'includes/_leaderboard_overlay.html' %}
-  {% include 'includes/accessibility_widget.html' %}
+  {% include 'includes/accessibility_widget.html' with participant_options_menu=True %}
 </body>
 </html>

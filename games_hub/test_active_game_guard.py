@@ -309,6 +309,148 @@ class ActiveGameGuardTests(TransactionTestCase):
         self.assertContains(response, 'Dieses Spiel ist nicht das nächste geplante Spiel.')
         self.assertContains(response, 'Trotzdem fortfahren')
 
+    def test_hub_monitor_renders_restructured_session_view(self):
+        completed_quiz = Quiz.objects.create(
+            creator=self.user,
+            title='Beendetes Quick Quiz',
+            status='completed',
+            started_at=timezone.now(),
+            ended_at=timezone.now(),
+        )
+        HubGameStep.objects.create(
+            session=self.session,
+            order=2,
+            game_key='quiz',
+            room_code=completed_quiz.room_code,
+            title=completed_quiz.title,
+        )
+
+        response = self.client.get(reverse('games_hub:monitor', args=[self.session.code]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'session-monitor-header')
+        self.assertContains(response, 'Session Monitor')
+        self.assertContains(response, f'Code: {self.session.code}')
+        self.assertContains(response, 'body > .admin-layout')
+        self.assertContains(response, 'z-index: auto')
+        self.assertContains(response, 'data-bs-target="#addGameModal"')
+        self.assertContains(response, 'id="addGameModal"')
+        self.assertContains(response, 'id="wsStatus"')
+        self.assertContains(response, 'id="game-plan-tab"')
+        self.assertContains(response, 'class="nav-link active" id="game-plan-tab"', html=False)
+        self.assertContains(response, 'id="participants-tab"')
+        self.assertContains(response, 'id="gamePlanMount"')
+        self.assertContains(response, 'id="participantsScoreboardMount"')
+        self.assertContains(response, 'data-session-panel-target="joinPanel"')
+        self.assertContains(response, 'data-session-panel-target="checkInPanel"')
+        self.assertContains(response, 'data-session-panel-target="scoringPanel"')
+        self.assertContains(response, 'data-session-floating-menu')
+        self.assertContains(response, 'data-session-menu-toggle')
+        self.assertContains(response, 'session-floating-menu.is-collapsed')
+        self.assertContains(response, "window.matchMedia('(max-width: 1520px)')")
+        self.assertContains(response, 'setFloatingMenuCollapsed')
+        self.assertContains(response, 'justify-content: center')
+        self.assertContains(response, 'padding-left: 4.25rem')
+        self.assertContains(response, 'session-tab-primary-section')
+        self.assertContains(response, 'class="row g-0 mt-0 session-tab-primary-section" id="scoreboardSection"', html=False)
+        self.assertContains(response, 'border-top-left-radius: 0')
+        self.assertContains(response, 'margin-top: -1px')
+        self.assertContains(response, 'id="inactiveSessionBtn"')
+        self.assertContains(response, 'id="endSessionBtn"')
+        self.assertContains(response, 'Inactivate Session')
+        self.assertContains(response, 'End Session')
+        self.assertContains(response, 'inactivate_session')
+        self.assertContains(response, 'Diese Session wird auf inaktiv gesetzt.')
+        self.assertContains(response, 'id="joinPanel"')
+        self.assertContains(response, 'id="checkInPanel"')
+        self.assertContains(response, 'Check-in abschließen')
+        self.assertContains(response, 'Zurücksetzen')
+        self.assertContains(response, 'Check-in wirklich zurücksetzen?')
+        self.assertNotContains(response, 'abschlieÃŸen')
+        self.assertNotContains(response, 'ZurÃ¼cksetzen')
+        self.assertNotContains(response, 'zurÃ¼cksetzen')
+        self.assertContains(response, 'id="scoringPanel"')
+        self.assertContains(response, 'id="votingPanel"')
+        self.assertContains(response, 'id="votingResultsList"')
+        self.assertContains(response, 'data-session-panel-target="readinessPanel"')
+        self.assertContains(response, 'id="readinessPanel"')
+        self.assertContains(response, 'Bereitschaft checken')
+        self.assertContains(response, 'Bereitschaftscheck beenden')
+        self.assertContains(response, 'id="readinessEndWarningModal"')
+        self.assertContains(response, 'Trotzdem beenden')
+        self.assertContains(response, 'start_readiness_check')
+        self.assertContains(response, 'participant_ready')
+        self.assertContains(response, 'readiness_end_requires_confirmation')
+        self.assertContains(response, 'id="lobbyLink"')
+        self.assertContains(response, 'id="copyLinkBtn"')
+        self.assertContains(response, 'id="stepsList"')
+        self.assertContains(response, 'class="step-name step-name-primary"', html=False)
+        self.assertContains(response, 'class="step-game-type"', html=False)
+        self.assertContains(response, 'grid-template-columns: 28px 36px minmax(0, 1fr) 260px')
+        self.assertContains(response, 'gap: 0.55rem')
+        self.assertContains(response, 'padding: 0.5rem 1rem')
+        self.assertContains(response, 'flex-direction: column')
+        self.assertContains(response, '.launch-btn {\n    align-self: flex-end;')
+        self.assertContains(response, 'padding: 0.22rem 0.5rem')
+        self.assertContains(response, 'class="btn btn-sm btn-outline-danger delete-step-btn"', html=False)
+        self.assertContains(response, 'aria-label="Spiel löschen"')
+        self.assertContains(response, 'margin-top: auto')
+        self.assertContains(response, 'padding: 0.15rem 0.3rem')
+        self.assertContains(response, '.delete-step-btn svg')
+        self.assertContains(response, 'Spiel öffnen')
+        self.assertContains(response, 'Läuft – Öffnen')
+        self.assertContains(response, 'Beendet – Öffnen')
+        self.assertContains(response, '.step-votes { display: none; }')
+        self.assertContains(response, 'voting-result-row')
+        self.assertContains(response, 'id="sessionScoreboardWrap"')
+        self.assertContains(response, 'padding: 0.45rem 0.65rem')
+        self.assertContains(response, '.sb-name { min-width: 8rem; }')
+        self.assertContains(response, '.sb-game { min-width: 3.75rem; max-width: 5rem;')
+        self.assertContains(response, '.sb-game-info')
+        self.assertContains(response, '.sb-game-tooltip-floating')
+        self.assertContains(response, 'id="spectateBtn"')
+        self.assertContains(response, f"/hub/spectate/{self.session.code}/")
+        self.assertContains(response, 'openSessionToolPanel')
+        self.assertNotContains(response, 'activateParticipantsTab')
+        self.assertNotContains(response, 'Check-In öffnen')
+        self.assertNotContains(response, 'Share this link')
+        self.assertNotContains(response, 'id="participantOverviewSection"')
+        self.assertNotContains(response, 'Teilnehmerliste und aktueller Spielstand.')
+        self.assertNotContains(response, '<div class="step-header-votes">Votes</div>', html=False)
+        content = response.content.decode('utf-8')
+        self.assertNotIn('step-status-hint', content)
+        self.assertNotIn('step-title-label', content)
+        scoreboard_renderer = content.rsplit('function renderSessionScoreboard(data)', 1)[1].split('function showScoringSettingsAlert', 1)[0]
+        self.assertIn('const displayedInstanceKeys = [...instanceKeys].reverse();', scoreboard_renderer)
+        self.assertIn('<th class="sb-rank">Rang</th>', scoreboard_renderer)
+        self.assertIn('<th class="sb-name">Name</th>', scoreboard_renderer)
+        self.assertIn('<th class="center sb-total">Gesamtwertung</th>', scoreboard_renderer)
+        self.assertIn('${headerCols}', scoreboard_renderer)
+        self.assertLess(scoreboard_renderer.index('<th class="sb-rank">Rang</th>'), scoreboard_renderer.index('<th class="sb-name">Name</th>'))
+        self.assertLess(scoreboard_renderer.index('<th class="sb-name">Name</th>'), scoreboard_renderer.index('<th class="center sb-total">Gesamtwertung</th>'))
+        self.assertLess(scoreboard_renderer.index('<th class="center sb-total">Gesamtwertung</th>'), scoreboard_renderer.index('${headerCols}'))
+        self.assertIn('class="sb-game-info"', scoreboard_renderer)
+        self.assertIn('data-tooltip=', scoreboard_renderer)
+        self.assertIn('<summary>Korr.</summary>', scoreboard_renderer)
+        self.assertNotIn('<th>Teilnehmer</th>', scoreboard_renderer)
+        self.assertNotIn('Korrektur</th>', scoreboard_renderer)
+        self.assertNotIn('Total</th>', scoreboard_renderer)
+        game_plan_section = content.split('id="gamePlanSection"', 1)[1].split('id="stepsList"', 1)[0]
+        self.assertNotIn('data-lucide="list-ordered"', game_plan_section)
+        self.assertNotIn('>Game Plan</h5>', game_plan_section)
+        for launch_button in content.split('class="btn btn-sm btn-primary launch-btn')[1:]:
+            self.assertNotIn('data-lucide="play"', launch_button.split('</a>', 1)[0])
+        participants_header = content.split('id="participantsScoreboardTab"', 1)[1].split('id="participantsScoreboardMount"', 1)[0]
+        self.assertNotIn('data-session-panel-target="checkInPanel"', participants_header)
+        self.assertNotIn('Teilnehmerliste', participants_header)
+        session_controls = content.split('id="sessionControlsPanel"', 1)[1].split('id="gamePlanMount"', 1)[0]
+        self.assertNotIn('id="endSessionBtn"', session_controls)
+        left_menu = content.split('session-floating-menu-left', 1)[1].split('session-floating-menu-right', 1)[0]
+        self.assertIn('id="inactiveSessionBtn"', left_menu)
+        self.assertIn('id="endSessionBtn"', left_menu)
+        right_menu = content.split('session-floating-menu-right', 1)[1].split('session-panel-backdrop', 1)[0]
+        self.assertIn('Bereitschaft', right_menu)
+
     def test_game_monitor_renders_active_game_conflict_dialog(self):
         response = self.client.get(
             f"{reverse('admin_dashboard:quiz_monitor', args=[self.active_quiz.room_code])}?hub_session={self.session.code}"
@@ -475,6 +617,21 @@ class ActiveGameGuardTests(TransactionTestCase):
 
         self.target_estimation.refresh_from_db()
         self.assertEqual(self.target_estimation.status, 'inactive')
+
+    def test_inactivate_session_marks_current_session_inactive_without_ending(self):
+        consumer = HubConsumer()
+        consumer.session_code = self.session.code
+
+        result = async_to_sync(consumer.inactivate_session_db)()
+
+        self.assertTrue(result['success'])
+        self.session.refresh_from_db()
+        self.active_quiz.refresh_from_db()
+        self.target_estimation.refresh_from_db()
+        self.assertFalse(self.session.is_active)
+        self.assertIsNone(self.session.ended_at)
+        self.assertEqual(self.active_quiz.status, 'inactive')
+        self.assertEqual(self.target_estimation.status, 'waiting')
 
     def test_first_game_activation_requires_completed_check_in(self):
         fresh_session = HubSession.objects.create(

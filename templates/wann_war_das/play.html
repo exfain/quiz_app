@@ -1,0 +1,192 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Wann war das?: {{ game.title }}</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        @font-face { font-family: "Walkway Condensed"; src: url("/static/fonts/Walkway%20Condensed%20SemiBold.ttf") format("truetype"); font-style: normal; font-weight: 400 700; font-display: swap; }
+        @font-face { font-family: "Cinematografica"; src: url("/static/fonts/Cinematografica-Regular-trial.ttf") format("truetype"); font-style: normal; font-weight: 400; font-display: swap; }
+        .qa-game-title-font { font-family: "Cinematografica", system-ui, sans-serif; letter-spacing: .035em; }
+        body { background: #d0d6b4; color: #e5e7eb; min-height: 100vh; font-family: "Walkway Condensed", system-ui, sans-serif; position: relative; }
+        body::before { content: ""; position: fixed; inset: 0; z-index: 0; pointer-events: none; background-image: url("/static/neutral_transparent_noise_overlay_512.png"); background-repeat: repeat; opacity: .32; }
+        body > * { position: relative; z-index: 1; }
+        .game-shell { max-width: 820px; margin: 0 auto; padding: 28px 16px; }
+        .game-card { background: rgba(17, 24, 39, .95); border: 1px solid rgba(148, 163, 184, .24); border-radius: 24px; padding: 28px; box-shadow: 0 24px 80px rgba(0,0,0,.35); }
+        .game-card h1.qa-game-title-font { font-size: clamp(2rem, 5vw, 3rem); line-height: 1; }
+        .qa-local-start-title { display: block; font-size: clamp(2rem, 5vw, 3rem); line-height: 1; }
+        .qa-local-start-subtitle { display: block; margin-top: .7rem; font-size: clamp(1rem, 2.2vw, 1.25rem); font-weight: 600; color: #cbd5e1; }
+        .metric { background: rgba(15, 23, 42, .76); border: 1px solid rgba(148, 163, 184, .18); border-radius: 16px; padding: 12px 14px; }
+        .answer-input { font-size: 2rem; text-align: center; font-weight: 800; }
+    </style>
+</head>
+<body class="wann-war-das-play-page">
+<main class="game-shell">
+    {% include 'includes/_unit_tutorial_notice.html' with tutorial_notice_label='Tutorialfrage' %}
+    <div class="game-card">
+        <div class="d-flex flex-wrap justify-content-between gap-3 align-items-start mb-4">
+            <div>
+                <div class="text-info text-uppercase fw-bold small">Wann war das?</div>
+                <h1 class="h3 mb-1 qa-game-title-font">{{ game.title }}</h1>
+                {% include 'includes/_session_game_number.html' with game_key='wann_war_das' room_code=game.room_code %}
+                <div class="text-secondary">Runde <span id="questionNumber">{{ game.current_question_number|default:0 }}</span></div>
+            </div>
+            <div class="metric text-end">
+                <div class="small text-secondary">Deine Punkte</div>
+                <div class="h3 mb-0" id="ownScore">{{ participant.total_score }}</div>
+            </div>
+        </div>
+
+        <div id="questionArea" class="d-none">
+            <p class="lead fs-3" id="questionText"></p>
+            <div class="row g-2 mb-3">
+                <div class="col-4"><div class="metric"><div class="small text-secondary">Toleranz</div><strong id="toleranceText">-</strong></div></div>
+                <div class="col-4"><div class="metric"><div class="small text-secondary">Punkte jetzt</div><strong id="pointsText">-</strong></div></div>
+                <div class="col-4"><div class="metric"><div class="small text-secondary">Restzeit</div><strong id="remainingText">-</strong></div></div>
+            </div>
+            <p class="small text-secondary">Je frueher du innerhalb der Toleranz antwortest, desto mehr Punkte bekommst du.</p>
+            <div id="answerForm" class="row g-2 align-items-center">
+                <div class="col-sm-8">
+                    <input type="number" step="any" class="form-control answer-input" id="answerInput" placeholder="Jahreszahl / Zahl">
+                </div>
+                <div class="col-sm-4">
+                    <button class="btn btn-info w-100 btn-lg fw-bold" id="submitBtn">Einloggen</button>
+                </div>
+            </div>
+            <div class="alert alert-success mt-3 d-none" id="submittedAlert">Antwort abgegeben. Warte auf Aufloesung.</div>
+        </div>
+
+        <div id="waitingArea" class="text-center py-5">
+            <p class="lead mb-0" id="waitingText">
+                <span class="qa-game-title-font qa-local-start-title">{{ game.title }}</span>
+                <span class="qa-local-start-subtitle">beginnt gleich!</span>
+            </p>
+        </div>
+
+        <div id="revealArea" class="alert alert-light mt-4 d-none text-dark">
+            <h2 class="h5">Aufloesung</h2>
+            <div>Richtige Antwort: <strong id="correctAnswerText"></strong></div>
+            <div>Deine Antwort: <strong id="ownAnswerText"></strong></div>
+            <div>Abweichung: <strong id="deviationText"></strong></div>
+            <div>Toleranz beim Submit: <strong id="answerToleranceText"></strong></div>
+            <div>Punkte: <strong id="answerPointsText"></strong></div>
+            <p class="mb-0 mt-2" id="explanationText"></p>
+        </div>
+
+        <div class="mt-4">
+            <button type="button" class="btn btn-outline-light btn-sm" id="returnToLobbyBtn">Zur Lobby zurückkehren</button>
+        </div>
+    </div>
+</main>
+{% include 'includes/_hub_return_to_lobby_player.html' %}
+{% include 'includes/_game_tutorial_overlay.html' %}
+{% include 'includes/_session_game_start_intro.html' %}
+{% include 'includes/accessibility_widget.html' with participant_options_menu=True %}
+<script>
+const ROOM_CODE = '{{ game.room_code|escapejs }}';
+const PARTICIPANT_NAME = '{{ participant.name|escapejs }}';
+const HUB_SESSION = '{{ hub_session|escapejs }}';
+const GAME_TITLE = '{{ game.title|escapejs }}';
+let socket = null;
+let currentState = null;
+const lobbyReturnController = createHubLobbyReturnController({
+    sessionCode: '{{ hub_session|default_if_none:""|escapejs }}',
+    gameKey: 'wann_war_das',
+    roomCode: ROOM_CODE,
+    participantName: PARTICIPANT_NAME,
+    csrfToken: '{{ csrf_token }}',
+    buttonId: 'returnToLobbyBtn',
+});
+
+function fmt(value) {
+    if (value === null || value === undefined || value === '') return '-';
+    const num = Number(value);
+    return Number.isFinite(num) && Number.isInteger(num) ? String(num) : String(value);
+}
+
+function send(payload) {
+    if (!socket || socket.readyState !== WebSocket.OPEN) return;
+    socket.send(JSON.stringify({ hub_session: HUB_SESSION, participant_name: PARTICIPANT_NAME, ...payload }));
+}
+
+function renderStartWaitingText() {
+    const waitingText = document.getElementById('waitingText');
+    waitingText.innerHTML = '';
+    const title = document.createElement('span');
+    title.className = 'qa-game-title-font qa-local-start-title';
+    title.textContent = GAME_TITLE;
+    const subtitle = document.createElement('span');
+    subtitle.className = 'qa-local-start-subtitle';
+    subtitle.textContent = 'beginnt gleich!';
+    waitingText.append(title, subtitle);
+}
+
+function renderState(state) {
+    window.sessionGameStartIntro?.handleState(state);
+    currentState = state;
+    if (state.event_type === 'game_ended' || state.game?.status === 'completed') {
+        window.location.href = `/wann-war-das/result/${ROOM_CODE}/${encodeURIComponent(PARTICIPANT_NAME)}/?hub_session=${encodeURIComponent(HUB_SESSION)}`;
+        return;
+    }
+    if (state.event_type && !state.participant) {
+        send({ type: 'get_state' });
+        return;
+    }
+    const question = state.question;
+    const timer = state.timer || {};
+    const own = state.participant || {};
+    const ownAnswer = state.own_answer;
+    const isActive = question && state.question_state === 'active';
+    const isReveal = question && state.question_state === 'revealed';
+    document.getElementById('ownScore').textContent = own.score ?? 0;
+    document.getElementById('questionNumber').textContent = state.question_number || 0;
+    document.getElementById('questionArea').classList.toggle('d-none', !question);
+    document.getElementById('waitingArea').classList.toggle('d-none', !!question);
+    if (!question) {
+        const started = state.game?.status === 'active';
+        if (started) document.getElementById('waitingText').textContent = 'Spiel gestartet. Warte auf die naechste Frage.';
+        else renderStartWaitingText();
+        return;
+    }
+    document.getElementById('questionText').textContent = question.question_text || '';
+    document.getElementById('toleranceText').textContent = `±${fmt(timer.current_tolerance)}`;
+    document.getElementById('pointsText').textContent = fmt(timer.current_points);
+    document.getElementById('remainingText').textContent = timer.remaining_seconds === null || timer.remaining_seconds === undefined ? '-' : `${timer.remaining_seconds}s`;
+    document.getElementById('answerInput').disabled = !state.can_answer;
+    document.getElementById('submitBtn').disabled = !state.can_answer;
+    document.getElementById('submittedAlert').classList.toggle('d-none', !ownAnswer || isReveal);
+    if (ownAnswer) document.getElementById('answerInput').value = ownAnswer.raw_answer || '';
+    document.getElementById('revealArea').classList.toggle('d-none', !isReveal);
+    if (isReveal) {
+        document.getElementById('correctAnswerText').textContent = question.formatted_correct_answer || fmt(question.correct_answer);
+        document.getElementById('ownAnswerText').textContent = ownAnswer ? ownAnswer.formatted_answer : 'keine Antwort';
+        document.getElementById('deviationText').textContent = ownAnswer && ownAnswer.absolute_deviation !== null ? fmt(ownAnswer.absolute_deviation) : '-';
+        document.getElementById('answerToleranceText').textContent = ownAnswer ? `±${fmt(ownAnswer.tolerance_at_submit)}` : '-';
+        document.getElementById('answerPointsText').textContent = ownAnswer ? ownAnswer.points_earned : 0;
+        document.getElementById('explanationText').textContent = question.explanation || '';
+    }
+}
+
+function connect() {
+    const scheme = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    socket = new WebSocket(`${scheme}//${window.location.host}/ws/wann-war-das/${ROOM_CODE}/`);
+    socket.onopen = () => send({ type: 'participant_join' });
+    socket.onmessage = event => {
+        const data = JSON.parse(event.data);
+        if (data.type === 'wann_war_das_state') renderState(data);
+        if (data.type === 'answer_rejected') alert(data.message || 'Antwort wurde abgelehnt.');
+        if (data.type === 'tutorial_start') window.gameTutorial?.showFromPayload(data);
+    };
+    socket.onclose = () => setTimeout(connect, 2000);
+}
+
+document.getElementById('submitBtn').addEventListener('click', () => {
+    send({ type: 'participant_submit_answer', answer: document.getElementById('answerInput').value });
+});
+setInterval(() => send({ type: 'get_state' }), 1000);
+connect();
+</script>
+</body>
+</html>

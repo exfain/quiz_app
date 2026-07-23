@@ -32,6 +32,7 @@
                             {{ quiz.room_code }}
                         </div> -->
                         <h1 class="quiz-title">{{ quiz.title }}</h1>
+                        {% include 'includes/_session_game_number.html' with game_key='assign' room_code=quiz.room_code %}
                     </div>
                     <div class="participant-info">
                         <div class="participant-avatar">
@@ -55,28 +56,14 @@
                         <!-- Waiting State -->
                         <div id="waitingQuizState" class="game-state {% if quiz.status != 'waiting' %}d-none{% endif %}">
                             <div class="waiting-card">
-                                <div class="waiting-animation">
-                                    <div class="pulse-ring"></div>
-                                    <div class="pulse-ring delay-1"></div>
-                                    <div class="pulse-ring delay-2"></div>
-                                    <i data-lucide="move"></i>
-                                </div>
-                                <h2>Waiting for Drag & Drop Quiz to Start</h2>
-                                <p>Get ready to drag and drop! The quiz host will start the session shortly.</p>
-                                <div class="participants-count">
-                                    <i data-lucide="users"></i>
-                                    <span id="waitingParticipantCount">{{ participant_count }}</span> participants joined
-                                </div>
+                                {% include 'includes/_participant_start_waiting.html' with waiting_game_title=quiz.title %}
                             </div>
                         </div>
 
                         <div id="waitingQuestionState" class="game-state d-none">
                             <div class="waiting-card">
                                 <div class="waiting-animation">
-                                    <div class="pulse-ring"></div>
-                                    <div class="pulse-ring delay-1"></div>
-                                    <div class="pulse-ring delay-2"></div>
-                                    <i data-lucide="clock"></i>
+                                    <div class="qa-wait-loader" aria-hidden="true"></div>
                                 </div>
                                 <h2>Waiting for Next Question</h2>
                                 <p>Get ready for the next challenge!</p>
@@ -88,21 +75,21 @@
                             <div class="question-card">
                                 <!-- Question Header -->
                                 <div class="question-header">
-                                    <div class="question-number" id="questionNumberDisplay">
-                                        Frage <span id="currentQuestionNumber">1</span>
+                                    <div class="question-round-status">
+                                        <div class="question-number" id="questionNumberDisplay">
+                                            Frage <span id="currentQuestionNumber">1</span>
+                                        </div>
+                                        <div id="roundProgressBar" class="round-progress d-none">
+                                            <div class="round-progress-inner">
+                                                <span id="roundProgressText">Runde 1 von 3</span>
+                                                <div class="round-dots" id="roundDots"></div>
+                                            </div>
+                                        </div>
                                     </div>
                                     <div class="question-timer">
                                         <div class="timer-circle" id="playerTimerCircle">
                                             <span id="playerTimeLeft">60</span>
                                         </div>
-                                    </div>
-                                </div>
-
-                                <!-- Runden-Fortschritt (nur im rundenbasierten Modus) -->
-                                <div id="roundProgressBar" class="round-progress d-none">
-                                    <div class="round-progress-inner">
-                                        <span id="roundProgressText">Runde 1 von 3</span>
-                                        <div class="round-dots" id="roundDots"></div>
                                     </div>
                                 </div>
 
@@ -115,40 +102,40 @@
                                     </div>
 
                                     <!-- Drag Drop Interface -->
-                                    <div class="drag-drop-interface" id="dragDropInterface">
-                                        <div class="drag-drop-container">
-                                            <div class="left-items" id="leftItems">
+                                    <div class="drag-drop-interface assign-workspace" id="dragDropInterface">
+                                        <div class="drag-drop-container assign-workspace-grid">
+                                            <div class="left-items assign-source-panel" id="leftItems">
                                                 <h4 id="leftItemsHeader">Ziehe von hier</h4>
                                                 <div class="items-list" id="leftItemsList">
                                                     <!-- Items will be populated dynamically -->
                                                 </div>
                                             </div>
 
-                                            <div class="drop-zones" id="dropZones">
-                                                <h4>Lege hier ab</h4>
-                                                <div class="zones-list" id="zonesList">
+                                            <div class="drop-zones assign-target-panel" id="dropZones">
+                                                <h4>Ordne hier zu</h4>
+                                                <div class="zones-list assign-targets-list" id="zonesList">
                                                     <!-- Drop zones will be populated dynamically -->
                                                 </div>
                                             </div>
                                         </div>
+
+                                        <div class="assign-action-row">
+                                            <button class="btn btn-outline-secondary d-none assign-reset-button" id="resetRoundBtn">
+                                                <i data-lucide="rotate-ccw"></i>
+                                                Zurücksetzen
+                                            </button>
+                                            <button class="btn btn-primary d-none assign-submit-button" id="logRoundBtn">
+                                                Einloggen
+                                            </button>
+                                        </div>
                                     </div>
 
                                     <!-- Warte-Nachricht nach Runden-Submit -->
-                                    <div id="roundSubmittedMessage" class="d-none text-center py-3">
-                                        <i data-lucide="check-circle" style="color:var(--success-500);width:28px;height:28px;"></i>
+                                    <div id="roundSubmittedMessage" class="assign-round-status d-none text-center py-3">
+                                        <i data-lucide="check-circle"></i>
                                         <p class="mt-2 mb-0 fw-semibold">Antwort gespeichert!</p>
                                         <p class="text-muted small">Warte auf nächste Runde...</p>
                                     </div>
-
-                                    <!-- Zurücksetzen Button (nach Drop sichtbar) -->
-                                    <button class="btn btn-outline-secondary w-100 mb-2 d-none" id="resetRoundBtn">
-                                        <i data-lucide="rotate-ccw"></i>
-                                        Zurücksetzen
-                                    </button>
-                                    <button class="btn btn-primary w-100 mb-2 d-none" id="logRoundBtn">
-                                        <i data-lucide="check-circle"></i>
-                                        Antwort einloggen
-                                    </button>
 
                                 </div>
                             </div>
@@ -190,12 +177,17 @@
 
                         <!-- Eliminated State (falsche Zuordnung) -->
                         <div id="eliminatedState" class="game-state d-none">
-                            <div class="waiting-card">
-                                <div class="waiting-animation">
-                                    <i data-lucide="x-circle" style="width:48px;height:48px;color:var(--danger-500,#ef4444);"></i>
+                            <div class="waiting-card assign-elimination-card">
+                                <div class="waiting-animation assign-elimination-icon">
+                                    <i data-lucide="x-circle"></i>
                                 </div>
                                 <h2>Leider ausgeschieden!</h2>
-                                <p>Die vorherige Zuweisung war falsch. Du bist leider ausgeschieden.</p>
+                                <p
+                                    id="assignEliminationMessage"
+                                    class="assign-elimination-message assign-elimination-message--vhs"
+                                    data-elimination-reason="incorrect_assignment"
+                                    aria-live="polite"
+                                >Die vorherige Zuweisung war falsch.</p>
                             </div>
                         </div>
 
@@ -203,10 +195,7 @@
                         <div id="waitingSolutionState" class="game-state d-none">
                             <div class="waiting-card">
                                 <div class="waiting-animation">
-                                    <div class="pulse-ring"></div>
-                                    <div class="pulse-ring delay-1"></div>
-                                    <div class="pulse-ring delay-2"></div>
-                                    <i data-lucide="loader"></i>
+                                    <div class="qa-wait-loader" aria-hidden="true"></div>
                                 </div>
                                 <h2>Auswertung läuft...</h2>
                                 <p>Bitte warte, der Host wertet die Ergebnisse aus.</p>
@@ -217,7 +206,7 @@
                         <div id="solutionState" class="game-state d-none">
                             <div class="waiting-card">
                                 <h2>Auflösung</h2>
-                                <div class="row g-3 mt-1">
+                                <div class="assign-legacy-solution row g-3 mt-1">
                                     <div class="col-6">
                                         <h6 class="fw-bold text-success text-center mb-2">Richtige Zuordnung</h6>
                                         <div id="correctSolutionList"></div>
@@ -226,6 +215,20 @@
                                         <h6 class="fw-bold text-center mb-2">Deine Zuordnung</h6>
                                         <div id="userSolutionList"></div>
                                     </div>
+                                </div>
+                                <div
+                                    class="assign-vhs-solution"
+                                    aria-label="Vollständig gelöste Zuordnung"
+                                    style="display: none;"
+                                >
+                                    <p id="assignVhsSolutionTimeout" class="assign-reveal-timeout" hidden>
+                                        Zeit abgelaufen
+                                    </p>
+                                    <div class="assign-reveal-headings" aria-hidden="true">
+                                        <span>Quellbegriff</span>
+                                        <span>Zielbegriff</span>
+                                    </div>
+                                    <div id="assignVhsSolutionMatrix" class="assign-reveal-matrix"></div>
                                 </div>
                             </div>
                         </div>
@@ -612,15 +615,24 @@
             display: flex;
             justify-content: space-between;
             align-items: center;
+            gap: 1rem;
             padding: 1.5rem 2rem;
             background: linear-gradient(135deg, var(--secondary-50) 0%, var(--primary-50) 100%);
             border-bottom: 1px solid var(--border-color);
+        }
+
+        .question-round-status {
+            display: flex;
+            align-items: center;
+            gap: 0.9rem;
+            min-width: 0;
         }
 
         .question-number {
             font-size: 1.125rem;
             font-weight: 700;
             color: var(--text-primary);
+            white-space: nowrap;
         }
 
         .timer-circle {
@@ -684,15 +696,17 @@
         }
 
         .left-items, .drop-zones, .matched-panel {
-            background: var(--bg-secondary);
+            background: var(--participant-effective-bg-color, var(--participant-theme-background, var(--bg-secondary)));
+            color: var(--participant-effective-text-color, var(--participant-theme-text, var(--text-primary)));
             border-radius: var(--border-radius-lg);
-            padding: 1.5rem;
-            border: 2px dashed var(--border-color);
+            padding: 1.1rem;
+            border: 2px dashed var(--participant-effective-text-color, var(--participant-theme-text, var(--border-color)));
+            overflow: visible;
         }
 
         .matched-panel {
             border-style: solid;
-            border-color: var(--secondary-300, #adb5bd);
+            border-color: var(--participant-effective-text-color, var(--participant-theme-text, var(--border-color)));
         }
 
         .matched-list .matched-row {
@@ -720,8 +734,8 @@
 
         .left-items h4, .drop-zones h4, .matched-panel h4 {
             text-align: center;
-            margin-bottom: 1.5rem;
-            color: var(--text-primary);
+            margin-bottom: 1rem;
+            color: var(--participant-effective-text-color, var(--participant-theme-text, var(--text-primary)));
             font-size: 1rem;
             font-weight: 600;
             text-transform: uppercase;
@@ -731,15 +745,18 @@
         .items-list, .zones-list {
             display: flex;
             flex-direction: column;
-            gap: 1rem;
-            min-height: 300px;
+            gap: 0.7rem;
+            min-height: 240px;
+            overflow: visible;
         }
 
         /* Draggable Items */
         .draggable-item {
-            padding: 1rem;
-            background: var(--bg-primary);
-            border: 2px solid var(--border-color);
+            min-height: 52px;
+            padding: 0.7rem 0.85rem;
+            background: var(--participant-effective-accent-color, var(--participant-accent-color, var(--bg-primary)));
+            color: var(--participant-effective-text-color, var(--participant-theme-text, var(--text-primary)));
+            border: 2px solid var(--participant-effective-text-color, var(--participant-theme-text, var(--border-color)));
             border-radius: var(--border-radius);
             cursor: grab;
             touch-action: none;
@@ -750,11 +767,13 @@
             align-items: center;
             justify-content: center;
             font-weight: 500;
+            font-size: 0.95rem;
+            line-height: 1.25;
             text-align: center;
         }
 
         .draggable-item:hover {
-            border-color: var(--color-secondary);
+            border-color: var(--participant-effective-text-color, var(--participant-theme-text, var(--color-secondary)));
             box-shadow: var(--shadow-md);
         }
 
@@ -767,17 +786,17 @@
         }
 
         .draggable-item.matched {
-            background: var(--success-50);
-            border-color: var(--success-200);
-            color: var(--success-700);
+            background: var(--participant-effective-accent-color, var(--participant-accent-color, var(--success-50)));
+            border-color: var(--participant-effective-text-color, var(--participant-theme-text, var(--success-200)));
+            color: var(--participant-effective-text-color, var(--participant-theme-text, var(--success-700)));
             cursor: default;
         }
 
         /* Abgeschlossene Runde links: nur ausgegraut, keine Zuordnungsanzeige */
         .draggable-item.matched-done {
-            background: var(--success-50);
-            border-color: var(--success-200);
-            color: var(--success-700);
+            background: var(--participant-effective-accent-color, var(--participant-accent-color, var(--success-50)));
+            border-color: var(--participant-effective-text-color, var(--participant-theme-text, var(--success-200)));
+            color: var(--participant-effective-text-color, var(--participant-theme-text, var(--success-700)));
             cursor: default;
             opacity: 0.75;
         }
@@ -802,48 +821,51 @@
 
         /* Drop Zones */
         .drop-zone {
-            padding: 1rem;
-            background: var(--bg-primary);
-            border: 2px dashed var(--border-color);
+            padding: 0.7rem 0.85rem;
+            background: var(--participant-effective-bg-color, var(--participant-theme-background, var(--bg-primary)));
+            color: var(--participant-effective-text-color, var(--participant-theme-text, var(--text-primary)));
+            border: 2px dashed var(--participant-effective-text-color, var(--participant-theme-text, var(--border-color)));
             border-radius: var(--border-radius);
-            min-height: 60px;
+            min-height: 52px;
             display: flex;
+            flex-direction: column;
+            gap: 0.35rem;
             align-items: center;
             justify-content: center;
             transition: all var(--transition-fast);
             position: relative;
+            box-sizing: border-box;
+            overflow: visible;
         }
 
         .drop-zone.drag-over {
-            border-color: var(--color-secondary);
-            background: var(--secondary-50);
+            border-color: var(--participant-effective-text-color, var(--participant-theme-text, var(--color-secondary)));
+            background: var(--participant-effective-bg-color, var(--participant-theme-background, var(--secondary-50)));
         }
 
         .drop-zone.occupied {
-            border-color: var(--success-200);
-            background: var(--success-50);
+            border-color: var(--participant-effective-text-color, var(--participant-theme-text, var(--success-200)));
+            background: var(--participant-effective-bg-color, var(--participant-theme-background, var(--success-50)));
         }
 
         .drop-zone-label {
             font-weight: 500;
-            color: var(--text-secondary);
-            position: absolute;
-            top: -1.5rem;
-            left: 0;
-            right: 0;
+            color: var(--participant-effective-text-color, var(--participant-theme-text, var(--text-secondary)));
+            position: static;
             text-align: center;
-            font-size: 0.875rem;
-            background: var(--bg-secondary);
-            padding: 0 0.5rem;
+            font-size: 0.95rem;
+            line-height: 1.25;
+            background: transparent;
+            padding: 0;
             border-radius: var(--border-radius-sm);
         }
 
         .dropped-item {
             padding: 0.75rem;
-            background: var(--secondary-100);
-            border: 1px solid var(--secondary-200);
+            background: var(--participant-effective-accent-color, var(--participant-accent-color, var(--secondary-100)));
+            border: 1px solid var(--participant-effective-text-color, var(--participant-theme-text, var(--secondary-200)));
             border-radius: var(--border-radius);
-            color: var(--secondary-700);
+            color: var(--participant-effective-text-color, var(--participant-theme-text, var(--secondary-700)));
             font-weight: 500;
             cursor: pointer;
             text-align: center;
@@ -852,7 +874,7 @@
         }
 
         .dropped-item:hover {
-            background: var(--secondary-200);
+            background: var(--participant-effective-accent-color, var(--participant-accent-color, var(--secondary-200)));
         }
 
 
@@ -992,28 +1014,38 @@
 
         /* Runden-Fortschritt */
         .round-progress {
-            background: linear-gradient(135deg, var(--secondary-50) 0%, var(--primary-50) 100%);
-            border-bottom: 1px solid var(--border-color);
-            padding: 0.75rem 2rem;
+            background: transparent;
+            border: 0;
+            padding: 0;
         }
 
         .round-progress-inner {
             display: flex;
             align-items: center;
-            justify-content: space-between;
-            gap: 1rem;
+            justify-content: flex-start;
+            gap: 0.65rem;
         }
 
         #roundProgressText {
+            position: absolute;
+            width: 1px;
+            height: 1px;
+            padding: 0;
+            margin: -1px;
+            overflow: hidden;
+            clip: rect(0, 0, 0, 0);
+            white-space: nowrap;
+            border: 0;
             font-weight: 600;
             color: var(--color-secondary);
             font-size: 0.9rem;
-            white-space: nowrap;
         }
 
         .round-dots {
             display: flex;
-            gap: 0.4rem;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 0.35rem;
         }
 
         .round-dot {
@@ -1086,6 +1118,11 @@
                 padding: 1rem 1.5rem;
             }
 
+            .question-round-status {
+                flex-wrap: wrap;
+                gap: 0.55rem;
+            }
+
             .question-content {
                 padding: 1.5rem;
             }
@@ -1135,6 +1172,7 @@
 
     {% include 'includes/_hub_return_to_lobby_player.html' %}
     {% include 'includes/_game_tutorial_overlay.html' %}
+    {% include 'includes/_session_game_start_intro.html' %}
 <script>
         document.addEventListener('DOMContentLoaded', function() {
             lucide.createIcons();
@@ -1156,6 +1194,9 @@
                     this.accumulatedMatches = {};  // gesammelte Matches über alle Runden
                     this.solvedPairs = [];
                     this.currentQuestion = null;  // vollständige Frage-Daten
+                    this.currentSetNumber = null;
+                    this.vhsRevealAnswers = {};
+                    this.lastEliminationReason = null;
                     this.pointerDrag = null;
                     this.scoreboardQuestions = this.readJsonScript('assignScoreboardData', []);
                     this.progressHistory = this.readJsonScript('assignInitialProgressData', []);
@@ -1209,6 +1250,7 @@
                 }
 
                 handleWebSocketMessage(data) {
+                    window.sessionGameStartIntro?.handleState(data);
                     switch(data.type) {
                         case 'quiz_started':
                             this.onQuizStarted();
@@ -1427,12 +1469,61 @@
                     });
                 }
 
+                normalizeRemainingSeconds(value, fallbackValue) {
+                    const parsed = Number(value);
+                    if (Number.isFinite(parsed)) {
+                        return Math.max(0, Math.ceil(parsed));
+                    }
+                    const fallback = Number(fallbackValue);
+                    return Number.isFinite(fallback) ? Math.max(0, Math.ceil(fallback)) : 0;
+                }
+
+                setTimerDisplay(timeLeft) {
+                    const normalized = Math.max(0, Math.ceil(Number(timeLeft) || 0));
+                    const timerElement = document.getElementById('playerTimeLeft');
+                    const circleElement = document.getElementById('playerTimerCircle');
+                    const submittedTimerElement = document.getElementById('playerTimeLeftSubmitted');
+                    const submittedCircleElement = document.getElementById('playerTimerCircleSubmitted');
+                    const timerClass = normalized <= 10 ? 'danger' : normalized <= 20 ? 'warning' : '';
+
+                    if (timerElement) timerElement.textContent = normalized;
+                    if (circleElement) circleElement.className = `timer-circle ${timerClass}`.trim();
+                    if (submittedTimerElement) submittedTimerElement.textContent = normalized;
+                    if (submittedCircleElement) submittedCircleElement.className = `timer-circle ${timerClass}`.trim();
+                }
+
+                acceptSetEvent(setNumber, { allowSameWhenEliminated = false } = {}) {
+                    if (setNumber === null || setNumber === undefined || setNumber === '') {
+                        return true;
+                    }
+                    const normalizedSetNumber = Number(setNumber);
+                    if (!Number.isInteger(normalizedSetNumber)) return true;
+                    if (
+                        Number.isInteger(this.currentSetNumber) &&
+                        normalizedSetNumber < this.currentSetNumber
+                    ) {
+                        return false;
+                    }
+                    if (
+                        this.eliminated &&
+                        normalizedSetNumber === this.currentSetNumber &&
+                        !allowSameWhenEliminated
+                    ) {
+                        return false;
+                    }
+                    this.currentSetNumber = normalizedSetNumber;
+                    return true;
+                }
+
                 onQuestionStarted(question) {
+                    if (!this.acceptSetEvent(question?.set_number)) return;
                     this.hasAnswered = false;
                     this.eliminated = false;
                     this.lastRoundCorrect = null;
                     this._pendingHistoryEntry = null;
                     this._wrongEntry = null;
+                    this.vhsRevealAnswers = {};
+                    this.lastEliminationReason = null;
                     this._bufferedRoundsComplete = null;
                     this._bufferedRoundAdvanced = null;
                     this.userMatches = {};
@@ -1465,6 +1556,7 @@
                 }
 
                 onRoundAdvanced(data) {
+                    if (!this.acceptSetEvent(data?.set_number)) return;
                     if (this.eliminated) return;
 
                     // Immer auf serverseitige Round-Auswertung warten, damit
@@ -1490,8 +1582,7 @@
                         this._wrongEntry = this._pendingHistoryEntry;
                         this._pendingHistoryEntry = null;
                         this.eliminated = true;
-                        this.showState('eliminatedState');
-                        try { lucide.createIcons(); } catch(_) {}
+                        this.showEliminatedState(this.lastEliminationReason);
                         return;
                     }
 
@@ -1535,7 +1626,16 @@
                 }
 
                 onRoundChecked(data) {
+                    if (!this.acceptSetEvent(data?.set_number, { allowSameWhenEliminated: true })) return;
                     this.lastRoundCorrect = data.is_correct;
+                    this.lastEliminationReason = data.elimination_reason || null;
+
+                    if (this._pendingHistoryEntry) {
+                        this.vhsRevealAnswers[this._pendingHistoryEntry.leftIdx] = {
+                            rightText: this._pendingHistoryEntry.rightText,
+                            correct: Boolean(data.is_correct),
+                        };
+                    }
 
                     if (!data.is_correct) {
                         // Falschen Eintrag retten bevor _pendingHistoryEntry genullt wird
@@ -1545,8 +1645,7 @@
                         this.eliminated = true;
                         this._bufferedRoundAdvanced = null;
                         this._bufferedRoundsComplete = null;
-                        this.showState('eliminatedState');
-                        try { lucide.createIcons(); } catch(_) {}
+                        this.showEliminatedState(this.lastEliminationReason);
                         return;
                     }
 
@@ -1598,6 +1697,7 @@
 
                 onQuizEnded(data) {
                     clearInterval(this.questionTimer);
+                    this.currentSetNumber = null;
                     this.setCurrentQuestion(null);
                     // If final scores are provided, update the displayed score for this participant
                     try {
@@ -1613,6 +1713,7 @@
                 }
 
                 onQuestionRoundsComplete(data = {}) {
+                    if (!this.acceptSetEvent(data?.set_number)) return;
                     if (this.eliminated) return;
                     clearInterval(this.questionTimer);
 
@@ -1626,9 +1727,9 @@
                     if (!this.roundSubmitted && this.lastRoundCorrect === null) {
                         this._wrongEntry = null;
                         this.eliminated = true;
+                        this.lastEliminationReason = 'no_assignment';
                         this.showRoundProgress(false);
-                        this.showState('eliminatedState');
-                        try { lucide.createIcons(); } catch(_) {}
+                        this.showEliminatedState(this.lastEliminationReason);
                         return;
                     }
 
@@ -1645,9 +1746,12 @@
                 onShowSolution(data) {
                     const correctList = document.getElementById('correctSolutionList');
                     const userList = document.getElementById('userSolutionList');
-                    if (!correctList || !userList) return;
+                    const vhsMatrix = document.getElementById('assignVhsSolutionMatrix');
+                    const timeoutNotice = document.getElementById('assignVhsSolutionTimeout');
+                    if (!correctList || !userList || !vhsMatrix || !timeoutNotice) return;
                     correctList.innerHTML = '';
                     userList.innerHTML = '';
+                    vhsMatrix.replaceChildren();
 
                     const leftItems = data.left_items || [];
                     const rightItems = data.right_items || [];
@@ -1662,10 +1766,47 @@
                         participantAnswers[this._wrongEntry.leftIdx] = { rightText: this._wrongEntry.rightText, correct: false };
                     }
 
+                    const vhsParticipantAnswers = this.vhsRevealAnswers || {};
+                    const timedOutWithoutAnswer = (
+                        Object.keys(vhsParticipantAnswers).length === 0 ||
+                        (this.eliminated && !this._wrongEntry)
+                    );
+                    timeoutNotice.hidden = !timedOutWithoutAnswer;
+                    vhsMatrix.dataset.answerState = timedOutWithoutAnswer ? 'unanswered' : 'answered';
+
                     leftItems.forEach((leftItem, idx) => {
                         const correctRightIdx = correctMatches[String(idx)];
                         const correctRightText = correctRightIdx !== undefined ? rightItems[correctRightIdx] : null;
                         const answer = participantAnswers[idx];
+                        const vhsAnswer = vhsParticipantAnswers[idx];
+
+                        if (correctRightText !== null && correctRightText !== undefined) {
+                            const pair = document.createElement('div');
+                            pair.className = 'assign-reveal-pair';
+
+                            if (vhsAnswer?.correct) {
+                                pair.classList.add('assign-reveal-pair--correct');
+                                pair.dataset.result = 'correct';
+                            } else if (!timedOutWithoutAnswer && vhsAnswer && !vhsAnswer.correct) {
+                                pair.classList.add('assign-reveal-pair--wrong');
+                                pair.dataset.result = 'wrong';
+                            } else {
+                                pair.dataset.result = 'neutral';
+                            }
+
+                            const source = document.createElement('div');
+                            source.className = 'assign-reveal-box assign-reveal-box--source';
+                            source.textContent = leftItem;
+                            this.applyAssignBoxTextSizing(source, leftItem);
+
+                            const target = document.createElement('div');
+                            target.className = 'assign-reveal-box assign-reveal-box--target';
+                            target.textContent = correctRightText;
+                            this.applyAssignBoxTextSizing(target, correctRightText);
+
+                            pair.append(source, target);
+                            vhsMatrix.appendChild(pair);
+                        }
 
                         // Linkes Panel: Richtige Zuordnung
                         const correctDiv = document.createElement('div');
@@ -1695,6 +1836,21 @@
                     });
 
                     this.showState('solutionState');
+                    try { lucide.createIcons(); } catch(_) {}
+                }
+
+                showEliminatedState(reason) {
+                    const normalizedReason = reason === 'no_assignment'
+                        ? 'no_assignment'
+                        : 'incorrect_assignment';
+                    const message = document.getElementById('assignEliminationMessage');
+                    if (message) {
+                        message.dataset.eliminationReason = normalizedReason;
+                        message.textContent = normalizedReason === 'no_assignment'
+                            ? 'Die Zeit ist abgelaufen.'
+                            : 'Die vorherige Zuweisung war falsch.';
+                    }
+                    this.showState('eliminatedState');
                     try { lucide.createIcons(); } catch(_) {}
                 }
 
@@ -1762,6 +1918,14 @@
                     }
                 }
 
+                applyAssignBoxTextSizing(element, text) {
+                    if (!element) return;
+                    element.classList.toggle(
+                        'assign-box-text--long',
+                        String(text || '').trim().length > 24
+                    );
+                }
+
                 setupRoundDragDrop(roundIndex, currentLeftText, allRightItems) {
                     const leftItemsList = document.getElementById('leftItemsList');
                     const zonesList = document.getElementById('zonesList');
@@ -1786,14 +1950,16 @@
                           }))
                         : [{ text: currentLeftText, roundIdx: roundIndex }];
                     const allLeft = [...allLeftRaw].sort((a, b) => a.text.localeCompare(b.text));
+                    const availableLeft = allLeft.filter(({ roundIdx: idx }) => !completedIndices.has(idx));
+                    leftItemsList.dataset.itemCount = String(availableLeft.length);
+                    zonesList.dataset.itemCount = String(normRight.length);
 
-                    allLeft.forEach(({ text: leftText, roundIdx: idx }) => {
-                        if (completedIndices.has(idx)) return;
-
+                    availableLeft.forEach(({ text: leftText, roundIdx: idx }) => {
                         const div = document.createElement('div');
-                        div.className = 'draggable-item';
+                        div.className = 'draggable-item assign-item';
                         div.draggable = true;
                         div.textContent = leftText;
+                        this.applyAssignBoxTextSizing(div, leftText);
                         div.dataset.leftIndex = idx;
                         div.addEventListener('dragstart', (e) => {
                             e.dataTransfer.setData('text/plain', String(idx));
@@ -1816,21 +1982,27 @@
                     // zugeordnete Items bleiben an ihrer Position und werden nur markiert.
                     normRight.forEach((item) => {
                         const dropZone = document.createElement('div');
-                        dropZone.className = 'drop-zone';
+                        dropZone.className = 'drop-zone assign-target';
                         dropZone.dataset.rightIndex = item.originalIndex;
 
                         const label = document.createElement('div');
-                        label.className = 'drop-zone-label';
+                        label.className = 'drop-zone-label assign-target__label';
                         label.textContent = item.text;
+                        this.applyAssignBoxTextSizing(label, item.text);
                         dropZone.appendChild(label);
+
+                        const slot = document.createElement('div');
+                        slot.className = 'drop-zone-slot assign-target__dropzone';
+                        dropZone.appendChild(slot);
 
                         const completed = completedByRightIndex.get(item.originalIndex);
                         if (completed) {
                             dropZone.classList.add('occupied', 'completed-round');
                             const droppedItem = document.createElement('div');
-                            droppedItem.className = 'dropped-item';
+                            droppedItem.className = 'dropped-item assign-item';
                             droppedItem.textContent = completed.leftText || '';
-                            dropZone.appendChild(droppedItem);
+                            this.applyAssignBoxTextSizing(droppedItem, completed.leftText);
+                            slot.appendChild(droppedItem);
                             zonesList.appendChild(dropZone);
                             return;
                         }
@@ -1973,11 +2145,13 @@
 
                     // Neues dropped-item erstellen (kein Click-to-undo — nur Reset-Button)
                     const droppedItem = document.createElement('div');
-                    droppedItem.className = 'dropped-item';
+                    droppedItem.className = 'dropped-item assign-item';
                     droppedItem.textContent = itemText;
+                    this.applyAssignBoxTextSizing(droppedItem, itemText);
                     droppedItem.dataset.leftIndex = leftIndex;
 
-                    dropZone.appendChild(droppedItem);
+                    const dropSlot = dropZone.querySelector('.drop-zone-slot');
+                    (dropSlot || dropZone).appendChild(droppedItem);
                     dropZone.classList.add('occupied');
 
                     // Das konkret gezogene Item sperren, alle anderen ausgrauen
@@ -1990,6 +2164,12 @@
                         draggableItem.classList.remove('inactive-item');
                         draggableItem.classList.add('matched');
                         draggableItem.draggable = false;
+                    }
+                    const leftItemsList = document.getElementById('leftItemsList');
+                    if (leftItemsList) {
+                        leftItemsList.dataset.itemCount = String(
+                            leftItemsList.querySelectorAll('.draggable-item:not(.matched)').length
+                        );
                     }
 
                     // Drop sperren: alle weiteren Drops in dieser Runde verhindern
@@ -2036,6 +2216,12 @@
                         el.classList.remove('inactive-item');
                         el.draggable = true;
                     });
+                    const leftItemsList = document.getElementById('leftItemsList');
+                    if (leftItemsList) {
+                        leftItemsList.dataset.itemCount = String(
+                            leftItemsList.querySelectorAll('.draggable-item').length
+                        );
+                    }
                     // Reset ausblenden
                     const resetBtn = document.getElementById('resetRoundBtn');
                     if (resetBtn) resetBtn.classList.add('d-none');
@@ -2054,37 +2240,18 @@
                 }
 
                 startQuestionTimer(timeLimit) {
-                    let timeLeft = timeLimit;
-                    const timerElement = document.getElementById('playerTimeLeft');
-                    const circleElement = document.getElementById('playerTimerCircle');
-                    const submittedTimerElement = document.getElementById('playerTimeLeftSubmitted');
-                    const submittedCircleElement = document.getElementById('playerTimerCircleSubmitted');
-                    
-                    // Initialize both timers
-                    timerElement.textContent = timeLeft;
-                    circleElement.className = 'timer-circle';
-                    if (submittedTimerElement) {
-                        submittedTimerElement.textContent = timeLeft;
-                        submittedCircleElement.className = 'timer-circle';
+                    clearInterval(this.questionTimer);
+                    let timeLeft = this.normalizeRemainingSeconds(timeLimit, 0);
+                    this.setTimerDisplay(timeLeft);
+
+                    if (timeLeft <= 0) {
+                        this.onTimeUp();
+                        return;
                     }
                     
                     this.questionTimer = setInterval(() => {
-                        timeLeft--;
-                        timerElement.textContent = timeLeft;
-                        if (submittedTimerElement) {
-                            submittedTimerElement.textContent = timeLeft;
-                        }
-                        
-                        // Update timer circle appearance for both timers
-                        const timerClass = timeLeft <= 10 ? 'danger' : timeLeft <= 20 ? 'warning' : '';
-                        circleElement.className = 'timer-circle ' + timerClass;
-                        if (submittedCircleElement) {
-                            submittedCircleElement.className = 'timer-circle ' + timerClass;
-                        }
-                        
-                        if (timeLeft <= 0) {
-                            circleElement.classList.add('warning');
-                        }
+                        timeLeft = Math.max(0, timeLeft - 1);
+                        this.setTimerDisplay(timeLeft);
                         
                         if (timeLeft <= 0) {
                             console.log("Time up!");
@@ -2487,6 +2654,6 @@
         });
     </script>
   {% include 'includes/_leaderboard_overlay.html' %}
-  {% include 'includes/accessibility_widget.html' %}
+  {% include 'includes/accessibility_widget.html' with participant_options_menu=True %}
 </body>
 </html>

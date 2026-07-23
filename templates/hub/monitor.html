@@ -7,73 +7,149 @@
 {% block page_subtitle %}{{ session.name|default:'' }} · Code: {{ session.code }}{% endblock %}
 
 {% block content %}
-<div class="monitor-wrap">
+<div class="monitor-wrap host-session-monitor">
 
-    <!-- Top bar: lobby link + end session -->
-    <div class="card mb-4">
-        <div class="card-body py-3">
-            <div class="d-flex flex-column gap-3">
-                <div>
-                    <label class="form-label fw-semibold mb-1">
-                        <i data-lucide="link" class="me-1"></i> Participant Lobby Link
-                    </label>
-                    <div class="input-group" style="max-width:600px;">
-                        <input type="text" class="form-control font-monospace" id="lobbyLink"
-                               value="{{ request.scheme }}://{{ ip }}:8000{% url 'games_hub:lobby' session_code=session.code %}"
-                               readonly>
-                        <button class="btn btn-outline-secondary" type="button" id="copyLinkBtn">
-                            <i data-lucide="copy" class="me-1"></i> Copy
-                        </button>
-                    </div>
-                    <small class="text-muted">Share this link — participants enter their name and join the session</small>
-                </div>
-                <div class="d-flex align-items-center gap-2 flex-wrap">
-                    <div id="wsStatus" class="d-flex align-items-center gap-2 text-muted me-2">
-                        <span class="status-dot connecting"></span>
-                        <span class="status-text">Connecting…</span>
-                    </div>
-                    <a href="{% url 'admin_dashboard:sessions_overview' %}" class="btn btn-outline-secondary">
-                        <i data-lucide="layout-dashboard" class="me-1"></i> Dashboard
-                    </a>
-                    {% if not session.started_at %}
-                    <button id="startSessionBtn" class="btn btn-success">
-                        <i data-lucide="play" class="me-1"></i> Start Session
+    <div class="session-floating-menu session-floating-menu-left is-expanded" aria-label="Session tools left" data-session-floating-menu>
+        <button type="button" class="session-float-btn session-float-toggle" data-session-menu-toggle aria-expanded="true" aria-label="Linkes Menü ein- oder ausklappen" title="Menü einklappen">
+            <i data-lucide="chevrons-left" class="session-toggle-icon-expanded"></i>
+            <i data-lucide="chevrons-right" class="session-toggle-icon-collapsed"></i>
+            <span>Menü</span>
+        </button>
+        <button type="button" class="session-float-btn" data-session-panel-target="joinPanel" title="Join">
+            <i data-lucide="link"></i><span>Join</span>
+        </button>
+        <button type="button" class="session-float-btn" data-session-panel-target="checkInPanel" title="Check-In">
+            <i data-lucide="user-check"></i><span>Check-In</span>
+        </button>
+        <button type="button" class="session-float-btn" data-session-panel-target="scoringPanel" title="Wertung">
+            <i data-lucide="calculator"></i><span>Wertung</span>
+        </button>
+        {% if not session.ended_at %}
+        <div class="session-floating-action-group">
+            <button type="button" id="inactiveSessionBtn" class="session-float-btn session-float-warning" title="Inactivate Session" {% if session.ended_at or not session.is_active %}disabled{% endif %}>
+                <i data-lucide="pause-circle"></i><span>Inactivate Session</span>
+            </button>
+            <button type="button" id="endSessionBtn" class="session-float-btn session-float-danger" title="End Session" {% if session.ended_at %}disabled{% endif %}>
+                <i data-lucide="square"></i><span>End Session</span>
+            </button>
+        </div>
+        {% endif %}
+    </div>
+
+    <div class="session-floating-menu session-floating-menu-right is-expanded" aria-label="Session tools right" data-session-floating-menu>
+        <button type="button" class="session-float-btn session-float-toggle" data-session-menu-toggle aria-expanded="true" aria-label="Rechtes Menü ein- oder ausklappen" title="Menü einklappen">
+            <i data-lucide="chevrons-right" class="session-toggle-icon-expanded"></i>
+            <i data-lucide="chevrons-left" class="session-toggle-icon-collapsed"></i>
+            <span>Menü</span>
+        </button>
+        <button type="button" id="spectateBtn" class="session-float-btn" onclick="window.open('/hub/spectate/{{ session.code }}/', '_blank')" title="Spectator View">
+            <i data-lucide="monitor"></i><span>Spectator View</span>
+        </button>
+        <button type="button" class="session-float-btn" data-session-panel-target="votingPanel" title="Voting">
+            <i data-lucide="vote"></i><span>Voting</span>
+        </button>
+        <button type="button" class="session-float-btn" data-session-panel-target="readinessPanel" title="Bereitschaft">
+            <i data-lucide="clipboard-check"></i><span>Bereitschaft</span>
+        </button>
+    </div>
+
+    <div class="session-panel-backdrop" id="sessionPanelBackdrop"></div>
+
+    <div class="session-tool-panel session-floating-only" id="joinPanel" aria-label="Join Panel">
+        <div class="card shadow-lg">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h5 class="mb-0"><i data-lucide="link" class="me-2"></i>Join</h5>
+                <button type="button" class="btn-close session-panel-close" aria-label="Schließen" data-session-panel-close></button>
+            </div>
+            <div class="card-body">
+                <label class="form-label fw-semibold mb-1">Participant Lobby Link</label>
+                <div class="input-group">
+                    <input type="text" class="form-control font-monospace" id="lobbyLink"
+                           value="{{ request.scheme }}://{{ ip }}:8000{% url 'games_hub:lobby' session_code=session.code %}"
+                           readonly>
+                    <button class="btn btn-outline-secondary" type="button" id="copyLinkBtn">
+                        <i data-lucide="copy" class="me-1"></i> Copy
                     </button>
-                    {% elif not session.ended_at and not session.is_active %}
-                    <button id="startSessionBtn" class="btn btn-success">
-                        <i data-lucide="play" class="me-1"></i> Activate Session
-                    </button>
-                    {% endif %}
-                    <button id="spectateBtn" class="btn btn-outline-info" onclick="window.open('/hub/spectate/{{ session.code }}/', '_blank')">
-                        <i data-lucide="monitor" class="me-1"></i> Spectator-View öffnen
-                    </button>
-                    <button id="recallLobbyBtn" class="btn btn-outline-warning">
-                        <i data-lucide="users" class="me-1"></i> Teilnehmer in die Lobby zurückschicken 
-                    </button>
-                    {% if session.ended_at %}
-                    <span id="sessionEndedLabel" class="text-muted fw-semibold d-inline-flex align-items-center gap-1">
-                        <i data-lucide="check-circle-2" class="me-1"></i> Session beendet
-                    </span>
-                    {% else %}
-                    <button id="endSessionBtn" class="btn btn-outline-danger">
-                        <i data-lucide="square" class="me-1"></i> End Session
-                    </button>
-                    {% endif %}
                 </div>
             </div>
         </div>
     </div>
 
-    <div class="card mb-4">
+    <header class="session-monitor-header card mb-3">
+        <div class="card-body py-3">
+            <div class="d-flex flex-wrap justify-content-between align-items-center gap-3">
+                <div class="d-flex align-items-center gap-3">
+                    <a href="{% url 'admin_dashboard:home' %}" class="session-monitor-logo" aria-label="Zum Dashboard">
+                        <i data-lucide="brain-circuit"></i>
+                    </a>
+                    <div>
+                        <div class="text-uppercase text-muted small fw-semibold">Session Monitor</div>
+                        <h2 class="h4 mb-0">{{ session.name|default:session.code }}</h2>
+                    </div>
+                    <span class="badge bg-light text-dark border">Code: {{ session.code }}</span>
+                </div>
+                <div id="wsStatus" class="d-flex align-items-center gap-2 text-muted">
+                    <span class="status-dot connecting"></span>
+                    <span class="status-text">Connecting…</span>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <ul class="nav nav-tabs session-main-tabs mb-0" id="sessionMainTabs" role="tablist">
+        <li class="nav-item" role="presentation">
+            <button class="nav-link active" id="game-plan-tab" data-bs-toggle="tab" data-bs-target="#gamePlanTab" type="button" role="tab" aria-controls="gamePlanTab" aria-selected="true">Game Plan</button>
+        </li>
+        <li class="nav-item" role="presentation">
+            <button class="nav-link" id="participants-tab" data-bs-toggle="tab" data-bs-target="#participantsScoreboardTab" type="button" role="tab" aria-controls="participantsScoreboardTab" aria-selected="false">Teilnehmer / Scoreboard</button>
+        </li>
+    </ul>
+
+    <div class="tab-content session-tab-content" id="sessionMainTabsContent">
+        <div class="tab-pane fade show active" id="gamePlanTab" role="tabpanel" aria-labelledby="game-plan-tab" tabindex="0">
+            {% if not session.started_at or session.ended_at or not session.is_active %}
+            <div class="card mb-3" id="sessionControlsPanel">
+                <div class="card-body py-3">
+                    <div class="d-flex flex-wrap align-items-center gap-2">
+                        {% if not session.started_at %}
+                        <button id="startSessionBtn" class="btn btn-success">
+                            <i data-lucide="play" class="me-1"></i> Start Session
+                        </button>
+                        {% elif not session.ended_at and not session.is_active %}
+                        <button id="startSessionBtn" class="btn btn-success">
+                            <i data-lucide="play" class="me-1"></i> Activate Session
+                        </button>
+                        {% endif %}
+                        {% if session.ended_at %}
+                        <span id="sessionEndedLabel" class="text-muted fw-semibold d-inline-flex align-items-center gap-1">
+                            <i data-lucide="check-circle-2" class="me-1"></i> Session beendet
+                        </span>
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+            {% endif %}
+            <div id="gamePlanMount"></div>
+        </div>
+        <div class="tab-pane fade" id="participantsScoreboardTab" role="tabpanel" aria-labelledby="participants-tab" tabindex="0">
+            <div id="participantsScoreboardMount"></div>
+        </div>
+    </div>
+
+    <div class="card mb-4 session-tool-panel session-floating-only" id="checkInPanel">
         <div class="card-header d-flex flex-wrap justify-content-between align-items-center gap-2">
             <div>
                 <h5 class="mb-0"><i data-lucide="user-check" class="me-2"></i>Teilnehmer-Check-in</h5>
                 <small class="text-muted" id="checkInStatusText">Check-in-Status wird geladen.</small>
             </div>
             <div class="d-flex flex-wrap gap-2">
+                <button id="recallLobbyBtn" class="btn btn-sm btn-outline-warning">
+                    <i data-lucide="users" class="me-1"></i> Teilnehmer in die Lobby zurückschicken
+                </button>
                 <button id="startCheckInBtn" class="btn btn-sm btn-outline-primary">Check-in starten</button>
-                <button id="completeCheckInBtn" class="btn btn-sm btn-success">Check-in abschlieÃŸen</button>
-                <button id="resetCheckInBtn" class="btn btn-sm btn-outline-secondary">ZurÃ¼cksetzen</button>
+                <button id="completeCheckInBtn" class="btn btn-sm btn-success">Check-in abschließen</button>
+                <button id="resetCheckInBtn" class="btn btn-sm btn-outline-secondary">Zurücksetzen</button>
+                <button type="button" class="btn-close session-panel-close" aria-label="Schließen" data-session-panel-close></button>
             </div>
         </div>
         <div class="card-body">
@@ -100,7 +176,7 @@
         </div>
     </div>
 
-    <div class="card mb-4">
+    <div class="card mb-4 session-tool-panel session-floating-only" id="votingPanel">
         <div class="card-header d-flex flex-wrap justify-content-between align-items-center gap-2">
             <div>
                 <h5 class="mb-0"><i data-lucide="vote" class="me-2"></i>Voting</h5>
@@ -114,6 +190,7 @@
                     <option value="winner" {% if session.voting_mode == 'winner' %}selected{% endif %}>Sieger-Voting</option>
                 </select>
                 <button id="openVotingBtn" class="btn btn-sm btn-outline-primary">Voting freischalten</button>
+                <button type="button" class="btn-close session-panel-close" aria-label="Schließen" data-session-panel-close></button>
                 <button id="closeVotingBtn" class="btn btn-sm btn-outline-secondary">Voting schlieÃŸen</button>
             </div>
         </div>
@@ -126,15 +203,61 @@
             </div>
             <div class="small text-muted" id="votingEligibleText">Stimmberechtigte: -</div>
             <div class="small text-muted" id="votingVotedText">Bereits abgestimmt: -</div>
+            <div class="voting-results mt-3" id="votingResultsList">
+                <div class="text-muted small">Keine Voting-Ergebnisse.</div>
+            </div>
         </div>
     </div>
 
-    <div class="row g-4">
+    <div class="card mb-4 session-tool-panel session-floating-only" id="readinessPanel">
+        <div class="card-header d-flex flex-wrap justify-content-between align-items-center gap-2">
+            <div>
+                <h5 class="mb-0"><i data-lucide="clipboard-check" class="me-2"></i>Bereitschaft</h5>
+                <small class="text-muted" id="readinessStatusText">Kein Bereitschaftscheck aktiv.</small>
+            </div>
+            <div class="d-flex flex-wrap gap-2 align-items-center">
+                <button type="button" id="startReadinessBtn" class="btn btn-sm btn-outline-primary">Bereitschaft checken</button>
+                <button type="button" id="endReadinessBtn" class="btn btn-sm btn-outline-secondary d-none">Bereitschaftscheck beenden</button>
+                <button type="button" class="btn-close session-panel-close" aria-label="Schließen" data-session-panel-close></button>
+            </div>
+        </div>
+        <div class="card-body">
+            <div id="readinessAllReadyAlert" class="alert alert-success py-2 d-none">Alle Teilnehmer sind bereit.</div>
+            <div id="readinessError" class="alert alert-danger py-2 d-none"></div>
+            <div class="d-flex flex-wrap gap-2 mb-3">
+                <span class="badge bg-light text-dark border" id="readinessTotalBadge">Teilnehmer: 0</span>
+                <span class="badge bg-light text-dark border" id="readinessReadyBadge">Bereit: 0</span>
+                <span class="badge bg-light text-dark border" id="readinessPendingBadge">Noch nicht bereit: 0</span>
+            </div>
+            <div class="list-group readiness-list" id="readinessParticipantRows">
+                <div class="list-group-item text-muted">Kein Bereitschaftscheck aktiv.</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal fade" id="readinessEndWarningModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">Bereitschaftscheck beenden?</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Schließen"></button>
+                </div>
+                <div class="modal-body">
+                    Noch nicht alle Teilnehmer haben ihre Bereitschaft bestätigt. Möchtest du den Bereitschaftscheck trotzdem beenden?
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Weiter warten</button>
+                    <button type="button" class="btn btn-danger" id="forceEndReadinessBtn">Trotzdem beenden</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="row g-0 session-tab-primary-section" id="gamePlanSection">
         <!-- Left: Game Steps -->
-        <div class="col-12 col-lg-7">
+        <div class="col-12">
             <div class="card h-100">
-                <div class="card-header d-flex justify-content-between align-items-center">
-                    <h5 class="mb-0"><i data-lucide="list-ordered" class="me-2"></i>Game Plan</h5>
+                <div class="card-header d-flex justify-content-end align-items-center">
                     <div class="d-flex align-items-center gap-2">
                         <span class="badge bg-secondary" id="stepCount">{{ steps|length }} game{{ steps|length|pluralize }}</span>
                         <button class="btn btn-sm btn-primary" data-bs-toggle="modal" data-bs-target="#addGameModal">
@@ -147,39 +270,18 @@
                         <div class="step-header">
                             <div class="step-header-drag"></div>
                             <div class="step-header-num">#</div>
-                            <div class="step-header-info">Game Type</div>
-                            <div class="step-header-votes">Votes</div>
+                            <div class="step-header-info">Spiel</div>
                             <div class="step-header-action">Action</div>
                         </div>
                         {% for s in steps %}
-                        <div class="step-row {% if forloop.first %}step-first{% endif %}{% if s.game_status == 'completed' %} completed{% elif s.game_status == 'inactive' %} inactive{% endif %}" id="step-{{ forloop.counter0 }}"
+                        <div class="step-row {% if forloop.first %}step-first{% endif %}{% if s.game_status == 'completed' %} completed{% elif s.game_status == 'active' %} active{% elif s.game_status == 'inactive' %} inactive{% endif %}" id="step-{{ forloop.counter0 }}"
                              data-game-key="{{ s.game_key }}" data-room-code="{{ s.room_code }}" data-order="{{ s.order }}" data-step-id="{{ s.id }}"
                              draggable="true">
                             <div class="drag-handle" title="Drag to reorder"><i data-lucide="grip-vertical"></i></div>
                             <div class="step-num">{{ forloop.counter }}</div>
                             <div class="step-info">
-                                <div class="step-name">{{ s.get_game_key_display }}{% if s.title %} · <span class="step-title-label">{{ s.title }}</span>{% endif %}</div>
-                                {% if s.game_status == 'completed' %}
-                                    <div class="step-status-hint">
-                                        <i data-lucide="check-circle" style="width:11px;height:11px;"></i>
-                                        Beendet
-                                    </div>
-                                {% elif s.game_status == 'active' %}
-                                    <div class="step-status-hint step-status-active">
-                                        <i data-lucide="radio" style="width:11px;height:11px;"></i>
-                                        Läuft
-                                    </div>
-                                {% elif s.game_status == 'inactive' %}
-                                    <div class="step-status-hint step-status-inactive">
-                                        <i data-lucide="pause-circle" style="width:11px;height:11px;"></i>
-                                        inactive
-                                    </div>
-                                {% else %}
-                                    <div class="step-status-hint">
-                                        <i data-lucide="clock" style="width:11px;height:11px;"></i>
-                                        Not started yet
-                                    </div>
-                                {% endif %}
+                                <div class="step-name step-name-primary">{% if s.title %}{{ s.title }}{% else %}{{ s.get_game_key_display }}{% endif %}</div>
+                                <div class="step-game-type">{{ s.get_game_key_display }}</div>
                             </div>
                             <div class="step-votes">
                                 <span class="vote-badge" data-order="{{ s.order }}" title="Votes for this game"></span>
@@ -191,7 +293,7 @@
                                    data-game-key="{{ s.game_key }}" data-room-code="{{ s.room_code }}"
                                    data-session="{{ session.code }}"
                                    {% if not session.started_at or not session.is_active %}aria-disabled="true" tabindex="-1"{% endif %}>
-                                    <i data-lucide="play" class="me-1"></i> Spiel öffnen
+                                    {% if s.game_status == 'completed' %}Beendet – Öffnen{% elif s.game_status == 'active' %}Läuft – Öffnen{% else %}Spiel öffnen{% endif %}
                                 </a>
                                 {% if s.game_status == 'inactive' %}
                                 <button type="button"
@@ -205,7 +307,8 @@
                                 {% endif %}
                                 <button class="btn btn-sm btn-outline-danger delete-step-btn"
                                         data-step-id="{{ s.id }}"
-                                        title="Spiel entfernen">
+                                        title="Spiel löschen"
+                                        aria-label="Spiel löschen">
                                     <i data-lucide="trash-2"></i>
                                 </button>
                             </div>
@@ -221,7 +324,7 @@
             </div>
         </div>
 
-        <div class="col-12 col-lg-5">
+        <div class="d-none">
             <!-- Players list kept in DOM for WebSocket updates but hidden -->
             <ul class="d-none" id="playerList">
                 {% for p in session_players %}
@@ -232,7 +335,7 @@
     </div>
 
     <!-- Overall Scoring Settings -->
-    <div class="row g-4 mt-0">
+    <div class="row g-4 mt-0 session-tool-panel session-floating-only" id="scoringPanel">
         <div class="col-12">
             <div class="card">
                 <div class="card-header d-flex flex-wrap justify-content-between align-items-center gap-2">
@@ -244,9 +347,12 @@
                         <small class="text-muted">Bis zum Start des ersten Spiels Ã¤nderbar.</small>
                         {% endif %}
                     </div>
-                    <button id="saveScoringSettingsBtn" class="btn btn-sm btn-outline-primary" {% if scoring_settings_locked %}disabled{% endif %}>
-                        Speichern
-                    </button>
+                    <div class="d-flex flex-wrap gap-2 align-items-center">
+                        <button id="saveScoringSettingsBtn" class="btn btn-sm btn-outline-primary" {% if scoring_settings_locked %}disabled{% endif %}>
+                            Speichern
+                        </button>
+                        <button type="button" class="btn-close session-panel-close" aria-label="Schließen" data-session-panel-close></button>
+                    </div>
                 </div>
                 <div class="card-body">
                     <div id="scoringSettingsAlert" class="alert d-none mb-3" role="alert"></div>
@@ -299,7 +405,7 @@
     </div>
 
     <!-- Session Scoreboard -->
-    <div class="row g-4 mt-0">
+    <div class="row g-0 mt-0 session-tab-primary-section" id="scoreboardSection">
         <div class="col-12">
             <div class="card">
                 <div class="card-header d-flex justify-content-between align-items-center">
@@ -341,6 +447,9 @@
             <option value="blackjack">Black Jack</option>
             <option value="sorting_ladder">Sorting Ladder</option>
             <option value="clue_rush">Clue Rush</option>
+            <option value="buzzer">Buzzer</option>
+            <option value="host_points">Host-Punktevergabe</option>
+            <option value="wann_war_das">Wann war das?</option>
             <option value="wer_weiss_mehr">Wer weiß mehr?</option>
           </select>
         </div>
@@ -386,9 +495,300 @@
 
 <style>
 .monitor-wrap {
-    max-width: 1100px;
+    max-width: 1180px;
     margin: 0 auto;
     padding: 1rem;
+}
+
+body > .admin-layout {
+    z-index: auto;
+}
+
+.session-monitor-header {
+    position: sticky;
+    top: 0.75rem;
+    z-index: 20;
+}
+
+.session-monitor-logo {
+    width: 42px;
+    height: 42px;
+    border-radius: 14px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: #0f172a;
+    color: #fff;
+    text-decoration: none;
+    box-shadow: 0 10px 24px rgba(15, 23, 42, 0.18);
+}
+
+.session-monitor-logo:hover {
+    color: #fff;
+    transform: translateY(-1px);
+}
+
+.session-main-tabs {
+    border-bottom: 0;
+    justify-content: center;
+}
+
+.session-main-tabs .nav-link {
+    border-radius: 0.85rem 0.85rem 0 0;
+    font-weight: 700;
+    margin-bottom: 0;
+}
+
+.session-main-tabs .nav-link.active {
+    border-bottom-color: #fff;
+}
+
+.session-tab-content {
+    margin-top: 0;
+}
+
+.session-tab-primary-section > .col-12 > .card {
+    border-top-left-radius: 0;
+    border-top-right-radius: 0;
+    margin-top: -1px;
+}
+
+.session-floating-menu {
+    position: fixed;
+    top: 10rem;
+    z-index: 30;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    transition: width 0.18s ease, transform 0.18s ease;
+}
+
+.session-floating-menu-left { left: 1rem; }
+.session-floating-menu-right { right: 1rem; }
+
+.session-float-btn {
+    border: 1px solid rgba(15, 23, 42, 0.12);
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.96);
+    color: #0f172a;
+    box-shadow: 0 10px 30px rgba(15, 23, 42, 0.12);
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
+    padding: 0.55rem 0.8rem;
+    font-weight: 700;
+    white-space: nowrap;
+    transition: background 0.18s ease, color 0.18s ease, width 0.18s ease, padding 0.18s ease;
+}
+
+.session-float-btn:hover,
+.session-float-btn.is-active {
+    background: #0f172a;
+    color: #fff;
+}
+
+.session-float-btn svg {
+    width: 16px;
+    height: 16px;
+    flex-shrink: 0;
+}
+
+.session-float-toggle {
+    background: #0f172a;
+    color: #fff;
+    justify-content: center;
+}
+
+.session-toggle-icon-collapsed {
+    display: none;
+}
+
+.session-floating-menu.is-collapsed {
+    align-items: center;
+}
+
+.session-floating-menu.is-collapsed .session-float-btn {
+    gap: 0;
+    height: 2.75rem;
+    justify-content: center;
+    padding: 0;
+    width: 2.75rem;
+}
+
+.session-floating-menu.is-collapsed .session-float-btn span {
+    display: none;
+}
+
+.session-floating-menu.is-collapsed .session-toggle-icon-expanded {
+    display: none;
+}
+
+.session-floating-menu.is-collapsed .session-toggle-icon-collapsed {
+    display: inline-block;
+}
+
+.session-floating-action-group {
+    border-top: 1px solid rgba(15, 23, 42, 0.12);
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    margin-top: 0.35rem;
+    padding-top: 0.85rem;
+}
+
+.session-floating-menu.is-collapsed .session-floating-action-group {
+    align-items: center;
+    width: 100%;
+}
+
+.session-float-btn:disabled {
+    cursor: not-allowed;
+    opacity: 0.5;
+}
+
+.session-float-warning {
+    border-color: rgba(245, 158, 11, 0.55);
+    color: #92400e;
+}
+
+.session-float-warning:hover:not(:disabled) {
+    background: #f59e0b;
+    color: #111827;
+}
+
+.session-float-danger {
+    border-color: rgba(220, 38, 38, 0.55);
+    color: #991b1b;
+}
+
+.session-float-danger:hover:not(:disabled) {
+    background: #dc2626;
+    color: #fff;
+}
+
+.session-panel-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(15, 23, 42, 0.28);
+    z-index: 35;
+    display: none;
+}
+
+.session-panel-backdrop.is-active {
+    display: block;
+}
+
+.session-floating-only {
+    display: none;
+}
+
+.session-tool-panel.is-open {
+    display: block !important;
+    position: fixed !important;
+    top: 6.5rem;
+    left: 50%;
+    width: min(920px, calc(100vw - 2rem));
+    max-height: calc(100vh - 8rem);
+    overflow-y: auto;
+    transform: translateX(-50%);
+    z-index: 40;
+}
+
+.session-panel-close {
+    display: none;
+}
+
+.session-tool-panel.is-open .session-panel-close {
+    display: inline-flex;
+}
+
+.readiness-list .list-group-item {
+    align-items: center;
+    display: flex;
+    justify-content: space-between;
+}
+
+.readiness-status {
+    border-radius: 999px;
+    font-size: 0.78rem;
+    font-weight: 700;
+    padding: 0.18rem 0.55rem;
+}
+
+.readiness-status-pending {
+    background: #fef3c7;
+    color: #92400e;
+}
+
+.readiness-status-ready {
+    background: #dcfce7;
+    color: #166534;
+}
+
+@media (min-width: 1200px) and (max-width: 1519.98px) {
+    .monitor-wrap.host-session-monitor {
+        max-width: calc(100vw - 9.5rem);
+    }
+}
+
+@media (max-width: 1199.98px) {
+    .monitor-wrap.host-session-monitor {
+        max-width: 100%;
+        padding-left: 4.25rem;
+        padding-right: 4.25rem;
+    }
+
+    .session-floating-menu {
+        position: fixed;
+        top: 8rem;
+        flex-direction: column;
+        flex-wrap: nowrap;
+        margin-bottom: 0;
+        max-width: none;
+    }
+
+    .session-floating-menu-left {
+        left: 0.5rem;
+        right: auto;
+    }
+
+    .session-floating-menu-right {
+        left: auto;
+        right: 0.5rem;
+        justify-content: flex-start;
+    }
+
+    .session-floating-action-group {
+        border-left: 0;
+        border-top: 1px solid rgba(15, 23, 42, 0.12);
+        flex-direction: column;
+        margin-left: 0;
+        margin-top: 0.35rem;
+        padding-left: 0;
+        padding-top: 0.85rem;
+    }
+}
+
+@media (max-width: 575.98px) {
+    .monitor-wrap.host-session-monitor {
+        padding-left: 3.65rem;
+        padding-right: 3.65rem;
+    }
+
+    .session-floating-menu {
+        gap: 0.35rem;
+        top: 7.25rem;
+    }
+
+    .session-floating-menu.is-expanded .session-float-btn {
+        padding: 0.5rem 0.65rem;
+    }
+
+    .session-floating-menu.is-expanded .session-float-btn span {
+        max-width: 8rem;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
 }
 
 /* WS status dot */
@@ -408,7 +808,7 @@
 
 .step-header {
     display: grid;
-    grid-template-columns: 28px 36px 1fr 80px 240px;
+    grid-template-columns: 28px 36px minmax(0, 1fr) 260px;
     align-items: center;
     gap: 0.75rem;
     padding: 0.5rem 1.25rem;
@@ -425,10 +825,10 @@
 
 .step-row {
     display: grid;
-    grid-template-columns: 28px 36px 1fr 80px 240px;
+    grid-template-columns: 28px 36px minmax(0, 1fr) 260px;
     align-items: center;
-    gap: 0.75rem;
-    padding: 0.75rem 1.25rem;
+    gap: 0.55rem;
+    padding: 0.5rem 1rem;
     border-bottom: 1px solid var(--border-color);
     transition: background 0.15s;
 }
@@ -460,14 +860,48 @@
 
 .step-info { min-width: 0; }
 .step-name { font-weight: 600; font-size: 0.9rem; }
-.step-title-label { font-weight: 400; color: #6c757d; }
+.step-name-primary {
+    font-size: 0.95rem;
+    line-height: 1.2;
+}
+.step-game-type {
+    color: var(--text-muted);
+    font-size: 0.78rem;
+    line-height: 1.15;
+    margin-top: 0.04rem;
+}
 .step-sub { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
-.step-votes { display: flex; align-items: center; justify-content: center; }
-.step-action { display: flex; align-items: center; justify-content: flex-end; }
+.step-votes { display: none; }
+.step-action {
+    align-self: stretch;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    justify-content: flex-start;
+    gap: 0.25rem;
+}
 
-.launch-btn { flex-shrink: 0; }
+.launch-btn {
+    align-self: flex-end;
+    flex-shrink: 0;
+    line-height: 1.15;
+    min-width: auto;
+    padding: 0.22rem 0.5rem;
+    white-space: nowrap;
+}
 .launch-btn.disabled { pointer-events: none; opacity: 0.45; }
+
+.delete-step-btn {
+    align-self: flex-end;
+    line-height: 1;
+    margin-top: auto;
+    padding: 0.15rem 0.3rem;
+}
+.delete-step-btn svg {
+    width: 14px;
+    height: 14px;
+}
 
 .drag-handle {
     cursor: grab;
@@ -498,6 +932,50 @@
 }
 .vote-badge.has-votes { display: inline-block; }
 .vote-badge.top-vote { background: #dcfce7; color: #166534; }
+
+.voting-results {
+    border-top: 1px solid var(--border-color);
+    padding-top: 0.75rem;
+}
+
+.voting-result-row {
+    align-items: center;
+    border: 1px solid var(--border-color);
+    border-radius: 0.65rem;
+    display: flex;
+    justify-content: space-between;
+    gap: 0.75rem;
+    padding: 0.55rem 0.75rem;
+}
+
+.voting-result-row + .voting-result-row {
+    margin-top: 0.5rem;
+}
+
+.voting-result-row.top-vote {
+    background: #dcfce7;
+    border-color: #86efac;
+}
+
+.voting-result-title {
+    font-weight: 700;
+}
+
+.voting-result-type {
+    color: var(--text-muted);
+    font-size: 0.75rem;
+}
+
+.voting-result-count {
+    background: #dbeafe;
+    border-radius: 999px;
+    color: #2563eb;
+    font-size: 0.8rem;
+    font-weight: 700;
+    min-width: 2rem;
+    padding: 0.2rem 0.6rem;
+    text-align: center;
+}
 
 .quiz-pick-list {
     max-height: 220px;
@@ -559,29 +1037,75 @@
     font-size: 0.9rem;
 }
 .sb-table th { font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase;
-    letter-spacing: 0.5px; padding: 0.5rem 1rem; text-align: left;
+    letter-spacing: 0.5px; padding: 0.45rem 0.65rem; text-align: left;
     border-bottom: 2px solid var(--border-color); background: var(--bg-secondary); }
 .sb-table th.center { text-align: center; }
 .sb-table th,
 .sb-table td { white-space: nowrap; }
-.sb-table td { padding: 0.6rem 1rem; border-bottom: 1px solid var(--border-color); vertical-align: middle; }
+.sb-table td { padding: 0.5rem 0.65rem; border-bottom: 1px solid var(--border-color); vertical-align: middle; }
 .sb-table tr:last-child td { border-bottom: none; }
 .sb-table tr:hover td { background: var(--bg-secondary); }
 .sb-rank { width: 2.5rem; font-weight: 700; color: var(--text-muted); }
 .sb-rank.gold { color: #f59e0b; }
 .sb-rank.silver { color: #94a3b8; }
 .sb-rank.bronze { color: #c07b3a; }
-.sb-total { font-weight: 700; font-size: 1rem; text-align: center; color: var(--color-primary); }
-.sb-game { min-width: 8.5rem; text-align: center; color: var(--text-muted); font-size: 0.8rem; }
+.sb-name { min-width: 8rem; }
+.sb-total { font-weight: 700; font-size: 1rem; min-width: 7rem; text-align: center; color: var(--color-primary); }
+.sb-game { min-width: 3.75rem; max-width: 5rem; text-align: center; color: var(--text-muted); font-size: 0.8rem; }
 .sb-game.winner { color: #22c55e; font-weight: 700; }
 .sb-adj { text-align: center; font-size: 0.8rem; color: var(--text-muted); }
 .sb-edit { text-align: center; }
-.step-status-hint {
-    display: flex; align-items: center; gap: 3px;
-    font-size: 0.7rem; color: #6c757d; margin-top: 2px;
+.sb-game-info {
+    border: 0;
+    background: transparent;
+    color: inherit;
+    cursor: help;
+    font: inherit;
+    font-weight: 700;
+    padding: 0.1rem 0.25rem;
 }
-.step-status-active { color: #0d6efd; }
-.step-status-inactive { color: #b45309; }
+.sb-game-info:focus {
+    outline: 2px solid rgba(13, 110, 253, 0.35);
+    outline-offset: 2px;
+}
+.sb-score-main {
+    font-weight: 700;
+}
+.sb-score-detail {
+    display: block;
+    font-size: 0.68rem;
+    line-height: 1.15;
+}
+.sb-adjust-menu {
+    margin-top: 0.18rem;
+}
+.sb-adjust-menu summary {
+    color: var(--text-muted);
+    cursor: pointer;
+    font-size: 0.68rem;
+    font-weight: 600;
+    list-style: none;
+}
+.sb-adjust-menu summary::-webkit-details-marker {
+    display: none;
+}
+.sb-adjust-controls {
+    margin-top: 0.18rem;
+}
+.sb-game-tooltip-floating {
+    position: fixed;
+    z-index: 2000;
+    max-width: 14rem;
+    border: 1px solid rgba(15, 23, 42, 0.12);
+    border-radius: 0.5rem;
+    background: #0f172a;
+    box-shadow: 0 10px 24px rgba(15, 23, 42, 0.18);
+    color: #fff;
+    font-size: 0.78rem;
+    line-height: 1.25;
+    padding: 0.4rem 0.55rem;
+    pointer-events: none;
+}
 </style>
 
 <script type="text/plain" id="legacyBrokenSessionMonitorScript">
@@ -723,6 +1247,9 @@ const GAME_MONITOR_ROUTES = {
     clue_rush: '/admin-dashboard/clue-rush/{room_code}/monitor/',
     sorting_ladder: '/admin-dashboard/sorting-ladder/{room_code}/monitor/',
     wer_weiss_mehr: '/admin-dashboard/wer-weiss-mehr/{room_code}/monitor/',
+    buzzer: '/admin-dashboard/buzzer/{room_code}/monitor/',
+    host_points: '/admin-dashboard/host-points/{room_code}/monitor/',
+    wann_war_das: '/admin-dashboard/wann-war-das/{room_code}/monitor/',
 };
 
 let ws = null;
@@ -735,6 +1262,7 @@ let currentCheckInStatus = '{{ session.check_in_status }}';
 
 document.addEventListener('DOMContentLoaded', function() {
     const startSessionBtn = document.getElementById('startSessionBtn');
+    const inactiveSessionBtn = document.getElementById('inactiveSessionBtn');
     const endSessionBtn = document.getElementById('endSessionBtn');
     const copyLinkBtn = document.getElementById('copyLinkBtn');
     const lobbyLinkInput = document.getElementById('lobbyLink');
@@ -788,6 +1316,114 @@ document.addEventListener('DOMContentLoaded', function() {
     const votingVotedBadge = document.getElementById('votingVotedBadge');
     const votingEligibleText = document.getElementById('votingEligibleText');
     const votingVotedText = document.getElementById('votingVotedText');
+    const votingResultsList = document.getElementById('votingResultsList');
+    const startReadinessBtn = document.getElementById('startReadinessBtn');
+    const endReadinessBtn = document.getElementById('endReadinessBtn');
+    const forceEndReadinessBtn = document.getElementById('forceEndReadinessBtn');
+    const readinessStatusText = document.getElementById('readinessStatusText');
+    const readinessError = document.getElementById('readinessError');
+    const readinessAllReadyAlert = document.getElementById('readinessAllReadyAlert');
+    const readinessTotalBadge = document.getElementById('readinessTotalBadge');
+    const readinessReadyBadge = document.getElementById('readinessReadyBadge');
+    const readinessPendingBadge = document.getElementById('readinessPendingBadge');
+    const readinessParticipantRows = document.getElementById('readinessParticipantRows');
+    const readinessEndWarningModalEl = document.getElementById('readinessEndWarningModal');
+    const readinessEndWarningModal = readinessEndWarningModalEl && window.bootstrap
+        ? new bootstrap.Modal(readinessEndWarningModalEl)
+        : null;
+    const gamePlanMount = document.getElementById('gamePlanMount');
+    const gamePlanSection = document.getElementById('gamePlanSection');
+    const participantsScoreboardMount = document.getElementById('participantsScoreboardMount');
+    const checkInPanel = document.getElementById('checkInPanel');
+    const playerList = document.getElementById('playerList');
+    const scoringPanel = document.getElementById('scoringPanel');
+    const scoreboardSection = document.getElementById('scoreboardSection');
+    const sessionPanelBackdrop = document.getElementById('sessionPanelBackdrop');
+    const sessionToolPanels = Array.from(document.querySelectorAll('.session-tool-panel'));
+    const sessionToolButtons = Array.from(document.querySelectorAll('[data-session-panel-target]'));
+    const floatingMenus = Array.from(document.querySelectorAll('[data-session-floating-menu]'));
+    const floatingMenuToggles = Array.from(document.querySelectorAll('[data-session-menu-toggle]'));
+    const floatingMenuCompactQuery = window.matchMedia('(max-width: 1520px)');
+    let floatingMenuManuallyChanged = false;
+
+    if (gamePlanMount && gamePlanSection) {
+        gamePlanMount.appendChild(gamePlanSection);
+    }
+    if (participantsScoreboardMount) {
+        [playerList, scoreboardSection].forEach((element) => {
+            if (element) participantsScoreboardMount.appendChild(element);
+        });
+    }
+
+    function closeSessionToolPanel() {
+        sessionToolPanels.forEach((panel) => panel.classList.remove('is-open'));
+        sessionToolButtons.forEach((button) => button.classList.remove('is-active'));
+        sessionPanelBackdrop?.classList.remove('is-active');
+    }
+
+    function openSessionToolPanel(panelId) {
+        const panel = document.getElementById(panelId);
+        if (!panel) return;
+        closeSessionToolPanel();
+        panel.classList.add('is-open');
+        sessionPanelBackdrop?.classList.add('is-active');
+        sessionToolButtons
+            .filter((button) => button.dataset.sessionPanelTarget === panelId)
+            .forEach((button) => button.classList.add('is-active'));
+    }
+
+    function setFloatingMenuCollapsed(menu, collapsed) {
+        if (!menu) return;
+        menu.classList.toggle('is-collapsed', collapsed);
+        menu.classList.toggle('is-expanded', !collapsed);
+        const toggle = menu.querySelector('[data-session-menu-toggle]');
+        if (toggle) {
+            toggle.setAttribute('aria-expanded', String(!collapsed));
+            toggle.setAttribute('title', collapsed ? 'Menü aufklappen' : 'Menü einklappen');
+        }
+    }
+
+    function setAllFloatingMenusCollapsed(collapsed) {
+        floatingMenus.forEach((menu) => setFloatingMenuCollapsed(menu, collapsed));
+    }
+
+    function applyDefaultFloatingMenuState() {
+        if (floatingMenuManuallyChanged) return;
+        setAllFloatingMenusCollapsed(floatingMenuCompactQuery.matches);
+    }
+
+    floatingMenuToggles.forEach((button) => {
+        button.addEventListener('click', () => {
+            const menu = button.closest('[data-session-floating-menu]');
+            if (!menu) return;
+            floatingMenuManuallyChanged = true;
+            setFloatingMenuCollapsed(menu, !menu.classList.contains('is-collapsed'));
+        });
+    });
+
+    applyDefaultFloatingMenuState();
+    if (typeof floatingMenuCompactQuery.addEventListener === 'function') {
+        floatingMenuCompactQuery.addEventListener('change', applyDefaultFloatingMenuState);
+    }
+
+    sessionToolButtons.forEach((button) => {
+        button.addEventListener('click', () => openSessionToolPanel(button.dataset.sessionPanelTarget));
+    });
+    document.querySelectorAll('[data-session-panel-close]').forEach((button) => {
+        button.addEventListener('click', closeSessionToolPanel);
+    });
+    sessionPanelBackdrop?.addEventListener('click', closeSessionToolPanel);
+    document.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape') closeSessionToolPanel();
+    });
+    document.addEventListener('click', (event) => {
+        if (!floatingMenuCompactQuery.matches) return;
+        const clickedMenu = floatingMenus.some((menu) => menu.contains(event.target));
+        const clickedPanel = sessionToolPanels.some((panel) => panel.contains(event.target));
+        if (!clickedMenu && !clickedPanel) {
+            setAllFloatingMenusCollapsed(true);
+        }
+    });
 
     function setStatus(kind, text) {
         const wrap = document.getElementById('wsStatus');
@@ -903,10 +1539,27 @@ document.addEventListener('DOMContentLoaded', function() {
         });
 
         if (!Array.isArray(votes) || votes.length === 0) {
+            if (votingResultsList) {
+                votingResultsList.innerHTML = '<div class="text-muted small">Keine Voting-Ergebnisse.</div>';
+            }
             return;
         }
 
         const topCount = Math.max(...votes.map((vote) => vote.count || 0), 0);
+        if (votingResultsList) {
+            votingResultsList.innerHTML = votes.map((vote) => {
+                const count = vote.count || 0;
+                const title = vote.title || vote.display_name || `Spiel ${Number(vote.step_order || 0) + 1}`;
+                const type = vote.game_type || vote.game_key || '';
+                return `<div class="voting-result-row ${count === topCount && topCount > 0 ? 'top-vote' : ''}">
+                    <div>
+                        <div class="voting-result-title">${escapeHtml(title)}</div>
+                        <div class="voting-result-type">${escapeHtml(type)}</div>
+                    </div>
+                    <span class="voting-result-count">${count}</span>
+                </div>`;
+            }).join('');
+        }
         votes.forEach((vote) => {
             const badge = document.querySelector(`.vote-badge[data-order="${vote.step_order}"]`);
             if (!badge || !vote.count) return;
@@ -1121,6 +1774,63 @@ document.addEventListener('DOMContentLoaded', function() {
         return url.toString();
     }
 
+    let scoreboardTooltipEl = null;
+    let activeScoreboardTooltipButton = null;
+
+    function hideScoreboardTooltip() {
+        if (scoreboardTooltipEl) {
+            scoreboardTooltipEl.remove();
+            scoreboardTooltipEl = null;
+        }
+        activeScoreboardTooltipButton = null;
+    }
+
+    function showScoreboardTooltip(button) {
+        const text = button?.dataset?.tooltip || '';
+        if (!text) return;
+        hideScoreboardTooltip();
+        scoreboardTooltipEl = document.createElement('div');
+        scoreboardTooltipEl.className = 'sb-game-tooltip-floating';
+        scoreboardTooltipEl.textContent = text;
+        document.body.appendChild(scoreboardTooltipEl);
+
+        const buttonRect = button.getBoundingClientRect();
+        const tooltipRect = scoreboardTooltipEl.getBoundingClientRect();
+        const left = Math.min(
+            Math.max(buttonRect.left + (buttonRect.width / 2) - (tooltipRect.width / 2), 8),
+            window.innerWidth - tooltipRect.width - 8
+        );
+        const top = Math.min(buttonRect.bottom + 8, window.innerHeight - tooltipRect.height - 8);
+        scoreboardTooltipEl.style.left = `${left}px`;
+        scoreboardTooltipEl.style.top = `${top}px`;
+        activeScoreboardTooltipButton = button;
+    }
+
+    function bindScoreboardInfoTooltips(wrap) {
+        wrap.querySelectorAll('.sb-game-info').forEach((button) => {
+            button.addEventListener('mouseenter', () => showScoreboardTooltip(button));
+            button.addEventListener('focus', () => showScoreboardTooltip(button));
+            button.addEventListener('mouseleave', () => {
+                if (document.activeElement !== button) hideScoreboardTooltip();
+            });
+            button.addEventListener('blur', hideScoreboardTooltip);
+            button.addEventListener('click', (event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                if (activeScoreboardTooltipButton === button) {
+                    hideScoreboardTooltip();
+                } else {
+                    showScoreboardTooltip(button);
+                }
+            });
+        });
+    }
+
+    document.addEventListener('click', (event) => {
+        if (!event.target.closest('.sb-game-info')) hideScoreboardTooltip();
+    });
+    window.addEventListener('resize', hideScoreboardTooltip);
+
     function renderSessionScoreboard(data) {
         const wrap = document.getElementById('sessionScoreboardWrap');
         const players = data.participants || [];
@@ -1145,47 +1855,40 @@ document.addEventListener('DOMContentLoaded', function() {
         const instanceKeys = Object.keys(instances).sort((a, b) => {
             return (instances[a].game_number || 0) - (instances[b].game_number || 0);
         });
+        const displayedInstanceKeys = [...instanceKeys].reverse();
         const weighted = settings.overall_weighting_mode === 'linear_cap';
 
-        const headerCols = instanceKeys.map((key) => {
+        const headerCols = displayedInstanceKeys.map((key) => {
             const meta = instances[key] || {};
-            const range = meta.score_range || {};
             const title = meta.title || meta.name || meta.type || key;
-            const typeLine = meta.type && meta.type !== title
-                ? `<div class="small text-muted">${escapeHtml(meta.type)}</div>`
-                : '';
-            const weightLine = weighted
-                ? `<div class="small text-muted">x${formatScore(meta.weight || 1)}</div>`
-                : '';
-            const rangeLine = rankingMode
-                ? (range.available
-                    ? `<div class="small text-muted">Range ${formatScore(range.weighted_min)}-${formatScore(range.weighted_max)}</div>`
-                    : '<div class="small text-muted">Range nicht berechenbar</div>')
-                : '';
+            const type = meta.type || '';
+            const gameNumber = meta.game_number || '';
+            const label = gameNumber ? `#${gameNumber}` : '#';
+            const tooltip = [title, type].filter(Boolean).join(' · ');
             return `<th class="center sb-game">
-                <div>#${escapeHtml(meta.game_number || '')} ${escapeHtml(title)}</div>
-                ${typeLine}
-                ${weightLine}
-                ${rangeLine}
+                <button type="button"
+                        class="sb-game-info"
+                        data-tooltip="${escapeHtml(tooltip)}"
+                        aria-label="${escapeHtml(`${label}: ${tooltip}`)}">${escapeHtml(label)}</button>
             </th>`;
         }).join('');
 
         const rows = players.map((player, index) => {
             const rankClass = rankLabels[index] || '';
-            const gameCols = instanceKeys.map((key) => {
+            const gameCols = displayedInstanceKeys.map((key) => {
                 const rawScore = player.game_scores ? player.game_scores[key] : undefined;
                 if (rawScore === undefined) return '<td class="sb-game">&mdash;</td>';
                 const overallScore = player.game_overall_scores ? player.game_overall_scores[key] : rawScore;
                 const baseScore = player.game_base_scores ? player.game_base_scores[key] : rawScore;
                 const rank = player.game_ranks ? player.game_ranks[key] : null;
                 const detail = rankingMode
-                    ? `<div class="small text-muted">Rang ${rank || '-'}: ${formatScore(baseScore)} Pkt.</div>`
+                    ? `<span class="sb-score-detail text-muted">R${rank || '-'} / ${formatScore(baseScore)}</span>`
                     : '';
                 const weightedDetail = (weighted || rankingMode)
-                    ? `<div class="small text-muted">+${formatScore(overallScore)} gesamt</div>`
+                    ? `<span class="sb-score-detail text-muted">+${formatScore(overallScore)}</span>`
                     : '';
                 return `<td class="sb-game">
-                    <div class="fw-semibold">${formatScore(rawScore)}</div>
+                    <span class="sb-score-main">${formatScore(rawScore)}</span>
                     ${detail}
                     ${weightedDetail}
                 </td>`;
@@ -1196,20 +1899,26 @@ document.addEventListener('DOMContentLoaded', function() {
             const total = Number(player.total_with_adjustment ?? (sessionPoints + adjustment));
             const participantId = player.hub_participant_id;
             const adjustmentControls = participantId
-                ? `<div class="d-flex align-items-center justify-content-center gap-1">
+                ? `<details class="sb-adjust-menu">
+                    <summary>Korr.</summary>
+                    <div class="sb-adjust-controls d-flex align-items-center justify-content-center gap-1">
                     <button class="btn btn-sm btn-outline-secondary sb-adj-btn" data-pid="${participantId}" data-delta="-1" style="padding:0.1rem 0.4rem;font-size:0.8rem;">-</button>
                     <span class="sb-adj-val" data-pid="${participantId}">${formatScore(adjustment)}</span>
                     <button class="btn btn-sm btn-outline-secondary sb-adj-btn" data-pid="${participantId}" data-delta="1" style="padding:0.1rem 0.4rem;font-size:0.8rem;">+</button>
-                </div>`
-                : '&mdash;';
+                    </div>
+                </details>`
+                : '';
 
             return `<tr data-pid="${participantId || ''}">
                 <td class="sb-rank ${rankClass}">${index + 1}</td>
-                <td>${escapeHtml(player.name)}</td>
+                <td class="sb-name">${escapeHtml(player.name)}</td>
+                <td class="sb-total sb-overall" data-session-points="${formatScore(sessionPoints)}">
+                    <div class="sb-overall-main">
+                        <span class="sb-sum" data-pid="${participantId || ''}">${formatScore(total)}</span>
+                        ${adjustmentControls}
+                    </div>
+                </td>
                 ${gameCols}
-                <td class="sb-total sb-session-points">${formatScore(sessionPoints)}</td>
-                <td class="sb-adj">${adjustmentControls}</td>
-                <td class="sb-total sb-sum" data-pid="${participantId || ''}">${formatScore(total)}</td>
             </tr>`;
         }).join('');
 
@@ -1217,17 +1926,16 @@ document.addEventListener('DOMContentLoaded', function() {
             <table class="sb-table">
                 <thead>
                     <tr>
-                        <th class="sb-rank">#</th>
-                        <th>Teilnehmer</th>
-                        ${headerCols}
+                        <th class="sb-rank">Rang</th>
+                        <th class="sb-name">Name</th>
                         <th class="center sb-total">Gesamtwertung</th>
-                        <th class="center sb-adj">Korrektur</th>
-                        <th class="center sb-total">Total</th>
+                        ${headerCols}
                     </tr>
                 </thead>
                 <tbody>${rows}</tbody>
             </table>`;
 
+        bindScoreboardInfoTooltips(wrap);
         wrap.querySelectorAll('.sb-adj-btn').forEach((btn) => {
             btn.addEventListener('click', function() {
                 const participantId = this.dataset.pid;
@@ -1237,7 +1945,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 const row = wrap.querySelector(`tr[data-pid="${participantId}"]`);
                 const currentAdjustment = Number(valueEl.textContent) || 0;
                 const newAdjustment = currentAdjustment + delta;
-                const sessionPoints = Number(row.querySelector('.sb-session-points').textContent) || 0;
+                const sessionPoints = Number(row.querySelector('.sb-overall').dataset.sessionPoints) || 0;
 
                 valueEl.textContent = formatScore(newAdjustment);
                 sumEl.textContent = formatScore(sessionPoints + newAdjustment);
@@ -1303,6 +2011,12 @@ document.addEventListener('DOMContentLoaded', function() {
         if (!checkInError) return;
         checkInError.textContent = message || '';
         checkInError.classList.toggle('d-none', !message);
+    }
+
+    function showReadinessError(message) {
+        if (!readinessError) return;
+        readinessError.textContent = message || '';
+        readinessError.classList.toggle('d-none', !message);
     }
 
     function renderCheckInState(payload) {
@@ -1375,6 +2089,55 @@ document.addEventListener('DOMContentLoaded', function() {
                 renderCheckInState(payload);
             }
         } catch (_) {}
+    }
+
+    function renderReadinessState(payload) {
+        if (!payload || !payload.readiness_check) return;
+        const check = payload.readiness_check || {};
+        const participants = Array.isArray(payload.readiness_participants)
+            ? [...payload.readiness_participants]
+            : [];
+        participants.sort((a, b) => {
+            if (!!a.ready !== !!b.ready) return a.ready ? 1 : -1;
+            return (a.nickname || '').localeCompare(b.nickname || '');
+        });
+        const counts = payload.readiness_counts || {};
+        const active = !!check.active;
+        const total = counts.total ?? participants.length;
+        const ready = counts.ready ?? participants.filter(p => p.ready).length;
+        const pending = counts.pending ?? (total - ready);
+
+        if (readinessStatusText) {
+            readinessStatusText.textContent = active
+                ? `Bereitschaftscheck läuft · ${ready}/${total} bereit`
+                : 'Kein Bereitschaftscheck aktiv.';
+        }
+        if (startReadinessBtn) startReadinessBtn.classList.toggle('d-none', active);
+        if (endReadinessBtn) endReadinessBtn.classList.toggle('d-none', !active);
+        if (readinessTotalBadge) readinessTotalBadge.textContent = `Teilnehmer: ${total}`;
+        if (readinessReadyBadge) readinessReadyBadge.textContent = `Bereit: ${ready}`;
+        if (readinessPendingBadge) readinessPendingBadge.textContent = `Noch nicht bereit: ${pending}`;
+        if (readinessAllReadyAlert) {
+            readinessAllReadyAlert.classList.toggle('d-none', !(active && total > 0 && pending === 0));
+        }
+        if (!readinessParticipantRows) return;
+        if (!active) {
+            readinessParticipantRows.innerHTML = '<div class="list-group-item text-muted">Kein Bereitschaftscheck aktiv.</div>';
+            return;
+        }
+        if (!participants.length) {
+            readinessParticipantRows.innerHTML = '<div class="list-group-item text-muted">Keine Teilnehmer im Bereitschaftscheck.</div>';
+            return;
+        }
+        readinessParticipantRows.innerHTML = participants.map((participant) => {
+            const readyState = !!participant.ready;
+            return `<div class="list-group-item">
+                <span>${escapeHtml(participant.nickname || '')}</span>
+                <span class="readiness-status ${readyState ? 'readiness-status-ready' : 'readiness-status-pending'}">
+                    ${readyState ? 'Bereit' : 'Noch nicht bereit'}
+                </span>
+            </div>`;
+        }).join('');
     }
 
     async function postCheckInAction(path, body = {}) {
@@ -1471,6 +2234,7 @@ document.addEventListener('DOMContentLoaded', function() {
     function showCheckInRequired(result) {
         const message = result?.error || result?.message || 'Bitte schließe zuerst den Teilnehmer-Check-in ab.';
         showCheckInError(message);
+        openSessionToolPanel('checkInPanel');
         const checkInCard = checkInError?.closest('.card');
         if (checkInCard) {
             checkInCard.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -1719,6 +2483,16 @@ document.addEventListener('DOMContentLoaded', function() {
         }
     });
 
+    inactiveSessionBtn?.addEventListener('click', () => {
+        if (!confirm('Diese Session wird auf inaktiv gesetzt. Teilnehmer können sie danach nicht mehr als aktive Session nutzen. Fortfahren?')) return;
+        inactiveSessionBtn.disabled = true;
+        const sent = sendWhenSocketOpen({ type: 'inactivate_session' });
+        if (!sent) {
+            inactiveSessionBtn.disabled = false;
+            alert('Die Session konnte nicht auf inaktiv gesetzt werden, weil keine Hub-Verbindung besteht.');
+        }
+    });
+
     endSessionBtn?.addEventListener('click', () => {
         if (!confirm('End this session? All game instances will be marked as inactive.')) return;
         manualEnd = true;
@@ -1755,8 +2529,21 @@ document.addEventListener('DOMContentLoaded', function() {
     completeCheckInBtn?.addEventListener('click', () => postCheckInAction('complete'));
     openVotingBtn?.addEventListener('click', () => configureVoting('open'));
     closeVotingBtn?.addEventListener('click', () => configureVoting('close'));
+    startReadinessBtn?.addEventListener('click', () => {
+        showReadinessError('');
+        sendWhenSocketOpen({ type: 'start_readiness_check' });
+    });
+    endReadinessBtn?.addEventListener('click', () => {
+        showReadinessError('');
+        sendWhenSocketOpen({ type: 'end_readiness_check' });
+    });
+    forceEndReadinessBtn?.addEventListener('click', () => {
+        readinessEndWarningModal?.hide();
+        showReadinessError('');
+        sendWhenSocketOpen({ type: 'end_readiness_check', force: true });
+    });
     resetCheckInBtn?.addEventListener('click', () => {
-        if (confirm('Check-in wirklich zurÃ¼cksetzen?')) {
+        if (confirm('Check-in wirklich zurücksetzen?')) {
             postCheckInAction('reset');
         }
     });
@@ -1926,6 +2713,7 @@ document.addEventListener('DOMContentLoaded', function() {
             updateScoreboardToggle();
             renderCheckInState(message);
             renderVotingState(message);
+            renderReadinessState(message);
             renderVoteBadges(message.votes || []);
             break;
         case 'vote_update':
@@ -1946,7 +2734,23 @@ document.addEventListener('DOMContentLoaded', function() {
         case 'check_in_error':
             showCheckInError(message.error || 'Check-in fehlgeschlagen.');
             break;
+        case 'readiness_started':
+        case 'readiness_participant_ready':
+        case 'readiness_ended':
+            showReadinessError('');
+            renderReadinessState(message);
+            break;
+        case 'readiness_end_requires_confirmation':
+            renderReadinessState(message);
+            readinessEndWarningModal?.show();
+            break;
+        case 'readiness_error':
+            showReadinessError(message.error || 'Bereitschaftscheck fehlgeschlagen.');
+            break;
         case 'session_started':
+            window.location.reload();
+            break;
+        case 'session_inactivated':
             window.location.reload();
             break;
         case 'session_ended':

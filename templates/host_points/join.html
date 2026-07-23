@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Host-Punktevergabe beitreten</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+</head>
+<body class="bg-light">
+<main class="container py-5" style="max-width: 520px;">
+    <div class="card border-0 shadow-sm">
+        <div class="card-body p-4">
+            <h1 class="h4 mb-3">Host-Punktevergabe</h1>
+            {% if error %}<div class="alert alert-danger">{{ error }}</div>{% endif %}
+            <form method="post">
+                {% csrf_token %}
+                <div class="mb-3">
+                    <label class="form-label" for="roomCode">Room-Code</label>
+                    <input class="form-control" id="roomCode" name="room_code" required>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label" for="participantName">Name</label>
+                    <input class="form-control" id="participantName" name="participant_name" required>
+                </div>
+                <button class="btn btn-primary w-100" type="submit">Beitreten</button>
+            </form>
+        </div>
+    </div>
+</main>
+</body>
+</html>

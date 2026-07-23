@@ -13,6 +13,7 @@ from games_hub.active_game_guard import (
 from games_hub.check_in import complete_session_check_in, participant_check_in, start_session_check_in
 from games_hub.models import HubGameParticipantSnapshot, HubGameStep, HubParticipant, HubSession
 from games_hub.tutorial_runtime import activate_tutorial_runtime, mark_tutorial_completed
+from games_hub.unit_tutorial_runtime import get_unit_tutorial_state
 from games_hub.views import get_leaderboard_data
 from .consumers import WerWeissMehrConsumer
 from .models import (
@@ -45,6 +46,18 @@ class DummyChannelLayer:
 
     async def group_send(self, group, payload):
         self.sent.append((group, payload))
+
+
+class WerWeissMehrRoutingTests(TestCase):
+    def test_asgi_routes_wer_weiss_mehr_websocket_path(self):
+        from games_website.asgi import websocket_urlpatterns
+
+        path = 'ws/wer-weiss-mehr/8600/'
+
+        self.assertTrue(
+            any(pattern.pattern.regex.match(path) for pattern in websocket_urlpatterns),
+            'games_website.asgi must route /ws/wer-weiss-mehr/<room_code>/ websockets.',
+        )
 
 
 class WerWeissMehrRuntimeTests(TestCase):
@@ -358,6 +371,52 @@ class WerWeissMehrAdminIntegrationTests(TestCase):
         participant_check_in(session, nickname)
         complete_session_check_in(session)
 
+    def _create_tutorial_set_game(self, session_code='WWMTSET'):
+        game = WerWeissMehrGame.objects.create(
+            title='Tutorial Flow',
+            creator=self.user,
+            status='waiting',
+            tutorial_enabled=True,
+        )
+        WerWeissMehrSession.objects.create(quiz=game)
+        tutorial = WerWeissMehrQuestion.objects.create(
+            question_text='Tutorialset',
+            round_time_limit=15,
+            created_by=self.user,
+        )
+        normal = WerWeissMehrQuestion.objects.create(
+            question_text='Normales Set',
+            round_time_limit=30,
+            created_by=self.user,
+        )
+        WerWeissMehrAnswerOption.objects.create(question=tutorial, canonical_text='Probe')
+        WerWeissMehrAnswerOption.objects.create(question=normal, canonical_text='Bayern')
+        tutorial.recalculate_answer_sort_order()
+        normal.recalculate_answer_sort_order()
+        game.tutorial_question = tutorial
+        game.selected_questions.add(normal)
+        game.question_order = [normal.id]
+        game.save(update_fields=['tutorial_question', 'question_order'])
+        session = HubSession.objects.create(code=session_code, name='Tutorial Flow')
+        HubGameStep.objects.create(
+            session=session,
+            order=0,
+            game_key='wer_weiss_mehr',
+            room_code=game.room_code,
+            title=game.title,
+        )
+        self._complete_check_in(session)
+        return game, session, tutorial, normal
+
+    def _start_game_with_tutorial_set(self, game, session):
+        response = self.client.post(
+            reverse('wer_weiss_mehr:start_game', args=[game.room_code]),
+            data=json.dumps({'hub_session': session.code, 'play_tutorial': True}),
+            content_type='application/json',
+        )
+        self.assertEqual(response.status_code, 200)
+        return response.json()
+
     def test_create_custom_game_can_create_and_select_inline_set(self):
         response = self.client.post(
             reverse('admin_dashboard:create_wer_weiss_mehr_custom_game'),
@@ -522,6 +581,156 @@ class WerWeissMehrAdminIntegrationTests(TestCase):
         self.assertEqual(participant_payload['target_answers'], [])
         self.assertEqual(participant_payload['responses'], [])
         self.assertTrue(all(tile['text'] == '' for tile in participant_payload['question']['tiles']))
+
+    def test_tutorial_set_is_visible_and_regular_sets_locked_until_completed(self):
+        game, session, tutorial, normal = self._create_tutorial_set_game('WWMTVIS')
+
+        payload = self._start_game_with_tutorial_set(game, session)
+
+        self.assertTrue(payload['success'])
+        self.assertEqual(payload['game_status'], 'active')
+        self.assertEqual([item['id'] for item in payload['available_questions']], [tutorial.id, normal.id])
+        tutorial_row = payload['available_questions'][0]
+        normal_row = payload['available_questions'][1]
+        self.assertTrue(tutorial_row['is_tutorial_set'])
+        self.assertEqual(tutorial_row['status'], 'tutorial_pending')
+        self.assertFalse(tutorial_row['is_start_disabled'])
+        self.assertFalse(normal_row['is_tutorial_set'])
+        self.assertEqual(normal_row['status'], 'locked_until_tutorial')
+        self.assertTrue(normal_row['is_start_disabled'])
+        self.assertIn('Tutorialset', normal_row['disabled_reason'])
+        self.assertEqual([row['question_id'] for row in payload['scorebox']], [normal.id])
+        self.assertEqual(payload['scorebox'][0]['label'], '#1')
+        self.assertNotIn('question_text', payload['scorebox'][0])
+
+    def test_monitor_renders_tutorial_set_host_controls(self):
+        game, _, _, _ = self._create_tutorial_set_game('WWMTTPL')
+
+        response = self.client.get(reverse('admin_dashboard:wer_weiss_mehr_monitor', args=[game.room_code]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'Tutorialset – keine Wertung')
+        self.assertContains(response, 'Tutorialset starten')
+        self.assertContains(response, 'Tutorialset überspringen')
+        self.assertContains(response, 'SKIP_TUTORIAL_SET_URL')
+
+    def test_regular_set_start_does_not_trigger_pending_tutorial_set(self):
+        game, session, tutorial, normal = self._create_tutorial_set_game('WWMTBLOCK')
+        self._start_game_with_tutorial_set(game, session)
+
+        response = self.client.post(
+            reverse('wer_weiss_mehr:start_game_set', args=[game.room_code]),
+            data=json.dumps({
+                'hub_session': session.code,
+                'question_id': normal.id,
+                'time_limit_seconds': 30,
+            }),
+            content_type='application/json',
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('Tutorialset', response.json()['error'])
+        game.refresh_from_db()
+        self.assertIsNone(game.current_question_id)
+        tutorial_state = get_unit_tutorial_state('wer_weiss_mehr', game.room_code, session.code)
+        self.assertFalse(tutorial_state['current_unit_is_tutorial'])
+        self.assertFalse(tutorial_state['tutorial_has_been_played'])
+        self.assertEqual(tutorial_state['tutorial_question_id'], tutorial.id)
+
+    def test_explicit_tutorial_set_start_keeps_tutorial_unscored(self):
+        game, session, tutorial, normal = self._create_tutorial_set_game('WWMTSTART')
+        self._start_game_with_tutorial_set(game, session)
+
+        response = self.client.post(
+            reverse('wer_weiss_mehr:start_game_set', args=[game.room_code]),
+            data=json.dumps({
+                'hub_session': session.code,
+                'question_id': tutorial.id,
+                'time_limit_seconds': 15,
+            }),
+            content_type='application/json',
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload['success'])
+        self.assertEqual(payload['question']['id'], tutorial.id)
+        self.assertTrue(payload['question']['is_tutorial_round'])
+        self.assertEqual([row['question_id'] for row in payload['scorebox']], [normal.id])
+        tutorial_state = get_unit_tutorial_state('wer_weiss_mehr', game.room_code, session.code)
+        self.assertTrue(tutorial_state['current_unit_is_tutorial'])
+        self.assertFalse(tutorial_state['tutorial_has_been_played'])
+
+    def test_tutorial_set_host_correction_is_allowed_but_unscored(self):
+        game, session, tutorial, normal = self._create_tutorial_set_game('WWMTCORR')
+        self._start_game_with_tutorial_set(game, session)
+        participant = WerWeissMehrParticipant.objects.create(
+            quiz=game,
+            name='Lisa',
+            hub_session_code=session.code,
+        )
+        self.client.post(
+            reverse('wer_weiss_mehr:start_game_set', args=[game.room_code]),
+            data=json.dumps({
+                'hub_session': session.code,
+                'question_id': tutorial.id,
+                'time_limit_seconds': 15,
+            }),
+            content_type='application/json',
+        )
+        submit_answer(game, participant, 'falsch')
+        response = WerWeissMehrRoundResponse.objects.get(
+            quiz=game,
+            participant=participant,
+            question=tutorial,
+            round_number=1,
+        )
+        target = tutorial.answers.get()
+
+        correction_response = self.client.post(
+            reverse('admin_dashboard:apply_wer_weiss_mehr_correction', args=[game.room_code]),
+            data=json.dumps({
+                'hub_session': session.code,
+                'response_id': response.id,
+                'target_answer_id': target.id,
+            }),
+            content_type='application/json',
+        )
+
+        self.assertEqual(correction_response.status_code, 200)
+        payload = correction_response.json()
+        self.assertTrue(payload['success'])
+        corrected = WerWeissMehrRoundResponse.objects.get(id=response.id)
+        participant.refresh_from_db()
+        self.assertTrue(corrected.is_correct)
+        self.assertTrue(corrected.is_manual_override)
+        self.assertEqual(corrected.matched_answer_id, target.id)
+        self.assertEqual(participant.total_score, 0)
+        self.assertEqual([row['question_id'] for row in payload['scorebox']], [normal.id])
+        self.assertIsNone(payload['scorebox'][0]['scores'][0]['points'])
+
+    def test_skip_tutorial_set_unlocks_regular_sets_without_scoring_tutorial(self):
+        game, session, tutorial, normal = self._create_tutorial_set_game('WWMTSKIP')
+        self._start_game_with_tutorial_set(game, session)
+
+        response = self.client.post(
+            reverse('wer_weiss_mehr:skip_tutorial_set', args=[game.room_code]),
+            data=json.dumps({'hub_session': session.code}),
+            content_type='application/json',
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload['success'])
+        rows = {item['id']: item for item in payload['available_questions']}
+        self.assertEqual(rows[tutorial.id]['status'], 'tutorial_completed')
+        self.assertTrue(rows[tutorial.id]['is_start_disabled'])
+        self.assertEqual(rows[normal.id]['status'], 'available')
+        self.assertFalse(rows[normal.id]['is_start_disabled'])
+        self.assertEqual([row['question_id'] for row in payload['scorebox']], [normal.id])
+        tutorial_state = get_unit_tutorial_state('wer_weiss_mehr', game.room_code, session.code)
+        self.assertFalse(tutorial_state['current_unit_is_tutorial'])
+        self.assertTrue(tutorial_state['tutorial_has_been_played'])
 
     def test_start_set_endpoint_warns_when_tutorial_acknowledgements_are_open(self):
         game = WerWeissMehrGame.objects.create(

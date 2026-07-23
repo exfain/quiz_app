@@ -12,10 +12,6 @@
     <!-- Lucide Icons -->
     <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
     
-    <!-- Leaflet CSS and JS -->
-    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-    
     <!-- Custom Theme CSS -->
     <link rel="stylesheet" href="{% static 'theme.css' %}">
     
@@ -36,6 +32,7 @@
                             {{ quiz.room_code }}
                         </div> -->
                         <h1 class="quiz-title">{{ quiz.title }}</h1>
+                        {% include 'includes/_session_game_number.html' with game_key='where' room_code=quiz.room_code %}
                     </div>
                     <div class="participant-info">
                         <div class="participant-avatar">
@@ -59,28 +56,14 @@
                         <!-- Waiting State -->
                         <div id="waitingQuizState" class="game-state {% if quiz.status != 'waiting' %}d-none{% endif %}">
                             <div class="waiting-card">
-                                <div class="waiting-animation">
-                                    <div class="pulse-ring"></div>
-                                    <div class="pulse-ring delay-1"></div>
-                                    <div class="pulse-ring delay-2"></div>
-                                    <i data-lucide="globe"></i>
-                                </div>
-                                <h2>Waiting for Location Quiz to Start</h2>
-                                <p>Get ready to explore the world! The quiz host will start the session shortly.</p>
-                                <div class="participants-count">
-                                    <i data-lucide="users"></i>
-                                    <span id="waitingParticipantCount">{{ participant_count }}</span> participants joined
-                                </div>
+                                {% include 'includes/_participant_start_waiting.html' with waiting_game_title=quiz.title %}
                             </div>
                         </div>
 
-                        <div id="waitingQuestionState" class="game-state d-none">
+                        <div id="waitingQuestionState" class="game-state {% if quiz.status != 'active' or quiz.current_question %}d-none{% endif %}">
                             <div class="waiting-card">
                                 <div class="waiting-animation">
-                                    <div class="pulse-ring"></div>
-                                    <div class="pulse-ring delay-1"></div>
-                                    <div class="pulse-ring delay-2"></div>
-                                    <i data-lucide="clock"></i>
+                                    <div class="qa-wait-loader" aria-hidden="true"></div>
                                 </div>
                                 <h2>Waiting for Next Question</h2>
                                 <p>Get ready for the next challenge!</p>
@@ -88,7 +71,7 @@
                         </div>
 
                         <!-- Question State -->
-                        <div id="questionState" class="game-state {% if not quiz.current_question %}d-none{% endif %}">
+                        <div id="questionState" class="game-state {% if not quiz.current_question or quiz.status == 'completed' %}d-none{% endif %}">
                             <div class="question-layout">
                                 <!-- Question Panel -->
                                 <div class="question-panel">
@@ -131,15 +114,17 @@
                                         </div>
 
                                         <button class="btn btn-primary btn-lg w-100 submit-answer" id="submitAnswerBtn" disabled>
-                                            <i data-lucide="send"></i>
-                                            Submit Location
+                                            Einloggen
                                         </button>
                                     </div>
                                 </div>
 
                                 <!-- Map Panel -->
                                 <div class="map-panel">
-                                    <div id="gameMap" class="game-map"></div>
+                                    <div id="gameMap" class="game-map static-world-map" data-map-url="{% static 'where_is_this/maps/world_web_mercator_blank_landmasses.svg' %}">
+                                        <div class="svg-map-stage" id="gameMapStage"></div>
+                                        <div class="map-marker guess-marker d-none" id="guessMarker"></div>
+                                    </div>
                                     <div class="map-controls">
                                         <button class="btn btn-outline btn-sm" id="clearSelectionBtn" disabled>
                                             <i data-lucide="x"></i>
@@ -185,14 +170,18 @@
                                         </div>
                                     </div>
                                     <div class="result-map-container">
-                                        <div id="resultMap" class="result-map"></div>
+                                        <div id="resultMap" class="result-map static-world-map" data-map-url="{% static 'where_is_this/maps/world_web_mercator_blank_landmasses.svg' %}">
+                                            <div class="svg-map-stage" id="resultMapStage"></div>
+                                            <div class="map-marker guess-marker d-none" id="resultGuessMarker"></div>
+                                            <div class="map-marker correct-marker d-none" id="resultCorrectMarker"></div>
+                                        </div>
                                     </div>
                                 </div>
                             </div>
                         </div>
 
                         <!-- Quiz Ended State -->
-                        <div id="quizEndedState" class="game-state d-none">
+                        <div id="quizEndedState" class="game-state {% if quiz.status != 'completed' %}d-none{% endif %}">
                             <div class="ended-card">
                                 <div class="ended-animation">
                                     <i data-lucide="globe" class="globe-icon"></i>
@@ -693,6 +682,49 @@
             cursor: crosshair;
         }
 
+        .static-world-map {
+            position: relative;
+            aspect-ratio: 1 / 1;
+            max-height: min(72vh, 760px);
+            background: #8ecae6;
+            overflow: hidden;
+            border-radius: var(--border-radius-lg);
+            border: 1px solid var(--border-color);
+            touch-action: manipulation;
+        }
+
+        .static-world-map .svg-map-stage,
+        .static-world-map svg {
+            width: 100%;
+            height: 100%;
+            display: block;
+        }
+
+        .static-world-map svg #land {
+            fill: #4f9f57 !important;
+            stroke: #236334 !important;
+        }
+
+        .map-marker {
+            position: absolute;
+            width: 18px;
+            height: 18px;
+            border-radius: 999px;
+            transform: translate(-50%, -50%);
+            border: 3px solid #fff;
+            box-shadow: 0 2px 8px rgba(15, 23, 42, 0.35);
+            pointer-events: none;
+            z-index: 3;
+        }
+
+        .guess-marker {
+            background: #ef4444;
+        }
+
+        .correct-marker {
+            background: #16a34a;
+        }
+
         .map-controls {
             flex-shrink: 0;
             padding: 1rem;
@@ -1004,6 +1036,7 @@
 
     {% include 'includes/_hub_return_to_lobby_player.html' %}
     {% include 'includes/_game_tutorial_overlay.html' %}
+    {% include 'includes/_session_game_start_intro.html' %}
 <script>
         document.addEventListener('DOMContentLoaded', function() {
             lucide.createIcons();
@@ -1019,9 +1052,8 @@
                     this.questionStartTime = null;
                     this.gameMap = null;
                     this.resultMap = null;
-                    this.selectedMarker = null;
-                    this.selectedLatitude = null;
-                    this.selectedLongitude = null;
+                    this.selectedXNorm = null;
+                    this.selectedYNorm = null;
                     this.hasAnswered = false;
                     this.scoreboardQuestions = this.readJsonScript('whereQuestionScoreboardData', []);
                     this.progressHistory = this.readJsonScript('whereInitialProgressData', []);
@@ -1044,31 +1076,65 @@
                 }
 
                 initializeMaps() {
-                    // Initialize game map
-                    this.gameMap = L.map('gameMap', {
-                        center: [20, 0],
-                        zoom: 2,
-                        minZoom: 2,
-                        maxZoom: 15,
-                    });
+                    this.gameMap = document.getElementById('gameMap');
+                    this.resultMap = document.getElementById('resultMap');
+                    this.loadStaticMap(this.gameMap);
+                    this.loadStaticMap(this.resultMap);
 
-                    L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
-                        attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors © <a href="https://carto.com/">CARTO</a>',
-                        subdomains: 'abcd',
-                        maxZoom: 19
-                    }).addTo(this.gameMap);
-
-                    // Add click handler for map
-                    this.gameMap.on('click', (e) => {
-                        this.selectLocation(e.latlng.lat, e.latlng.lng);
+                    this.gameMap?.addEventListener('click', (event) => {
+                        if (this.hasAnswered) return;
+                        const coords = this.eventToNormalizedCoords(this.gameMap, event);
+                        if (!coords) return;
+                        this.selectLocation(coords.x, coords.y);
                     });
+                }
 
-                    // Korrekte Größe sicherstellen (doppeltes rAF wartet auf vollständiges Layout)
-                    requestAnimationFrame(() => {
-                        requestAnimationFrame(() => {
-                            this.gameMap.invalidateSize({ animate: false });
-                        });
-                    });
+                loadStaticMap(container) {
+                    if (!container || container.dataset.loaded === '1') return;
+                    const stage = container.querySelector('.svg-map-stage');
+                    const mapUrl = container.dataset.mapUrl;
+                    if (!stage || !mapUrl) return;
+                    fetch(mapUrl)
+                        .then(response => response.text())
+                        .then(svg => {
+                            stage.innerHTML = svg;
+                            const svgElement = stage.querySelector('svg');
+                            if (svgElement) {
+                                svgElement.setAttribute('preserveAspectRatio', 'none');
+                                svgElement.setAttribute('aria-hidden', 'true');
+                            }
+                            container.dataset.loaded = '1';
+                        })
+                        .catch(error => console.warn('Unable to load static map:', error));
+                }
+
+                eventToNormalizedCoords(container, event) {
+                    if (!container) return null;
+                    const rect = container.getBoundingClientRect();
+                    if (!rect.width || !rect.height) return null;
+                    const x = (event.clientX - rect.left) / rect.width;
+                    const y = (event.clientY - rect.top) / rect.height;
+                    if (x < 0 || x > 1 || y < 0 || y > 1) return null;
+                    return { x, y };
+                }
+
+                setMarker(markerId, xNorm, yNorm) {
+                    const marker = document.getElementById(markerId);
+                    if (!marker || xNorm === null || yNorm === null || xNorm === undefined || yNorm === undefined) return;
+                    marker.style.left = `${Number(xNorm) * 100}%`;
+                    marker.style.top = `${Number(yNorm) * 100}%`;
+                    marker.classList.remove('d-none');
+                }
+
+                hideMarker(markerId) {
+                    document.getElementById(markerId)?.classList.add('d-none');
+                }
+
+                normToLatLng(xNorm, yNorm) {
+                    const lon = Number(xNorm) * 360 - 180;
+                    const mercY = Math.PI * (1 - 2 * Number(yNorm));
+                    const lat = Math.atan(Math.sinh(mercY)) * 180 / Math.PI;
+                    return { lat, lon };
                 }
 
                 connectWebSocket() {
@@ -1107,6 +1173,7 @@
                 }
 
                 handleWebSocketMessage(data) {
+                    window.sessionGameStartIntro?.handleState(data);
                     switch(data.type) {
                         case 'quiz_started':
                             this.onQuizStarted();
@@ -1128,7 +1195,7 @@
                             
                         case 'question_ended':
                             window.unitTutorialNotice?.hide();
-                            this.onQuestionEnded();
+                            this.onQuestionEnded(data);
                             break;
                             
                         case 'quiz_ended':
@@ -1180,17 +1247,7 @@
                         this.gameMap.removeLayer(this.selectedMarker);
                     }
                     
-                    // Add new marker
-                    this.selectedMarker = L.marker([lat, lng], {
-                        icon: L.icon({
-                            iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-red.png',
-                            shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/0.7.7/images/marker-shadow.png',
-                            iconSize: [25, 41],
-                            iconAnchor: [12, 41],
-                            popupAnchor: [1, -34],
-                            shadowSize: [41, 41]
-                        })
-                    }).addTo(this.gameMap);
+                    // Legacy marker removed; SVG handler below overrides this method.
                     
                     // Update UI
                     document.getElementById('selectedCoords').textContent = `${lat.toFixed(4)}°, ${lng.toFixed(4)}°`;
@@ -1487,62 +1544,6 @@
                     }, 500);
                 }
 
-                showResultOnMap(correctLat, correctLng) {
-                    if (this.resultMap) {
-                        this.resultMap.remove();
-                    }
-                    // Initialize result map
-                    this.resultMap = L.map('resultMap', {
-                        center: [correctLat, correctLng],
-                        zoom: 6
-                    });
-                    
-                    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-                        attribution: '© OpenStreetMap contributors'
-                    }).addTo(this.resultMap);
-                    
-                    // Add user's guess marker (red)
-                    L.marker([this.selectedLatitude, this.selectedLongitude], {
-                        icon: L.icon({
-                            iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-red.png',
-                            shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/0.7.7/images/marker-shadow.png',
-                            iconSize: [25, 41],
-                            iconAnchor: [12, 41],
-                            popupAnchor: [1, -34],
-                            shadowSize: [41, 41]
-                        })
-                    }).addTo(this.resultMap).bindPopup('Your guess');
-                    
-                    // Add correct location marker (green)
-                    L.marker([correctLat, correctLng], {
-                        icon: L.icon({
-                            iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-green.png',
-                            shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/0.7.7/images/marker-shadow.png',
-                            iconSize: [25, 41],
-                            iconAnchor: [12, 41],
-                            popupAnchor: [1, -34],
-                            shadowSize: [41, 41]
-                        })
-                    }).addTo(this.resultMap).bindPopup('Correct location');
-                    
-                    // Add line between them
-                    L.polyline([
-                        [this.selectedLatitude, this.selectedLongitude],
-                        [correctLat, correctLng]
-                    ], {
-                        color: 'red',
-                        weight: 3,
-                        opacity: 0.7
-                    }).addTo(this.resultMap);
-                    
-                    // Fit bounds to show both markers
-                    const bounds = L.latLngBounds([
-                        [this.selectedLatitude, this.selectedLongitude],
-                        [correctLat, correctLng]
-                    ]);
-                    this.resultMap.fitBounds(bounds, { padding: [20, 20] });
-                }
-
                 onTimeUp() {
                     if (this.hasAnswered) return;
                     
@@ -1662,6 +1663,132 @@
 
                     if (totalElement) {
                         totalElement.textContent = `${totalEarned}/${totalMax}`;
+                    }
+                }
+
+                selectLocation(xNorm, yNorm) {
+                    if (this.hasAnswered) return;
+                    this.selectedXNorm = Number(xNorm);
+                    this.selectedYNorm = Number(yNorm);
+                    this.setMarker('guessMarker', this.selectedXNorm, this.selectedYNorm);
+                    const position = this.normToLatLng(this.selectedXNorm, this.selectedYNorm);
+                    document.getElementById('selectedCoords').textContent = `${position.lat.toFixed(4)}°, ${position.lon.toFixed(4)}°`;
+                    document.getElementById('selectionInfo').style.display = 'flex';
+                    document.getElementById('clearSelectionBtn').disabled = false;
+                    document.getElementById('submitAnswerBtn').disabled = false;
+                }
+
+                clearSelection() {
+                    this.selectedXNorm = null;
+                    this.selectedYNorm = null;
+                    this.hideMarker('guessMarker');
+                    document.getElementById('selectedCoords').textContent = 'No location selected';
+                    document.getElementById('selectionInfo').style.display = 'none';
+                    document.getElementById('clearSelectionBtn').disabled = true;
+                    document.getElementById('submitAnswerBtn').disabled = true;
+                }
+
+                onQuestionStarted(question) {
+                    this.hasAnswered = false;
+                    this.clearSelection();
+                    this.currentQuestionIsTutorial = !!question?.is_tutorial_round;
+                    this.questionStartTime = Date.now();
+                    if (this.currentQuestionIsTutorial) {
+                        this.currentQuestionId = null;
+                    } else {
+                        this.setCurrentQuestion(question.id, question.points);
+                    }
+                    this.loadQuestion(question);
+                    this.startQuestionTimer(question.time_limit);
+                    this.showState('questionState');
+                }
+
+                onQuestionEnded(data) {
+                    clearInterval(this.questionTimer);
+                    const answer = (data?.answers || []).find(entry => entry.participant_name === this.participantName);
+                    if (!this.currentQuestionIsTutorial) {
+                        if (answer) {
+                            this.pushProgressEntry(Number(answer.points_earned || 0));
+                        } else {
+                            this.markCurrentQuestionUnansweredIfNeeded();
+                        }
+                    }
+                    this.currentQuestionId = null;
+                    this.renderScoreHistory();
+                    this.showReveal(data || {}, answer || null);
+                }
+
+                onAnswerSubmitted(data) {
+                    if (data.x_norm !== undefined && data.y_norm !== undefined) {
+                        this.selectedXNorm = Number(data.x_norm);
+                        this.selectedYNorm = Number(data.y_norm);
+                    }
+                }
+
+                submitAnswer() {
+                    if (this.selectedXNorm === null || this.selectedYNorm === null || this.hasAnswered) return;
+                    const timeTaken = (Date.now() - this.questionStartTime) / 1000;
+                    document.getElementById('gameMap').style.cursor = 'default';
+                    this.websocket.send(JSON.stringify({
+                        type: 'participant_submit_answer',
+                        participant_name: this.participantName,
+                        hub_session: this.hubSession,
+                        x_norm: this.selectedXNorm,
+                        y_norm: this.selectedYNorm,
+                        time_taken: timeTaken
+                    }));
+                    this.hasAnswered = true;
+                    document.getElementById('submittedDistance').textContent = 'Auswertung folgt';
+                    document.getElementById('submittedPoints').textContent = '-';
+                    document.getElementById('submittedAccuracy').textContent = '-';
+                    this.hideMarker('resultGuessMarker');
+                    this.hideMarker('resultCorrectMarker');
+                    setTimeout(() => {
+                        this.showState('answerSubmittedState');
+                    }, 500);
+                }
+
+                showReveal(data, answer) {
+                    document.getElementById('submittedDistance').textContent = answer?.formatted_distance || 'Keine Antwort';
+                    document.getElementById('submittedPoints').textContent = answer ? Number(answer.points_earned || 0) : 0;
+                    document.getElementById('submittedAccuracy').textContent = answer?.accuracy_percentage !== undefined ? `${answer.accuracy_percentage}%` : '0%';
+                    this.showResultOnMap(data?.correct_location || null, answer);
+                    this.showState('answerSubmittedState');
+                }
+
+                showResultOnMap(correctLocation, answer) {
+                    if (answer?.x_norm !== null && answer?.x_norm !== undefined && answer?.y_norm !== null && answer?.y_norm !== undefined) {
+                        this.setMarker('resultGuessMarker', Number(answer.x_norm), Number(answer.y_norm));
+                    } else if (this.selectedXNorm !== null && this.selectedYNorm !== null) {
+                        this.setMarker('resultGuessMarker', this.selectedXNorm, this.selectedYNorm);
+                    } else {
+                        this.hideMarker('resultGuessMarker');
+                    }
+
+                    if (correctLocation?.x_norm !== null && correctLocation?.x_norm !== undefined && correctLocation?.y_norm !== null && correctLocation?.y_norm !== undefined) {
+                        this.setMarker('resultCorrectMarker', Number(correctLocation.x_norm), Number(correctLocation.y_norm));
+                    } else {
+                        this.hideMarker('resultCorrectMarker');
+                    }
+                }
+
+                onTimeUp() {
+                    if (this.hasAnswered) return;
+                    if (this.selectedXNorm !== null && this.selectedYNorm !== null) {
+                        this.submitAnswer();
+                    }
+                }
+
+                showState(stateId) {
+                    document.querySelectorAll('.game-state').forEach(state => {
+                        state.classList.add('d-none');
+                    });
+                    const targetState = document.getElementById(stateId);
+                    if (targetState) {
+                        targetState.classList.remove('d-none');
+                    }
+                    if (stateId === 'questionState' && this.gameMap) {
+                        document.getElementById('gameMap').style.cursor = 'crosshair';
                     }
                 }
 
@@ -1815,6 +1942,6 @@
         });
     </script>
   {% include 'includes/_leaderboard_overlay.html' %}
-  {% include 'includes/accessibility_widget.html' %}
+  {% include 'includes/accessibility_widget.html' with participant_options_menu=True %}
 </body>
 </html>

@@ -177,6 +177,8 @@ class AssignParticipant(SyncBase):
     questions_answered = models.IntegerField(default=0)
     last_activity = models.DateTimeField(auto_now=True)
     hub_session_code = models.CharField(max_length=16, null=True, blank=True, db_index=True)
+    eliminated_set_number = models.PositiveIntegerField(null=True, blank=True)
+    elimination_reason = models.CharField(max_length=32, blank=True, default='')
     
     class Meta:
         unique_together = ['quiz', 'name', 'hub_session_code']

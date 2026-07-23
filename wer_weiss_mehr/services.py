@@ -3,10 +3,12 @@ import math
 from django.db import transaction
 from django.utils import timezone
 from games_hub.unit_tutorial_runtime import (
+    finish_current_unit_tutorial,
     get_scorebox_excluded_tutorial_question_ids,
     get_unit_tutorial_state,
     is_current_unit_tutorial_question,
     is_unit_tutorial_question,
+    start_unit_tutorial_if_needed,
 )
 
 from .models import (
@@ -40,6 +42,33 @@ def get_ordered_scored_questions(quiz, hub_session_code=None):
     return [question for question in get_ordered_questions(quiz) if question.id not in tutorial_question_ids]
 
 
+def prepare_set_start(quiz, question_id, hub_session_code=None):
+    tutorial_state = get_unit_tutorial_state('wer_weiss_mehr', quiz.room_code, hub_session_code)
+    tutorial_pending = bool(
+        tutorial_state.get('requested')
+        and tutorial_state.get('tutorial_question_id')
+        and not tutorial_state.get('tutorial_has_been_played')
+    )
+    if not tutorial_pending:
+        return {'is_tutorial_round': False, 'tutorial_question_id': None}
+
+    if str(question_id) != str(tutorial_state.get('tutorial_question_id')):
+        raise ValueError('Bitte zuerst das Tutorialset starten oder ueberspringen.')
+
+    return start_unit_tutorial_if_needed('wer_weiss_mehr', quiz.room_code, hub_session_code)
+
+
+def skip_tutorial_set(quiz, hub_session_code=None):
+    tutorial_state = get_unit_tutorial_state('wer_weiss_mehr', quiz.room_code, hub_session_code)
+    if not tutorial_state.get('requested') or tutorial_state.get('tutorial_has_been_played'):
+        return {'is_tutorial_round': False, 'tutorial_question_id': None}
+
+    started = start_unit_tutorial_if_needed('wer_weiss_mehr', quiz.room_code, hub_session_code)
+    if not started.get('is_tutorial_round'):
+        return started
+    return finish_current_unit_tutorial('wer_weiss_mehr', quiz.room_code, hub_session_code)
+
+
 def get_scoped_participants(quiz, hub_session_code=None, active_only=False):
     participants = quiz.participants.all()
     if hub_session_code is not None:
@@ -51,6 +80,20 @@ def get_scoped_participants(quiz, hub_session_code=None, active_only=False):
 
 def start_set(quiz, question_id, hub_session_code=None, time_limit_seconds=None):
     question = WerWeissMehrQuestion.objects.get(id=question_id, is_active=True)
+    tutorial_state = get_unit_tutorial_state('wer_weiss_mehr', quiz.room_code, hub_session_code)
+    tutorial_pending = bool(
+        tutorial_state.get('requested')
+        and tutorial_state.get('tutorial_question_id')
+        and not tutorial_state.get('tutorial_has_been_played')
+    )
+    if tutorial_pending and str(question.id) != str(tutorial_state.get('tutorial_question_id')):
+        raise ValueError('Bitte zuerst das Tutorialset starten oder ueberspringen.')
+    if (
+        tutorial_pending
+        and str(question.id) == str(tutorial_state.get('tutorial_question_id'))
+        and not tutorial_state.get('current_unit_is_tutorial')
+    ):
+        raise ValueError('Das Tutorialset muss explizit gestartet werden.')
     is_tutorial_round = is_unit_tutorial_question('wer_weiss_mehr', quiz.room_code, hub_session_code, question.id)
     if (
         quiz.selected_questions.exists()
@@ -121,7 +164,7 @@ def submit_answer(quiz, participant, answer_text):
 
 
 @transaction.atomic
-def apply_manual_correction(quiz, response_id, target_answer_id):
+def apply_manual_correction(quiz, response_id, target_answer_id, hub_session_code=None):
     quiz.refresh_from_db()
     if quiz.status != 'active':
         raise ValueError('Das Spiel ist nicht aktiv.')
@@ -140,6 +183,13 @@ def apply_manual_correction(quiz, response_id, target_answer_id):
         raise ValueError('Antwort wurde nicht gefunden.')
     if response.question_id != quiz.current_question_id or response.round_number != session.current_round:
         raise ValueError('Diese Antwort gehoert nicht zur aktuellen Review-Runde.')
+    effective_hub_session = hub_session_code or response.participant.hub_session_code
+    is_tutorial_round = is_current_unit_tutorial_question(
+        'wer_weiss_mehr',
+        quiz.room_code,
+        effective_hub_session,
+        response.question_id,
+    )
     target = WerWeissMehrAnswerOption.objects.filter(id=target_answer_id, question=response.question).first()
     if not target:
         raise ValueError('Zielantwort gehoert nicht zum aktuellen Set.')
@@ -148,11 +198,15 @@ def apply_manual_correction(quiz, response_id, target_answer_id):
         question=response.question,
         round_number=response.round_number,
     ).first()
-    if round_state and int(target.id) in {int(item) for item in (round_state.revealed_answer_ids_at_start or [])}:
+    if (
+        round_state
+        and not is_tutorial_round
+        and int(target.id) in {int(item) for item in (round_state.revealed_answer_ids_at_start or [])}
+    ):
         raise ValueError('Diese Zielantwort war bereits vor Beginn dieser Runde aufgedeckt.')
     response.apply_manual_correction(target)
     session.revealed_answers.add(target)
-    _apply_correct_response_progress(response)
+    _apply_correct_response_progress(response, update_total=not is_tutorial_round)
     if session.phase == WerWeissMehrSession.PHASE_REVIEW:
         session.sync_review_scores()
     return response
@@ -298,7 +352,7 @@ def build_game_state(quiz, hub_session_code=None, participant_name=None):
         ) if question else None,
         'available_questions': []
         if is_participant_view
-        else [_serialize_available_question(question, session) for question in get_ordered_scored_questions(quiz, hub_session_code)],
+        else _serialize_available_questions(quiz, session, hub_session_code),
         'participants': [_serialize_participant(p, current_states.get(p.id)) for p in participants],
         'responses': [] if is_participant_view else responses,
         'target_answers': []
@@ -342,15 +396,66 @@ def _idle_timer_payload(session):
     }
 
 
-def _serialize_available_question(question, session=None):
+def _serialize_available_questions(quiz, session, hub_session_code=None):
+    tutorial_state = get_unit_tutorial_state('wer_weiss_mehr', quiz.room_code, hub_session_code)
+    tutorial_requested = bool(tutorial_state.get('requested') and tutorial_state.get('tutorial_question_id'))
+    tutorial_completed = bool(tutorial_state.get('tutorial_has_been_played'))
+    tutorial_pending = bool(tutorial_requested and not tutorial_completed)
+    questions = []
+
+    if tutorial_requested:
+        tutorial_question = (
+            WerWeissMehrQuestion.objects
+            .filter(id=tutorial_state.get('tutorial_question_id'), is_active=True)
+            .prefetch_related('answers')
+            .first()
+        )
+        if tutorial_question:
+            questions.append(_serialize_available_question(
+                tutorial_question,
+                session,
+                is_tutorial_set=True,
+                tutorial_completed=tutorial_completed,
+            ))
+
+    questions.extend(
+        _serialize_available_question(
+            question,
+            session,
+            regular_blocked_by_tutorial=tutorial_pending,
+        )
+        for question in get_ordered_scored_questions(quiz, hub_session_code)
+    )
+    return questions
+
+
+def _serialize_available_question(
+    question,
+    session=None,
+    *,
+    is_tutorial_set=False,
+    tutorial_completed=False,
+    regular_blocked_by_tutorial=False,
+):
     is_completed = bool(session and question.id in set(session.completed_question_ids or []))
+    if is_tutorial_set and tutorial_completed:
+        is_completed = True
+    status = 'completed' if is_completed else 'available'
+    if is_tutorial_set:
+        status = 'tutorial_completed' if is_completed else 'tutorial_pending'
+    elif regular_blocked_by_tutorial and not is_completed:
+        status = 'locked_until_tutorial'
     return {
         'id': question.id,
         'question_text': question.question_text,
         'round_time_limit': question.round_time_limit,
         'answer_count': question.answers.count(),
-        'status': 'completed' if is_completed else 'available',
+        'status': status,
         'is_completed': is_completed,
+        'is_tutorial_set': is_tutorial_set,
+        'is_start_disabled': bool((regular_blocked_by_tutorial and not is_completed) or is_completed),
+        'disabled_reason': 'Tutorialset zuerst abschliessen oder ueberspringen.'
+        if regular_blocked_by_tutorial and not is_completed else '',
     }
 
 
@@ -485,7 +590,7 @@ def _normalize_response_status(status):
     return WerWeissMehrRoundResponse.STATUS_WRONG
 
 
-def _apply_correct_response_progress(response):
+def _apply_correct_response_progress(response, update_total=True):
     if not response.is_correct:
         return None
     state = WerWeissMehrParticipantState.objects.select_for_update().filter(
@@ -499,7 +604,8 @@ def _apply_correct_response_progress(response):
     state.survived_rounds = max(state.survived_rounds, response.round_number)
     state.last_status = response.final_status
     state.save(update_fields=['is_eliminated', 'survived_rounds', 'last_status'])
-    response.participant.recalculate_total_score()
+    if update_total:
+        response.participant.recalculate_total_score()
     return state
 
 
@@ -550,11 +656,12 @@ def _serialize_scorebox(quiz, participants, hub_session_code=None):
     )
     state_map = {(state.participant_id, state.question_id): state for state in states}
     rows = []
-    for question in selected_questions:
+    for index, question in enumerate(selected_questions, start=1):
         max_points = question.answers.count()
         rows.append({
             'question_id': question.id,
-            'question_text': question.question_text,
+            'round_number': index,
+            'label': f'#{index}',
             'answer_count': max_points,
             'max_points': max_points,
             'scores': [

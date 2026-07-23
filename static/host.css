@@ -1,0 +1,29 @@
+@font-face {
+  font-family: "QA Host Coolvetica";
+  src: url("/static/fonts/Coolvetica%20Rg%20Cond.otf") format("opentype");
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+}
+
+.qa-host-root {
+  --host-font-family: "QA Host Coolvetica", sans-serif;
+  --font-family-sans: var(--host-font-family);
+  --font-family-game-title: var(--host-font-family);
+  --font-family-mono: var(--host-font-family);
+  --bs-body-font-family: var(--host-font-family);
+  font-family: var(--host-font-family);
+}
+
+.qa-host-root button,
+.qa-host-root input,
+.qa-host-root textarea,
+.qa-host-root select,
+.qa-host-root option,
+.qa-host-root optgroup {
+  font-family: inherit;
+}
+
+.qa-host-root .quiz-pick-item .quiz-code {
+  font-family: var(--host-font-family);
+}

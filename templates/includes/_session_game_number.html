@@ -1,0 +1,16 @@
+{% load session_game_tags %}
+{% session_game_number hub_session game_key room_code as session_game_number_value %}
+{% if session_game_number_value %}
+  <div class="session-game-number">Spiel {{ session_game_number_value }}</div>
+{% endif %}
+
+<style>
+  .session-game-number {
+    margin-top: .22rem;
+    font-size: .86rem;
+    font-weight: 600;
+    line-height: 1.2;
+    color: currentColor;
+    opacity: .64;
+  }
+</style>

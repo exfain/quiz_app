@@ -41,6 +41,9 @@
             <option value="black jack">Black Jack Quiz</option>
             <option value="clue rush">Clue Rush</option>
             <option value="sorting ladder">Sorting Ladder</option>
+            <option value="buzzer">Buzzer</option>
+            <option value="host-punktevergabe">Host-Punktevergabe</option>
+            <option value="wann_war_das">Wann war das?</option>
             <option value="wer weiß mehr">Wer weiß mehr?</option>
         </select>
         <span class="align-self-center text-muted small ms-1" id="gameFilterCount"></span>
@@ -152,7 +155,7 @@
 <script>
 const QB_CONFIG = {
     quiz:           { url: '/admin-dashboard/quiz/questions/',           dataKey: 'questions', columns: [{key:'question_text',label:'Question'},{key:'question_type',label:'Type'},{key:'time_limit',label:'Time (s)'}] },
-    estimation:     { url: '/admin-dashboard/estimation/questions/',     dataKey: 'questions', columns: [{key:'question_text',label:'Question'},{key:'correct_answer',label:'Answer'},{key:'unit',label:'Unit'},{key:'points_display',label:'Zonenpunkte'}] },
+    estimation:     { url: '/admin-dashboard/estimation/questions/',     dataKey: 'questions', columns: [{key:'question_text',label:'Question'},{key:'correct_answer',label:'Answer'},{key:'unit_display',label:'Einheit'},{key:'points_display',label:'Zonenpunkte'}] },
     assign:         { url: '/admin-dashboard/assign/questions/',         dataKey: 'questions', columns: [{key:'question_text',label:'Topic'},{key:'time_limit',label:'Time (s)'}] },
     where:          { url: '/admin-dashboard/where/questions/',          dataKey: 'questions', columns: [{key:'question_text',label:'Location'},{key:'points',label:'Points'}] },
     who:            { url: '/admin-dashboard/who/questions/',            dataKey: 'questions', columns: [{key:'statement',label:'Statement'},{key:'people_count',label:'People'},{key:'points',label:'Points'}] },

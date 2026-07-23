@@ -517,6 +517,8 @@ class QuizSession(SyncBase):
     total_questions_sent = models.IntegerField(default=0)
     is_question_active = models.BooleanField(default=False)
     question_end_time = models.DateTimeField(null=True, blank=True)
+    pending_answers = models.JSONField(default=dict, blank=True)
+    last_question_result = models.JSONField(default=dict, blank=True)
     
     # Session statistics
     total_responses_current_question = models.IntegerField(default=0)
@@ -530,6 +532,8 @@ class QuizSession(SyncBase):
         self.total_questions_sent = 0
         self.is_question_active = False
         self.question_end_time = None
+        self.pending_answers = {}
+        self.last_question_result = {}
         self.total_responses_current_question = 0
         self.correct_responses_current_question = 0
         self.save(update_fields=[
@@ -537,6 +541,8 @@ class QuizSession(SyncBase):
             'total_questions_sent',
             'is_question_active',
             'question_end_time',
+            'pending_answers',
+            'last_question_result',
             'total_responses_current_question',
             'correct_responses_current_question',
             'updated_at',
@@ -552,6 +558,8 @@ class QuizSession(SyncBase):
         self.total_questions_sent += 1
         self.is_question_active = True
         self.question_end_time = now + timezone.timedelta(seconds=effective_time_limit)
+        self.pending_answers = {}
+        self.last_question_result = {}
         self.total_responses_current_question = 0
         self.correct_responses_current_question = 0
         
@@ -561,6 +569,8 @@ class QuizSession(SyncBase):
             'total_questions_sent',
             'is_question_active',
             'question_end_time',
+            'pending_answers',
+            'last_question_result',
             'total_responses_current_question',
             'correct_responses_current_question',
             'updated_at',
@@ -570,11 +580,12 @@ class QuizSession(SyncBase):
         """End the current active question"""
         self.is_question_active = False
         self.question_end_time = None
+        self.pending_answers = {}
         self.quiz.current_question = None
         self.quiz.question_start_time = None
         
         self.quiz.save(update_fields=['current_question', 'question_start_time', 'updated_at'])
-        self.save(update_fields=['is_question_active', 'question_end_time', 'updated_at'])
+        self.save(update_fields=['is_question_active', 'question_end_time', 'pending_answers', 'updated_at'])
     
     def record_answer(self, is_correct):
         """Record statistics for an answer"""

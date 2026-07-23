@@ -1,12 +1,10 @@
 {% extends "admin_dashboard/base.html" %}
+{% load static %}
 
 {% block title %}Where is this? Management - QuizMaster Admin{% endblock %}
 
 {% block page_title %}Where is this? Management{% endblock %}
 {% block page_subtitle %}Add, edit and delete questions{% endblock %}
-
-<!-- Leaflet CSS -->
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
 
 {% block content %}
 <div class="where-management-content">
@@ -144,6 +142,12 @@
                     <div class="col-md-6">
                         <input type="text" class="form-control" id="customQuizTitle" placeholder="Enter quiz name" value="Custom Quiz">
                     </div>
+                    <div class="col-md-3">
+                        <select class="form-select" id="customQuizScoringMode">
+                            <option value="zones" selected>Zielzonen</option>
+                            <option value="rank">Ranking</option>
+                        </select>
+                    </div>
                 </div>
                 <div class="table-responsive">
                     <table class="table table-hover">
@@ -195,9 +199,6 @@
     </div>
 </div>
 
-<!-- Leaflet JS -->
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-
 <style>
 .where-management-content {
     /*max-width: 1400px;*/
@@ -236,11 +237,39 @@
 }
 
 .location-map {
+    position: relative;
     width: 100%;
-    height: 300px;
+    aspect-ratio: 1 / 1;
+    min-height: 300px;
     border-radius: var(--border-radius);
     border: 1px solid var(--border-color);
+    background: #8ecae6;
     overflow: hidden;
+}
+
+.location-map .svg-map-stage,
+.location-map svg {
+    display: block;
+    width: 100%;
+    height: 100%;
+}
+
+.location-map svg #land {
+    fill: #4f9f57 !important;
+    stroke: #236334 !important;
+}
+
+.map-marker {
+    position: absolute;
+    width: 18px;
+    height: 18px;
+    border-radius: 999px;
+    transform: translate(-50%, -50%);
+    border: 3px solid #fff;
+    background: #16a34a;
+    box-shadow: 0 2px 8px rgba(15, 23, 42, 0.35);
+    z-index: 3;
+    pointer-events: none;
 }
 
 .map-instructions {
@@ -423,28 +452,75 @@
         const imagePreviewContainer = document.getElementById('imagePreviewContainer');
         const removeImageBtn = document.getElementById('removeImageBtn');
 
-        // Initialize map inline after page load
+        function loadStaticMap(container) {
+            if (!container || container.dataset.loaded === '1') return;
+            const stage = container.querySelector('.svg-map-stage');
+            const mapUrl = container.dataset.mapUrl;
+            if (!stage || !mapUrl) return;
+            fetch(mapUrl)
+                .then(response => response.text())
+                .then(svg => {
+                    stage.innerHTML = svg;
+                    const svgElement = stage.querySelector('svg');
+                    if (svgElement) {
+                        svgElement.setAttribute('preserveAspectRatio', 'none');
+                        svgElement.setAttribute('aria-hidden', 'true');
+                    }
+                    container.dataset.loaded = '1';
+                })
+                .catch(error => console.warn('Unable to load static map:', error));
+        }
+
+        function eventToNorm(container, event) {
+            const rect = container.getBoundingClientRect();
+            if (!rect.width || !rect.height) return null;
+            const x = (event.clientX - rect.left) / rect.width;
+            const y = (event.clientY - rect.top) / rect.height;
+            if (x < 0 || x > 1 || y < 0 || y > 1) return null;
+            return { x, y };
+        }
+
+        function normToLatLng(xNorm, yNorm) {
+            const lon = Number(xNorm) * 360 - 180;
+            const mercY = Math.PI * (1 - 2 * Number(yNorm));
+            const lat = Math.atan(Math.sinh(mercY)) * 180 / Math.PI;
+            return { lat, lon };
+        }
+
+        function latLngToNorm(lat, lng) {
+            const clampedLat = Math.max(-85.05112878, Math.min(85.05112878, Number(lat)));
+            const longitude = Number(lng);
+            const latRad = clampedLat * Math.PI / 180;
+            return {
+                x: (longitude + 180) / 360,
+                y: (1 - Math.log(Math.tan(latRad) + (1 / Math.cos(latRad))) / Math.PI) / 2,
+            };
+        }
+
+        function setStaticMarker(xNorm, yNorm) {
+            selectedMarker = document.getElementById('locationMarker');
+            if (!selectedMarker) return;
+            selectedMarker.style.left = `${Number(xNorm) * 100}%`;
+            selectedMarker.style.top = `${Number(yNorm) * 100}%`;
+            selectedMarker.classList.remove('d-none');
+        }
+
         function initMap() {
-            if (!locationMap) {
-                locationMap = L.map('locationMap', {
-                    worldCopyJump: false,
-                    maxBounds: [[-90, -180], [90, 180]],
-                    maxBoundsViscosity: 1.0
-                }).setView([48.8566, 2.3522], 2);
-                L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-                    attribution: '© OpenStreetMap contributors',
-                    noWrap: true
-                }).addTo(locationMap);
-                locationMap.on('click', function(e) {
-                    const lat = e.latlng.lat;
-                    const lng = e.latlng.lng;
-                    document.getElementById('latitude').value = lat.toFixed(6);
-                    document.getElementById('longitude').value = lng.toFixed(6);
-                    if (selectedMarker) locationMap.removeLayer(selectedMarker);
-                    selectedMarker = L.marker([lat, lng]).addTo(locationMap);
-                });
+            locationMap = document.getElementById('locationMap');
+            if (!locationMap || locationMap.dataset.clickBound === '1') {
+                if (locationMap) loadStaticMap(locationMap);
+                return;
             }
-            setTimeout(() => locationMap.invalidateSize(), 250);
+            loadStaticMap(locationMap);
+            locationMap.addEventListener('click', function(event) {
+                const norm = eventToNorm(locationMap, event);
+                if (!norm) return;
+                const coords = normToLatLng(norm.x, norm.y);
+                document.getElementById('latitude').value = coords.lat.toFixed(6);
+                document.getElementById('longitude').value = coords.lon.toFixed(6);
+                setStaticMarker(norm.x, norm.y);
+            });
+            locationMap.dataset.clickBound = '1';
         }
 
         // Initialize map when the modal shows
@@ -514,6 +590,8 @@
             formData.append('good_distance', parseFloat(document.getElementById('goodDistance').value));
             formData.append('fair_distance', parseFloat(document.getElementById('fairDistance').value));
             formData.append('poor_distance', parseFloat(document.getElementById('poorDistance').value));
+            formData.append('map_type', document.getElementById('mapType').value);
+            formData.append('distance_zones', document.getElementById('distanceZones').value.trim());
             formData.append('latitude', parseFloat(document.getElementById('latitude').value));
             formData.append('longitude', parseFloat(document.getElementById('longitude').value));
             formData.append('hint_text', document.getElementById('hintText').value.trim());
@@ -609,6 +687,8 @@
                 document.getElementById('poorDistance').value = question.poor_distance;
                 document.getElementById('hintText').value = question.hint_text || '';
                 document.getElementById('explanation').value = question.explanation || '';
+                document.getElementById('mapType').value = question.map_type || 'world_mercator';
+                document.getElementById('distanceZones').value = JSON.stringify(question.distance_zones || [], null, 2);
                 document.getElementById('latitude').value = question.latitude != null ? question.latitude : '';
                 document.getElementById('longitude').value = question.longitude != null ? question.longitude : '';
                 if (question.image) setImagePreviewFromUrl(question.image);
@@ -621,11 +701,10 @@
                 setTimeout(() => {
                     const lat = parseFloat(document.getElementById('latitude').value);
                     const lng = parseFloat(document.getElementById('longitude').value);
-                    if (!isNaN(lat) && !isNaN(lng) && locationMap) {
-                        if (selectedMarker) locationMap.removeLayer(selectedMarker);
-                        selectedMarker = L.marker([lat, lng]).addTo(locationMap);
-                        locationMap.setView([lat, lng], 6);
-                        locationMap.invalidateSize();
+                    if (!isNaN(lat) && !isNaN(lng)) {
+                        initMap();
+                        const norm = latLngToNorm(lat, lng);
+                        setStaticMarker(norm.x, norm.y);
                     }
                 }, 300);
             })
@@ -680,7 +759,15 @@
                 submitQuestionBtn.dataset.mode = 'add';
                 document.getElementById('questionId').value = '';
                 document.getElementById('addQuestionForm').reset();
-                if (selectedMarker && locationMap) { locationMap.removeLayer(selectedMarker); selectedMarker = null; }
+                document.getElementById('locationMarker')?.classList.add('d-none');
+                selectedMarker = null;
+                document.getElementById('mapType').value = 'world_mercator';
+                document.getElementById('distanceZones').value = `[
+  {"min_distance_km": 0, "max_distance_km": 10, "points": 100, "label": "Perfekt"},
+  {"min_distance_km": 10, "max_distance_km": 100, "points": 75, "label": "Gut"},
+  {"min_distance_km": 100, "max_distance_km": 500, "points": 50, "label": "Okay"},
+  {"min_distance_km": 500, "max_distance_km": 2000, "points": 25, "label": "Weit entfernt"}
+]`;
                 document.getElementById('latitude').value = '';
                 document.getElementById('longitude').value = '';
                 clearImagePreview();
@@ -737,6 +824,8 @@
                 document.getElementById('createCustomQuizModalLabel').innerHTML = '<i data-lucide="layers"></i> Edit Quiz';
                 const titleInput = document.getElementById('customQuizTitle');
                 if (titleInput) titleInput.value = quizTitle;
+                const scoringInput = document.getElementById('customQuizScoringMode');
+                if (scoringInput) scoringInput.value = data.scoring_mode === 'rank' ? 'rank' : 'zones';
                 const btnPrimary = document.getElementById('createCustomQuizBtn');
                 if (btnPrimary) btnPrimary.innerHTML = '<i data-lucide="check"></i> Update Quiz';
 
@@ -761,6 +850,8 @@
                 if (btnPrimary) btnPrimary.innerHTML = '<i data-lucide="check"></i> Create Quiz';
                 const titleInput = document.getElementById('customQuizTitle');
                 if (titleInput) titleInput.value = 'Custom Quiz';
+                const scoringInput = document.getElementById('customQuizScoringMode');
+                if (scoringInput) scoringInput.value = 'zones';
             });
         }
 
@@ -814,6 +905,7 @@
 
         createCustomQuizBtn.addEventListener('click', function() {
             const title = document.getElementById('customQuizTitle').value.trim() || 'Custom Quiz';
+            const scoringMode = document.getElementById('customQuizScoringMode')?.value || 'zones';
             const btn = this;
             btn.classList.add('loading');
             const csrfToken = getCookie('csrftoken');
@@ -821,7 +913,7 @@
                 fetch("{% url 'admin_dashboard:update_where_custom_quiz' %}", {
                     method: 'POST',
                     headers: { 'X-CSRFToken': csrfToken, 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ quiz_id: whereCurrentQuizId, title, question_ids: Array.from(whereSelectedIds) })
+                    body: JSON.stringify({ quiz_id: whereCurrentQuizId, title, question_ids: Array.from(whereSelectedIds), scoring_mode: scoringMode })
                 })
                 .then(r => r.json())
                 .then(data => {
@@ -835,7 +927,7 @@
                 fetch("{% url 'admin_dashboard:create_where_custom_quiz' %}", {
                     method: 'POST',
                     headers: { 'X-CSRFToken': csrfToken, 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ title, question_ids: selected })
+                    body: JSON.stringify({ title, question_ids: selected, scoring_mode: scoringMode })
                 })
                 .then(r => r.json())
                 .then(data => {
@@ -1015,11 +1107,20 @@
                                         </div>
                                     </div>
                                     <div class="map-container mb-3">
-                                        <div id="locationMap" class="location-map"></div>
+                                        <div id="locationMap" class="location-map" data-map-url="{% static 'where_is_this/maps/world_web_mercator_blank_landmasses.svg' %}">
+                                            <div class="svg-map-stage"></div>
+                                            <div id="locationMarker" class="map-marker d-none"></div>
+                                        </div>
                                         <div class="map-instructions">
                                             <i data-lucide="mouse-pointer"></i>
-                                            <span>Click on the map to select the correct location</span>
+                                            <span>Click on the world map to select the correct location</span>
                                         </div>
+                                    </div>
+                                    <div class="mb-3">
+                                        <label for="mapType" class="form-label">Karte</label>
+                                        <select class="form-select" id="mapType" name="map_type">
+                                            <option value="world_mercator" selected>Weltkarte</option>
+                                        </select>
                                     </div>
                                     <div class="distance-thresholds">
                                         <h6>Distance Thresholds</h6>
@@ -1042,6 +1143,16 @@
                                                        name="poor_distance" value="2000" min="1" step="1">
                                                 <div class="form-text">km</div>
                                             </div>
+                                        </div>
+                                        <div class="mt-3">
+                                            <label for="distanceZones" class="form-label">Zielzonen (JSON)</label>
+                                            <textarea class="form-control" id="distanceZones" rows="4">[
+  {"min_distance_km": 0, "max_distance_km": 10, "points": 100, "label": "Perfekt"},
+  {"min_distance_km": 10, "max_distance_km": 100, "points": 75, "label": "Gut"},
+  {"min_distance_km": 100, "max_distance_km": 500, "points": 50, "label": "Okay"},
+  {"min_distance_km": 500, "max_distance_km": 2000, "points": 25, "label": "Weit entfernt"}
+]</textarea>
+                                            <div class="form-text">Untere Grenze inklusiv, obere Grenze exklusiv. LÃ¼cken ergeben 0 Punkte.</div>
                                         </div>
                                     </div>
                                 </div>

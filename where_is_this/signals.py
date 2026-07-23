@@ -6,6 +6,7 @@ from .models import (
     WhereQuestion,
     WhereParticipant,
     WhereAnswer,
+    WhereDistanceZone,
     WhereSession,
 )
 
@@ -19,6 +20,7 @@ def _mark_unsynced(instance):
 @receiver(pre_save, sender=WhereQuestion)
 @receiver(pre_save, sender=WhereParticipant)
 @receiver(pre_save, sender=WhereAnswer)
+@receiver(pre_save, sender=WhereDistanceZone)
 @receiver(pre_save, sender=WhereSession)
 def mark_where_models_unsynced(sender, instance, **kwargs):  # noqa: D401
     _mark_unsynced(instance)

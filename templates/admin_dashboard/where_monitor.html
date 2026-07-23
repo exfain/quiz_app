@@ -1,4 +1,5 @@
 {% extends "admin_dashboard/base.html" %}
+{% load static %}
 
 {% block title %}Where Quiz Monitor - QuizMaster Admin{% endblock %}
 
@@ -6,7 +7,7 @@
 {% block page_subtitle %}Real-time monitoring and control for your live "Where is this?" quiz session{% endblock %}
 
 {% block content %}
-<div class="where-monitor-content">
+<div class="where-monitor-content host-monitor-content">
     {% include 'includes/_unit_tutorial_notice.html' %}
     <!-- Quiz Status Header -->
     <div class="quiz-status-header mb-4">
@@ -46,6 +47,15 @@
                             <div class="form-check form-switch mb-0">
                                 <input class="form-check-input" type="checkbox" id="showTutorialToggle">
                                 <label class="form-check-label" for="showTutorialToggle">Spielerläuterung anzeigen</label>
+                            </div>
+                            {% endif %}
+                            {% if quiz.status == 'waiting' %}
+                            <div class="d-flex align-items-center gap-2">
+                                <label for="whereScoringModeSelect" class="form-label mb-0 small text-muted">Auswertung</label>
+                                <select class="form-select form-select-sm" id="whereScoringModeSelect" style="width:auto;">
+                                    <option value="zones" {% if quiz.scoring_mode != 'rank' %}selected{% endif %}>Zielzonen</option>
+                                    <option value="rank" {% if quiz.scoring_mode == 'rank' %}selected{% endif %}>Ranking</option>
+                                </select>
                             </div>
                             {% endif %}
                             {% if quiz.status == 'waiting' %}
@@ -141,7 +151,7 @@
                                             <small class="text-muted d-block mb-1">Zeit in Sek.</small>
                                             <input type="number" class="form-control form-control-sm question-time-input" placeholder="Time (s)" min="5" step="1" style="max-width: 120px;" value="{{ question.time_limit }}">
                                         </div>
-                                        <button class="btn btn-secondary send-question-btn" data-question-id="{{ question.id }}" {% if quiz.status != 'active' %}disabled title="Start the quiz to send questions"{% endif %}>
+                                        <button type="button" class="btn btn-secondary send-question-btn" data-question-id="{{ question.id }}" {% if quiz.status != 'active' %}disabled title="Start the quiz to send questions"{% endif %}>
                                             <i data-lucide="send"></i>
                                             Send Question
                                         </button>
@@ -329,19 +339,56 @@
                 <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
             </div>
             <div class="modal-body">
-                <div id="previewMap" style="height: 400px; width: 100%;"></div>
+                <div id="previewMap" class="static-world-map preview-world-map" data-map-url="{% static 'where_is_this/maps/world_web_mercator_blank_landmasses.svg' %}">
+                    <div class="svg-map-stage"></div>
+                    <div class="map-marker correct-marker d-none" id="previewCorrectMarker"></div>
+                </div>
             </div>
         </div>
     </div>
 </div>
 
-<!-- Leaflet CSS and JS -->
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-
 <style>
 .where-monitor-content {
     max-width: 1600px;
+}
+
+.static-world-map {
+    position: relative;
+    width: 100%;
+    aspect-ratio: 1 / 1;
+    min-height: 320px;
+    background: #8ecae6;
+    border: 1px solid var(--border-color);
+    border-radius: var(--border-radius-lg);
+    overflow: hidden;
+}
+
+.static-world-map .svg-map-stage,
+.static-world-map svg {
+    display: block;
+    width: 100%;
+    height: 100%;
+}
+
+.static-world-map svg #land {
+    fill: #4f9f57 !important;
+    stroke: #236334 !important;
+}
+
+.map-marker {
+    position: absolute;
+    width: 18px;
+    height: 18px;
+    border-radius: 999px;
+    transform: translate(-50%, -50%);
+    border: 3px solid #fff;
+    box-shadow: 0 2px 8px rgba(15, 23, 42, 0.35);
+    z-index: 3;
+}
+
+.correct-marker {
+    background: #16a34a;
 }
 
 /* Same base styles as assign_monitor.html */
@@ -901,9 +948,18 @@ document.addEventListener('DOMContentLoaded', function() {
             this.isActive = '{{ quiz.status|escapejs }}' === 'active';
             this.questionTimer = null;
             this.quizStartTime = {% if quiz.started_at %}new Date('{{ quiz.started_at|date:"c" }}'){% else %}null{% endif %};
-            this.previewMap = null;
             this.liveResponseState = new Map();
+            this.pendingQuestionId = null;
             this.init();
+        }
+
+        getHubSession() {
+            try {
+                const qs = new URLSearchParams(window.location.search);
+                return qs.get('hub_session') || window.__hubCode || sessionStorage.getItem('_hub_admin') || '';
+            } catch (_) {
+                return '';
+            }
         }
 
                 getStorageKey() {
@@ -1051,15 +1107,22 @@ document.addEventListener('DOMContentLoaded', function() {
                     
                 case 'question_started':
                     window.unitTutorialNotice?.setFromPayload(data);
+                    this.clearHostError();
                     this.resetLiveResponseStateForQuestion();
                     console.log('Question started');
-                    location.reload();
+                    if (data.question?.id) {
+                        this.markQuestionSent(data.question.id);
+                        const btn = document.querySelector(`[data-question-id="${data.question.id}"]`);
+                        if (btn) this.updateSendButtonAsSent(btn);
+                    }
+                    this.pendingQuestionId = null;
+                    this.renderActiveQuestion(data.question || {});
                     break;
                     
                 case 'question_ended':
                     window.unitTutorialNotice?.hide();
                     console.log('Question ended:', data.message);
-                    location.reload();
+                    this.renderRevealResults(data);
                     break;
                     
                 case 'quiz_ended':
@@ -1067,7 +1130,7 @@ document.addEventListener('DOMContentLoaded', function() {
                     console.log('Quiz ended:', data.message);
                     // Clear persisted sent state so a new session starts fresh
                     this.resetSentStates();
-                    location.reload();
+                    window.hostEndState?.apply({ message: data.message, event: data });
                     break;
 
                 case 'quiz_inactive':
@@ -1075,9 +1138,18 @@ document.addEventListener('DOMContentLoaded', function() {
                     this.isActive = false;
                     location.reload();
                     break;
+
+                case 'scoring_mode_updated':
+                    this.updateScoringMode(data.scoring_mode);
+                    break;
+
+                case 'error':
+                    this.showHostError(data.message || 'Frage konnte nicht gestartet werden.');
+                    this.resetPendingSendButton(data.question_id || this.pendingQuestionId);
+                    break;
                     
                 default:
-                    console.log('Unknown message type:', data.type);
+                    console.warn('Unknown message type:', data.type);
             }
         }
         
@@ -1213,6 +1285,58 @@ document.addEventListener('DOMContentLoaded', function() {
             document.getElementById('shareCodeBtn')?.addEventListener('click', () => {
                 this.shareRoomCode();
             });
+
+            document.getElementById('whereScoringModeSelect')?.addEventListener('change', (event) => {
+                if (this.websocket && this.websocket.readyState === WebSocket.OPEN) {
+                    this.websocket.send(JSON.stringify({
+                        type: 'admin_set_scoring_mode',
+                        scoring_mode: event.target.value
+                    }));
+                }
+            });
+        }
+
+        updateScoringMode(scoringMode) {
+            const select = document.getElementById('whereScoringModeSelect');
+            if (select && scoringMode) select.value = scoringMode === 'rank' ? 'rank' : 'zones';
+        }
+
+        showHostError(message) {
+            let alertBox = document.getElementById('whereHostError');
+            const container = document.getElementById('availableQuestions') || document.querySelector('.question-panel .card-body') || document.querySelector('.host-monitor-content');
+            if (!alertBox && container) {
+                alertBox = document.createElement('div');
+                alertBox.id = 'whereHostError';
+                alertBox.className = 'alert alert-danger py-2';
+                alertBox.setAttribute('role', 'alert');
+                container.parentNode.insertBefore(alertBox, container);
+            }
+            if (alertBox) {
+                alertBox.textContent = message;
+                alertBox.classList.remove('d-none');
+            } else {
+                alert(message);
+            }
+        }
+
+        clearHostError() {
+            const alertBox = document.getElementById('whereHostError');
+            if (alertBox) {
+                alertBox.textContent = '';
+                alertBox.classList.add('d-none');
+            }
+        }
+
+        resetPendingSendButton(questionId) {
+            if (!questionId) return;
+            const btn = document.querySelector(`[data-question-id="${questionId}"]`);
+            if (!btn) return;
+            btn.disabled = false;
+            btn.classList.remove('loading');
+            btn.innerHTML = '<i data-lucide="send"></i> Send Question';
+            btn.removeAttribute('aria-busy');
+            try { lucide.createIcons(); } catch(_) {}
+            this.pendingQuestionId = null;
         }
         
         startQuiz() {
@@ -1242,42 +1366,37 @@ document.addEventListener('DOMContentLoaded', function() {
                 this.websocket.send(JSON.stringify({
                     type: 'admin_start_quiz',
                     show_tutorial: showTutorial,
-                    play_tutorial: playTutorial
+                    play_tutorial: playTutorial,
+                    hub_session: this.getHubSession()
                 }));
-                //reload page
-                location.reload();
             }
         }
         
         endQuiz() {
             if (this.websocket && this.websocket.readyState === WebSocket.OPEN) {
-                // Also notify hub directly (in case backend mirror is unavailable)
-                // try {
-                //     const qs = new URLSearchParams(window.location.search);
-                //     const hub = qs.get('hub_session') || window.__hubCode || (function(){ try { return sessionStorage.getItem("_hub_admin"); } catch(_) { return null; } })();
-                //     if (hub) {
-                //         const hubWs = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws/hub/' + hub + '/');
-                //         hubWs.onopen = () => {
-                //             hubWs.send(JSON.stringify({
-                //                 type: 'broadcast',
-                //                 event: { type: 'quiz_ended', game_key: 'where', room_code: '{{ quiz.room_code }}' }
-                //             }));
-                //             setTimeout(() => hubWs.close(), 100);
-                //         };
-                //     }
-                // } catch(_) {}
+                const qs = new URLSearchParams(window.location.search);
+                const hub = qs.get('hub_session') || window.__hubCode || (function(){ try { return sessionStorage.getItem('_hub_admin'); } catch(_) { return null; } })();
                 this.websocket.send(JSON.stringify({
-                    type: 'admin_end_quiz'
+                    type: 'admin_end_quiz',
+                    hub_session: hub || this.getHubSession()
                 }));
-                //Immediately reset UI/local state on admin action
-                this.resetSentStates();
+                return;
             }
+            fetch('{% url "admin_dashboard:end_where_quiz_by_room_code" quiz.room_code %}', {
+                method: 'POST',
+                headers: {'X-CSRFToken': '{{ csrf_token }}'},
+                credentials: 'same-origin'
+            }).then((response) => {
+                if (!response.ok) throw new Error('end failed');
+                window.hostEndState?.apply({ message: 'Quiz beendet.' });
+            }).catch(() => alert('Quiz could not be ended.'));
         }
 
         setInactive() {
             if (this.websocket && this.websocket.readyState === WebSocket.OPEN) {
                 this.websocket.send(JSON.stringify({
-                    type: 'admin_set_inactive'
+                    type: 'admin_set_inactive',
+                    hub_session: this.getHubSession()
                 }));
             }
         }
@@ -1295,9 +1414,23 @@ document.addEventListener('DOMContentLoaded', function() {
         }
         
         sendQuestion(questionId) {
+            if (!questionId) {
+                this.showHostError('Frage konnte nicht gestartet werden: Frage-ID fehlt.');
+                return;
+            }
+            if (!this.websocket || this.websocket.readyState !== WebSocket.OPEN) {
+                this.showHostError('Frage konnte nicht gestartet werden: Verbindung zum Server ist nicht bereit.');
+                return;
+            }
             if (this.websocket && this.websocket.readyState === WebSocket.OPEN) {
                 const btn = document.querySelector(`[data-question-id="${questionId}"]`);
-                if (btn) btn.classList.add('loading');
+                if (btn) {
+                    btn.classList.add('loading');
+                    btn.disabled = true;
+                    btn.setAttribute('aria-busy', 'true');
+                }
+                this.clearHostError();
+                this.pendingQuestionId = questionId;
 
                 // Read optional time override from the adjacent input
                 let customTime = null;
@@ -1312,7 +1445,8 @@ document.addEventListener('DOMContentLoaded', function() {
 
                 const payload = {
                     type: 'admin_send_question',
-                    question_id: questionId
+                    question_id: questionId,
+                    hub_session: this.getHubSession()
                 };
                 if (customTime) {
                     payload.custom_time_limit = customTime;
@@ -1321,43 +1455,124 @@ document.addEventListener('DOMContentLoaded', function() {
                 }
 
                 this.websocket.send(JSON.stringify(payload));
-
-                // Optimistically mark as sent to prevent duplicate sends
-                this.markQuestionSent(questionId);
-                if (btn) this.updateSendButtonAsSent(btn);
             }
         }
         
         endCurrentQuestion() {
             if (this.websocket && this.websocket.readyState === WebSocket.OPEN) {
                 this.websocket.send(JSON.stringify({
-                    type: 'admin_end_question'
+                    type: 'admin_end_question',
+                    hub_session: this.getHubSession()
                 }));
             }
         }
-        
-        showLocationPreview(lat, lng) {
-            const modal = new bootstrap.Modal(document.getElementById('locationPreviewModal'));
-            modal.show();
-            
-            // Initialize map when modal is shown
-            modal._element.addEventListener('shown.bs.modal', () => {
-                if (!this.previewMap) {
-                    this.previewMap = L.map('previewMap');
-                    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-                        attribution: '© OpenStreetMap contributors'
-                    }).addTo(this.previewMap);
-                }
-                
-                this.previewMap.setView([lat, lng], 10);
-                L.marker([lat, lng]).addTo(this.previewMap);
-                
-                setTimeout(() => {
-                    this.previewMap.invalidateSize();
-                }, 250);
+
+        renderActiveQuestion(question) {
+            const body = document.querySelector('.question-panel .card-body');
+            if (!body || !question?.id) return;
+            const safeText = String(question.question_text || '').replace(/[&<>"']/g, (char) => ({
+                '&': '&amp;',
+                '<': '&lt;',
+                '>': '&gt;',
+                '"': '&quot;',
+                "'": '&#039;'
+            }[char]));
+            const imageHtml = question.image_url
+                ? `<div class="current-question-image"><img src="${question.image_url}" alt="Question image" class="img-fluid"></div>`
+                : '';
+            body.innerHTML = `
+                <div id="activeQuestion">
+                    <div class="active-question-header">
+                        <h6>Current Question</h6>
+                        <div class="question-timer">
+                            <div class="timer-circle" id="questionTimerCircle">
+                                <span id="questionTimeLeft">${Number(question.time_limit || 0)}</span>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="current-question-content">
+                        <div class="question-text">${safeText}</div>
+                        ${imageHtml}
+                        <div class="current-question-info">
+                            <div class="info-grid">
+                                <div class="info-item">
+                                    <label>Max Points:</label>
+                                    <span class="value">${Number(question.points || 0)}</span>
+                                </div>
+                                <div class="info-item">
+                                    <label>Karte:</label>
+                                    <span class="value">Weltkarte</span>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="question-actions">
+                            <button class="btn btn-warning" id="endQuestionBtn">
+                                <i data-lucide="skip-forward"></i>
+                                End Question Early
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            `;
+            document.getElementById('endQuestionBtn')?.addEventListener('click', () => {
+                this.endCurrentQuestion();
             });
+            clearInterval(this.questionTimer);
+            this.startQuestionTimer();
+            try { lucide.createIcons(); } catch (_) {}
         }
         
+        loadStaticMap(container) {
+            if (!container || container.dataset.loaded === '1') return;
+            const stage = container.querySelector('.svg-map-stage');
+            const mapUrl = container.dataset.mapUrl;
+            if (!stage || !mapUrl) return;
+            fetch(mapUrl)
+                .then(response => response.text())
+                .then(svg => {
+                    stage.innerHTML = svg;
+                    const svgElement = stage.querySelector('svg');
+                    if (svgElement) {
+                        svgElement.setAttribute('preserveAspectRatio', 'none');
+                        svgElement.setAttribute('aria-hidden', 'true');
+                    }
+                    container.dataset.loaded = '1';
+                })
+                .catch(error => console.warn('Unable to load static map:', error));
+        }
+
+        latLngToNorm(lat, lng) {
+            const clampedLat = Math.max(-85.05112878, Math.min(85.05112878, Number(lat)));
+            const longitude = Number(lng);
+            const latRad = clampedLat * Math.PI / 180;
+            return {
+                x: (longitude + 180) / 360,
+                y: (1 - Math.log(Math.tan(latRad) + (1 / Math.cos(latRad))) / Math.PI) / 2,
+            };
+        }
+
+        setMapMarker(markerId, xNorm, yNorm) {
+            const marker = document.getElementById(markerId);
+            if (!marker) return;
+            marker.style.left = `${Number(xNorm) * 100}%`;
+            marker.style.top = `${Number(yNorm) * 100}%`;
+            marker.classList.remove('d-none');
+        }
+
+        showLocationPreview(lat, lng) {
+            const modalEl = document.getElementById('locationPreviewModal');
+            const modal = new bootstrap.Modal(modalEl);
+            const render = () => {
+                const container = document.getElementById('previewMap');
+                this.loadStaticMap(container);
+                const norm = this.latLngToNorm(lat, lng);
+                this.setMapMarker('previewCorrectMarker', norm.x, norm.y);
+            };
+            modalEl.addEventListener('shown.bs.modal', render, { once: true });
+            modal.show();
+            render();
+        }
+
         startQuestionTimer() {
             // Prefer any override set at send-time (stored just before backend switched state)
             let override = null;
@@ -1497,6 +1712,50 @@ document.addEventListener('DOMContentLoaded', function() {
             if (responseCount) responseCount.textContent = `${answeredCount}/${entries.length}`;
         }
 
+        renderRevealResults(data) {
+            const responsesContainer = document.getElementById('liveResponses');
+            if (!responsesContainer) return;
+            const answers = Array.isArray(data?.answers) ? data.answers : [];
+            if (!answers.length) {
+                responsesContainer.innerHTML = `
+                    <div class="no-responses">
+                        <i data-lucide="map-pin"></i>
+                        <p>Keine Antworten fÃ¼r diese Frage.</p>
+                    </div>
+                `;
+                const responseCount = document.getElementById('responseCount');
+                if (responseCount) responseCount.textContent = '0';
+                try { lucide.createIcons(); } catch(_) {}
+                return;
+            }
+
+            responsesContainer.innerHTML = '';
+            answers.forEach(answer => {
+                const detail = data.scoring_mode === 'rank'
+                    ? `Rang ${answer.rank_position || '-'} â€¢ ${answer.formatted_distance || '-'} â€¢ ${answer.points_earned || 0} Punkte`
+                    : `${answer.zone_label || 'auÃŸerhalb der Zielzonen'} â€¢ ${answer.formatted_distance || '-'} â€¢ ${answer.points_earned || 0} Punkte`;
+                const row = document.createElement('div');
+                row.className = 'response-item';
+                row.innerHTML = `
+                    <div class="response-avatar excellent">${(answer.participant_name || '?').charAt(0).toUpperCase()}</div>
+                    <div class="response-content">
+                        <div class="response-name">${answer.participant_name || ''}</div>
+                        <div class="response-details">${detail}</div>
+                    </div>
+                `;
+                responsesContainer.appendChild(row);
+            });
+            const reloadRow = document.createElement('div');
+            reloadRow.className = 'mt-3';
+            reloadRow.innerHTML = '<button type="button" class="btn btn-outline-primary btn-sm" id="whereReloadAfterRevealBtn">ZurÃ¼ck zur Fragenauswahl</button>';
+            responsesContainer.appendChild(reloadRow);
+            reloadRow.querySelector('button')?.addEventListener('click', () => location.reload());
+
+            const responseCount = document.getElementById('responseCount');
+            if (responseCount) responseCount.textContent = String(answers.length);
+            try { lucide.createIcons(); } catch(_) {}
+        }
+
         addParticipant(participant) {
             const participantsList = document.getElementById('participantsList');
             if (!participantsList) return;
@@ -1593,7 +1852,8 @@ document.addEventListener('DOMContentLoaded', function() {
             console.log('Question timed out');
             if (this.websocket && this.websocket.readyState === WebSocket.OPEN) {
                 this.websocket.send(JSON.stringify({
-                    type: 'admin_end_question'
+                    type: 'admin_end_question',
+                    hub_session: this.getHubSession()
                 }));
             }
         }

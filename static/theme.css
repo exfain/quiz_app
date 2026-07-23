@@ -1,3 +1,35 @@
+@font-face {
+  font-family: "Walkway Condensed";
+  src: url("/static/fonts/Walkway%20Condensed%20SemiBold.ttf") format("truetype");
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Cinematografica";
+  src: url("/static/fonts/Cinematografica-Regular-trial.ttf") format("truetype");
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "QA Arcade Heading";
+  src: url("/static/fonts/ka1.ttf") format("truetype");
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "QA Arcade Text";
+  src: url("/static/fonts/RETROTECH.ttf") format("truetype");
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+}
+
 :root {
   /* Primary Color Palette - Soft & Vibrant Educational Theme */
   --primary-50: #eef2ff;
@@ -98,6 +130,8 @@
   --bg-tertiary: var(--gray-100);
   --bg-dark: var(--gray-900);
   --bg-overlay: rgba(15, 23, 42, 0.5);
+  --app-background: #d0d6b4;
+  --app-noise-overlay: url("/static/neutral_transparent_noise_overlay_512.png");
 
   /* Text Colors */
   --text-primary: var(--gray-800);
@@ -136,10 +170,10 @@
   --spacing-2xl: 3rem;
 
   /* Typography */
-  --font-family-sans: "Inter", "system-ui", -apple-system, BlinkMacSystemFont,
-    "Segoe UI", Roboto, sans-serif;
+  --font-family-sans: "Walkway Condensed", system-ui, sans-serif;
   --font-family-mono: "SF Mono", Monaco, "Cascadia Code", "Roboto Mono",
     Consolas, "Courier New", monospace;
+  --font-family-game-title: "Cinematografica", system-ui, sans-serif;
 
   --font-size-xs: 0.75rem;
   --font-size-sm: 0.875rem;
@@ -155,6 +189,650 @@
   --sidebar-width-collapsed: 70px;
   --navbar-height: 70px;
   --admin-content-padding: 2rem;
+}
+
+.quiz-title,
+.step-name-primary,
+.session-game-start-intro__title,
+.qa-game-title-font,
+.host-monitor-content .quiz-title {
+  font-family: var(--font-family-game-title);
+  letter-spacing: .035em;
+}
+
+.quiz-title {
+  font-size: clamp(2rem, 4.4vw, 3.15rem);
+  line-height: 1.05;
+}
+
+.host-monitor-content .quiz-title {
+  font-size: clamp(1.9rem, 3vw, 2.7rem);
+}
+
+.session-game-start-intro__title {
+  font-size: clamp(2.45rem, 7vw, 4.9rem);
+  line-height: .95;
+}
+
+.step-name-primary {
+  font-size: 1.08em;
+}
+
+.qa-wait-loader {
+  color: var(--participant-effective-text-color, var(--participant-text-color, currentColor));
+  box-sizing: border-box;
+}
+
+.qa-wait-loader:not([class*="qa-wait-loader-"]):not(.qa-arcade-wait-loader) {
+  width: 40px;
+  aspect-ratio: 1;
+  border-radius: 50%;
+  border: 2px solid;
+  position: relative;
+  display: inline-block;
+  flex: 0 0 auto;
+  z-index: 1;
+  transform-origin: left;
+  animation: qa-wait-loader-spin 2s infinite linear;
+}
+
+.waiting-animation:has(.qa-wait-loader) {
+  overflow: visible;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.waiting-animation .qa-wait-loader {
+  color: currentColor;
+  flex: 0 0 auto;
+  z-index: 1;
+}
+
+.qa-start-waiting-animation {
+  width: 100%;
+  height: auto;
+  min-height: 64px;
+  margin: 0 auto 1.5rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.qa-wait-loader-frame {
+  width: 80px;
+  min-height: 64px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: visible;
+}
+
+.qa-wait-loader-frame:has(.qa-wait-loader:not([class*="qa-wait-loader-"]):not(.qa-arcade-wait-loader)) {
+  justify-content: flex-end;
+}
+
+.qa-wait-loader-frame:has(.qa-arcade-wait-loader) {
+  justify-content: center;
+}
+
+.qa-start-waiting-title {
+  margin: 0;
+  font-weight: 800;
+  line-height: 1.1;
+}
+
+.qa-start-waiting-game-name {
+  display: block;
+  font-size: clamp(2rem, 5vw, 3.3rem);
+  line-height: 1;
+}
+
+.qa-start-waiting-subtitle {
+  display: block;
+  margin-top: .7rem;
+  font-family: var(--font-family-sans);
+  font-size: clamp(1rem, 2.2vw, 1.25rem);
+  font-weight: 600;
+  letter-spacing: .02em;
+  color: var(--text-secondary);
+}
+
+.qa-wait-loader:not([class*="qa-wait-loader-"]):not(.qa-arcade-wait-loader)::before,
+.qa-wait-loader:not([class*="qa-wait-loader-"]):not(.qa-arcade-wait-loader)::after {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto;
+  margin: auto;
+  width: 50%;
+  aspect-ratio: 1;
+  border-radius: 50%;
+  border: 2px solid;
+  box-sizing: content-box;
+  transform-origin: 50% calc(100% - 4px);
+  animation: inherit;
+}
+
+.qa-wait-loader:not([class*="qa-wait-loader-"]):not(.qa-arcade-wait-loader)::after {
+  inset: auto 0 calc(100% + 2px);
+  animation-duration: 1s;
+  animation-direction: reverse;
+  transform-origin: 50% calc(200% - 2px);
+}
+
+@keyframes qa-wait-loader-spin {
+  100% { transform: rotate(1turn); }
+}
+
+/* ============================================================
+   Participant waiting-screen loader collection
+   Use with:
+   <div class="qa-wait-loader qa-wait-loader-01" aria-hidden="true"></div>
+
+   Important:
+   - Do not use the generic .loader class.
+   - The outer wrapper should center the loader.
+   - The animated element itself should not be translated for positioning.
+   ============================================================ */
+
+/* Loader 01 */
+.qa-wait-loader-01 {
+  width: 50px;
+  aspect-ratio: 1;
+  border: 2px solid;
+  display: grid;
+  box-sizing: border-box;
+  animation: qa-wait-loader-01-spin 4s infinite linear;
+}
+
+.qa-wait-loader-01::before,
+.qa-wait-loader-01::after {
+  content: "";
+  grid-area: 1 / 1;
+  margin: auto;
+  width: 70.7%;
+  aspect-ratio: 1;
+  border: 2px solid;
+  box-sizing: content-box;
+  animation: inherit;
+}
+
+.qa-wait-loader-01::after {
+  width: 50%;
+  aspect-ratio: 1;
+  border: 2px solid;
+  animation-duration: 2s;
+}
+
+@keyframes qa-wait-loader-01-spin {
+  100% {
+    transform: rotate(1turn);
+  }
+}
+
+/* Loader 03 */
+.qa-wait-loader-03 {
+  width: 50px;
+  aspect-ratio: 1;
+  border: 2px solid;
+  --qa-c: conic-gradient(
+    from -90deg at calc(100% - 2px) calc(100% - 2px),
+    #0000 0 90deg,
+    currentColor 0
+  );
+  background: var(--qa-c), var(--qa-c);
+  background-size: 16px 16px;
+  background-position: 0 0;
+  animation: qa-wait-loader-03-move 1s infinite;
+}
+
+@keyframes qa-wait-loader-03-move {
+  100% {
+    background-position: -16px -16px, 16px 16px;
+  }
+}
+
+/* Loader 04 */
+.qa-wait-loader-04 {
+  width: 50px;
+  aspect-ratio: 1;
+  border: 2px solid;
+  box-sizing: border-box;
+  --qa-c: radial-gradient(
+    farthest-side,
+    #0000 calc(100% - 3px),
+    currentColor calc(100% - 2px) 98%,
+    #0000
+  );
+  background: var(--qa-c), var(--qa-c);
+  background-size: 23px 23px;
+  background-position: 0 0, 12px 12px;
+  animation: qa-wait-loader-04-move 1s infinite;
+}
+
+@keyframes qa-wait-loader-04-move {
+  100% {
+    background-position: -23px 0, 12px 35px;
+  }
+}
+
+/* Loader 05 */
+.qa-wait-loader-05 {
+  width: 50px;
+  aspect-ratio: 1.154;
+  display: grid;
+  background:
+    linear-gradient(to bottom left, #0000 calc(50% - 1px), currentColor 0 calc(50% + 1px), #0000 0) right / 50% 100%,
+    linear-gradient(to bottom right, #0000 calc(50% - 1px), currentColor 0 calc(50% + 1px), #0000 0) left / 50% 100%,
+    linear-gradient(currentColor 0 0) bottom / 100% 2px;
+  background-repeat: no-repeat;
+  transform-origin: 50% 66%;
+  animation: qa-wait-loader-05-spin 4s infinite linear;
+}
+
+.qa-wait-loader-05::before,
+.qa-wait-loader-05::after {
+  content: "";
+  grid-area: 1 / 1;
+  background: inherit;
+  transform-origin: inherit;
+  animation: inherit;
+}
+
+.qa-wait-loader-05::after {
+  animation-duration: 2s;
+}
+
+@keyframes qa-wait-loader-05-spin {
+  100% {
+    transform: rotate(1turn);
+  }
+}
+
+/* Loader 06 */
+.qa-wait-loader-06 {
+  width: 50px;
+  aspect-ratio: 1;
+  display: grid;
+  background:
+    linear-gradient(90deg, currentColor 2px, #0000 0 calc(100% - 2px), currentColor 0) center / 100% 14px,
+    linear-gradient(0deg, currentColor 2px, #0000 0 calc(100% - 2px), currentColor 0) center / 14px 100%,
+    linear-gradient(currentColor 0 0) center / 100% 2px,
+    linear-gradient(currentColor 0 0) center / 2px 100%;
+  background-repeat: no-repeat;
+  animation: qa-wait-loader-06-spin 4s infinite linear;
+}
+
+.qa-wait-loader-06::before,
+.qa-wait-loader-06::after {
+  content: "";
+  grid-area: 1 / 1;
+  background: inherit;
+  transform-origin: inherit;
+  animation: inherit;
+}
+
+.qa-wait-loader-06::after {
+  animation-duration: 2s;
+}
+
+@keyframes qa-wait-loader-06-spin {
+  100% {
+    transform: rotate(1turn);
+  }
+}
+
+/* Loader 07 */
+.qa-wait-loader-07 {
+  width: 50px;
+  aspect-ratio: 1;
+  border: 2px solid;
+  box-sizing: border-box;
+  background:
+    repeating-conic-gradient(#0000 0 90deg, currentColor 0 180deg),
+    repeating-conic-gradient(currentColor 0 90deg, #0000 0 180deg);
+  background-size: 16px 16px;
+  background-position: 0 0;
+  animation: qa-wait-loader-07-move 2s infinite;
+}
+
+@keyframes qa-wait-loader-07-move {
+  100% {
+    background-position: 0 32px, 16px 0;
+  }
+}
+
+/* Loader 08 */
+.qa-wait-loader-08 {
+  width: 50px;
+  aspect-ratio: 1;
+  border: 2px solid;
+  box-sizing: border-box;
+  background:
+    radial-gradient(farthest-side, currentColor 90%, #0000),
+    radial-gradient(farthest-side, #0000 90%, currentColor);
+  background-size: 16px 16px;
+  background-position: 0 0;
+  animation: qa-wait-loader-08-move 2s infinite;
+}
+
+@keyframes qa-wait-loader-08-move {
+  100% {
+    background-position: 0 32px, -16px 0;
+  }
+}
+
+/* Loader 09 */
+.qa-wait-loader-09 {
+  width: 50px;
+  aspect-ratio: 1;
+  border-radius: 50%;
+  background: repeating-conic-gradient(#0000, currentColor 1deg 18deg, #0000 20deg 36deg);
+  animation: qa-wait-loader-09-spin 4s infinite linear;
+  position: relative;
+}
+
+.qa-wait-loader-09::before {
+  content: "";
+  position: absolute;
+  border-radius: 50%;
+  inset: 0;
+  background: inherit;
+  animation: inherit;
+}
+
+@keyframes qa-wait-loader-09-spin {
+  100% {
+    transform: rotate(0.5turn);
+  }
+}
+
+/* Loader 10 */
+.qa-wait-loader-10 {
+  width: 50px;
+  aspect-ratio: 1;
+  display: grid;
+}
+
+.qa-wait-loader-10::before,
+.qa-wait-loader-10::after {
+  content: "";
+  grid-area: 1 / 1;
+  border-radius: 50%;
+  background: repeating-conic-gradient(#0000, currentColor 1deg 18deg, #0000 20deg 36deg);
+  -webkit-mask: repeating-radial-gradient(farthest-side, #000 0 10%, #0000 0 20%);
+  mask: repeating-radial-gradient(farthest-side, #000 0 10%, #0000 0 20%);
+  animation: qa-wait-loader-10-spin 4s infinite linear;
+}
+
+.qa-wait-loader-10::after {
+  -webkit-mask: repeating-radial-gradient(farthest-side, #0000 0 10%, #000 0 20%);
+  mask: repeating-radial-gradient(farthest-side, #0000 0 10%, #000 0 20%);
+  animation-direction: reverse;
+}
+
+@keyframes qa-wait-loader-10-spin {
+  100% {
+    transform: rotate(0.5turn);
+  }
+}
+
+/* Loader 11 */
+.qa-wait-loader-11 {
+  width: 50px;
+  aspect-ratio: 1;
+  border: 2px solid;
+  box-sizing: border-box;
+  border-radius: 50%;
+  display: grid;
+  animation: qa-wait-loader-11-spin 1.5s infinite linear;
+  transform-origin: 50% 80%;
+}
+
+.qa-wait-loader-11::before,
+.qa-wait-loader-11::after {
+  content: "";
+  grid-area: 1 / 1;
+  border: inherit;
+  border-radius: 50%;
+  animation: inherit;
+  animation-duration: 1s;
+  transform-origin: inherit;
+}
+
+.qa-wait-loader-11::after {
+  --qa-s: -1;
+}
+
+@keyframes qa-wait-loader-11-spin {
+  100% {
+    transform: rotate(calc(var(--qa-s, 1) * 1turn));
+  }
+}
+
+/* Loader 12 */
+.qa-wait-loader-12 {
+  width: 60px;
+  height: 25px;
+  border: 2px solid;
+  box-sizing: border-box;
+  border-radius: 50%;
+  display: grid;
+  animation: qa-wait-loader-12-spin 2s infinite linear;
+}
+
+.qa-wait-loader-12::before,
+.qa-wait-loader-12::after {
+  content: "";
+  grid-area: 1 / 1;
+  border: inherit;
+  border-radius: 50%;
+  animation: inherit;
+  animation-duration: 3s;
+}
+
+.qa-wait-loader-12::after {
+  --qa-s: -1;
+}
+
+@keyframes qa-wait-loader-12-spin {
+  100% {
+    transform: rotate(calc(var(--qa-s, 1) * 1turn));
+  }
+}
+
+/* Loader 14 */
+.qa-wait-loader-14 {
+  width: 60px;
+  height: 30px;
+  display: grid;
+  --qa-c: #0000 calc(100% - 5px), currentColor calc(100% - 4px) 96%, #0000;
+  background:
+    radial-gradient(farthest-side at bottom, var(--qa-c)) 0 0,
+    radial-gradient(farthest-side at top, var(--qa-c)) 100% 100%;
+  background-size: calc(50% + 2px) 50%;
+  background-repeat: no-repeat;
+  animation: qa-wait-loader-14-spin 1.5s infinite linear;
+}
+
+.qa-wait-loader-14::before,
+.qa-wait-loader-14::after {
+  content: "";
+  grid-area: 1 / 1;
+  background: inherit;
+  animation: inherit;
+  animation-duration: 2s;
+}
+
+.qa-wait-loader-14::after {
+  --qa-s: -1;
+}
+
+@keyframes qa-wait-loader-14-spin {
+  100% {
+    transform: rotate(calc(var(--qa-s, 1) * 1turn));
+  }
+}
+
+/* Loader 15 */
+.qa-wait-loader-15 {
+  width: 50px;
+  aspect-ratio: 1;
+  border: 2px solid;
+  box-sizing: border-box;
+  --qa-c: conic-gradient(from 180deg at 50% calc(100% - 2px), currentColor 90deg, #0000 0);
+  background: var(--qa-c), var(--qa-c);
+  background-position: 0 0, 8px 0;
+  background-size: 16px 9.6px;
+  animation: qa-wait-loader-15-move 1s infinite;
+}
+
+@keyframes qa-wait-loader-15-move {
+  100% {
+    background-position: 0 -9.6px, 8px 9.6px;
+  }
+}
+
+/* Loader 16 */
+.qa-wait-loader-16 {
+  width: 50px;
+  aspect-ratio: 1;
+  position: relative;
+  overflow: hidden;
+  border: 2px solid;
+}
+
+.qa-wait-loader-16::before {
+  content: "";
+  position: absolute;
+  inset: -48px;
+  --qa-c: conic-gradient(from 180deg at 50% calc(100% - 2px), currentColor 90deg, #0000 0);
+  background: var(--qa-c), var(--qa-c);
+  background-position: 0 0, 8px 0;
+  background-size: 16px 9.6px;
+  animation: qa-wait-loader-16-move 2s infinite;
+}
+
+@keyframes qa-wait-loader-16-move {
+  50% {
+    background-position: 0 -9.6px, 8px 9.6px;
+    transform: rotate(90deg);
+  }
+
+  100% {
+    background-position: 0 -19.2px, 8px 19.2px;
+    transform: rotate(180deg);
+  }
+}
+
+/* Loader 17 */
+.qa-wait-loader-17 {
+  width: 30px;
+  aspect-ratio: 0.577;
+  display: grid;
+  background:
+    linear-gradient(currentColor 0 0) top / 100% 1px,
+    linear-gradient(currentColor 0 0) bottom / 100% 1px,
+    linear-gradient(to bottom right, #0000 calc(50% - 2px), currentColor calc(50% - 1px), #0000 50%) top / 100% calc(100% + 2px),
+    linear-gradient(to bottom left, #0000 calc(50% - 2px), currentColor calc(50% - 1px), #0000 50%) top / 100% calc(100% + 2px);
+  background-repeat: no-repeat;
+  animation: qa-wait-loader-17-spin 4s infinite linear;
+}
+
+.qa-wait-loader-17::before,
+.qa-wait-loader-17::after {
+  content: "";
+  grid-area: 1 / 1;
+  background: inherit;
+  border: inherit;
+  animation: inherit;
+}
+
+.qa-wait-loader-17::after {
+  animation-duration: 2s;
+}
+
+@keyframes qa-wait-loader-17-spin {
+  100% {
+    transform: rotate(1turn);
+  }
+}
+
+/* Loader 18 */
+.qa-wait-loader-18 {
+  width: 25px;
+  height: 50px;
+  display: grid;
+  background:
+    linear-gradient(currentColor 0 0) top / 100% 2px,
+    radial-gradient(farthest-side at top, #0000 calc(100% - 2px), currentColor calc(100% - 1px), #0000) top,
+    linear-gradient(currentColor 0 0) bottom / 100% 2px,
+    radial-gradient(farthest-side at bottom, #0000 calc(100% - 2px), currentColor calc(100% - 1px), #0000) bottom;
+  background-size: 100% 1px, 100% 50%;
+  background-repeat: no-repeat;
+  animation: qa-wait-loader-18-spin 4s infinite linear;
+}
+
+.qa-wait-loader-18::before,
+.qa-wait-loader-18::after {
+  content: "";
+  grid-area: 1 / 1;
+  background: inherit;
+  border: inherit;
+  animation: inherit;
+}
+
+.qa-wait-loader-18::after {
+  animation-duration: 2s;
+}
+
+@keyframes qa-wait-loader-18-spin {
+  100% {
+    transform: rotate(1turn);
+  }
+}
+
+/* Loader 19 */
+.qa-wait-loader-19 {
+  width: 50px;
+  aspect-ratio: 1;
+  display: grid;
+}
+
+.qa-wait-loader-19::before,
+.qa-wait-loader-19::after {
+  content: "";
+  grid-area: 1 / 1;
+  border-radius: 50%;
+  background: repeating-radial-gradient(farthest-side, #0000 0%, currentColor 1% 10%, #0000 11% 30%);
+  -webkit-mask: repeating-conic-gradient(#000 0 36deg, #0000 0 72deg);
+  mask: repeating-conic-gradient(#000 0 36deg, #0000 0 72deg);
+  animation: qa-wait-loader-19-spin 4s infinite linear;
+}
+
+.qa-wait-loader-19::after {
+  -webkit-mask: repeating-conic-gradient(#0000 0 36deg, #000 0 72deg);
+  mask: repeating-conic-gradient(#0000 0 36deg, #000 0 72deg);
+  animation-direction: reverse;
+}
+
+@keyframes qa-wait-loader-19-spin {
+  100% {
+    transform: rotate(1turn);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .qa-wait-loader,
+  .qa-wait-loader::before,
+  .qa-wait-loader::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+  }
 }
 
 /* ==========================================================================
@@ -177,9 +855,49 @@ body {
   font-size: var(--font-size-base);
   line-height: 1.6;
   color: var(--text-primary);
-  background-color: var(--bg-secondary);
+  background-color: var(--app-background);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  position: relative;
+  min-height: 100vh;
+}
+
+body.quiz-play-page,
+body.estimation-play-page,
+body.where-play-page,
+body.who-that-play-page,
+body.assign-play-page,
+body.blackjack-play-page,
+body.who-play-page,
+body.assign-result-page,
+body.estimation-result-page,
+body.blackjack-result-page,
+body.who-that-result-page,
+body.where-result-page,
+body.who-result-page,
+body.hub-leaderboard-page,
+body.login-page {
+  background: var(--app-background);
+}
+
+body.bg-light {
+  background: var(--app-background) !important;
+}
+
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background-image: var(--app-noise-overlay);
+  background-repeat: repeat;
+  opacity: .32;
+}
+
+body > * {
+  position: relative;
+  z-index: 1;
 }
 
 /* ==========================================================================

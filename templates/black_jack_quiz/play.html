@@ -32,6 +32,7 @@
                             {{ quiz.room_code }}
                         </div> -->
                         <h1 class="quiz-title">{{ quiz.title }}</h1>
+                        {% include 'includes/_session_game_number.html' with game_key='blackjack' room_code=quiz.room_code %}
                     </div>
                     <div class="participant-info">
                         <div class="participant-avatar {% if participant.is_busted %}busted{% elif participant.total_points == 21 %}blackjack{% endif %}">
@@ -102,33 +103,19 @@
                         <!-- Waiting State -->
                         <div id="waitingQuizState" class="game-state {% if quiz.status != 'waiting' %}d-none{% endif %}">
                             <div class="waiting-card">
-                                <div class="waiting-animation">
-                                    <div class="pulse-ring"></div>
-                                    <div class="pulse-ring delay-1"></div>
-                                    <div class="pulse-ring delay-2"></div>
-                                    <i data-lucide="spade"></i>
-                                </div>
-                                <h2>Waiting for BlackJack Quiz to Start</h2>
-                                <p>Get ready to hit close to 21 stars! The quiz host will start the session shortly.</p>
-                                <div class="participants-count">
-                                    <i data-lucide="users"></i>
-                                    <span id="waitingParticipantCount">{{ participant_count }}</span> participants joined
-                                </div>
-                                <div class="game-rules-preview">
+                                {% include 'includes/_participant_start_waiting.html' with waiting_game_title=quiz.title %}
+                                {% comment %}<div class="game-rules-preview">
                                     <div class="rule-preview">🎯 Goal: Get as close to 21 stars as possible</div>
                                     <div class="rule-preview">💥 22+ stars = BUST (you're out!)</div>
                                     <div class="rule-preview">📊 Stars = |Your Answer - Correct Answer|</div>
-                                </div>
+                                </div>{% endcomment %}
                             </div>
                         </div>
 
                         <div id="waitingQuestionState" class="game-state d-none">
                             <div class="waiting-card">
                                 <div class="waiting-animation">
-                                    <div class="pulse-ring"></div>
-                                    <div class="pulse-ring delay-1"></div>
-                                    <div class="pulse-ring delay-2"></div>
-                                    <i data-lucide="clock"></i>
+                                    <div class="qa-wait-loader" aria-hidden="true"></div>
                                 </div>
                                 <h2>Waiting for Next Question</h2>
                                 <p>Get ready for the next challenge!</p>
@@ -185,8 +172,7 @@
 
                                     <!-- Submit Button -->
                                     <button class="btn btn-primary btn-lg w-100 submit-answer {% if participant.is_busted %}d-none{% endif %}" id="submitAnswerBtn" disabled>
-                                        <i data-lucide="send"></i>
-                                        Submit Answer
+                                        Einloggen
                                     </button>
 
                                     <div class="zone-submit-feedback d-none" id="questionSubmitFeedback">
@@ -1438,6 +1424,7 @@
 
     {% include 'includes/_hub_return_to_lobby_player.html' %}
     {% include 'includes/_game_tutorial_overlay.html' %}
+    {% include 'includes/_session_game_start_intro.html' %}
     {{ last_completed_set_summary|json_script:"blackjackLastSetSummaryData" }}
 <script>
         document.addEventListener('DOMContentLoaded', function() {
@@ -1552,6 +1539,7 @@
                 }
 
                 handleWebSocketMessage(data) {
+                    window.sessionGameStartIntro?.handleState(data);
                     switch(data.type) {
                         case 'quiz_started':
                             this.onQuizStarted();
@@ -2468,6 +2456,6 @@
         });
     </script>
   {% include 'includes/_leaderboard_overlay.html' %}
-  {% include 'includes/accessibility_widget.html' %}
+  {% include 'includes/accessibility_widget.html' with participant_options_menu=True %}
 </body>
 </html>

@@ -22,6 +22,12 @@ def _get_run_tutorial_question_id(quiz, session_code=None):
 
 def _get_ordered_quiz_questions(quiz, session_code=None):
     tutorial_question_ids = get_scorebox_excluded_tutorial_question_ids('quiz', quiz.room_code, session_code)
+    active_question_id = None
+    try:
+        if quiz.current_question_id and quiz.session.is_question_active:
+            active_question_id = quiz.current_question_id
+    except QuizSession.DoesNotExist:
+        active_question_id = None
     configured_questions = []
     configured_by_id = {}
     if quiz.selected_questions.exists():
@@ -46,6 +52,8 @@ def _get_ordered_quiz_questions(quiz, session_code=None):
     if session_code is not None:
         sent_answers = sent_answers.filter(participant__hub_session_code=session_code)
     for answer in sent_answers:
+        if active_question_id and answer.question_id == active_question_id:
+            continue
         if answer.question_id in tutorial_question_ids:
             continue
         if answer.question_id in seen_ids:
@@ -72,6 +80,12 @@ def _get_ordered_quiz_questions(quiz, session_code=None):
 def _build_participant_progress_history(quiz, participant, session_code=None):
     ordered_questions = _get_ordered_quiz_questions(quiz, session_code=session_code)
     tutorial_question_ids = get_scorebox_excluded_tutorial_question_ids('quiz', quiz.room_code, session_code)
+    active_question_id = None
+    try:
+        if quiz.current_question_id and quiz.session.is_question_active:
+            active_question_id = quiz.current_question_id
+    except QuizSession.DoesNotExist:
+        active_question_id = None
     question_number_by_id = {
         question.id: index
         for index, question in enumerate(ordered_questions, start=1)
@@ -87,6 +101,8 @@ def _build_participant_progress_history(quiz, participant, session_code=None):
     history = []
     seen_question_ids = set()
     for answer in answers:
+        if active_question_id and answer.question_id == active_question_id:
+            continue
         if answer.question_id in tutorial_question_ids:
             continue
         if answer.question_id in seen_question_ids:

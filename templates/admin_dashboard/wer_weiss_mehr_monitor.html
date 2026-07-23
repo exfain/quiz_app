@@ -5,11 +5,11 @@
 {% block page_subtitle %}Sets starten, Runden reviewen und Antworten manuell zuordnen{% endblock %}
 
 {% block content %}
-<div class="container-fluid py-3">
+<div class="container-fluid py-3 host-monitor-content">
     {% include 'includes/_unit_tutorial_notice.html' %}
     <div class="d-flex justify-content-between align-items-start gap-3 mb-4">
         <div>
-            <h2 class="mb-1">{{ quiz.title }}</h2>
+            <h2 class="mb-1 qa-game-title-font">{{ quiz.title }}</h2>
             <div class="text-muted">Raum {{ quiz.room_code }} · <span id="participantCount">{{ participant_count }}</span> Teilnehmer</div>
             {% if lobby_url %}
                 <a href="{{ lobby_url }}" target="_blank" class="small">{{ lobby_url }}</a>
@@ -103,6 +103,7 @@ const END_ROUND_URL = '{% url "admin_dashboard:end_wer_weiss_mehr_round" quiz.ro
 const NEXT_ROUND_URL = '{% url "admin_dashboard:next_wer_weiss_mehr_round" quiz.room_code %}';
 const FINISH_SET_URL = '{% url "admin_dashboard:finish_wer_weiss_mehr_set" quiz.room_code %}';
 const CLEAR_SET_URL = '{% url "admin_dashboard:clear_wer_weiss_mehr_set" quiz.room_code %}';
+const SKIP_TUTORIAL_SET_URL = '{% url "wer_weiss_mehr:skip_tutorial_set" quiz.room_code %}';
 const APPLY_CORRECTION_URL = '{% url "admin_dashboard:apply_wer_weiss_mehr_correction" quiz.room_code %}';
 let ws = null;
 let state = null;
@@ -449,6 +450,33 @@ function clearSetSelection() {
             if (clearBtn && state?.phase === 'set_completed') clearBtn.disabled = false;
         });
 }
+function skipTutorialSet() {
+    const skipBtn = document.getElementById('skipTutorialSetBtn');
+    if (skipBtn) skipBtn.disabled = true;
+    fetch(SKIP_TUTORIAL_SET_URL, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-CSRFToken': CSRF_TOKEN,
+        },
+        body: JSON.stringify({hub_session: HUB_SESSION}),
+        credentials: 'same-origin',
+    })
+        .then(response => parseJsonResponse(response, 'Das Tutorialset konnte nicht übersprungen werden.'))
+        .then(({response, payload}) => {
+            if (!response.ok || !payload.success) {
+                throw new Error(payload.error || payload.message || 'Das Tutorialset konnte nicht übersprungen werden.');
+            }
+            renderState(payload);
+        })
+        .catch(error => {
+            alert(error.message || 'Das Tutorialset konnte nicht übersprungen werden.');
+            fetchState();
+        })
+        .finally(() => {
+            if (skipBtn && state?.game_status === 'active') skipBtn.disabled = false;
+        });
+}
 function applyCorrection(responseId, targetAnswerId) {
     if (!responseId || !targetAnswerId) {
         alert('Antwort oder Zielantwort fehlt.');
@@ -523,6 +551,9 @@ function renderState(nextState) {
     renderScorebox(nextState.scorebox || []);
     startHostTimer(nextState);
     syncLiveResponsePolling(nextState);
+    if (['completed', 'cancelled'].includes(nextState.game_status)) {
+        window.hostEndState?.apply({ message: 'Spiel beendet.', event: nextState });
+    }
 }
 function renderControls(s) {
     const status = s.game_status;
@@ -548,14 +579,22 @@ function renderQuestionArea(s) {
     if (!s.question) {
         current.innerHTML = `<div class="alert alert-secondary">Kein Set aktiv. Wähle ein Set aus der Liste.</div>`;
         list.innerHTML = (s.available_questions || []).map(q => `
-            <div class="border rounded-3 p-3 mb-2 d-flex justify-content-between align-items-center gap-3">
+            <div class="border rounded-3 p-3 mb-2 d-flex justify-content-between align-items-center gap-3 ${q.is_tutorial_set ? 'border-warning bg-warning-subtle' : ''}">
                 <div>
-                    <div class="fw-bold">${escapeHtml(q.question_text)} ${q.is_completed ? '<span class="badge bg-success ms-2">abgeschlossen</span>' : ''}</div>
-                    <div class="small text-muted">${q.answer_count} Antworten${q.is_completed ? ' - Punkte in der Scorebox finalisiert' : ''}</div>
+                    <div class="fw-bold">
+                        ${escapeHtml(q.question_text)}
+                        ${q.is_tutorial_set ? '<span class="badge bg-warning text-dark ms-2">Tutorialset – keine Wertung</span>' : ''}
+                        ${q.is_completed ? '<span class="badge bg-success ms-2">abgeschlossen</span>' : ''}
+                    </div>
+                    <div class="small text-muted">
+                        ${q.answer_count} Antworten${q.is_completed && !q.is_tutorial_set ? ' - Punkte in der Scorebox finalisiert' : ''}
+                        ${q.disabled_reason ? `<span class="d-block text-warning-emphasis">${escapeHtml(q.disabled_reason)}</span>` : ''}
+                    </div>
                 </div>
                 <div class="d-flex align-items-center gap-2">
-                    <input type="number" class="form-control form-control-sm time-input" value="${q.round_time_limit}" min="5" style="width:90px" data-question-id="${q.id}" ${q.is_completed ? 'disabled' : ''}>
-                    <button class="btn btn-primary start-set-btn" data-question-id="${q.id}" ${s.game_status !== 'active' || q.is_completed ? 'disabled' : ''}>${q.is_completed ? 'Beendet' : 'Set starten'}</button>
+                    <input type="number" class="form-control form-control-sm time-input" value="${q.round_time_limit}" min="5" style="width:90px" data-question-id="${q.id}" ${q.is_completed || q.is_start_disabled ? 'disabled' : ''}>
+                    ${q.is_tutorial_set && !q.is_completed ? '<button class="btn btn-outline-secondary skip-tutorial-set-btn" id="skipTutorialSetBtn" type="button">Tutorialset überspringen</button>' : ''}
+                    <button class="btn ${q.is_tutorial_set ? 'btn-warning' : 'btn-primary'} start-set-btn" data-question-id="${q.id}" ${s.game_status !== 'active' || q.is_completed || q.is_start_disabled ? 'disabled' : ''}>${q.is_completed ? 'Beendet' : (q.is_tutorial_set ? 'Tutorialset starten' : 'Set starten')}</button>
                 </div>
             </div>
         `).join('') || '<div class="text-muted">Keine Sets diesem Spiel zugeordnet.</div>';
@@ -563,6 +602,7 @@ function renderQuestionArea(s) {
             const input = document.querySelector(`.time-input[data-question-id="${btn.dataset.questionId}"]`);
             startSet(parseInt(btn.dataset.questionId), parseInt(input.value) || 30);
         }));
+        document.getElementById('skipTutorialSetBtn')?.addEventListener('click', skipTutorialSet);
         return;
     }
     list.innerHTML = '';
@@ -670,7 +710,7 @@ function renderParticipants(participants) {
 function renderScorebox(rows) {
     document.getElementById('scorebox').innerHTML = rows.map(row => `
         <div class="mb-3">
-            <div class="fw-semibold">${escapeHtml(row.question_text)}</div>
+            <div class="fw-semibold">${escapeHtml(row.label || `#${row.round_number || ''}`)}</div>
             <div class="small text-muted mb-1">Maximal ${row.max_points ?? row.answer_count ?? '-'} Punkte</div>
             ${(row.scores || []).map(score => `<div class="d-flex justify-content-between small"><span>${escapeHtml(score.participant_name)}</span><strong>${score.points === null ? '-' : `${score.points}/${score.max_points ?? row.max_points ?? row.answer_count ?? '-'}`}</strong></div>`).join('')}
         </div>

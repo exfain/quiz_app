@@ -20,8 +20,8 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 </head>
-<body class="estimation-result-page">
-    <div class="result-container">
+<body class="estimation-result-page participant-result-page">
+    <div class="result-container" data-participant-name="{{ participant.name }}">
         <!-- Header -->
         <header class="result-header">
             <div class="container">
@@ -227,34 +227,40 @@
                     <!-- Leaderboard & Actions -->
                     <div class="col-lg-4">
                         <!-- Leaderboard -->
-                        <div class="card mb-4">
+                        <div class="card mb-4 estimation-final-ranking">
                             <div class="card-header">
                                 <h6 class="card-title mb-0">
                                     <i data-lucide="trophy"></i>
-                                    Leaderboard
+                                    <span class="estimation-final-ranking__title-default">Leaderboard</span>
+                                    <span class="estimation-final-ranking__title-vhs">FINALE RANGLISTE</span>
                                 </h6>
                             </div>
                             <div class="card-body">
                                 <div class="leaderboard">
-                                    {% for participant in leaderboard %}
-                                    <div class="leaderboard-item {% if participant.name == participant.name %}current-user{% endif %}">
+                                    {% for ranking_participant in leaderboard %}
+                                    <div class="leaderboard-item {% if ranking_participant.id == participant.id %}current-user{% endif %}">
                                         <div class="rank">
                                             {% if forloop.counter <= 3 %}
                                                 <i data-lucide="medal" class="medal rank-{{ forloop.counter }}"></i>
-                                            {% else %}
-                                                <span class="rank-number">#{{ forloop.counter }}</span>
                                             {% endif %}
+                                            <span class="rank-number {% if forloop.counter <= 3 %}rank-number--top{% endif %}">#{{ forloop.counter }}</span>
                                         </div>
                                         <div class="participant-info">
                                             <div class="participant-name">
-                                                {{ participant.name }}
-                                                {% if participant.name == participant.name %}
-                                                    <span class="you-badge">YOU</span>
+                                                {{ ranking_participant.name }}
+                                                {% if ranking_participant.id == participant.id %}
+                                                    <span class="you-badge">
+                                                        <span class="you-badge__default">YOU</span>
+                                                        <span class="you-badge__vhs">DU</span>
+                                                    </span>
                                                 {% endif %}
                                             </div>
                                             <div class="participant-stats">
-                                                <span class="participant-score">{{ participant.total_score }} pts</span>
-                                                <span class="participant-accuracy">{{ participant.get_average_accuracy }}% avg</span>
+                                                <span class="participant-score">
+                                                    <span class="participant-score__default">{{ ranking_participant.total_score }} pts</span>
+                                                    <span class="participant-score__vhs">{{ ranking_participant.total_score }} {% if ranking_participant.total_score == 1 %}Punkt{% else %}Punkte{% endif %}</span>
+                                                </span>
+                                                <span class="participant-accuracy">{{ ranking_participant.get_average_accuracy }}% avg</span>
                                             </div>
                                         </div>
                                     </div>
@@ -823,6 +829,13 @@
             gap: 0.75rem;
         }
 
+        .estimation-final-ranking__title-vhs,
+        .participant-score__vhs,
+        .you-badge__vhs,
+        .rank-number--top {
+            display: none;
+        }
+
         .leaderboard-item {
             display: flex;
             align-items: center;
@@ -1138,5 +1151,6 @@
             });
         });
     </script>
+{% include 'includes/accessibility_widget.html' with participant_options_menu=True %}
 </body>
 </html>

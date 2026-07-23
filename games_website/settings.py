@@ -43,6 +43,9 @@ INSTALLED_APPS = [
     'clue_rush.apps.ClueRushConfig',
     'sorting_ladder.apps.SortingLadderConfig',
     'wer_weiss_mehr.apps.WerWeissMehrConfig',
+    'buzzer.apps.BuzzerConfig',
+    'host_points.apps.HostPointsConfig',
+    'wann_war_das.apps.WannWarDasConfig',
 ]
 
 MIDDLEWARE = [
@@ -63,6 +66,9 @@ TEMPLATES = [
         'DIRS': [BASE_DIR / 'templates'],
         'APP_DIRS': True,
         'OPTIONS': {
+            'libraries': {
+                'session_game_tags': 'games_hub.templatetags.session_game_tags',
+            },
             'context_processors': [
                 'django.template.context_processors.debug',
                 'django.template.context_processors.request',

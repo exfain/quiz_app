@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import logging
 from datetime import timedelta
 
 from asgiref.sync import async_to_sync
@@ -12,6 +13,7 @@ from .models import HubGameStep, HubSession
 
 
 LOBBY_RETURN_COUNTDOWN_SECONDS = 10
+logger = logging.getLogger(__name__)
 
 
 def _get_lobby_return_countdown_cache_key(session_code: str) -> str:
@@ -100,6 +102,9 @@ def get_game_participant_model_map():
     from where_is_this.models import WhereParticipant
     from who_is_lying.models import WhoParticipant
     from who_is_that.models import WhoThatParticipant
+    from buzzer.models import BuzzerParticipant
+    from host_points.models import HostPointsParticipant
+    from wann_war_das.models import WannWarDasParticipant
 
     return {
         'quiz': QuizParticipant,
@@ -112,6 +117,9 @@ def get_game_participant_model_map():
         'clue_rush': ClueRushParticipant,
         'sorting_ladder': SortingLadderParticipant,
         'wer_weiss_mehr': WerWeissMehrParticipant,
+        'buzzer': BuzzerParticipant,
+        'host_points': HostPointsParticipant,
+        'wann_war_das': WannWarDasParticipant,
     }
 
 
@@ -216,11 +224,22 @@ def mark_session_game_participants_inactive(session_code: str) -> dict:
         participant_model = participant_model_map.get(step.game_key)
         if not participant_model:
             continue
-        participant_model.objects.filter(
+        updated_count = participant_model.objects.filter(
             quiz__room_code=step.room_code,
             hub_session_code=session.code,
             is_active=True,
         ).update(is_active=False)
+        if updated_count:
+            logger.info(
+                'Session game participants returned to lobby',
+                extra={
+                    'hub_session_code': session.code,
+                    'game_key': step.game_key,
+                    'room_code': step.room_code,
+                    'participants_updated': updated_count,
+                    'cleanup_at': timezone.now().isoformat(),
+                },
+            )
 
     return get_session_lobby_presence(session.code)
 
@@ -243,12 +262,23 @@ def mark_single_participant_inactive_for_lobby_return(
     if not participant_model:
         return {'success': False, 'error': 'Unbekannter Spieltyp.'}
 
-    participant_model.objects.filter(
+    updated_count = participant_model.objects.filter(
         quiz__room_code=room_code,
         hub_session_code=session_code,
         name=participant_name,
         is_active=True,
     ).update(is_active=False)
+    logger.info(
+        'Single game participant returned to lobby',
+        extra={
+            'hub_session_code': session_code,
+            'game_key': game_key,
+            'room_code': room_code,
+            'participant_name': participant_name,
+            'participants_updated': updated_count,
+            'cleanup_at': timezone.now().isoformat(),
+        },
+    )
 
     return {
         'success': True,

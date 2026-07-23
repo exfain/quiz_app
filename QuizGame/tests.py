@@ -1,15 +1,21 @@
 import json
+import os
+import time
 from datetime import timedelta
 from unittest.mock import patch
 
+os.environ.setdefault("DJANGO_ALLOW_ASYNC_UNSAFE", "1")
+
 from asgiref.sync import async_to_sync
+from channels.testing import WebsocketCommunicator
 from django.contrib.auth import get_user_model
-from django.test import TestCase, TransactionTestCase
+from django.test import LiveServerTestCase, TestCase, TransactionTestCase
 from django.urls import reverse
 from django.utils import timezone
 
 from games_hub.check_in import complete_session_check_in, participant_check_in, start_session_check_in
 from games_hub.models import HubGameStep, HubGameTutorialRuntime, HubParticipant, HubSession
+from games_hub.playwright_e2e import install_browser_test_stubs, start_chromium_browser
 from games_hub.tutorial_runtime import (
     activate_tutorial_runtime as activate_game_tutorial_runtime,
     mark_tutorial_completed as mark_game_tutorial_completed,
@@ -22,9 +28,15 @@ from games_hub.unit_tutorial_runtime import (
 
 from .consumers import QuizConsumer
 from .models import Quiz, QuizAnswer, QuizParticipant, QuizQuestion, QuizSession
+from games_website.asgi import application
 
 
 User = get_user_model()
+
+try:
+    from channels.testing import ChannelsLiveServerTestCase as _BrowserLiveServerTestCase
+except ImportError:
+    _BrowserLiveServerTestCase = LiveServerTestCase
 
 
 class FakeChannelLayer:
@@ -220,6 +232,20 @@ class QuizShortAnswerViewIntegrationTest(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, 'Legacy double answer')
         self.assertContains(response, 'Vorname: Ada | Nachname: Lovelace')
+
+    def test_quiz_monitor_loads_with_empty_pending_answer_state(self):
+        quiz = Quiz.objects.create(title='Quick Quiz', creator=self.user, status='waiting')
+        session = QuizSession.objects.create(quiz=quiz)
+        second_quiz = Quiz.objects.create(title='Quick Quiz 2', creator=self.user, status='waiting')
+        second_session = QuizSession.objects.create(quiz=second_quiz)
+
+        response = self.client.get(reverse('admin_dashboard:quiz_monitor', args=[quiz.room_code]))
+
+        self.assertEqual(response.status_code, 200)
+        session.refresh_from_db()
+        self.assertEqual(session.pending_answers, {})
+        self.assertEqual(second_session.pending_answers, {})
+        self.assertIs(QuizSession._meta.get_field('pending_answers').default, dict)
 
     def test_create_game_page_renders_short_answer_builder_ui(self):
         response = self.client.get(reverse('admin_dashboard:create_game'))
@@ -481,6 +507,74 @@ class QuizTutorialRuntimeTests(TransactionTestCase):
         self.quiz.refresh_from_db()
         self.assertFalse(self.quiz.tutorial_active)
 
+    def test_admin_send_question_starts_active_quick_quiz_question(self):
+        question = QuizQuestion.objects.create(
+            question_text='Question one',
+            question_type='multiple_choice',
+            correct_answer='A',
+            option_a='A',
+            option_b='B',
+            created_by=self.user,
+        )
+        self.quiz.status = 'active'
+        self.quiz.save(update_fields=['status'])
+
+        async_to_sync(self.consumer.handle_admin_send_question)({'question_id': question.id})
+
+        self.quiz.refresh_from_db()
+        self.assertEqual(self.direct_messages, [])
+        self.assertEqual(self.quiz.current_question_id, question.id)
+        question_started = next(
+            message for _, message in self.consumer.channel_layer.group_messages
+            if message['type'] == 'question_started'
+        )
+        self.assertEqual(question_started['question']['id'], question.id)
+        self.assertEqual(question_started['question']['question_text'], 'Question one')
+
+    def test_admin_send_question_without_question_id_returns_visible_error(self):
+        self.quiz.status = 'active'
+        self.quiz.save(update_fields=['status'])
+
+        async_to_sync(self.consumer.handle_admin_send_question)({})
+
+        self.assertEqual(self.direct_messages[-1]['type'], 'error')
+        self.assertIn('Frage-ID fehlt', self.direct_messages[-1]['message'])
+        self.assertEqual(self.consumer.channel_layer.group_messages, [])
+
+    def test_admin_send_question_before_start_returns_visible_error(self):
+        question = QuizQuestion.objects.create(
+            question_text='Question one',
+            question_type='multiple_choice',
+            correct_answer='A',
+            option_a='A',
+            option_b='B',
+            created_by=self.user,
+        )
+
+        async_to_sync(self.consumer.handle_admin_send_question)({'question_id': question.id})
+
+        self.assertEqual(self.direct_messages[-1]['type'], 'error')
+        self.assertIn('Start the quiz', self.direct_messages[-1]['message'])
+        self.assertEqual(self.direct_messages[-1]['question_id'], question.id)
+        self.assertEqual(self.consumer.channel_layer.group_messages, [])
+
+    def test_admin_send_question_with_unknown_question_returns_visible_error(self):
+        self.quiz.status = 'active'
+        self.quiz.save(update_fields=['status'])
+
+        async_to_sync(self.consumer.handle_admin_send_question)({'question_id': 999999})
+
+        self.assertEqual(self.direct_messages[-1]['type'], 'error')
+        self.assertIn('nicht gefunden', self.direct_messages[-1]['message'])
+        self.assertEqual(self.direct_messages[-1]['question_id'], 999999)
+        self.assertEqual(self.consumer.channel_layer.group_messages, [])
+
+    def test_unknown_websocket_action_returns_visible_error(self):
+        async_to_sync(self.consumer.receive)(json.dumps({'type': 'send_question'}))
+
+        self.assertEqual(self.direct_messages[-1]['type'], 'error')
+        self.assertIn('Unknown action: send_question', self.direct_messages[-1]['message'])
+
     def test_participant_rejoin_during_active_tutorial_receives_tutorial_start(self):
         session = self._create_hub_step_with_officials(['Alice'])
         participant = QuizParticipant.objects.create(
@@ -591,6 +685,437 @@ class QuizTutorialRuntimeTests(TransactionTestCase):
         self.assertContains(response, "case 'tutorial_start':")
 
 
+class QuickQuizWebSocketLiveFlowTests(TransactionTestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username='quick-live-host', password='pass')
+        self.quiz = Quiz.objects.create(
+            title='Quick Live Quiz',
+            creator=self.user,
+            room_code='QLIV',
+            status='active',
+            started_at=timezone.now(),
+        )
+        self.question = QuizQuestion.objects.create(
+            question_text='Live question?',
+            question_type='multiple_choice',
+            correct_answer='A',
+            option_a='A',
+            option_b='B',
+            created_by=self.user,
+        )
+        self.participant = QuizParticipant.objects.create(
+            quiz=self.quiz,
+            name='Alice',
+            hub_session_code='HUBLIVE',
+            is_active=True,
+        )
+
+    async def _receive_until(self, communicator, message_type, attempts=6):
+        for _ in range(attempts):
+            message = await communicator.receive_json_from(timeout=2)
+            if message.get('type') == message_type:
+                return message
+        self.fail(f'Did not receive {message_type}')
+
+    def test_host_send_question_reaches_host_and_participant_websockets(self):
+        async def scenario():
+            host = WebsocketCommunicator(application, f'/ws/quiz/{self.quiz.room_code}/')
+            player = WebsocketCommunicator(application, f'/ws/quiz/{self.quiz.room_code}/')
+            host_connected, _ = await host.connect()
+            player_connected, _ = await player.connect()
+            self.assertTrue(host_connected)
+            self.assertTrue(player_connected)
+
+            await self._receive_until(host, 'connection_established')
+            await self._receive_until(player, 'connection_established')
+            await player.send_json_to({
+                'type': 'participant_join',
+                'participant_name': self.participant.name,
+                'hub_session': self.participant.hub_session_code,
+            })
+            await self._receive_until(player, 'participant_joined')
+
+            await host.send_json_to({
+                'type': 'admin_send_question',
+                'question_id': self.question.id,
+                'hub_session': self.participant.hub_session_code,
+            })
+
+            host_message = await self._receive_until(host, 'question_started')
+            player_message = await self._receive_until(player, 'question_started')
+
+            await host.disconnect()
+            await player.disconnect()
+
+            return host_message, player_message
+
+        host_message, player_message = async_to_sync(scenario)()
+        self.quiz.refresh_from_db()
+
+        self.assertEqual(self.quiz.current_question_id, self.question.id)
+        self.assertEqual(host_message['question']['id'], self.question.id)
+        self.assertEqual(player_message['question']['id'], self.question.id)
+
+    def test_end_quiz_reaches_host_websocket_without_reload(self):
+        async def scenario():
+            host = WebsocketCommunicator(application, f'/ws/quiz/{self.quiz.room_code}/')
+            host_connected, _ = await host.connect()
+            self.assertTrue(host_connected)
+
+            await self._receive_until(host, 'connection_established')
+            await host.send_json_to({
+                'type': 'admin_end_quiz',
+                'hub_session': self.participant.hub_session_code,
+            })
+
+            host_message = await self._receive_until(host, 'quiz_ended')
+
+            await host.disconnect()
+            return host_message
+
+        host_message = async_to_sync(scenario)()
+        self.quiz.refresh_from_db()
+
+        self.assertEqual(self.quiz.status, 'completed')
+        self.assertEqual(host_message['type'], 'quiz_ended')
+        self.assertIn('Quiz has ended', host_message['message'])
+        self.assertIn('final_scores', host_message)
+
+    def test_quick_quiz_start_routes_lobby_participant_to_play_screen(self):
+        session = HubSession.objects.create(
+            code='HUBLIVE',
+            name='Quick Live Session',
+            is_active=True,
+            started_at=timezone.now(),
+        )
+        HubParticipant.objects.create(session=session, nickname=self.participant.name)
+        self.assertTrue(start_session_check_in(session)['success'])
+        self.assertTrue(participant_check_in(session, self.participant.name)['success'])
+        self.assertTrue(complete_session_check_in(session)['success'])
+        HubGameStep.objects.create(
+            session=session,
+            order=0,
+            game_key='quiz',
+            room_code=self.quiz.room_code,
+            title=self.quiz.title,
+        )
+        self.participant.is_active = False
+        self.participant.save(update_fields=['is_active'])
+        self.quiz.status = 'waiting'
+        self.quiz.started_at = None
+        self.quiz.save(update_fields=['status', 'started_at'])
+
+        async def scenario():
+            hub = WebsocketCommunicator(application, f'/ws/hub/{session.code}/')
+            host = WebsocketCommunicator(application, f'/ws/quiz/{self.quiz.room_code}/')
+            hub_connected, _ = await hub.connect()
+            host_connected, _ = await host.connect()
+            self.assertTrue(hub_connected)
+            self.assertTrue(host_connected)
+
+            await self._receive_until(hub, 'connection_established')
+            await self._receive_until(host, 'connection_established')
+            await host.send_json_to({
+                'type': 'admin_start_quiz',
+                'hub_session': session.code,
+            })
+
+            navigate = await self._receive_until(hub, 'navigate')
+
+            await host.disconnect()
+            await hub.disconnect()
+            return navigate
+
+        navigate = async_to_sync(scenario)()
+        self.quiz.refresh_from_db()
+
+        self.assertEqual(self.quiz.status, 'active')
+        self.assertEqual(navigate['step']['game_key'], 'quiz')
+        self.assertEqual(navigate['step']['room_code'], self.quiz.room_code)
+
+
+class QuickQuizBrowserLiveFlowTests(_BrowserLiveServerTestCase):
+    """Browser regression coverage for the real Quick Quiz host/player live flow."""
+
+    TIMEOUT = 15_000
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        try:
+            cls._pw, cls._browser = start_chromium_browser(headless=True)
+            cls._playwright_available = True
+        except Exception as exc:
+            cls._playwright_available = False
+            cls._playwright_error = exc
+
+    @classmethod
+    def tearDownClass(cls):
+        if getattr(cls, '_playwright_available', False):
+            cls._browser.close()
+            cls._pw.stop()
+        super().tearDownClass()
+
+    def setUp(self):
+        if not self._playwright_available:
+            self.skipTest(f'Playwright/Chromium nicht verfuegbar: {self._playwright_error}')
+
+        self.password = 'testpass123'
+        self.user = User.objects.create_superuser(
+            username='quick-browser-host',
+            password=self.password,
+            email='',
+        )
+        self.quiz = Quiz.objects.create(
+            title='Quick Browser Quiz',
+            creator=self.user,
+            room_code='QB99',
+            status='active',
+            started_at=timezone.now(),
+        )
+        self.question = QuizQuestion.objects.create(
+            question_text='Browser live question?',
+            question_type='multiple_choice',
+            correct_answer='A',
+            option_a='Answer A',
+            option_b='Answer B',
+            points=1,
+            time_limit=30,
+            created_by=self.user,
+        )
+        self.quiz.selected_questions.set([self.question])
+        self.quiz.question_order = [self.question.id]
+        self.quiz.save(update_fields=['question_order', 'updated_at'])
+        QuizSession.objects.get_or_create(quiz=self.quiz)
+        self.session = HubSession.objects.create(
+            code='QBLIVE',
+            name='Quick Browser Session',
+            is_active=True,
+            started_at=timezone.now(),
+        )
+        HubGameStep.objects.create(
+            session=self.session,
+            order=0,
+            game_key='quiz',
+            room_code=self.quiz.room_code,
+            title=self.quiz.title,
+        )
+        HubParticipant.objects.create(session=self.session, nickname='Alice')
+        self.participant = QuizParticipant.objects.create(
+            quiz=self.quiz,
+            name='Alice',
+            hub_session_code=self.session.code,
+            is_active=True,
+        )
+
+        self.host_context = self._browser.new_context()
+        self.player_context = self._browser.new_context()
+        install_browser_test_stubs(self.host_context)
+        install_browser_test_stubs(self.player_context)
+        self.host_page = self.host_context.new_page()
+        self.player_page = self.player_context.new_page()
+        self.browser_errors = []
+        self.websocket_urls = {'host': [], 'player': []}
+        self.websocket_frames = {
+            'host': {'sent': [], 'received': []},
+            'player': {'sent': [], 'received': []},
+        }
+        self._instrument_page('host', self.host_page)
+        self._instrument_page('player', self.player_page)
+        self._admin_login()
+
+    def tearDown(self):
+        for page in (getattr(self, 'host_page', None), getattr(self, 'player_page', None)):
+            if page:
+                page.close()
+        for context in (getattr(self, 'host_context', None), getattr(self, 'player_context', None)):
+            if context:
+                context.close()
+
+    def _instrument_page(self, label, page):
+        page.on('console', lambda msg: self._record_console(label, msg))
+        page.on('pageerror', lambda exc: self.browser_errors.append(f'{label} pageerror: {exc}'))
+        page.on('websocket', lambda ws: self._record_websocket(label, ws))
+
+    def _record_console(self, label, msg):
+        if msg.type in {'error'}:
+            self.browser_errors.append(f'{label} console {msg.type}: {msg.text}')
+
+    def _record_websocket(self, label, websocket):
+        self.websocket_urls[label].append(websocket.url)
+        websocket.on('framesent', lambda payload: self.websocket_frames[label]['sent'].append(str(payload)))
+        websocket.on(
+            'framereceived',
+            lambda payload: self.websocket_frames[label]['received'].append(str(payload)),
+        )
+
+    def _admin_login(self):
+        self.host_page.goto(f'{self.live_server_url}{reverse("admin_dashboard:login")}')
+        self.host_page.fill("input[name='username']", self.user.username)
+        self.host_page.fill("input[name='password']", self.password)
+        self.host_page.click("button[type='submit']")
+        self.host_page.wait_for_url(f'**{reverse("admin_dashboard:home")}**', timeout=self.TIMEOUT)
+
+    def _wait_for_ws_url(self, label, path):
+        deadline = time.time() + (self.TIMEOUT / 1000)
+        while time.time() < deadline:
+            if any(path in url for url in self.websocket_urls[label]):
+                return
+            self.host_page.wait_for_timeout(100)
+        self.fail(f'{label} did not open WebSocket {path}. URLs: {self.websocket_urls[label]}')
+
+    def _wait_for_frame(self, label, direction, needle):
+        deadline = time.time() + (self.TIMEOUT / 1000)
+        while time.time() < deadline:
+            if any(needle in frame for frame in self.websocket_frames[label][direction]):
+                return
+            self.host_page.wait_for_timeout(100)
+        self.fail(
+            f'{label} did not receive {needle!r} in {direction} frames. '
+            f'Frames: {self.websocket_frames[label][direction]}'
+        )
+
+    def _assert_no_browser_errors(self):
+        js_errors = [
+            error for error in self.browser_errors
+            if (
+                'favicon.ico' not in error
+                and '404' not in error
+                and 'ERR_NETWORK_ACCESS_DENIED' not in error
+            )
+        ]
+        self.assertEqual(js_errors, [])
+
+    def test_send_question_and_end_quiz_update_host_and_player_without_reload(self):
+        monitor_url = (
+            f'{self.live_server_url}'
+            f'{reverse("admin_dashboard:quiz_monitor", args=[self.quiz.room_code])}'
+            f'?hub_session={self.session.code}'
+        )
+        play_url = (
+            f'{self.live_server_url}'
+            f'{reverse("quiz:play", args=[self.quiz.room_code, self.participant.name])}'
+            f'?hub_session={self.session.code}'
+        )
+
+        self.host_page.goto(monitor_url)
+        self.host_page.wait_for_selector('.send-question-btn:not([disabled])', timeout=self.TIMEOUT)
+        self.host_page.wait_for_function('() => !!window.adminGameMonitor', timeout=self.TIMEOUT)
+        self.player_page.goto(play_url)
+        self.player_page.wait_for_selector('#questionState', state='attached', timeout=self.TIMEOUT)
+        self._wait_for_ws_url('host', f'/ws/quiz/{self.quiz.room_code}/')
+        self._wait_for_ws_url('player', f'/ws/quiz/{self.quiz.room_code}/')
+        self._wait_for_frame('host', 'received', 'connection_established')
+        self._wait_for_frame('player', 'received', 'connection_established')
+
+        self.host_page.click('.send-question-btn')
+        self._wait_for_frame('host', 'sent', 'admin_send_question')
+        self._wait_for_frame('host', 'received', 'question_started')
+        self._wait_for_frame('player', 'received', 'question_started')
+        self._assert_no_browser_errors()
+
+        self.host_page.wait_for_selector('#activeQuestion', timeout=self.TIMEOUT)
+        self.host_page.wait_for_function(
+            """() => document.querySelector('#activeQuestion')?.textContent.includes('Browser live question?')""",
+            timeout=self.TIMEOUT,
+        )
+        self.player_page.wait_for_selector('#questionState:not(.d-none)', timeout=self.TIMEOUT)
+        self.player_page.wait_for_function(
+            """() => document.querySelector('#questionText')?.textContent.includes('Browser live question?')""",
+            timeout=self.TIMEOUT,
+        )
+        self.player_page.wait_for_selector('#submitAnswerBtn', timeout=self.TIMEOUT)
+
+        self.host_page.once('dialog', lambda dialog: dialog.accept())
+        self.host_page.click('#endQuizBtn')
+        self._wait_for_frame('host', 'sent', 'admin_end_quiz')
+        self._wait_for_frame('host', 'received', 'quiz_ended')
+        self._wait_for_frame('player', 'received', 'quiz_ended')
+
+        self.host_page.wait_for_function(
+            "() => document.body.dataset.hostGameStatus === 'completed'",
+            timeout=self.TIMEOUT,
+        )
+        self.assertEqual(self.host_page.locator('#hostEndStateBanner').count(), 0)
+        self.player_page.wait_for_selector('#quizEndedState:not(.d-none)', timeout=self.TIMEOUT)
+
+        self.quiz.refresh_from_db()
+        self.assertEqual(self.quiz.status, 'completed')
+        self._assert_no_browser_errors()
+
+    def test_manual_correction_during_active_question_is_revealed_only_after_question_end(self):
+        self.question.question_type = 'short_answer'
+        self.question.correct_answer = 'Berlin'
+        self.question.option_a = ''
+        self.question.option_b = ''
+        self.question.save(update_fields=['question_type', 'correct_answer', 'option_a', 'option_b', 'updated_at'])
+
+        monitor_url = (
+            f'{self.live_server_url}'
+            f'{reverse("admin_dashboard:quiz_monitor", args=[self.quiz.room_code])}'
+            f'?hub_session={self.session.code}'
+        )
+        play_url = (
+            f'{self.live_server_url}'
+            f'{reverse("quiz:play", args=[self.quiz.room_code, self.participant.name])}'
+            f'?hub_session={self.session.code}'
+        )
+        score_selector = f'.quiz-score-row[data-question-id="{self.question.id}"] .quiz-score-mark'
+
+        self.host_page.goto(monitor_url)
+        self.host_page.wait_for_selector('.send-question-btn:not([disabled])', timeout=self.TIMEOUT)
+        self.host_page.wait_for_function('() => !!window.adminGameMonitor', timeout=self.TIMEOUT)
+        self.player_page.goto(play_url)
+        self.player_page.wait_for_selector('#questionState', state='attached', timeout=self.TIMEOUT)
+        self._wait_for_ws_url('host', f'/ws/quiz/{self.quiz.room_code}/')
+        self._wait_for_ws_url('player', f'/ws/quiz/{self.quiz.room_code}/')
+
+        self.host_page.click('.send-question-btn')
+        self._wait_for_frame('host', 'received', 'question_started')
+        self._wait_for_frame('player', 'received', 'question_started')
+        self.player_page.wait_for_selector('#shortAnswerInput1', timeout=self.TIMEOUT)
+        self.player_page.fill('#shortAnswerInput1', 'Baerlin')
+        self.player_page.click('#submitAnswerBtn')
+        self._wait_for_frame('player', 'received', 'answer_submitted')
+        self.host_page.wait_for_selector('.promote-correct-btn', timeout=self.TIMEOUT)
+
+        self.host_page.once('dialog', lambda dialog: dialog.accept())
+        self.host_page.click('.promote-correct-btn')
+        self._wait_for_frame('host', 'received', 'answer_corrected')
+        self.host_page.wait_for_function(
+            "() => document.querySelector('#liveResponses')?.textContent.includes('Correct (manual)')",
+            timeout=self.TIMEOUT,
+        )
+        self.player_page.wait_for_timeout(500)
+        self.assertIn('__', self.player_page.locator(score_selector).inner_text())
+        self.assertFalse(any(
+            'answer_corrected' in frame
+            for frame in self.websocket_frames['player']['received']
+        ))
+        self.assertFalse(any(
+            'answer_submitted' in frame and 'is_correct' in frame
+            for frame in self.websocket_frames['player']['received']
+        ))
+
+        self.host_page.click('#endQuestionBtn')
+        self._wait_for_frame('player', 'received', 'question_ended')
+        self._wait_for_frame('player', 'received', 'answer_results')
+        self.player_page.wait_for_function(
+            """(selector) => {
+                const text = document.querySelector(selector)?.textContent || '';
+                return text.includes('✓') || text.includes('1/1');
+            }""",
+            arg=score_selector,
+            timeout=self.TIMEOUT,
+        )
+        self.player_page.wait_for_function(
+            "() => document.querySelector('#quizScoreTotal')?.textContent.trim() === '1/1'",
+            timeout=self.TIMEOUT,
+        )
+
+        self._assert_no_browser_errors()
+
+
 class QuizPlayScoreBoxTests(TransactionTestCase):
     def setUp(self):
         self.user = User.objects.create_user(username='quiz-score-user', password='pass')
@@ -652,6 +1177,46 @@ class QuizPlayScoreBoxTests(TransactionTestCase):
         self.assertContains(response, 'class="quiz-score-box score-box"')
         self.assertContains(response, 'id="quizScoreTotal"')
         self.assertContains(response, 'id="quizScoreTotal">1/3</div>')
+
+    def test_quiz_play_hides_active_question_answer_until_question_end(self):
+        question_one = self._create_question('Question one', 'True')
+        question_two = self._create_question('Question two', 'False')
+        self.quiz.selected_questions.set([question_one, question_two])
+        self.quiz.question_order = [question_one.id, question_two.id]
+        self.quiz.status = 'active'
+        self.quiz.current_question = question_one
+        self.quiz.question_start_time = timezone.now()
+        self.quiz.save(update_fields=['question_order', 'status', 'current_question', 'question_start_time'])
+        QuizSession.objects.create(
+            quiz=self.quiz,
+            current_question_number=1,
+            total_questions_sent=1,
+            is_question_active=True,
+        )
+        QuizAnswer.objects.create(
+            quiz=self.quiz,
+            participant=self.participant,
+            question=question_one,
+            answer_text='True',
+            time_taken=2.0,
+        )
+
+        response = self.client.get(
+            reverse('quiz:play', args=[self.quiz.room_code, self.participant.name]),
+            {'hub_session': self.participant.hub_session_code},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context['initial_progress_history'], [])
+        self.assertEqual(
+            response.context['question_scoreboard'],
+            [
+                {'id': question_one.id, 'number': 1, 'is_correct': None, 'status': 'current', 'points_earned': None, 'max_points': 1},
+                {'id': question_two.id, 'number': 2, 'is_correct': None, 'status': 'upcoming', 'points_earned': None, 'max_points': 1},
+            ],
+        )
+        self.assertEqual(response.context['score_total_correct'], 0)
+        self.assertContains(response, 'id="quizScoreTotal">0/2</div>')
 
     def test_quiz_play_uses_actual_current_send_order_not_config_order(self):
         question_one = self._create_question('Question one', 'True')
@@ -728,13 +1293,15 @@ class QuizPlayScoreBoxTests(TransactionTestCase):
         self.assertEqual(response.status_code, 200)
         self.assertNotContains(response, 'this.pushProgressEntry(!!data.is_correct);')
         self.assertNotContains(response, 'this.pushProgressEntry(data.is_correct, data.question_id);')
-        self.assertContains(response, 'this.storePendingProgressEvaluation(data.is_correct, data.question_id, data.points_earned);')
+        self.assertContains(response, 'data.evaluation_revealed')
         self.assertContains(response, 'this.applyPendingProgressEvaluation(endedQuestionId);')
         self.assertContains(response, 'this.applyPendingProgressEvaluationIfEnded(data.question_id);')
+        self.assertContains(response, 'this.applyQuestionEndResult(data, endedQuestionId);')
+        self.assertContains(response, 'data.answer_results.find')
         self.assertContains(response, "case 'answer_corrected':")
         self.assertContains(response, 'this.applyManualAnswerCorrection(data);')
-        self.assertContains(response, 'this.pushProgressEntry(!!data.is_correct, data.question_id, data.points_earned);')
-        self.assertContains(response, 'if (!awaitingFinalizedAnswer) {')
+        self.assertContains(response, 'this.storePendingProgressEvaluation(data.is_correct, data.question_id, data.points_earned);')
+        self.assertContains(response, '!this.hasProgressEntry(endedQuestionId)')
         self.assertContains(response, 'this.reorderScoreboardForQuestionStart(question.id);')
         self.assertContains(response, '<span class="quiz-score-empty score-box__empty">__</span>', html=True)
         self.assertContains(response, 'id="quizScoreTotal">0/2</div>')
@@ -856,16 +1423,20 @@ class QuizPlayScoreBoxTests(TransactionTestCase):
         async_to_sync(consumer.handle_participant_submit_answer)({
             'participant_name': self.participant.name,
             'hub_session': self.participant.hub_session_code,
+            'question_id': question.id,
             'answer': 'True',
             'time_taken': 2.5,
         })
 
         answer_message = next(message for message in direct_messages if message['type'] == 'answer_submitted')
         self.assertEqual(answer_message['question_id'], question.id)
-        self.assertTrue(answer_message['is_correct'])
+        self.assertTrue(answer_message['evaluation_pending'])
+        self.assertNotIn('is_correct', answer_message)
+        self.assertNotIn('points_earned', answer_message)
+        self.assertNotIn('total_score', answer_message)
 
 
-class QuizHostManualCorrectTests(TestCase):
+class QuizHostManualCorrectTests(TransactionTestCase):
     def setUp(self):
         self.user = User.objects.create_superuser(
             username='quiz_host_manual',
@@ -942,7 +1513,7 @@ class QuizHostManualCorrectTests(TestCase):
             quiz=quiz,
             participant=participant,
             question=question,
-            answer_text='Bärlin',
+            answer_text='Baerlin',
             time_taken=3.1,
         )
 
@@ -1038,7 +1609,7 @@ class QuizHostManualCorrectTests(TestCase):
         )
 
     @patch('admin_dashboard.views.get_channel_layer')
-    def test_host_promote_broadcasts_participant_scorebox_update(self, channel_layer_mock):
+    def test_host_promote_during_active_question_broadcasts_host_only_update(self, channel_layer_mock):
         question = QuizQuestion.objects.create(
             question_text='Capital?',
             question_type='short_answer',
@@ -1054,6 +1625,7 @@ class QuizHostManualCorrectTests(TestCase):
             current_question=question,
             question_start_time=timezone.now(),
         )
+        QuizSession.objects.create(quiz=quiz, is_question_active=True)
         participant = QuizParticipant.objects.create(quiz=quiz, name='Bob', is_active=True)
         answer = QuizAnswer.objects.create(
             quiz=quiz,
@@ -1081,6 +1653,55 @@ class QuizHostManualCorrectTests(TestCase):
         self.assertEqual(message['question_id'], question.id)
         self.assertTrue(message['is_correct'])
         self.assertEqual(message['total_score'], 1)
+        self.assertFalse(message['visible_to_participants'])
+
+    def test_question_end_payload_preserves_manual_correction_as_final_result(self):
+        question = QuizQuestion.objects.create(
+            question_text='Capital?',
+            question_type='short_answer',
+            correct_answer='Berlin',
+            created_by=self.user,
+        )
+        quiz = Quiz.objects.create(
+            title='Quick Quiz',
+            creator=self.user,
+            status='active',
+            started_at=timezone.now(),
+            current_question=question,
+            question_start_time=timezone.now(),
+        )
+        QuizSession.objects.create(quiz=quiz, is_question_active=True)
+        participant = QuizParticipant.objects.create(quiz=quiz, name='Bob', is_active=True)
+        answer = QuizAnswer.objects.create(
+            quiz=quiz,
+            participant=participant,
+            question=question,
+            answer_text='Bärlin',
+            time_taken=3.1,
+        )
+        answer.promote_short_answer_to_correct()
+
+        consumer = QuizConsumer()
+        consumer.room_code = quiz.room_code
+        consumer.room_group_name = f'quiz_{quiz.room_code}'
+        consumer.channel_layer = FakeChannelLayer()
+
+        async_to_sync(consumer.handle_admin_end_question)({})
+
+        question_ended = next(
+            message for _, message in consumer.channel_layer.group_messages
+            if message['type'] == 'question_ended'
+        )
+        self.assertEqual(question_ended['correct_answer']['question_id'], question.id)
+        self.assertEqual(
+            question_ended['answer_results'],
+            [{
+                'participant_name': participant.name,
+                'question_id': question.id,
+                'is_correct': True,
+                'points_earned': 1,
+            }],
+        )
 
     def test_quiz_monitor_contains_manual_correct_hook(self):
         quiz = Quiz.objects.create(title='Quick Quiz', creator=self.user, status='active')

@@ -3,6 +3,7 @@ from django.contrib.auth.decorators import login_required, user_passes_test
 from django.contrib.auth.models import User
 from django.contrib.auth import authenticate, login, logout
 from django.core.paginator import Paginator
+from django.core.exceptions import ValidationError
 from django.http import JsonResponse
 from django.views.decorators.http import require_POST
 from django.db import transaction
@@ -20,7 +21,8 @@ from sorting_ladder.models import SortingLadderGame, SortingLadderParticipant, S
 from Assign.models import AssignQuiz, AssignQuestion, AssignParticipant, AssignBundle
 from Assign.scoreboard import build_question_scoreboard
 from Estimation.models import EstimationQuiz, EstimationQuestion, EstimationParticipant, EstimationBundle
-from where_is_this.models import WhereQuiz, WhereQuestion, WhereParticipant, WhereBundle
+from where_is_this.models import WhereQuiz, WhereQuestion, WhereParticipant, WhereBundle, WhereDistanceZone
+from where_is_this.geo import WEB_MERCATOR_MAX_LATITUDE
 from black_jack_quiz.models import BlackJackQuiz, BlackJackQuestion, BlackJackParticipant, BlackJackBundle
 from clue_rush.models import ClueRushGame, ClueRushParticipant, ClueQuestion, Clue, ClueAnswer, ClueRushSession
 from who_is_that.models import WhoThatQuiz, WhoThatQuestion, WhoThatParticipant, WhoThatBundle
@@ -33,6 +35,9 @@ from wer_weiss_mehr.models import (
     WerWeissMehrSession,
     normalize_answer_text,
 )
+from buzzer.models import BuzzerGame, BuzzerParticipant
+from host_points.models import HostPointsGame, HostPointsParticipant
+from wann_war_das.models import WannWarDasAnswer, WannWarDasGame, WannWarDasParticipant, WannWarDasQuestion
 from wer_weiss_mehr.services import build_game_state
 from games_hub.active_game_guard import (
     _end_game_cleanly,
@@ -166,6 +171,7 @@ def end_session(request):
             game_models = [
                 Quiz, EstimationQuiz, AssignQuiz, WhereQuiz, WhoQuiz,
                 WhoThatQuiz, BlackJackQuiz, ClueRushGame, SortingLadderGame,
+                BuzzerGame, HostPointsGame, WannWarDasGame,
             ]
             now = timezone.now()
             for model in game_models:
@@ -264,6 +270,9 @@ def duplicate_session(request):
             'sorting_ladder': (SortingLadderGame, None),
             'clue_rush':      (ClueRushGame,      None),
             'wer_weiss_mehr': (WerWeissMehrGame,  None),
+            'buzzer':         (BuzzerGame,        None),
+            'host_points':    (HostPointsGame,    None),
+            'wann_war_das':   (WannWarDasGame,   None),
         }
 
         for step in original.steps.order_by('order'):
@@ -284,8 +293,18 @@ def duplicate_session(request):
                 if step.room_code:
                     try:
                         orig_game = game_model.objects.get(room_code=step.room_code)
-                        new_game.selected_questions.set(orig_game.selected_questions.all())
-                        if step.game_key == 'blackjack' and getattr(orig_game, 'tutorial_set_number', None):
+                        if hasattr(new_game, 'selected_questions') and hasattr(orig_game, 'selected_questions'):
+                            new_game.selected_questions.set(orig_game.selected_questions.all())
+                        if step.game_key == 'buzzer':
+                            new_game.points_per_correct = orig_game.points_per_correct
+                            new_game.planned_rounds = orig_game.planned_rounds
+                            new_game.save(update_fields=['points_per_correct', 'planned_rounds'])
+                        elif step.game_key == 'host_points':
+                            pass
+                        elif step.game_key == 'wann_war_das':
+                            new_game.question_order = getattr(orig_game, 'question_order', [])
+                            new_game.save(update_fields=['question_order'])
+                        elif step.game_key == 'blackjack' and getattr(orig_game, 'tutorial_set_number', None):
                             new_game.tutorial_set_number = orig_game.tutorial_set_number
                             new_game.save(update_fields=['tutorial_set_number'])
                         elif getattr(orig_game, 'tutorial_question_id', None):
@@ -2129,6 +2148,9 @@ def sessions_overview(request):
     _add_games(WhoThatQuiz.objects.filter(status='active'), 'who_that', 'Who Is That?', 'admin_dashboard:who_that_monitor', 'admin_dashboard:end_who_that_quiz_by_room_code')
     _add_games(BlackJackQuiz.objects.filter(status='active'), 'blackjack', 'Black Jack Quiz', 'admin_dashboard:blackjack_monitor', 'admin_dashboard:end_blackjack_quiz_by_room_code')
     _add_games(ClueRushGame.objects.filter(status='active'), 'clue_rush', 'Clue Rush', 'admin_dashboard:clue_rush_monitor', 'admin_dashboard:end_clue_rush_game_by_room_code')
+    _add_games(BuzzerGame.objects.filter(status='active'), 'buzzer', 'Buzzer', 'admin_dashboard:buzzer_monitor', 'admin_dashboard:end_buzzer_game_by_room_code')
+    _add_games(HostPointsGame.objects.filter(status='active'), 'host_points', 'Host-Punktevergabe', 'admin_dashboard:host_points_monitor', 'admin_dashboard:end_host_points_game_by_room_code')
+    _add_games(WannWarDasGame.objects.filter(status='active'), 'wann_war_das', 'Wann war das?', 'admin_dashboard:wann_war_das_monitor', 'admin_dashboard:end_wann_war_das_game_by_room_code')
     _add_games(SortingLadderGame.objects.filter(status='active'), 'sorting_ladder', 'Sorting Ladder', 'admin_dashboard:sorting_ladder_monitor', 'admin_dashboard:end_sorting_ladder_game_by_room_code')
     _add_games(WerWeissMehrGame.objects.filter(status='active'), 'wer_weiss_mehr', 'Wer weiß mehr?', 'admin_dashboard:wer_weiss_mehr_monitor', 'admin_dashboard:end_wer_weiss_mehr_game_by_room_code')
 
@@ -2226,6 +2248,9 @@ def manage_games(request):
     _add(BlackJackQuiz.objects.all().order_by('-created_at'), 'blackjack', 'Black Jack Quiz', 'admin_dashboard:blackjack_monitor')
     _add(SortingLadderGame.objects.all().order_by('-created_at'), 'sorting_ladder', 'Sorting Ladder', 'admin_dashboard:sorting_ladder_monitor')
     _add(ClueRushGame.objects.all().order_by('-created_at'), 'clue_rush', 'Clue Rush', 'admin_dashboard:clue_rush_monitor')
+    _add(BuzzerGame.objects.all().order_by('-created_at'), 'buzzer', 'Buzzer', 'admin_dashboard:buzzer_monitor')
+    _add(HostPointsGame.objects.all().order_by('-created_at'), 'host_points', 'Host-Punktevergabe', 'admin_dashboard:host_points_monitor')
+    _add(WannWarDasGame.objects.all().order_by('-created_at'), 'wann_war_das', 'Wann war das?', 'admin_dashboard:wann_war_das_monitor')
     _add(WerWeissMehrGame.objects.all().order_by('-created_at'), 'wer_weiss_mehr', 'Wer weiß mehr?', 'admin_dashboard:wer_weiss_mehr_monitor')
 
     all_games.sort(key=lambda g: g['created_at'], reverse=True)
@@ -2236,6 +2261,398 @@ def manage_games(request):
 def create_game(request):
     """New game creation form."""
     return render(request, 'admin_dashboard/manage_games.html')
+
+
+def _parse_optional_positive_int(value):
+    if value in (None, ''):
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
+@require_POST
+@admin_required
+def create_buzzer_game(request):
+    try:
+        data = json.loads(request.body or '{}')
+        title = (data.get('title') or '').strip()
+        if not title:
+            return JsonResponse({'success': False, 'error': 'title is required'}, status=400)
+        points_per_correct = _parse_optional_positive_int(data.get('points_per_correct')) or 1
+        planned_rounds = _parse_optional_positive_int(data.get('planned_rounds'))
+        game = BuzzerGame.objects.create(
+            title=title,
+            internal_description=(data.get('internal_description') or '').strip(),
+            points_per_correct=points_per_correct,
+            planned_rounds=planned_rounds,
+            creator=request.user,
+        )
+        fields_to_update = []
+        _apply_tutorial_fields(game, data, fields_to_update)
+        if fields_to_update:
+            game.save(update_fields=fields_to_update)
+        return JsonResponse({'success': True, 'game_id': game.id, 'room_code': game.room_code})
+    except json.JSONDecodeError:
+        return JsonResponse({'success': False, 'error': 'Invalid JSON'}, status=400)
+
+
+@require_POST
+@admin_required
+def update_buzzer_game(request):
+    try:
+        data = json.loads(request.body or '{}')
+        game = get_object_or_404(BuzzerGame, id=data.get('game_id'))
+        if not request.user.is_superuser and game.creator != request.user:
+            return JsonResponse({'success': False, 'error': 'Unauthorized'}, status=403)
+
+        fields_to_update = []
+        if 'title' in data:
+            game.title = (data.get('title') or '').strip() or game.title
+            fields_to_update.append('title')
+        if 'internal_description' in data:
+            game.internal_description = (data.get('internal_description') or '').strip()
+            fields_to_update.append('internal_description')
+        if 'points_per_correct' in data:
+            game.points_per_correct = _parse_optional_positive_int(data.get('points_per_correct')) or 1
+            fields_to_update.append('points_per_correct')
+        if 'planned_rounds' in data:
+            game.planned_rounds = _parse_optional_positive_int(data.get('planned_rounds'))
+            fields_to_update.append('planned_rounds')
+        _apply_tutorial_fields(game, data, fields_to_update)
+        if fields_to_update:
+            game.save(update_fields=list(dict.fromkeys(fields_to_update)))
+        return JsonResponse({'success': True})
+    except json.JSONDecodeError:
+        return JsonResponse({'success': False, 'error': 'Invalid JSON'}, status=400)
+
+
+@admin_required
+def buzzer_monitor(request, room_code):
+    game = get_object_or_404(BuzzerGame, room_code=room_code)
+    hub_session = _extract_hub_session_code(request) or _get_active_hub_session_code_for_room('buzzer', room_code)
+    if hub_session:
+        game.ensure_snapshot_participants(hub_session)
+    return render(request, 'admin_dashboard/buzzer_monitor.html', {
+        'game': game,
+        'hub_session': hub_session or '',
+        'state': game.serialize_state(hub_session),
+    })
+
+
+@require_POST
+@admin_required
+def end_buzzer_game_by_room_code(request, room_code):
+    game = get_object_or_404(BuzzerGame, room_code=room_code)
+    game.end_quiz()
+    if request.headers.get('x-requested-with') == 'XMLHttpRequest' or request.content_type == 'application/json':
+        return JsonResponse({'success': True})
+    return redirect('admin_dashboard:sessions_overview')
+
+
+@require_POST
+@admin_required
+def create_host_points_game(request):
+    try:
+        data = json.loads(request.body or '{}')
+        title = (data.get('title') or '').strip()
+        if not title:
+            return JsonResponse({'success': False, 'error': 'title is required'}, status=400)
+        game = HostPointsGame.objects.create(
+            title=title,
+            internal_description=(data.get('internal_description') or '').strip(),
+            creator=request.user,
+        )
+        fields_to_update = []
+        _apply_tutorial_fields(game, data, fields_to_update)
+        if fields_to_update:
+            game.save(update_fields=fields_to_update)
+        return JsonResponse({'success': True, 'game_id': game.id, 'room_code': game.room_code})
+    except json.JSONDecodeError:
+        return JsonResponse({'success': False, 'error': 'Invalid JSON'}, status=400)
+
+
+@require_POST
+@admin_required
+def update_host_points_game(request):
+    try:
+        data = json.loads(request.body or '{}')
+        game = get_object_or_404(HostPointsGame, id=data.get('game_id'))
+        if not request.user.is_superuser and game.creator != request.user:
+            return JsonResponse({'success': False, 'error': 'Unauthorized'}, status=403)
+
+        fields_to_update = []
+        if 'title' in data:
+            game.title = (data.get('title') or '').strip() or game.title
+            fields_to_update.append('title')
+        if 'internal_description' in data:
+            game.internal_description = (data.get('internal_description') or '').strip()
+            fields_to_update.append('internal_description')
+        _apply_tutorial_fields(game, data, fields_to_update)
+        if fields_to_update:
+            game.save(update_fields=list(dict.fromkeys(fields_to_update)))
+        return JsonResponse({'success': True})
+    except json.JSONDecodeError:
+        return JsonResponse({'success': False, 'error': 'Invalid JSON'}, status=400)
+
+
+@admin_required
+def host_points_monitor(request, room_code):
+    game = get_object_or_404(HostPointsGame, room_code=room_code)
+    hub_session = _extract_hub_session_code(request) or _get_active_hub_session_code_for_room('host_points', room_code)
+    if hub_session:
+        game.ensure_snapshot_participants(hub_session)
+    return render(request, 'admin_dashboard/host_points_monitor.html', {
+        'game': game,
+        'hub_session': hub_session or '',
+        'state': game.serialize_state(hub_session),
+    })
+
+
+@require_POST
+@admin_required
+def end_host_points_game_by_room_code(request, room_code):
+    game = get_object_or_404(HostPointsGame, room_code=room_code)
+    game.end_quiz()
+    if request.headers.get('x-requested-with') == 'XMLHttpRequest' or request.content_type == 'application/json':
+        return JsonResponse({'success': True})
+    return redirect('admin_dashboard:sessions_overview')
+
+
+def _parse_required_float(data, key, label):
+    value = data.get(key)
+    if value in (None, ''):
+        raise ValueError(f'{label} is required.')
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        raise ValueError(f'{label} must be numeric.')
+
+
+def _parse_float_default(data, key, default):
+    value = data.get(key, default)
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _parse_int_default(data, key, default):
+    value = data.get(key, default)
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _wann_question_payload(question):
+    return {
+        'id': question.id,
+        'question_text': question.question_text,
+        'correct_answer': question.correct_answer,
+        'unit': question.unit,
+        'start_tolerance': question.start_tolerance,
+        'tolerance_increment': question.tolerance_increment,
+        'seconds_per_step': question.seconds_per_step,
+        'max_tolerance': question.max_tolerance,
+        'max_points': question.max_points,
+        'min_points': question.min_points,
+        'time_limit': question.time_limit,
+        'explanation': question.explanation,
+        'tolerance_display': f'{question.start_tolerance:g} -> {question.max_tolerance:g}',
+        'points_display': f'{question.max_points}/{question.min_points}',
+    }
+
+
+def _build_wann_question_from_payload(data, user, question=None):
+    target = question or WannWarDasQuestion(created_by=user)
+    target.question_text = (data.get('question_text') or data.get('question') or '').strip()
+    if not target.question_text:
+        raise ValueError('Question text is required.')
+    target.correct_answer = _parse_required_float(data, 'correct_answer', 'Correct answer')
+    target.unit = (data.get('unit') or 'Jahr').strip()
+    target.start_tolerance = _parse_float_default(data, 'start_tolerance', 0)
+    target.tolerance_increment = _parse_float_default(data, 'tolerance_increment', 1)
+    target.seconds_per_step = _parse_int_default(data, 'seconds_per_step', 5)
+    target.max_tolerance = _parse_float_default(data, 'max_tolerance', 10)
+    target.max_points = _parse_int_default(data, 'max_points', 10)
+    target.min_points = _parse_int_default(data, 'min_points', 1)
+    raw_time_limit = data.get('time_limit')
+    target.time_limit = _parse_int_default(data, 'time_limit', None) if raw_time_limit not in (None, '') else None
+    target.explanation = (data.get('explanation') or '').strip()
+    target.is_active = True
+    target.save()
+    return target
+
+
+@require_POST
+@admin_required
+def create_wann_war_das_game(request):
+    try:
+        data = json.loads(request.body or '{}')
+        title = (data.get('title') or '').strip()
+        if not title:
+            return JsonResponse({'success': False, 'error': 'title is required'}, status=400)
+        question_ids = _normalize_question_ids(data.get('question_ids') or [])
+        game = WannWarDasGame.objects.create(
+            title=title,
+            internal_description=(data.get('internal_description') or '').strip(),
+            creator=request.user,
+            question_order=question_ids,
+        )
+        game.selected_questions.set(WannWarDasQuestion.objects.filter(id__in=question_ids))
+        fields_to_update = ['question_order']
+        _apply_tutorial_fields(game, data, fields_to_update)
+        try:
+            _apply_tutorial_question_selection(game, data, question_ids, fields_to_update)
+        except ValueError as exc:
+            game.delete()
+            return JsonResponse({'success': False, 'error': str(exc)}, status=400)
+        if fields_to_update:
+            game.save(update_fields=list(dict.fromkeys(fields_to_update)))
+        return JsonResponse({'success': True, 'game_id': game.id, 'room_code': game.room_code})
+    except json.JSONDecodeError:
+        return JsonResponse({'success': False, 'error': 'Invalid JSON'}, status=400)
+
+
+@require_POST
+@admin_required
+def update_wann_war_das_game(request):
+    try:
+        data = json.loads(request.body or '{}')
+        game = get_object_or_404(WannWarDasGame, id=data.get('game_id') or data.get('quiz_id'))
+        if not request.user.is_superuser and game.creator != request.user:
+            return JsonResponse({'success': False, 'error': 'Unauthorized'}, status=403)
+        question_ids = _normalize_question_ids(data.get('question_ids') or [])
+        fields_to_update = []
+        if 'title' in data:
+            game.title = (data.get('title') or '').strip() or game.title
+            fields_to_update.append('title')
+        if 'internal_description' in data:
+            game.internal_description = (data.get('internal_description') or '').strip()
+            fields_to_update.append('internal_description')
+        game.question_order = question_ids
+        fields_to_update.append('question_order')
+        game.selected_questions.set(WannWarDasQuestion.objects.filter(id__in=question_ids))
+        _apply_tutorial_fields(game, data, fields_to_update)
+        try:
+            _apply_tutorial_question_selection(game, data, question_ids, fields_to_update)
+        except ValueError as exc:
+            return JsonResponse({'success': False, 'error': str(exc)}, status=400)
+        if fields_to_update:
+            game.save(update_fields=list(dict.fromkeys(fields_to_update)))
+        return JsonResponse({'success': True})
+    except json.JSONDecodeError:
+        return JsonResponse({'success': False, 'error': 'Invalid JSON'}, status=400)
+
+
+@admin_required
+def wann_war_das_monitor(request, room_code):
+    game = get_object_or_404(WannWarDasGame, room_code=room_code)
+    hub_session = _extract_hub_session_code(request) or _get_active_hub_session_code_for_room('wann_war_das', room_code)
+    if hub_session:
+        game.ensure_snapshot_participants(hub_session)
+    available_questions = game.get_ordered_questions(hub_session, include_tutorial=True)
+    if not available_questions:
+        available_questions = list(WannWarDasQuestion.objects.filter(created_by=request.user, is_active=True).order_by('-created_at'))
+    return render(request, 'admin_dashboard/wann_war_das_monitor.html', {
+        'game': game,
+        'hub_session': hub_session or '',
+        'available_questions': available_questions,
+        'state': game.serialize_state(hub_session),
+    })
+
+
+@require_POST
+@admin_required
+def end_wann_war_das_game_by_room_code(request, room_code):
+    game = get_object_or_404(WannWarDasGame, room_code=room_code)
+    game.end_quiz()
+    if request.headers.get('x-requested-with') == 'XMLHttpRequest' or request.content_type == 'application/json':
+        return JsonResponse({'success': True})
+    return redirect('admin_dashboard:sessions_overview')
+
+
+@admin_required
+def get_wann_war_das_questions(request):
+    search = (request.GET.get('search') or '').strip()
+    qs = WannWarDasQuestion.objects.filter(is_active=True)
+    if search:
+        qs = qs.filter(question_text__icontains=search)
+    paginator = Paginator(qs.order_by('-created_at'), 25)
+    page_obj = paginator.get_page(request.GET.get('page') or 1)
+    return JsonResponse({
+        'success': True,
+        'questions': [_wann_question_payload(question) for question in page_obj.object_list],
+        'count': paginator.count,
+        'pages': paginator.num_pages,
+        'current_page': page_obj.number,
+    })
+
+
+@require_POST
+@admin_required
+def add_wann_war_das_question(request):
+    try:
+        data = json.loads(request.body or '{}')
+        question = _build_wann_question_from_payload(data, request.user)
+        return JsonResponse({'success': True, 'question_id': question.id, 'question': _wann_question_payload(question)})
+    except (json.JSONDecodeError, ValueError, ValidationError) as exc:
+        return JsonResponse({'success': False, 'error': str(exc)}, status=400)
+
+
+@admin_required
+def get_wann_war_das_question_detail(request, question_id):
+    question = get_object_or_404(WannWarDasQuestion, id=question_id)
+    return JsonResponse({'success': True, 'question': _wann_question_payload(question)})
+
+
+@require_POST
+@admin_required
+def update_wann_war_das_question(request):
+    try:
+        data = json.loads(request.body or '{}')
+        question = get_object_or_404(WannWarDasQuestion, id=data.get('question_id'))
+        if not request.user.is_superuser and question.created_by != request.user:
+            return JsonResponse({'success': False, 'error': 'Unauthorized'}, status=403)
+        question = _build_wann_question_from_payload(data, request.user, question)
+        return JsonResponse({'success': True, 'question_id': question.id, 'question': _wann_question_payload(question)})
+    except (json.JSONDecodeError, ValueError, ValidationError) as exc:
+        return JsonResponse({'success': False, 'error': str(exc)}, status=400)
+
+
+@require_POST
+@admin_required
+def delete_wann_war_das_question(request):
+    try:
+        data = json.loads(request.body or '{}')
+        question = get_object_or_404(WannWarDasQuestion, id=data.get('question_id'))
+        if not request.user.is_superuser and question.created_by != request.user:
+            return JsonResponse({'success': False, 'error': 'Unauthorized'}, status=403)
+        question.is_active = False
+        question.save(update_fields=['is_active', 'updated_at'])
+        return JsonResponse({'success': True})
+    except json.JSONDecodeError:
+        return JsonResponse({'success': False, 'error': 'Invalid JSON'}, status=400)
+
+
+@admin_required
+def get_wann_war_das_selected_questions(request, quiz_id):
+    game = get_object_or_404(WannWarDasGame, id=quiz_id)
+    questions_by_id = {question.id: question for question in game.selected_questions.filter(is_active=True)}
+    ordered = []
+    for question_id in _normalize_question_ids(game.question_order):
+        question = questions_by_id.pop(question_id, None)
+        if question:
+            ordered.append(question)
+    ordered.extend(questions_by_id.values())
+    return JsonResponse({
+        'success': True,
+        'questions': [_wann_question_payload(question) for question in ordered],
+        'tutorial_question_id': game.tutorial_question_id,
+    })
 
 
 @require_POST
@@ -2260,6 +2677,9 @@ def delete_game_instance(request):
             'clue_rush':      ClueRushGame,
             'sorting_ladder': SortingLadderGame,
             'wer_weiss_mehr': WerWeissMehrGame,
+            'buzzer':         BuzzerGame,
+            'host_points':    HostPointsGame,
+            'wann_war_das':   WannWarDasGame,
         }
         model = MODEL_MAP.get(game_type)
         if not model:
@@ -2291,6 +2711,9 @@ def delete_all_game_instances(request):
         'clue_rush':      ClueRushGame,
         'sorting_ladder': SortingLadderGame,
         'wer_weiss_mehr': WerWeissMehrGame,
+        'buzzer':         BuzzerGame,
+        'host_points':    HostPointsGame,
+        'wann_war_das':   WannWarDasGame,
     }
     for model in MODEL_MAP.values():
         model.objects.all().delete()
@@ -2312,14 +2735,18 @@ def edit_game(request, game_type, game_id):
         'sorting_ladder': SortingLadderGame,
         'clue_rush': ClueRushGame,
         'wer_weiss_mehr': WerWeissMehrGame,
+        'buzzer': BuzzerGame,
+        'host_points': HostPointsGame,
+        'wann_war_das': WannWarDasGame,
     }
     model = type_to_model.get(game_type)
     if not model:
         from django.http import Http404
         raise Http404('Unknown game type')
     game = get_object_or_404(model, id=game_id)
+    has_selected_questions = hasattr(game, 'selected_questions')
     _question_order = getattr(game, 'question_order', []) or []
-    if _question_order:
+    if has_selected_questions and _question_order:
         _id_set = set(game.selected_questions.values_list('id', flat=True))
         flattened_question_order = []
         for raw_item in _question_order:
@@ -2329,8 +2756,10 @@ def edit_game(request, game_type, game_id):
                 flattened_question_order.append(raw_item)
         selected_ids = [i for i in flattened_question_order if i in _id_set]
         selected_ids += [i for i in _id_set if i not in set(selected_ids)]
-    else:
+    elif has_selected_questions:
         selected_ids = list(game.selected_questions.values_list('id', flat=True))
+    else:
+        selected_ids = []
     return render(request, 'admin_dashboard/manage_games.html', {
         'edit_mode': True,
         'game_id': game_id,
@@ -2343,6 +2772,8 @@ def edit_game(request, game_type, game_id):
         'game_tutorial_set_number': getattr(game, 'tutorial_set_number', None) if game_type == 'blackjack' else None,
         'game_type': game_type,
         'game_scoring_mode': getattr(game, 'scoring_mode', ''),
+        'game_points_per_correct': getattr(game, 'points_per_correct', 1),
+        'game_planned_rounds': getattr(game, 'planned_rounds', None),
         'selected_ids_json': _json.dumps(selected_ids),
     })
 
@@ -2582,7 +3013,13 @@ def get_quiz_selected_questions(request, quiz_id: int):
         if _order:
             _omap = {i: pos for pos, i in enumerate(_order)}
             questions.sort(key=lambda q: _omap.get(q['id'], len(_order)))
-        return JsonResponse({'success': True, 'questions': questions, 'count': len(questions), 'tutorial_question_id': quiz.tutorial_question_id})
+        return JsonResponse({
+            'success': True,
+            'questions': questions,
+            'count': len(questions),
+            'tutorial_question_id': quiz.tutorial_question_id,
+            'scoring_mode': getattr(quiz, 'scoring_mode', None),
+        })
     except Exception as e:
         return JsonResponse({'success': False, 'error': str(e)}, status=400)
 
@@ -2740,6 +3177,7 @@ def get_estimation_selected_questions(request, quiz_id: int):
             'zone_count': getattr(q, 'zone_count', None),
             'points_display': q.get_zone_max_points(),
             'unit': getattr(q, 'unit', None),
+            'unit_display': q.get_unit_display_text(),
             'created_at': q.created_at.strftime('%Y-%m-%d %H:%M:%S'),
             'is_active': getattr(q, 'is_active', True),
             'is_tutorial': q.id == quiz.tutorial_question_id,
@@ -2870,6 +3308,9 @@ def update_where_custom_quiz(request):
         if 'internal_description' in data:
             quiz.internal_description = (data['internal_description'] or '').strip()
             fields_to_update.append('internal_description')
+        if 'scoring_mode' in data:
+            quiz.scoring_mode = _normalize_where_scoring_mode(data.get('scoring_mode'))
+            fields_to_update.append('scoring_mode')
         _apply_tutorial_fields(quiz, data, fields_to_update)
         if fields_to_update:
             quiz.save(update_fields=fields_to_update)
@@ -3377,12 +3818,17 @@ def promote_quiz_answer_correct(request, room_code):
             else:
                 answer.promote_short_answer_to_correct()
             answer.participant.refresh_from_db(fields=['total_score'])
+            correction_is_during_active_question = bool(
+                quiz.current_question_id == answer.question_id
+                and QuizSession.objects.filter(quiz=quiz, is_question_active=True).exists()
+            )
 
         payload = {'success': True, **_serialize_quiz_live_response(answer)}
 
         channel_layer = get_channel_layer()
         if channel_layer is not None:
             event_payload = {key: value for key, value in payload.items() if key != 'success'}
+            event_payload['visible_to_participants'] = not correction_is_during_active_question
             async_to_sync(channel_layer.group_send)(
                 f'quiz_{quiz.room_code}',
                 {
@@ -3812,13 +4258,13 @@ def end_quiz(request):
                 'success': False,
                 'error': 'You are not authorized to end this quiz.'
             }, status=403)
-        
-        quiz.end_quiz('completed')
-        
+
         # End current question if active
         if hasattr(quiz, 'session'):
             quiz.session.end_current_question()
-        
+
+        quiz.end_quiz('completed')
+
         return JsonResponse({'success': True})
     except Exception as e:
         return JsonResponse({
@@ -3868,13 +4314,13 @@ def end_quiz_by_room_code(request, room_code):
                 'success': False,
                 'error': 'You are not authorized to end this quiz.'
             }, status=403)
-        
-        quiz.end_quiz('completed')
-        
+
         # End current question if active
         if hasattr(quiz, 'session'):
             quiz.session.end_current_question()
-        
+
+        quiz.end_quiz('completed')
+
         return JsonResponse({'success': True})
     except Exception as e:
         return JsonResponse({
@@ -4190,7 +4636,87 @@ def api_live_responses(request, room_code):
 
 # WHERE IS THIS GAME VIEWS
 
-from where_is_this.models import WhereQuiz, WhereQuestion, WhereParticipant, WhereAnswer, WhereSession
+from where_is_this.models import WhereQuiz, WhereQuestion, WhereParticipant, WhereAnswer, WhereSession, WhereDistanceZone
+
+def _normalize_where_scoring_mode(value):
+    return 'rank' if value == 'rank' else 'zones'
+
+
+def _parse_where_zones_from_request(data):
+    raw_zones = data.get('distance_zones') or data.get('zones') or ''
+    if raw_zones:
+        if isinstance(raw_zones, str):
+            zones = json.loads(raw_zones)
+        else:
+            zones = raw_zones
+    else:
+        points = int(data.get('points', 100))
+        zones = [
+            {
+                'min_distance_km': 0,
+                'max_distance_km': float(data.get('perfect_distance', 10)),
+                'points': points,
+                'label': 'Zone 1',
+            },
+            {
+                'min_distance_km': float(data.get('perfect_distance', 10)),
+                'max_distance_km': float(data.get('good_distance', 100)),
+                'points': int(points * 0.75),
+                'label': 'Zone 2',
+            },
+            {
+                'min_distance_km': float(data.get('good_distance', 100)),
+                'max_distance_km': float(data.get('fair_distance', 500)),
+                'points': int(points * 0.5),
+                'label': 'Zone 3',
+            },
+            {
+                'min_distance_km': float(data.get('fair_distance', 500)),
+                'max_distance_km': float(data.get('poor_distance', 2000)),
+                'points': int(points * 0.25),
+                'label': 'Zone 4',
+            },
+        ]
+
+    parsed = []
+    for zone in zones:
+        min_distance = float(zone.get('min_distance_km', zone.get('min', 0)))
+        max_distance = float(zone.get('max_distance_km', zone.get('max')))
+        points = int(zone.get('points', 0))
+        label = (zone.get('label') or '').strip()
+        if min_distance < 0:
+            raise ValueError('Zone minimum distance must be >= 0.')
+        if max_distance <= min_distance:
+            raise ValueError('Zone maximum distance must be greater than minimum distance.')
+        if points < 0:
+            raise ValueError('Zone points must be >= 0.')
+        parsed.append({
+            'min_distance_km': min_distance,
+            'max_distance_km': max_distance,
+            'points': points,
+            'label': label,
+        })
+
+    parsed.sort(key=lambda zone: (zone['min_distance_km'], zone['max_distance_km']))
+    previous_max = None
+    for zone in parsed:
+        if previous_max is not None and zone['min_distance_km'] < previous_max:
+            raise ValueError('Distance zones must not overlap.')
+        previous_max = zone['max_distance_km']
+    return parsed
+
+
+def _sync_where_distance_zones(question, zones):
+    question.distance_zones.all().delete()
+    for zone in zones:
+        WhereDistanceZone.objects.create(
+            question=question,
+            min_distance_km=zone['min_distance_km'],
+            max_distance_km=zone['max_distance_km'],
+            points=zone['points'],
+            label=zone['label'],
+        )
+
 
 @admin_required
 def where_management(request):
@@ -4304,6 +4830,7 @@ def create_where_custom_quiz(request):
             tutorial_enabled=tutorial_enabled,
             tutorial_title=tutorial_title,
             tutorial_text=tutorial_text,
+            scoring_mode=_normalize_where_scoring_mode(data.get('scoring_mode')),
             question_order=[int(i) for i in question_ids],
             creator=request.user,
             status='waiting'
@@ -4336,6 +4863,8 @@ def add_where_question(request):
         longitude = float(request.POST.get('longitude'))
         hint_text = request.POST.get('hint_text', '').strip()
         explanation = request.POST.get('explanation', '').strip()
+        map_type = request.POST.get('map_type', 'world_mercator') or 'world_mercator'
+        distance_zones = _parse_where_zones_from_request(request.POST)
         
         # Handle image upload
         image = request.FILES.get('image')
@@ -4354,10 +4883,15 @@ def add_where_question(request):
             }, status=400)
         
         # Validate coordinates
-        if not (-90 <= latitude <= 90) or not (-180 <= longitude <= 180):
+        if not (-WEB_MERCATOR_MAX_LATITUDE <= latitude <= WEB_MERCATOR_MAX_LATITUDE) or not (-180 <= longitude <= 180):
             return JsonResponse({
                 'success': False,
-                'error': 'Invalid coordinates provided.'
+                'error': 'Invalid coordinates provided for the world map.'
+            }, status=400)
+        if map_type != 'world_mercator':
+            return JsonResponse({
+                'success': False,
+                'error': 'Only the world map is supported.'
             }, status=400)
         
         # Create question
@@ -4371,11 +4905,13 @@ def add_where_question(request):
             poor_distance=poor_distance,
             correct_latitude=latitude,
             correct_longitude=longitude,
+            map_type=map_type,
             hint_text=hint_text if hint_text else None,
             explanation=explanation if explanation else None,
             image=image,
             created_by=request.user
         )
+        _sync_where_distance_zones(question, distance_zones)
         
         return JsonResponse({
             'success': True,
@@ -4544,6 +5080,8 @@ def get_where_question_detail(request, question_id):
             'poor_distance': question.poor_distance,
             'latitude': question.correct_latitude,
             'longitude': question.correct_longitude,
+            'map_type': question.map_type,
+            'distance_zones': question.get_zone_reveal_data()['zones'],
             'hint_text': question.hint_text or '',
             'explanation': question.explanation or '',
             'image': question.image.url if question.image else None,
@@ -4576,6 +5114,8 @@ def update_where_question(request):
         longitude = request.POST.get('longitude')
         hint_text = request.POST.get('hint_text', question.hint_text or '').strip()
         explanation = request.POST.get('explanation', question.explanation or '').strip()
+        map_type = request.POST.get('map_type', question.map_type) or 'world_mercator'
+        distance_zones = _parse_where_zones_from_request(request.POST)
 
         # Basic validation
         if not question_text:
@@ -4589,13 +5129,16 @@ def update_where_question(request):
         question.good_distance = good_distance
         question.fair_distance = fair_distance
         question.poor_distance = poor_distance
+        if map_type != 'world_mercator':
+            return JsonResponse({'success': False, 'error': 'Only the world map is supported.'}, status=400)
+        question.map_type = map_type
 
         # Only overwrite coordinates if provided
         if latitude is not None and longitude is not None and latitude != '' and longitude != '':
             lat = float(latitude)
             lng = float(longitude)
-            if not (-90 <= lat <= 90) or not (-180 <= lng <= 180):
-                return JsonResponse({'success': False, 'error': 'Invalid coordinates provided.'}, status=400)
+            if not (-WEB_MERCATOR_MAX_LATITUDE <= lat <= WEB_MERCATOR_MAX_LATITUDE) or not (-180 <= lng <= 180):
+                return JsonResponse({'success': False, 'error': 'Invalid coordinates provided for the world map.'}, status=400)
             question.correct_latitude = lat
             question.correct_longitude = lng
 
@@ -4608,6 +5151,7 @@ def update_where_question(request):
             question.image = image
 
         question.save()
+        _sync_where_distance_zones(question, distance_zones)
         return JsonResponse({'success': True})
     except ValueError:
         return JsonResponse({'success': False, 'error': 'Invalid numeric values provided.'}, status=400)
@@ -5999,6 +6543,7 @@ def estimation_management(request):
         'total_players': total_players,
         'average_accuracy': round(avg_accuracy, 1),
         'bundles': EstimationBundle.objects.filter(creator=request.user).prefetch_related('questions'),
+        'estimation_unit_choices': EstimationQuestion.get_unit_choices_for_display(),
     }
 
     return render(request, 'admin_dashboard/estimation_management.html', context)
@@ -8895,6 +9440,7 @@ def get_estimation_questions(request):
                 'question_text': question.question_text,
                 'correct_answer': question.correct_answer,
                 'unit': question.unit,
+                'unit_display': question.get_unit_display_text(),
                 'max_points': question.max_points,
                 'use_manual_points': question.use_manual_points,
                 'tolerance_percentage': question.tolerance_percentage,
@@ -9051,6 +9597,8 @@ def get_where_questions(request):
                 'time_limit': question.time_limit,
                 'has_image': bool(question.image),
                 'correct_location': f"({question.correct_latitude}, {question.correct_longitude})",
+                'map_type': question.map_type,
+                'distance_zones': question.get_zone_reveal_data()['zones'],
                 'is_active': question.is_active,
                 'created_at': question.created_at.strftime('%Y-%m-%d %H:%M:%S') if question.created_at else None,
             })

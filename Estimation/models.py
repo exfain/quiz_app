@@ -145,6 +145,40 @@ class EstimationQuestion(SyncBase):
         'year': 'years',
         'other': 'number',
     }
+    UNIT_PRESENTATION = {
+        'number': ('Zahl (keine Einheit)', ''),
+        'meters': ('Meter', 'm'),
+        'kilometers': ('Kilometer', 'km'),
+        'feet': ('Fu\u00df', 'ft'),
+        'inches': ('Zoll', 'in'),
+        'centimeters': ('Zentimeter', 'cm'),
+        'year': ('Jahr', 'Jahr'),
+        'years': ('Jahre', 'Jahre'),
+        'months': ('Monate', 'Monate'),
+        'days': ('Tage', 'Tage'),
+        'hours': ('Stunden', 'Stunden'),
+        'minutes': ('Minuten', 'Minuten'),
+        'seconds': ('Sekunden', 'Sekunden'),
+        'kilograms': ('Kilogramm', 'kg'),
+        'pounds': ('Pfund', 'lbs'),
+        'grams': ('Gramm', 'g'),
+        'tons': ('Tonnen', 'Tonnen'),
+        'liters': ('Liter', 'L'),
+        'gallons': ('Gallonen', 'gal'),
+        'milliliters': ('Milliliter', 'mL'),
+        'degrees': ('Grad', '\u00b0'),
+        'fahrenheit': ('Fahrenheit', '\u00b0F'),
+        'celsius': ('Celsius', '\u00b0C'),
+        'dollars': ('Dollar ($)', '$'),
+        'euros': ('Euro (\u20ac)', '\u20ac'),
+        'percent': ('Prozent (%)', '%'),
+        'people': ('Personen', 'Personen'),
+        'calories': ('Kalorien', 'cal'),
+        'watts': ('Watt', 'W'),
+        'miles': ('Meilen', 'mi'),
+        'mph': ('Meilen pro Stunde', 'mph'),
+        'kmh': ('Kilometer pro Stunde', 'km/h'),
+    }
     
     question_text = models.TextField(help_text="The question, e.g., 'How tall is Mount Everest?'")
     correct_answer = models.FloatField(help_text="The correct numerical answer")
@@ -178,50 +212,29 @@ class EstimationQuestion(SyncBase):
         normalized = cls.LEGACY_UNIT_ALIASES.get(normalized, normalized)
         valid_units = {choice[0] for choice in cls.UNIT_CHOICES}
         return normalized if normalized in valid_units else 'number'
+
+    @classmethod
+    def get_unit_presentation(cls, unit):
+        raw_unit = str(unit or 'number').strip() or 'number'
+        presentation = cls.UNIT_PRESENTATION.get(raw_unit)
+        if presentation:
+            return presentation
+        return cls.UNIT_PRESENTATION[cls.normalize_unit_value(raw_unit)]
+
+    @classmethod
+    def get_unit_choices_for_display(cls):
+        return [
+            (value, cls.get_unit_presentation(value)[0])
+            for value, _label in cls.UNIT_CHOICES
+        ]
+
+    def get_unit_display(self):
+        """Return the localized long label without changing the stored value."""
+        return self.get_unit_presentation(self.unit)[0]
     
     def get_unit_display_text(self):
         """Get the display text for the unit"""
-        normalized_unit = self.normalize_unit_value(self.unit)
-        unit_map = {
-            'number': '',
-            'meters': 'm',
-            'kilometers': 'km',
-            'feet': 'ft',
-            'inches': 'in',
-            'centimeters': 'cm',
-            'years': 'years',
-            'months': 'months',
-            'days': 'days',
-            'hours': 'hours',
-            'minutes': 'minutes',
-            'seconds': 'seconds',
-            'kilograms': 'kg',
-            'pounds': 'lbs',
-            'grams': 'g',
-            'tons': 'tons',
-            'liters': 'L',
-            'gallons': 'gal',
-            'milliliters': 'mL',
-            'degrees': '°',
-            'fahrenheit': '°F',
-            'celsius': '°C',
-            'dollars': '$',
-            'euros': '€',
-            'percent': '%',
-            'people': 'people',
-            'calories': 'cal',
-            'watts': 'W',
-            'miles': 'mi',
-            'mph': 'mph',
-            'kmh': 'km/h',
-        }
-        unit_map.update({
-            'degrees': '\u00b0',
-            'fahrenheit': '\u00b0F',
-            'celsius': '\u00b0C',
-            'euros': '\u20ac',
-        })
-        return unit_map.get(normalized_unit, '')
+        return self.get_unit_presentation(self.unit)[1]
     
     def get_zone_count(self):
         try:

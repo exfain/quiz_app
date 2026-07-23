@@ -1,10 +1,21 @@
 import json
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 from asgiref.sync import async_to_sync
 from django.contrib.auth.models import User
 from django.test import TestCase, TransactionTestCase
 from django.urls import reverse
 from django.utils import timezone
+
+from games_hub.active_game_guard import resolve_session_game_activation
+from games_hub.consumers import HubConsumer
+from games_hub.lobby_return_flow import (
+    get_session_lobby_presence,
+    mark_single_participant_inactive_for_lobby_return,
+)
+from games_hub.models import HubGameStep, HubParticipant, HubSession
 
 from .consumers import WhoConsumer
 from .models import WhoAnswer, WhoParticipant, WhoQuestion, WhoQuiz, WhoSession
@@ -38,6 +49,14 @@ class WhoLyingScoringTests(TestCase):
         self.assertEqual(self.question.calculate_score([0]), -1)
         self.assertEqual(self.question.calculate_score([]), 0)
         self.assertEqual(self.question.calculate_score([0, 1]), 0)
+
+    def test_people_order_survives_a_process_hash_seed_change(self):
+        with patch('builtins.hash', return_value=1):
+            order_before_restart = self.question.get_randomized_people(room_code='7610')['people']
+        with patch('builtins.hash', return_value=4):
+            order_after_restart = self.question.get_randomized_people(room_code='7610')['people']
+
+        self.assertEqual(order_after_restart, order_before_restart)
 
     def test_correct_identifications_count_includes_unselected_truth_tellers(self):
         quiz = WhoQuiz.objects.create(
@@ -693,6 +712,164 @@ class WhoLyingPlayViewTests(TestCase):
         self.assertContains(response, 'lügt nicht')
         self.assertContains(response, 'gedrückt')
         self.assertContains(response, 'Set-Auflösung')
+        self.assertContains(response, 'class="who-reveal-vhs"')
+        self.assertContains(response, 'DIE RICHTIGE ANTWORT IST')
+        self.assertContains(response, 'GEGEBENE ANTWORT')
+        self.assertContains(response, 'BEHAUPTUNG')
+        self.assertContains(response, 'id="whoRevealCorrectValue"')
+        self.assertContains(response, 'id="whoRevealGivenValue"')
+        self.assertContains(response, 'id="whoRevealPromptValue"')
+        self.assertContains(response, "if (!this.currentSetResult || !this.questionHasEnded) return;")
+        self.assertContains(response, "return value ? 'Stimmt' : 'Stimmt nicht';")
+
+        markup = response.content.decode('utf-8')
+        self.assertEqual(markup.count('WhoPlayer.prototype.showRevealState = function()'), 1)
+        self.assertEqual(markup.count('class="who-reveal-vhs"'), 1)
+        self.assertNotIn('showLegacyRevealState', markup)
+
+        vhs_css = (Path(__file__).resolve().parent.parent / 'static' / 'themes' / 'vhs' / 'vhs.css').read_text(encoding='utf-8')
+        self.assertIn('#setRevealState .who-reveal-default', vhs_css)
+        self.assertIn('#setRevealState .who-reveal-vhs__correct', vhs_css)
+        self.assertIn('color: #e9dfca;', vhs_css)
+
+    def test_play_template_contains_vhs_current_person_layout(self):
+        response = self.client.get(
+            reverse('who_is_lying:play', args=[self.quiz.room_code, self.participant.name]),
+            {'hub_session': self.participant.hub_session_code},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'class="selection-summary who-person-position"')
+        self.assertContains(response, 'id="personSwitchTimer"')
+        self.assertContains(response, 'class="who-person-switch-timer__fill"')
+        self.assertContains(response, 'class="who-person-actions"')
+        self.assertContains(response, 'vhs-who-liar-button')
+        self.assertContains(response, 'id="personProgressDefault"')
+        self.assertContains(response, 'id="personProgressVhs"')
+        self.assertContains(response, 'progressVhsEl.textContent = `${this.currentPersonPosition + 1} von ${this.peopleSequence.length}`')
+        self.assertContains(response, '1 - (remaining / duration)')
+        self.assertContains(response, '--who-person-progress')
+        self.assertContains(response, "accuseBtn.classList.toggle('is-selected', isSelected)")
+        self.assertContains(response, "accuseBtn.setAttribute('aria-pressed', isSelected ? 'true' : 'false')")
+
+        markup = response.content.decode('utf-8')
+        card_start = markup.index('id="currentPersonCard"')
+        name_panel_start = markup.index('class="who-person-name-panel"', card_start)
+        actions_start = markup.index('class="who-person-actions"', name_panel_start)
+        button_position = markup.index('id="accuseLiarBtn"')
+        self.assertGreater(button_position, actions_start)
+        self.assertNotIn('id="accuseLiarBtn"', markup[name_panel_start:actions_start])
+
+        vhs_css = (Path(__file__).resolve().parent.parent / 'static' / 'themes' / 'vhs' / 'vhs.css').read_text(encoding='utf-8')
+        self.assertIn('body.who-play-page .vhs-theme-shell #questionState .statement-text', vhs_css)
+        self.assertIn('background: transparent !important;', vhs_css)
+        self.assertIn('transform: scaleX(var(--who-person-progress, 0));', vhs_css)
+        self.assertIn('transform-origin: left center;', vhs_css)
+        self.assertIn('.vhs-who-liar-button:not(:disabled):hover', vhs_css)
+        self.assertIn('.vhs-who-liar-button.is-selected', vhs_css)
+
+    def test_vhs_set_timer_and_set_end_summary_use_who_specific_sources(self):
+        response = self.client.get(
+            reverse('who_is_lying:play', args=[self.quiz.room_code, self.participant.name]),
+            {'hub_session': self.participant.hub_session_code},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'id="playerSetTimeLeft"')
+        self.assertContains(response, 'data-vhs-timer-key=""')
+        self.assertContains(response, 'data-vhs-timer-maximum=""')
+        self.assertContains(response, 'const endsAtMs = this.parseServerTimestamp(question?.question_end_time);')
+        self.assertContains(response, 'const totalTimerElement = document.getElementById(\'playerSetTimeLeft\');')
+        self.assertContains(response, 'const initialSetDuration = Math.max(1, peopleCount * this.currentTimePerPerson);')
+        self.assertContains(response, "const setTimerKey = `${question?.id || this.currentQuestionIndex || 'active'}:${question?.question_started_at || ''}`;")
+        self.assertContains(response, 'totalTimerElement.dataset.vhsTimerKey = setTimerKey;')
+        self.assertContains(response, 'totalTimerElement.dataset.vhsTimerMaximum = String(initialSetDuration);')
+        self.assertContains(response, 'totalTimerElement.textContent = timerState.totalTimeLeft')
+        self.assertContains(response, 'personSwitchTimer.style.setProperty(\'--who-person-progress\', progress)')
+        self.assertContains(response, 'class="submitted-details who-set-summary"')
+        self.assertContains(response, 'class="who-set-ended-title__vhs">SET BEENDET</span>')
+        self.assertContains(response, 'class="who-set-ended-waiting__vhs">Warte auf die n&auml;chste Runde...</span>')
+        self.assertContains(response, 'NICHT ERKANNTE L&Uuml;GNER')
+        self.assertContains(response, 'FALSCHE BESCHULDIGUNGEN')
+        self.assertContains(response, 'id="whoSetEvaluatingState"')
+        self.assertContains(response, 'SET WIRD AUSGEWERTET...')
+        self.assertContains(response, 'data-who-set-result-ready="false"')
+        self.assertContains(response, "this.showState('whoSetEvaluatingState')")
+        self.assertContains(response, 'this.renderSetResult(data);')
+        self.assertContains(response, 'this.setSetResultReady(true);')
+
+        markup = response.content.decode('utf-8')
+        self.assertEqual(markup.count('id="whoSetEvaluatingState"'), 1)
+        self.assertEqual(markup.count('id="answerSubmittedState"'), 1)
+        self.assertEqual(markup.count('this.questionTimer = setInterval(renderTimerState, 250);'), 1)
+        submitted_handler = markup.index('onAnswerSubmitted(data) {')
+        render_call = markup.index('this.renderSetResult(data);', submitted_handler)
+        final_show = markup.index("this.showState('answerSubmittedState');", render_call)
+        render_start = markup.index('renderSetResult(data) {')
+        result_ready = markup.index('this.setSetResultReady(true);', render_start)
+        state_switch = markup.index('showState(stateId) {')
+        hide_all_states = markup.index("state.classList.add('d-none');", state_switch)
+        show_target_state = markup.index("targetState.classList.remove('d-none');", hide_all_states)
+        self.assertLess(render_call, final_show)
+        self.assertLess(render_start, result_ready)
+        self.assertLess(hide_all_states, show_target_state)
+
+        project_root = Path(__file__).resolve().parent.parent
+        vhs_css = (project_root / 'static' / 'themes' / 'vhs' / 'vhs.css').read_text(encoding='utf-8')
+        accessibility = (project_root / 'templates' / 'includes' / 'accessibility_widget.html').read_text(encoding='utf-8')
+        self.assertIn('body.who-play-page .vhs-theme-shell #answerSubmittedState .who-set-summary', vhs_css)
+        self.assertIn('.who-set-ended-waiting {', vhs_css)
+        self.assertIn('color: #9ba19c !important;', vhs_css)
+        self.assertIn('.who-set-summary__group-values:empty::before', vhs_css)
+        self.assertIn('content: "Keine";', vhs_css)
+        self.assertIn('#answerSubmittedState:not([data-who-set-result-ready="true"])', vhs_css)
+        self.assertIn('.who-set-evaluating-panel', vhs_css)
+        self.assertIn("if (document.body.classList.contains('who-play-page')) return;", accessibility)
+        self.assertIn("? document.getElementById('playerSetTimeLeft')", accessibility)
+        self.assertIn("timerSource.dataset.vhsTimerMaximum", accessibility)
+        self.assertIn("timerSource.dataset.vhsTimerKey", accessibility)
+        self.assertIn("timerValue / vhsTimerMaximum", accessibility)
+        self.assertIn("timerFill.style.transition = 'none';", accessibility)
+        self.assertIn("timerFill.style.removeProperty('transition');", accessibility)
+
+    def test_vhs_set_end_is_not_overwritten_by_automatic_reveal(self):
+        response = self.client.get(
+            reverse('who_is_lying:play', args=[self.quiz.room_code, self.participant.name]),
+            {'hub_session': self.participant.hub_session_code},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        markup = response.content.decode('utf-8')
+
+        question_ended_start = markup.index('onQuestionEnded() {')
+        question_ended_end = markup.index('onQuizEnded(data) {', question_ended_start)
+        question_ended_handler = markup[question_ended_start:question_ended_end]
+        self.assertIn("if (this.isVhsTheme()) {", question_ended_handler)
+        self.assertIn('this.showVhsSetEndedState();', question_ended_handler)
+        self.assertLess(
+            question_ended_handler.index('this.showVhsSetEndedState();'),
+            question_ended_handler.index('this.showRevealState();'),
+        )
+        self.assertIn('return;', question_ended_handler)
+
+        answer_submitted_start = markup.index('onAnswerSubmitted(data) {')
+        answer_submitted_end = markup.index('isVhsTheme() {', answer_submitted_start)
+        answer_submitted_handler = markup[answer_submitted_start:answer_submitted_end]
+        self.assertIn("if (this.isVhsTheme()) {", answer_submitted_handler)
+        self.assertIn('this.showVhsSetEndedState();', answer_submitted_handler)
+        self.assertIn('} else if (this.questionHasEnded) {', answer_submitted_handler)
+
+        set_ended_start = markup.index('showVhsSetEndedState() {')
+        set_ended_end = markup.index('renderSetResult(data) {', set_ended_start)
+        set_ended_handler = markup[set_ended_start:set_ended_end]
+        self.assertIn('if (!this.currentSetResult) return;', set_ended_handler)
+        self.assertIn("this.showState('answerSubmittedState');", set_ended_handler)
+        self.assertNotIn('showRevealState', set_ended_handler)
+
+        self.assertIn("this.showState('questionState');", markup)
+        self.assertIn("this.showState('quizEndedState');", markup)
+        self.assertEqual(markup.count('id="answerSubmittedState"'), 1)
+        self.assertEqual(markup.count('id="setRevealState"'), 1)
 
     def test_play_view_embeds_server_timer_sync_fields_for_active_question(self):
         question = WhoQuestion.objects.create(
@@ -728,6 +905,416 @@ class WhoLyingPlayViewTests(TestCase):
         self.assertContains(response, 'server_now')
         self.assertContains(response, 'getQuestionTimerState(question)')
         self.assertContains(response, 'this.startQuestionTimer(activeQuestion);')
+
+
+class WhoLyingHubParticipantLifecycleTests(TransactionTestCase):
+    reset_sequences = True
+
+    def setUp(self):
+        self.user = User.objects.create_user(username='who-hub-lifecycle')
+        self.session = HubSession.objects.create(
+            code='GI4XUE',
+            name='Who lifecycle',
+            is_active=True,
+            started_at=timezone.now(),
+            check_in_status=HubSession.CHECK_IN_COMPLETED,
+            check_in_completed_at=timezone.now(),
+            locked_participant_count=2,
+        )
+        self.hub_participants = [
+            HubParticipant.objects.create(
+                session=self.session,
+                nickname='jkh',
+                scoring_eligible=True,
+                checked_in_at=timezone.now(),
+            ),
+            HubParticipant.objects.create(
+                session=self.session,
+                nickname='Ada',
+                scoring_eligible=True,
+                checked_in_at=timezone.now(),
+            ),
+        ]
+        self.games = []
+        self.steps = []
+        for order, room_code in enumerate(('W123', 'W124', 'W125')):
+            game = WhoQuiz.objects.create(
+                creator=self.user,
+                title=f'Who Lock Smoke {order + 1}',
+                room_code=room_code,
+                status='waiting',
+            )
+            step = HubGameStep.objects.create(
+                session=self.session,
+                order=order,
+                game_key='who',
+                room_code=room_code,
+                title=game.title,
+            )
+            self.games.append(game)
+            self.steps.append(step)
+
+    def activate(self, index, action=None):
+        result = resolve_session_game_activation(
+            self.session.code,
+            'who',
+            self.games[index].room_code,
+            action=action,
+        )
+        self.assertTrue(result['success'], result)
+        return result
+
+    def play_params(self, index, **overrides):
+        params = {
+            'hub_session': self.session.code,
+            'game_start_intro': '1',
+            'game_start_key': 'who',
+            'game_start_room': self.games[index].room_code,
+            'game_start_nonce': str(1784646760729 + index),
+            'game_start_order': str(self.steps[index].order + 1),
+            'game_start_title': self.games[index].title,
+        }
+        params.update(overrides)
+        return params
+
+    def open_play(self, index, nickname='jkh', **overrides):
+        return self.client.get(
+            reverse('who_is_lying:play', args=[self.games[index].room_code, nickname]),
+            self.play_params(index, **overrides),
+        )
+
+    def test_three_consecutive_who_games_provision_current_participants(self):
+        for index in range(3):
+            self.activate(index, action='end' if index else None)
+
+            response = self.open_play(index)
+
+            self.assertEqual(response.status_code, 200)
+            participant = WhoParticipant.objects.get(
+                quiz=self.games[index],
+                name='jkh',
+                hub_session_code=self.session.code,
+            )
+            self.assertEqual(participant.quiz_id, self.games[index].id)
+            self.assertEqual(
+                WhoParticipant.objects.filter(
+                    quiz=self.games[index],
+                    hub_session_code=self.session.code,
+                ).count(),
+                2,
+            )
+            self.session.refresh_from_db()
+            self.assertEqual(self.session.current_step_index, index)
+
+        self.assertEqual(
+            WhoParticipant.objects.filter(hub_session_code=self.session.code).count(),
+            6,
+        )
+
+    def test_activation_provisions_bindings_without_moving_players_out_of_lobby(self):
+        self.activate(0)
+
+        presence = get_session_lobby_presence(self.session.code)
+        participants = WhoParticipant.objects.filter(
+            quiz=self.games[0],
+            hub_session_code=self.session.code,
+        )
+
+        self.assertEqual(participants.count(), 2)
+        self.assertFalse(participants.filter(is_active=True).exists())
+        self.assertTrue(presence['all_in_lobby'])
+        self.assertEqual(presence['not_in_lobby_count'], 0)
+
+        join_response = self.client.post(
+            reverse('who_is_lying:join'),
+            json.dumps({
+                'room_code': self.games[0].room_code,
+                'participant_name': 'jkh',
+                'hub_session': self.session.code,
+            }),
+            content_type='application/json',
+        )
+
+        self.assertEqual(join_response.status_code, 200)
+        self.assertTrue(join_response.json()['success'])
+        self.assertTrue(participants.get(name='jkh').is_active)
+        self.assertFalse(participants.get(name='Ada').is_active)
+
+        second_join_response = self.client.post(
+            reverse('who_is_lying:join'),
+            json.dumps({
+                'room_code': self.games[0].room_code,
+                'participant_name': 'Ada',
+                'hub_session': self.session.code,
+            }),
+            content_type='application/json',
+        )
+
+        self.assertEqual(second_join_response.status_code, 200)
+        self.assertTrue(second_join_response.json()['success'])
+        self.assertEqual(participants.filter(is_active=True).count(), 2)
+        self.assertEqual(participants.count(), 2)
+
+    def test_lobby_disconnect_and_game_connect_order_cannot_overwrite_presence(self):
+        self.activate(0)
+        participant = WhoParticipant.objects.get(
+            quiz=self.games[0],
+            name='jkh',
+            hub_session_code=self.session.code,
+        )
+        hub_consumer = HubConsumer()
+        hub_consumer.session_code = self.session.code
+        hub_consumer.group_name = f'hub_{self.session.code}'
+        hub_consumer.channel_name = 'hub-old-channel'
+        hub_consumer.hub_participant_id = self.hub_participants[0].id
+        hub_consumer.channel_layer = SimpleNamespace(group_discard=AsyncMock())
+
+        async_to_sync(hub_consumer.disconnect)(1000)
+        participant.refresh_from_db()
+        self.assertFalse(participant.is_active)
+
+        game_consumer = WhoConsumer()
+        game_consumer.room_code = self.games[0].room_code
+        game_consumer.room_group_name = f'who_{self.games[0].room_code}'
+        game_consumer.who_participant_id = None
+        game_consumer.channel_layer = SimpleNamespace(group_send=AsyncMock())
+        game_consumer.send = AsyncMock()
+        async_to_sync(game_consumer.handle_participant_join)({
+            'participant_name': 'jkh',
+            'hub_session': self.session.code,
+        })
+
+        async_to_sync(hub_consumer.disconnect)(1000)
+        participant.refresh_from_db()
+        self.assertTrue(participant.is_active)
+        self.assertEqual(game_consumer.who_participant_id, participant.id)
+
+    def test_reload_and_rejoin_in_third_game_use_current_server_step(self):
+        for index in range(3):
+            self.activate(index, action='end' if index else None)
+
+        initial_response = self.open_play(2)
+        reload_response = self.client.get(
+            reverse('who_is_lying:play', args=[self.games[2].room_code, 'jkh']),
+            {'hub_session': self.session.code},
+        )
+        participant = WhoParticipant.objects.get(
+            quiz=self.games[2],
+            name='jkh',
+            hub_session_code=self.session.code,
+        )
+        participant.is_active = False
+        participant.save(update_fields=['is_active'])
+        rejoin_response = self.open_play(
+            2,
+            game_start_nonce=self.play_params(0)['game_start_nonce'],
+            game_start_order=self.play_params(0)['game_start_order'],
+        )
+
+        self.assertEqual(initial_response.status_code, 200)
+        self.assertEqual(reload_response.status_code, 200)
+        self.assertEqual(rejoin_response.status_code, 200)
+        participant.refresh_from_db()
+        self.assertTrue(participant.is_active)
+        self.assertEqual(
+            WhoParticipant.objects.filter(
+                quiz=self.games[2],
+                name='jkh',
+                hub_session_code=self.session.code,
+            ).count(),
+            1,
+        )
+
+    def test_duplicate_activation_join_and_rejoin_are_idempotent(self):
+        self.activate(0)
+        self.activate(0)
+
+        join_url = reverse('who_is_lying:join')
+        payload = {
+            'room_code': self.games[0].room_code,
+            'participant_name': 'jkh',
+            'hub_session': self.session.code,
+        }
+        first_join = self.client.post(join_url, json.dumps(payload), content_type='application/json')
+        second_join = self.client.post(join_url, json.dumps(payload), content_type='application/json')
+        first_play = self.open_play(0)
+        second_play = self.open_play(0)
+
+        self.assertEqual(first_join.status_code, 200)
+        self.assertEqual(second_join.status_code, 200)
+        self.assertEqual(first_play.status_code, 200)
+        self.assertEqual(second_play.status_code, 200)
+        self.assertEqual(
+            WhoParticipant.objects.filter(
+                quiz=self.games[0],
+                name='jkh',
+                hub_session_code=self.session.code,
+            ).count(),
+            1,
+        )
+
+    def test_play_recovers_missing_binding_only_for_current_authorized_hub_identity(self):
+        self.activate(0)
+        WhoParticipant.objects.filter(
+            quiz=self.games[0],
+            name='jkh',
+            hub_session_code=self.session.code,
+        ).delete()
+
+        response = self.open_play(0)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(WhoParticipant.objects.filter(
+            quiz=self.games[0],
+            name='jkh',
+            hub_session_code=self.session.code,
+        ).exists())
+
+    def test_stale_or_manipulated_start_context_cannot_create_participant(self):
+        self.activate(0)
+        self.activate(1, action='end')
+        current_count = WhoParticipant.objects.filter(quiz=self.games[1]).count()
+
+        stale_response = self.open_play(0)
+        stale_rejoin_response = self.client.get(
+            reverse('who_is_lying:play', args=[self.games[0].room_code, 'jkh']),
+            {'hub_session': self.session.code},
+        )
+        unknown_name_response = self.open_play(1, nickname='Mallory')
+        invalid_session_response = self.client.get(
+            reverse('who_is_lying:play', args=[self.games[1].room_code, 'jkh']),
+            self.play_params(1, hub_session='INVALID'),
+        )
+
+        self.assertEqual(stale_response.status_code, 302)
+        self.assertIn(reverse('games_hub:lobby', args=[self.session.code]), stale_response.url)
+        self.assertIn('who_join_error=', stale_response.url)
+        self.assertEqual(stale_rejoin_response.status_code, 302)
+        self.assertEqual(unknown_name_response.status_code, 302)
+        self.assertEqual(invalid_session_response.status_code, 302)
+        self.assertFalse(WhoParticipant.objects.filter(quiz=self.games[1], name='Mallory').exists())
+        self.assertFalse(WhoParticipant.objects.filter(
+            quiz=self.games[1],
+            name='jkh',
+            hub_session_code='INVALID',
+        ).exists())
+        self.assertEqual(WhoParticipant.objects.filter(quiz=self.games[1]).count(), current_count)
+
+    def test_join_rejects_untrusted_hub_session_and_accepts_alphanumeric_room(self):
+        self.activate(2)
+        WhoParticipant.objects.filter(
+            quiz=self.games[2],
+            name='jkh',
+            hub_session_code=self.session.code,
+        ).delete()
+        join_url = reverse('who_is_lying:join')
+
+        valid_response = self.client.post(
+            join_url,
+            json.dumps({
+                'room_code': 'W125',
+                'participant_name': 'jkh',
+                'hub_session': self.session.code,
+            }),
+            content_type='application/json',
+        )
+        invalid_response = self.client.post(
+            join_url,
+            json.dumps({
+                'room_code': 'W125',
+                'participant_name': 'Mallory',
+                'hub_session': self.session.code,
+            }),
+            content_type='application/json',
+        )
+
+        self.assertEqual(valid_response.status_code, 200)
+        self.assertTrue(valid_response.json()['success'])
+        self.assertEqual(invalid_response.status_code, 403)
+        self.assertFalse(invalid_response.json()['success'])
+        self.assertFalse(WhoParticipant.objects.filter(quiz=self.games[2], name='Mallory').exists())
+
+    def test_participants_and_sessions_remain_isolated_and_cleanup_is_room_scoped(self):
+        self.activate(0)
+        self.activate(1, action='end')
+        self.open_play(1, nickname='jkh')
+        mark_single_participant_inactive_for_lobby_return(
+            self.session.code,
+            'who',
+            self.games[0].room_code,
+            'jkh',
+        )
+
+        previous = WhoParticipant.objects.get(
+            quiz=self.games[0],
+            name='jkh',
+            hub_session_code=self.session.code,
+        )
+        current = WhoParticipant.objects.get(
+            quiz=self.games[1],
+            name='jkh',
+            hub_session_code=self.session.code,
+        )
+        ada = WhoParticipant.objects.get(
+            quiz=self.games[1],
+            name='Ada',
+            hub_session_code=self.session.code,
+        )
+        self.assertFalse(previous.is_active)
+        self.assertTrue(current.is_active)
+        self.assertFalse(ada.is_active)
+
+        other_session = HubSession.objects.create(
+            code='OTHER1',
+            name='Other session',
+            is_active=True,
+            started_at=timezone.now(),
+            check_in_status=HubSession.CHECK_IN_COMPLETED,
+            check_in_completed_at=timezone.now(),
+            locked_participant_count=1,
+        )
+        HubParticipant.objects.create(
+            session=other_session,
+            nickname='jkh',
+            scoring_eligible=True,
+            checked_in_at=timezone.now(),
+        )
+        other_game = WhoQuiz.objects.create(
+            creator=self.user,
+            title='Other Who',
+            room_code='W126',
+            status='waiting',
+        )
+        HubGameStep.objects.create(
+            session=other_session,
+            order=0,
+            game_key='who',
+            room_code=other_game.room_code,
+            title=other_game.title,
+        )
+
+        result = resolve_session_game_activation(other_session.code, 'who', other_game.room_code)
+
+        self.assertTrue(result['success'])
+        self.assertTrue(WhoParticipant.objects.filter(
+            quiz=other_game,
+            name='jkh',
+            hub_session_code=other_session.code,
+        ).exists())
+        self.assertEqual(
+            WhoParticipant.objects.filter(name='jkh', hub_session_code=self.session.code).count(),
+            2,
+        )
+
+    def test_lobby_does_not_redirect_who_after_failed_join(self):
+        response = self.client.get(
+            reverse('games_hub:lobby', args=[self.session.code]),
+            {'nickname': 'jkh'},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "step.game_key === 'who'")
+        self.assertContains(response, 'Who join failed; keeping participant in the hub lobby.')
 
 class WhoLyingScoreBoxViewTests(TestCase):
     def setUp(self):

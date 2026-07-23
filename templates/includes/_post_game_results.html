@@ -65,6 +65,56 @@
     color: #64748b;
     font-size: 0.95rem;
 }
+.post-game-results-card[data-game-key="estimation"] {
+    margin-top: 1.15rem;
+    padding: 0.85rem;
+    border: 2px solid currentColor;
+    background: var(--participant-effective-accent-color, var(--participant-accent-color, #A3A88D));
+    color: var(--participant-effective-text-color, var(--participant-theme-text, #000));
+    box-shadow: none;
+    font-family: var(--font-family-sans, "Walkway Condensed", system-ui, sans-serif);
+}
+.post-game-results-card[data-game-key="estimation"] .post-game-results-table-wrap {
+    overflow-x: auto;
+}
+.post-game-results-card[data-game-key="estimation"] .post-game-results-table {
+    width: max-content;
+    min-width: min(100%, 32rem);
+    border-collapse: separate;
+    border-spacing: 0 0.35rem;
+}
+.post-game-results-card[data-game-key="estimation"] .post-game-results-table th,
+.post-game-results-card[data-game-key="estimation"] .post-game-results-table td {
+    max-width: 10rem;
+    padding: 0.45rem 0.55rem;
+    border: 1px solid currentColor;
+    background: rgba(255, 255, 255, 0.2);
+    color: currentColor;
+    font-size: clamp(1rem, 1.8vw, 1.12rem);
+    line-height: 1.15;
+    white-space: normal;
+    overflow-wrap: anywhere;
+}
+.post-game-results-card[data-game-key="estimation"] .post-game-results-table th {
+    font-size: clamp(1.06rem, 1.9vw, 1.2rem);
+    letter-spacing: 0.04em;
+}
+.post-game-results-card[data-game-key="estimation"] .post-game-results-table td.is-number,
+.post-game-results-card[data-game-key="estimation"] .post-game-results-table th.is-number {
+    max-width: 7.5rem;
+    white-space: nowrap;
+}
+.post-game-results-card[data-game-key="estimation"] .post-game-results-table tr.is-current-player {
+    background: transparent;
+}
+.post-game-results-card[data-game-key="estimation"] .post-game-results-table tr.is-current-player td {
+    background: rgba(255, 255, 255, 0.3);
+}
+.post-game-results-card[data-game-key="estimation"] .post-game-results-empty,
+.post-game-results-card[data-game-key="estimation"] .post-game-results-loading {
+    color: currentColor;
+    font-size: clamp(1rem, 1.8vw, 1.12rem);
+}
 </style>
 
 <script>
@@ -116,23 +166,27 @@
         const rows = payload.rows || [];
         const rankingMode = payload.scoring_mode === 'ranking';
         const header = rankingMode
-            ? '<th>Teilnehmer</th><th class="is-number">Punkte im Spiel</th><th class="is-number">Rang</th><th class="is-number">Faktor</th><th class="is-number">Punkte fuers Gesamtkonto</th>'
-            : '<th>Teilnehmer</th><th class="is-number">Rang</th><th class="is-number">Punkte im Spiel</th><th class="is-number">Faktor</th><th class="is-number">Punkte fuers Gesamtkonto</th>';
+            ? '<th class="results-col-player">Teilnehmer</th><th class="is-number results-col-game-points">Punkte im Spiel</th><th class="is-number results-col-rank">Rang</th><th class="is-number results-col-factor">Faktor</th><th class="is-number results-col-overall">Punkte fuers Gesamtkonto</th>'
+            : '<th class="results-col-player">Teilnehmer</th><th class="is-number results-col-rank">Rang</th><th class="is-number results-col-game-points">Punkte im Spiel</th><th class="is-number results-col-factor">Faktor</th><th class="is-number results-col-overall">Punkte fuers Gesamtkonto</th>';
+        const columns = rankingMode
+            ? ['player', 'game-points', 'rank', 'factor', 'overall']
+            : ['player', 'rank', 'game-points', 'factor', 'overall'];
         const body = rows.map((row) => {
             const currentClass = row.is_current_participant ? ' class="is-current-player"' : '';
             const rankingCells = rankingMode
-                ? `<td class="is-number">${formatScore(row.game_points)}</td><td class="is-number">${row.rank || '-'}</td>`
-                : `<td class="is-number">${row.rank || '-'}</td><td class="is-number">${formatScore(row.game_points)}</td>`;
+                ? `<td class="is-number results-col-game-points">${formatScore(row.game_points)}</td><td class="is-number results-col-rank">${row.rank || '-'}</td>`
+                : `<td class="is-number results-col-rank">${row.rank || '-'}</td><td class="is-number results-col-game-points">${formatScore(row.game_points)}</td>`;
             return `<tr${currentClass}>
-                <td>${htmlEscape(row.participant)}</td>
+                <td class="results-col-player">${htmlEscape(row.participant)}</td>
                 ${rankingCells}
-                <td class="is-number">${htmlEscape(row.weight_display || payload.weight_display || '\u00d71.00')}</td>
-                <td class="is-number">${formatScore(row.overall_points)}</td>
+                <td class="is-number results-col-factor">${htmlEscape(row.weight_display || payload.weight_display || '\u00d71.00')}</td>
+                <td class="is-number results-col-overall">${formatScore(row.overall_points)}</td>
             </tr>`;
         }).join('');
 
         return `<div class="post-game-results-table-wrap">
             <table class="post-game-results-table">
+                <colgroup>${columns.map((column) => `<col class="results-col-${column}">`).join('')}</colgroup>
                 <thead><tr>${header}</tr></thead>
                 <tbody>${body}</tbody>
             </table>
@@ -153,6 +207,10 @@
         const game = payload.game || {};
         loading?.classList.add('d-none');
         content.classList.remove('d-none');
+        if (element.dataset.gameKey === 'estimation') {
+            content.innerHTML = renderTable(payload);
+            return;
+        }
         content.innerHTML = `
             <h3>Spiel beendet</h3>
             <div class="post-game-results-meta">

@@ -1,8 +1,9 @@
 import json
 from channels.generic.websocket import AsyncWebsocketConsumer
 from channels.db import database_sync_to_async
+from django.db import transaction
 from django.utils import timezone
-from django.core.cache import cache
+from django.utils.dateparse import parse_datetime
 from .models import Quiz, QuizParticipant, QuizQuestion, QuizAnswer, QuizSession
 from games_hub.active_game_guard import resolve_session_game_activation_for_room
 from games_hub.lobby_return_flow import ensure_session_players_ready_for_game_start_for_room
@@ -29,6 +30,8 @@ class QuizConsumer(AsyncWebsocketConsumer):
     async def connect(self):
         self.room_code = self.scope['url_route']['kwargs']['room_code']
         self.room_group_name = f'quiz_{self.room_code}'
+        self.participant_name = None
+        self.participant_hub_session = None
 
         # Join room group
         await self.channel_layer.group_add(
@@ -72,8 +75,8 @@ class QuizConsumer(AsyncWebsocketConsumer):
                 await self.handle_admin_set_inactive(text_data_json)
             elif message_type == 'participant_submit_answer':
                 await self.handle_participant_submit_answer(text_data_json)
-            elif message_type == 'participant_finalize_answer':
-                await self.handle_participant_finalize_answer(text_data_json)
+            elif message_type == 'participant_update_pending_answer':
+                await self.handle_participant_update_pending_answer(text_data_json)
             elif message_type == 'participant_join':
                 await self.handle_participant_join(text_data_json)
             elif message_type == 'admin_show_leaderboard':
@@ -82,6 +85,11 @@ class QuizConsumer(AsyncWebsocketConsumer):
                 await self.handle_admin_hide_leaderboard()
             elif message_type == 'ping':
                 await self.handle_ping()
+            else:
+                await self.send(text_data=json.dumps({
+                    'type': 'error',
+                    'message': f'Unknown action: {message_type or "missing type"}'
+                }))
                 
         except json.JSONDecodeError:
             await self.send(text_data=json.dumps({
@@ -199,10 +207,35 @@ class QuizConsumer(AsyncWebsocketConsumer):
         quiz = await self.get_quiz()
         
         if not quiz:
+            await self.send(text_data=json.dumps({
+                'type': 'error',
+                'message': 'Quiz not found.',
+                'question_id': question_id,
+            }))
+            return
+
+        if not question_id:
+            await self.send(text_data=json.dumps({
+                'type': 'error',
+                'message': 'Frage konnte nicht gestartet werden: Frage-ID fehlt.'
+            }))
+            return
+
+        if quiz.status != 'active':
+            await self.send(text_data=json.dumps({
+                'type': 'error',
+                'message': 'Start the quiz before sending questions.',
+                'question_id': question_id,
+            }))
             return
             
         question = await self.get_question(question_id)
         if not question:
+            await self.send(text_data=json.dumps({
+                'type': 'error',
+                'message': 'Frage konnte nicht gestartet werden: Frage wurde nicht gefunden.',
+                'question_id': question_id,
+            }))
             return
 
         # If quiz has a predefined set, enforce membership
@@ -213,7 +246,8 @@ class QuizConsumer(AsyncWebsocketConsumer):
                 if not allowed:
                     await self.send(text_data=json.dumps({
                         'type': 'error',
-                        'message': 'This question is not part of the selected set for this quiz.'
+                        'message': 'This question is not part of the selected set for this quiz.',
+                        'question_id': question_id,
                     }))
                     return
         except Exception:
@@ -235,6 +269,11 @@ class QuizConsumer(AsyncWebsocketConsumer):
         if is_tutorial_round and str(unit_tutorial.get('tutorial_question_id') or '') != str(question.id):
             question = await self.get_question(unit_tutorial.get('tutorial_question_id'))
             if not question:
+                await self.send(text_data=json.dumps({
+                    'type': 'error',
+                    'message': 'Frage konnte nicht gestartet werden: Tutorialfrage wurde nicht gefunden.',
+                    'question_id': question_id,
+                }))
                 return
             effective_time_limit = custom_time_limit if custom_time_limit is not None else question.time_limit
 
@@ -283,14 +322,16 @@ class QuizConsumer(AsyncWebsocketConsumer):
         """Handle admin ending current question"""
         quiz = await self.get_quiz()
         if quiz:
-            # Fetch current question's correct answer before clearing
-            correct_payload = await self.get_current_question_correct_payload()
-            if correct_payload and correct_payload.get('question_id'):
-                await self.mark_recently_ended_question(correct_payload['question_id'])
             hub_session = data.get('hub_session') or data.get('hub_session_code') or await self._get_hub_session_code_for_room()
-            unit_tutorial = await self.finish_current_unit_tutorial(hub_session)
-            is_tutorial_round = bool(unit_tutorial.get('is_tutorial_round'))
-            await self.clear_current_question(quiz.id)
+            finalization = await self.finalize_pending_answers_and_close_question(
+                quiz.id,
+                hub_session,
+            )
+            correct_payload = finalization['correct_answer']
+            answer_results = finalization['answer_results']
+            auto_finalized_answers = finalization['auto_finalized_answers']
+            is_tutorial_round = finalization['is_tutorial_round']
+            await self.finish_current_unit_tutorial(hub_session)
             
             await self.channel_layer.group_send(
                 self.room_group_name,
@@ -298,6 +339,8 @@ class QuizConsumer(AsyncWebsocketConsumer):
                     'type': 'question_ended',
                     'message': 'Question time is up!',
                     'correct_answer': correct_payload,
+                    'answer_results': answer_results,
+                    'auto_finalized_answers': auto_finalized_answers,
                     'is_tutorial_round': is_tutorial_round,
                 }
             )
@@ -307,6 +350,8 @@ class QuizConsumer(AsyncWebsocketConsumer):
                 'room_code': self.room_code,
                 'message': 'Question time is up!',
                 'correct_answer': correct_payload,
+                'answer_results': answer_results,
+                'auto_finalized_answers': auto_finalized_answers,
                 'is_tutorial_round': is_tutorial_round,
             })
 
@@ -354,10 +399,15 @@ class QuizConsumer(AsyncWebsocketConsumer):
         hub_session = data.get('hub_session') or None  # normalize '' → None
         answer_text = data.get('answer')
         time_taken = data.get('time_taken', 0)
+        question_id = data.get('question_id')
 
         # Save the answer
         answer = await self.save_participant_answer(
-            participant_name, hub_session, answer_text, time_taken
+            participant_name,
+            hub_session,
+            answer_text,
+            time_taken,
+            question_id=question_id,
         )
 
         if answer:
@@ -366,10 +416,10 @@ class QuizConsumer(AsyncWebsocketConsumer):
                 'type': 'answer_submitted',
                 'message': 'Answer submitted successfully',
                 'question_id': answer['question_id'],
-                'is_correct': answer['is_correct'],
-                'points_earned': answer['points_earned'],
-                'total_score': answer['total_score'],
+                'evaluation_pending': True,
                 'is_tutorial_round': answer['is_tutorial_round'],
+                'display_answer': answer['display_answer'],
+                'time_taken': time_taken,
             }))
 
             # Broadcast to admin dashboard (live answers)
@@ -393,56 +443,21 @@ class QuizConsumer(AsyncWebsocketConsumer):
                     }
                 }
             )
-
-    async def handle_participant_finalize_answer(self, data):
-        """Evaluate a typed answer that was not explicitly submitted before question end."""
-        participant_name = data.get('participant_name')
-        hub_session = data.get('hub_session') or None
-        answer_text = data.get('answer')
-        question_id = data.get('question_id')
-        time_taken = data.get('time_taken', 0)
-
-        answer = await self.save_participant_answer(
-            participant_name,
-            hub_session,
-            answer_text,
-            time_taken,
-            question_id=question_id,
-            allow_recently_ended=True,
-        )
-
-        if answer:
+        else:
             await self.send(text_data=json.dumps({
-                'type': 'answer_submitted',
-                'message': 'Answer submitted successfully',
-                'question_id': answer['question_id'],
-                'is_correct': answer['is_correct'],
-                'points_earned': answer['points_earned'],
-                'total_score': answer['total_score'],
-                'is_tutorial_round': answer['is_tutorial_round'],
+                'type': 'answer_rejected',
+                'message': 'Answer was not accepted.',
+                'question_id': question_id,
             }))
 
-            await self.channel_layer.group_send(
-                self.room_group_name,
-                {
-                    'type': 'participant_answered',
-                    'answer': {
-                        'answer_id': answer['answer_id'],
-                        'participant_name': participant_name,
-                        'answer_text': answer['display_answer'],
-                        'is_correct': answer['is_correct'],
-                        'is_manual_override': answer['is_manual_override'],
-                        'can_mark_correct': answer['can_mark_correct'],
-                        'question_type': answer['question_type'],
-                        'field_results': answer['field_results'],
-                        'points_earned': answer['points_earned'],
-                        'is_tutorial_round': answer['is_tutorial_round'],
-                        'time_taken': time_taken,
-                        'submitted_at': answer['submitted_at'],
-                    }
-                }
-            )
-
+    async def handle_participant_update_pending_answer(self, data):
+        """Persist the latest unconfirmed selection for authoritative finalization."""
+        await self.save_pending_answer(
+            data.get('participant_name'),
+            data.get('hub_session') or None,
+            data.get('answer'),
+            data.get('question_id'),
+        )
 
     async def handle_participant_join(self, data):
         """Handle new participant joining"""
@@ -451,6 +466,8 @@ class QuizConsumer(AsyncWebsocketConsumer):
         participant = await self.get_participant_by_name(participant_name, hub_session)
         
         if participant:
+            self.participant_name = participant_name
+            self.participant_hub_session = hub_session
             await self.mark_participant_active(participant['id'])
             
             # Broadcast to admin
@@ -489,6 +506,28 @@ class QuizConsumer(AsyncWebsocketConsumer):
                         'type': 'question_started',
                         'question': current_question_data
                     }))
+                    existing_answer = await self.get_current_participant_answer(
+                        participant['id'],
+                        current_question_data['id'],
+                    )
+                    if existing_answer:
+                        await self.send(text_data=json.dumps({
+                            'type': 'answer_submitted',
+                            'message': 'Answer already submitted',
+                            'question_id': existing_answer['question_id'],
+                            'evaluation_pending': True,
+                            'is_tutorial_round': existing_answer['is_tutorial_round'],
+                            'display_answer': existing_answer['display_answer'],
+                            'time_taken': existing_answer['time_taken'],
+                        }))
+                else:
+                    last_result = await self.get_last_question_result()
+                    if last_result:
+                        await self.send(text_data=json.dumps({
+                            'type': 'question_ended',
+                            'message': 'Question time is up!',
+                            **last_result,
+                        }))
 
     async def handle_ping(self):
         """Handle ping for keeping connection alive"""
@@ -535,7 +574,10 @@ class QuizConsumer(AsyncWebsocketConsumer):
         await self.send(text_data=json.dumps({
             'type': 'question_ended',
             'message': event['message'],
-            'correct_answer': event.get('correct_answer')
+            'correct_answer': event.get('correct_answer'),
+            'answer_results': event.get('answer_results', []),
+            'auto_finalized_answers': event.get('auto_finalized_answers', []),
+            'is_tutorial_round': event.get('is_tutorial_round', False),
         }))
 
     async def quiz_ended(self, event):
@@ -554,6 +596,8 @@ class QuizConsumer(AsyncWebsocketConsumer):
 
     async def participant_answered(self, event):
         """Send participant answer to admin"""
+        if self.participant_name:
+            return
         await self.send(text_data=json.dumps({
             'type': 'participant_answered',
             'answer': event['answer']
@@ -567,6 +611,8 @@ class QuizConsumer(AsyncWebsocketConsumer):
         }))
 
     async def answer_corrected(self, event):
+        if self.participant_name and not event.get('visible_to_participants', False):
+            return
         await self.send(text_data=json.dumps({
             'type': 'answer_corrected',
             'success': True,
@@ -584,6 +630,7 @@ class QuizConsumer(AsyncWebsocketConsumer):
             'total_score': event.get('total_score'),
             'time_taken': event.get('time_taken'),
             'submitted_at': event.get('submitted_at'),
+            'visible_to_participants': event.get('visible_to_participants', False),
         }))
 
     async def tutorial_start(self, event):
@@ -658,6 +705,54 @@ class QuizConsumer(AsyncWebsocketConsumer):
                 'points': q.get_effective_max_points(),
             }
         except Quiz.DoesNotExist:
+            return None
+
+    @database_sync_to_async
+    def get_current_participant_answer(self, participant_id, question_id):
+        try:
+            quiz = Quiz.objects.get(room_code=self.room_code)
+            answer = QuizAnswer.objects.select_related('question', 'participant').get(
+                quiz=quiz,
+                participant_id=participant_id,
+                question_id=question_id,
+            )
+            if quiz.question_start_time and answer.submitted_at < quiz.question_start_time:
+                return None
+
+            display_answer = answer.answer_text
+            if answer.question.get_effective_question_type() == 'short_answer':
+                display_answer = answer.question.format_short_answer_submission(answer.answer_text)
+            elif answer.question.question_type == 'multiple_choice':
+                display_answer = dict(answer.question.get_options()).get(
+                    answer.answer_text.upper(),
+                    answer.answer_text,
+                )
+            elif answer.question.question_type == 'true_false':
+                display_answer = 'Stimmt' if answer.answer_text == 'True' else 'Stimmt nicht'
+
+            return {
+                'question_id': answer.question_id,
+                'display_answer': display_answer,
+                'time_taken': answer.time_taken,
+                'is_tutorial_round': is_unit_tutorial_question(
+                    'quiz',
+                    self.room_code,
+                    answer.participant.hub_session_code,
+                    answer.question_id,
+                ),
+            }
+        except (Quiz.DoesNotExist, QuizAnswer.DoesNotExist):
+            return None
+
+    @database_sync_to_async
+    def get_last_question_result(self):
+        try:
+            quiz = Quiz.objects.select_related('session').get(room_code=self.room_code)
+            if quiz.status != 'active' or quiz.current_question_id:
+                return None
+            result = dict(quiz.session.last_question_result or {})
+            return result or None
+        except (Quiz.DoesNotExist, QuizSession.DoesNotExist):
             return None
 
     @database_sync_to_async
@@ -808,9 +903,10 @@ class QuizConsumer(AsyncWebsocketConsumer):
         session.send_question(question, time_limit=effective_time_limit)
 
     @database_sync_to_async
+    @transaction.atomic
     def clear_current_question(self, quiz_id):
         try:
-            quiz = Quiz.objects.get(id=quiz_id)
+            quiz = Quiz.objects.select_for_update().get(id=quiz_id)
             session = getattr(quiz, 'session', None)
             if session:
                 session.end_current_question()
@@ -835,28 +931,6 @@ class QuizConsumer(AsyncWebsocketConsumer):
     @database_sync_to_async
     def get_short_answer_fields(self, question):
         return question.get_public_short_answer_fields()
-
-    @database_sync_to_async
-    def get_current_question_correct_payload(self):
-        try:
-            quiz = Quiz.objects.select_related('current_question').get(room_code=self.room_code)
-            q = quiz.current_question
-            if not q:
-                return None
-            formatted = q.get_formatted_correct_answer()
-            raw = q.correct_answer
-            if q.get_effective_question_type() == 'short_answer' and q.get_short_answer_field_count() > 1:
-                raw = {
-                    field['key']: field['correct_answer']
-                    for field in q.get_short_answer_fields()
-                }
-            return {
-                'question_id': q.id,
-                'formatted_answer': formatted,
-                'raw': raw,
-            }
-        except Quiz.DoesNotExist:
-            return None
 
     # --- Hub mirroring helpers (Stage B) ---
     @database_sync_to_async
@@ -917,14 +991,225 @@ class QuizConsumer(AsyncWebsocketConsumer):
         except Quiz.DoesNotExist:
             return 0, 0
 
-    def _recently_ended_question_cache_key(self):
-        return f'quiz_recently_ended_question:{self.room_code}'
+    @staticmethod
+    def _format_answer_display(question, answer_text):
+        if question.get_effective_question_type() == 'short_answer':
+            return question.format_short_answer_submission(answer_text)
+        if question.question_type == 'multiple_choice':
+            return dict(question.get_options()).get(str(answer_text).upper(), answer_text)
+        if question.question_type == 'true_false':
+            return 'Stimmt' if str(answer_text) == 'True' else 'Stimmt nicht'
+        return answer_text
 
     @database_sync_to_async
-    def mark_recently_ended_question(self, question_id):
-        cache.set(self._recently_ended_question_cache_key(), str(question_id), timeout=120)
+    @transaction.atomic
+    def save_pending_answer(self, participant_name, hub_session_code, answer_text, question_id=None):
+        try:
+            quiz = (
+                Quiz.objects.select_for_update()
+                .select_related('current_question')
+                .get(room_code=self.room_code)
+            )
+            session = QuizSession.objects.select_for_update().filter(quiz=quiz).first()
+            if not session or quiz.status != 'active' or not quiz.current_question:
+                return False
+            if not session.is_question_active:
+                return False
+            if session.question_end_time and timezone.now() >= session.question_end_time:
+                return False
+            if question_id and str(quiz.current_question_id) != str(question_id):
+                return False
+
+            participant = quiz.participants.get(
+                name=participant_name,
+                hub_session_code=hub_session_code,
+            )
+            pending_answers = dict(session.pending_answers or {})
+            entry_key = str(participant.id)
+            existing_answer = QuizAnswer.objects.filter(
+                quiz=quiz,
+                participant=participant,
+                question=quiz.current_question,
+            ).first()
+            if existing_answer and (
+                not quiz.question_start_time
+                or existing_answer.submitted_at >= quiz.question_start_time
+            ):
+                if pending_answers.pop(entry_key, None) is not None:
+                    session.pending_answers = pending_answers
+                    session.save(update_fields=['pending_answers', 'updated_at'])
+                return False
+
+            if isinstance(answer_text, dict):
+                cleaned_answer = {
+                    str(key): str(value or '').strip()
+                    for key, value in answer_text.items()
+                }
+                has_answer = bool(cleaned_answer) and all(cleaned_answer.values())
+            else:
+                cleaned_answer = '' if answer_text is None else str(answer_text).strip()
+                has_answer = bool(cleaned_answer)
+
+            if has_answer:
+                pending_answers[entry_key] = {
+                    'question_id': quiz.current_question_id,
+                    'answer': cleaned_answer,
+                    'updated_at': timezone.now().isoformat(),
+                    'participant_name': participant.name,
+                    'hub_session_code': participant.hub_session_code,
+                }
+            else:
+                pending_answers.pop(entry_key, None)
+
+            session.pending_answers = pending_answers
+            session.save(update_fields=['pending_answers', 'updated_at'])
+            return True
+        except (Quiz.DoesNotExist, QuizParticipant.DoesNotExist):
+            return False
 
     @database_sync_to_async
+    @transaction.atomic
+    def finalize_pending_answers_and_close_question(
+        self,
+        quiz_id,
+        hub_session_code,
+    ):
+        quiz = (
+            Quiz.objects.select_for_update()
+            .select_related('current_question')
+            .get(id=quiz_id)
+        )
+        session = QuizSession.objects.select_for_update().get(quiz=quiz)
+        question = quiz.current_question
+        if not question:
+            return {
+                'correct_answer': None,
+                'answer_results': [],
+                'auto_finalized_answers': [],
+                'is_tutorial_round': False,
+            }
+
+        formatted_answer = question.get_formatted_correct_answer()
+        raw_answer = question.correct_answer
+        if question.get_effective_question_type() == 'short_answer' and question.get_short_answer_field_count() > 1:
+            raw_answer = {
+                field['key']: field['correct_answer']
+                for field in question.get_short_answer_fields()
+            }
+        correct_payload = {
+            'question_id': question.id,
+            'formatted_answer': formatted_answer,
+            'raw': raw_answer,
+            'question_text': question.question_text,
+            'question_type': question.get_effective_question_type(),
+        }
+        is_tutorial_round = is_unit_tutorial_question(
+            'quiz',
+            self.room_code,
+            hub_session_code,
+            question.id,
+        )
+
+        pending_answers = dict(session.pending_answers or {})
+        auto_finalized_answers = []
+        for participant_id, pending in list(pending_answers.items()):
+            if str(pending.get('question_id')) != str(question.id):
+                continue
+
+            try:
+                participant = quiz.participants.get(id=int(participant_id))
+            except (QuizParticipant.DoesNotExist, TypeError, ValueError):
+                continue
+
+            existing_answer = QuizAnswer.objects.filter(
+                quiz=quiz,
+                participant=participant,
+                question=question,
+            ).first()
+            if existing_answer and quiz.question_start_time and existing_answer.submitted_at < quiz.question_start_time:
+                existing_answer.delete()
+                existing_answer = None
+            if existing_answer:
+                continue
+
+            answer_value = pending.get('answer')
+            if isinstance(answer_value, dict):
+                has_answer = bool(answer_value) and all(str(value or '').strip() for value in answer_value.values())
+            else:
+                has_answer = bool(str(answer_value or '').strip())
+            if not has_answer:
+                continue
+
+            updated_at = parse_datetime(pending.get('updated_at') or '')
+            if updated_at and timezone.is_naive(updated_at):
+                updated_at = timezone.make_aware(updated_at, timezone.get_current_timezone())
+            time_taken = 0
+            if quiz.question_start_time and updated_at:
+                time_taken = max(0, (updated_at - quiz.question_start_time).total_seconds())
+
+            answer_to_store = answer_value
+            if question.get_effective_question_type() == 'short_answer':
+                answer_to_store = question.serialize_short_answer_submission(answer_value)
+            answer = QuizAnswer.objects.create(
+                quiz=quiz,
+                participant=participant,
+                question=question,
+                answer_text=answer_to_store,
+                time_taken=time_taken,
+            )
+            if is_tutorial_round and answer.points_earned:
+                answer.points_earned = 0
+                answer.save(update_fields=['points_earned', 'updated_at'])
+
+            auto_finalized_answers.append({
+                'participant_name': participant.name,
+                'question_id': question.id,
+                'display_answer': self._format_answer_display(question, answer.answer_text),
+                'is_correct': answer.is_correct,
+                'points_earned': answer.points_earned,
+            })
+
+        answers = QuizAnswer.objects.filter(
+            quiz=quiz,
+            question=question,
+        ).select_related('participant')
+        if hub_session_code is not None:
+            answers = answers.filter(participant__hub_session_code=hub_session_code)
+        answer_results = [
+            {
+                'participant_name': answer.participant.name,
+                'question_id': answer.question_id,
+                'is_correct': answer.is_correct,
+                'points_earned': answer.points_earned,
+                'display_answer': self._format_answer_display(question, answer.answer_text),
+            }
+            for answer in answers
+        ]
+
+        last_question_result = {
+            'correct_answer': correct_payload,
+            'answer_results': answer_results,
+            'auto_finalized_answers': auto_finalized_answers,
+            'is_tutorial_round': bool(is_tutorial_round),
+        }
+        quiz.current_question = None
+        quiz.question_start_time = None
+        session.is_question_active = False
+        session.question_end_time = None
+        session.pending_answers = {}
+        session.last_question_result = last_question_result
+        quiz.save(update_fields=['current_question', 'question_start_time', 'updated_at'])
+        session.save(update_fields=[
+            'is_question_active',
+            'question_end_time',
+            'pending_answers',
+            'last_question_result',
+            'updated_at',
+        ])
+        return last_question_result
+
+    @database_sync_to_async
+    @transaction.atomic
     def save_participant_answer(
         self,
         participant_name,
@@ -932,35 +1217,34 @@ class QuizConsumer(AsyncWebsocketConsumer):
         answer_text,
         time_taken,
         question_id=None,
-        allow_recently_ended=False,
     ):
         try:
-            quiz = Quiz.objects.get(room_code=self.room_code)
+            quiz = (
+                Quiz.objects.select_for_update()
+                .select_related('current_question')
+                .get(room_code=self.room_code)
+            )
             participant = quiz.participants.get(name=participant_name, hub_session_code=hub_session_code)
 
-            if quiz.status != 'active':
+            if quiz.status != 'active' or not quiz.current_question:
                 return None
 
             current_question = quiz.current_question
             target_question = current_question
             question_id = str(question_id) if question_id is not None else None
 
-            if target_question and question_id and str(target_question.id) != question_id:
-                recently_ended_question_id = cache.get(self._recently_ended_question_cache_key())
-                if allow_recently_ended and str(recently_ended_question_id or '') == question_id:
-                    target_question = QuizQuestion.objects.filter(id=question_id).first()
-                else:
-                    return None
+            if question_id and str(target_question.id) != question_id:
+                return None
 
-            if not target_question:
-                if not (allow_recently_ended and question_id):
-                    return None
-                recently_ended_question_id = cache.get(self._recently_ended_question_cache_key())
-                if str(recently_ended_question_id or '') != question_id:
-                    return None
-                target_question = QuizQuestion.objects.filter(id=question_id).first()
-                if not target_question:
-                    return None
+            session = QuizSession.objects.select_for_update().filter(quiz=quiz).first()
+            if session and (
+                not session.is_question_active
+                or (
+                    session.question_end_time is not None
+                    and timezone.now() >= session.question_end_time
+                )
+            ):
+                return None
 
             # Check if answer already exists
             existing_answer = QuizAnswer.objects.filter(
@@ -974,6 +1258,11 @@ class QuizConsumer(AsyncWebsocketConsumer):
                 if current_question and current_question.id == target_question.id and quiz.question_start_time and existing_answer.submitted_at < quiz.question_start_time:
                     existing_answer.delete()
                 else:
+                    if session:
+                        pending_answers = dict(session.pending_answers or {})
+                        if pending_answers.pop(str(participant.id), None) is not None:
+                            session.pending_answers = pending_answers
+                            session.save(update_fields=['pending_answers', 'updated_at'])
                     return None  # Already answered in this round
 
             answer_to_store = answer_text
@@ -1000,6 +1289,12 @@ class QuizConsumer(AsyncWebsocketConsumer):
             if is_tutorial_answer and answer.points_earned:
                 answer.points_earned = 0
                 answer.save(update_fields=['points_earned', 'updated_at'])
+
+            if session:
+                pending_answers = dict(session.pending_answers or {})
+                if pending_answers.pop(str(participant.id), None) is not None:
+                    session.pending_answers = pending_answers
+                    session.save(update_fields=['pending_answers', 'updated_at'])
 
             # Resolve key → full text for multiple choice
             if target_question.question_type == 'multiple_choice':

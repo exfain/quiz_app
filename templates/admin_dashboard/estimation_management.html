@@ -568,7 +568,7 @@
                     row.innerHTML = `
                         <td>${q.question_text}</td>
                         <td>${q.correct_answer}</td>
-                        <td>${q.unit}</td>
+                        <td>${q.unit_display || q.unit}</td>
                         <td>${q.use_manual_points ? q.max_points : (q.zone_count ?? q.max_points)}</td>
                         <td>${q.time_limit}</td>
                         <td>${q.created_at}</td>
@@ -786,7 +786,7 @@
                         <td>${q.question_text}</td>
                         <td>${q.correct_answer}</td>
                         <td class="custom-zone-points-col">${q.use_manual_points ? q.max_points : (q.zone_count ?? q.max_points)}</td>
-                        <td>${q.unit}</td>
+                        <td>${q.unit_display || q.unit}</td>
                         <td>${q.created_at}</td>
                     `;
                     body.appendChild(tr);
@@ -868,7 +868,7 @@
                 tbody.innerHTML = '';
                 (data.questions || []).forEach(q => {
                     const tr = document.createElement('tr');
-                    tr.innerHTML = `<td><input type="checkbox" class="bundle-q-check" value="${q.id}"></td><td>${q.question_text}</td><td>${q.correct_answer} ${q.unit}</td>`;
+                    tr.innerHTML = `<td><input type="checkbox" class="bundle-q-check" value="${q.id}"></td><td>${q.question_text}</td><td>${q.correct_answer} ${q.unit_display || q.unit}</td>`;
                     tbody.appendChild(tr);
                 });
                 document.getElementById('bundleQuestionCount').textContent = `${data.count} Fragen`;
@@ -962,37 +962,9 @@
                                     <div class="mb-3">
                                         <label for="unit" class="form-label">Unit</label>
                                         <select class="form-control" id="unit" name="unit">
-                                            <option value="number">Number (no unit)</option>
-                                            <option value="meters">Meters</option>
-                                            <option value="kilometers">Kilometers</option>
-                                            <option value="feet">Feet</option>
-                                            <option value="inches">Inches</option>
-                                            <option value="centimeters">Centimeters</option>
-                                            <option value="years">Years</option>
-                                            <option value="months">Months</option>
-                                            <option value="days">Days</option>
-                                            <option value="hours">Hours</option>
-                                            <option value="minutes">Minutes</option>
-                                            <option value="seconds">Seconds</option>
-                                            <option value="kilograms">Kilograms</option>
-                                            <option value="pounds">Pounds</option>
-                                            <option value="grams">Grams</option>
-                                            <option value="tons">Tons</option>
-                                            <option value="liters">Liters</option>
-                                            <option value="gallons">Gallons</option>
-                                            <option value="milliliters">Milliliters</option>
-                                            <option value="degrees">Degrees</option>
-                                            <option value="fahrenheit">Fahrenheit</option>
-                                            <option value="celsius">Celsius</option>
-                                            <option value="dollars">Dollars ($)</option>
-                                            <option value="euros">Euros (€)</option>
-                                            <option value="percent">Percent (%)</option>
-                                            <option value="people">People</option>
-                                            <option value="calories">Calories</option>
-                                            <option value="watts">Watts</option>
-                                            <option value="miles">Miles</option>
-                                            <option value="mph">Miles per hour</option>
-                                            <option value="kmh">Kilometers per hour</option>
+                                            {% for unit_value, unit_label in estimation_unit_choices %}
+                                            <option value="{{ unit_value }}">{{ unit_label }}</option>
+                                            {% endfor %}
                                         </select>
                                     </div>
                                 </div>

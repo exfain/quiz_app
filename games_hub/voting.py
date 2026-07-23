@@ -12,6 +12,9 @@ from wer_weiss_mehr.models import WerWeissMehrGame, WerWeissMehrParticipant
 from where_is_this.models import WhereParticipant, WhereQuiz
 from who_is_lying.models import WhoParticipant, WhoQuiz
 from who_is_that.models import WhoThatParticipant, WhoThatQuiz
+from buzzer.models import BuzzerGame, BuzzerParticipant
+from host_points.models import HostPointsGame, HostPointsParticipant
+from wann_war_das.models import WannWarDasGame, WannWarDasParticipant
 
 from .models import GameVote, HubGameParticipantSnapshot, HubGameStep, HubParticipant, HubSession
 
@@ -27,6 +30,9 @@ GAME_MODELS = {
     'blackjack': (BlackJackQuiz, BlackJackParticipant, 'Black Jack'),
     'sorting_ladder': (SortingLadderGame, SortingLadderParticipant, 'Sorting Ladder'),
     'wer_weiss_mehr': (WerWeissMehrGame, WerWeissMehrParticipant, 'Wer weiss mehr?'),
+    'buzzer': (BuzzerGame, BuzzerParticipant, 'Buzzer'),
+    'host_points': (HostPointsGame, HostPointsParticipant, 'Host-Punktevergabe'),
+    'wann_war_das': (WannWarDasGame, WannWarDasParticipant, 'Wann war das?'),
 }
 
 VOTING_BLOCKED_STATUSES = {'active', 'completed', 'cancelled', 'ended'}

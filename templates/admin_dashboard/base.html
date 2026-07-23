@@ -14,15 +14,11 @@
     
     <!-- Custom Theme CSS -->
     <link rel="stylesheet" href="{% static 'theme.css' %}">
-    
-    <!-- Inter Font -->
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="{% static 'host.css' %}">
     
     {% block extra_head %}{% endblock %}
 </head>
-<body>
+<body class="qa-host-root">
     <!-- Admin Layout Container -->
     <div class="admin-layout">
         <!-- Main Content -->
@@ -250,6 +246,9 @@
                 { regex: /^\/admin-dashboard\/clue-rush\/([^/]+)\/monitor\/?$/, gameKey: 'clue_rush' },
                 { regex: /^\/admin-dashboard\/sorting-ladder\/([^/]+)\/monitor\/?$/, gameKey: 'sorting_ladder' },
                 { regex: /^\/admin-dashboard\/wer-weiss-mehr\/([^/]+)\/monitor\/?$/, gameKey: 'wer_weiss_mehr' },
+                { regex: /^\/admin-dashboard\/buzzer\/([^/]+)\/monitor\/?$/, gameKey: 'buzzer' },
+                { regex: /^\/admin-dashboard\/host-points\/([^/]+)\/monitor\/?$/, gameKey: 'host_points' },
+                { regex: /^\/admin-dashboard\/wann-war-das\/([^/]+)\/monitor\/?$/, gameKey: 'wann_war_das' },
             ];
 
             const guardState = {
@@ -309,7 +308,9 @@
                 if (typeof monitor?.isActive === 'boolean') {
                     return monitor.isActive;
                 }
-                return !!document.getElementById('endQuizBtn') && !document.getElementById('startQuizBtn');
+                const endButton = document.getElementById('endQuizBtn') || document.getElementById('endGameBtn');
+                if (!endButton) return false;
+                return !endButton.disabled && !endButton.classList.contains('d-none');
             }
 
             function isMonitorGameUnfinished() {
@@ -331,8 +332,90 @@
             function syncSetInactiveVisibility() {
                 const setInactiveButton = document.getElementById('setInactive' + 'Btn');
                 if (!setInactiveButton) return;
+                if (document.body.dataset.hostGameStatus === 'completed') {
+                    setInactiveButton.classList.add('d-none');
+                    return;
+                }
                 setInactiveButton.classList.toggle('d-none', !isMonitorGameUnfinished());
             }
+
+            function disableEndedHostActions() {
+                const actionSelectors = [
+                    '#startQuizBtn',
+                    '#startGameBtn',
+                    '#startQuestionBtn',
+                    '#sendQuestionBtn',
+                    '#endQuizBtn',
+                    '#endGameBtn',
+                    '#endQuestionBtn',
+                    '#startRoundBtn',
+                    '#openBuzzerBtn',
+                    '#markCorrectBtn',
+                    '#markWrongBtn',
+                    '#endRoundBtn',
+                    '#nextRoundBtn',
+                    '#setInactiveBtn',
+                    '.send-question-btn',
+                    '.start-question-btn',
+                    '.end-question-btn',
+                    '.start-round-btn',
+                    '.next-round-btn',
+                    '.score-btn',
+                ].join(',');
+
+                document.querySelectorAll(actionSelectors).forEach((element) => {
+                    element.disabled = true;
+                    element.classList.add('d-none');
+                    element.setAttribute('aria-disabled', 'true');
+                });
+
+                document.querySelectorAll('.host-monitor-content input, .host-monitor-content select, .host-monitor-content textarea').forEach((element) => {
+                    element.disabled = true;
+                });
+            }
+
+            function updateEndedStatusBadges() {
+                ['hostGameStatus', 'gameStatus'].forEach((id) => {
+                    const element = document.getElementById(id);
+                    if (!element) return;
+                    element.textContent = 'Spiel beendet';
+                    element.classList.remove('bg-secondary', 'bg-primary', 'bg-warning', 'text-dark');
+                    element.classList.add('bg-success');
+                });
+
+                document.querySelectorAll('.host-monitor-content .status-badge, #statusBadge').forEach((element) => {
+                    element.textContent = 'Spiel beendet';
+                    element.classList.remove('status-waiting', 'status-active', 'status-inactive', 'bg-secondary', 'bg-primary', 'bg-warning', 'text-dark');
+                    element.classList.add('status-completed', 'bg-success');
+                });
+
+                const completedBanner = document.getElementById('completedBanner');
+                if (completedBanner) {
+                    completedBanner.classList.remove('d-none');
+                    if (!completedBanner.textContent.trim()) {
+                        completedBanner.textContent = 'Spiel beendet. Der finale Spielstand ist sichtbar.';
+                    }
+                }
+            }
+
+            window.hostEndState = {
+                apply(payload = {}) {
+                    const monitor = getAdminGameMonitor();
+                    if (monitor) {
+                        monitor.isActive = false;
+                        monitor.isQuestionRunning = false;
+                        monitor.isQuestionActive = false;
+                    }
+
+                    window.unitTutorialNotice?.hide?.();
+                    document.body.dataset.hostGameStatus = 'completed';
+                    updateEndedStatusBadges();
+                    disableEndedHostActions();
+                    syncSetInactiveVisibility();
+                    continuePendingLeaveNavigation();
+                    window.dispatchEvent(new CustomEvent('host:end-state-applied', { detail: payload }));
+                },
+            };
 
             function readPendingLeaveNavigation() {
                 try {
@@ -925,6 +1008,261 @@
             display: flex;
             justify-content: center;
             gap: 0.5rem;
+        }
+
+        /* ==========================================================================
+           Compact Host Monitor UI
+           ========================================================================== */
+
+        .host-monitor-content,
+        .host-session-monitor {
+            --host-gap: 1rem;
+            --host-card-radius: 0.9rem;
+            --host-card-border: rgba(15, 23, 42, 0.1);
+            --host-muted-bg: #f8fafc;
+        }
+
+        .host-monitor-content .quiz-status-header,
+        .host-session-monitor > .card:first-child {
+            background: rgba(255, 255, 255, 0.96);
+            border: 1px solid var(--host-card-border);
+            border-radius: var(--host-card-radius);
+            box-shadow: 0 12px 30px rgba(15, 23, 42, 0.06);
+            padding: 0.85rem 1rem;
+            margin-bottom: var(--host-gap) !important;
+        }
+
+        .host-monitor-content .quiz-status-header .row {
+            row-gap: 0.75rem;
+        }
+
+        .host-monitor-content .quiz-title,
+        .host-monitor-content h2.mb-1 {
+            font-size: clamp(1.15rem, 1.6vw, 1.55rem);
+            line-height: 1.15;
+            margin-bottom: 0.35rem;
+        }
+
+        .host-monitor-content .quiz-meta,
+        .host-monitor-content .quiz-controls,
+        .host-session-monitor .card-header,
+        .host-session-monitor .card-body > .d-flex,
+        .host-session-monitor .step-action {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .host-monitor-content .quiz-controls {
+            justify-content: flex-end;
+        }
+
+        .host-monitor-content .meta-item,
+        .host-session-monitor .badge,
+        .host-monitor-content .status-badge,
+        .host-monitor-content .badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.35rem;
+            border-radius: 999px;
+            line-height: 1.1;
+        }
+
+        .host-monitor-content .meta-item {
+            max-width: min(100%, 32rem);
+            background: var(--host-muted-bg);
+            border: 1px solid rgba(15, 23, 42, 0.08);
+            color: #475569;
+            font-size: 0.82rem;
+            padding: 0.3rem 0.55rem;
+        }
+
+        .host-monitor-content .meta-item a {
+            max-width: 20rem;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .host-monitor-content .form-check-label {
+            font-size: 0.82rem;
+        }
+
+        .host-monitor-content .btn:not(.btn-lg),
+        .host-session-monitor .btn:not(.btn-lg) {
+            --bs-btn-padding-y: 0.36rem;
+            --bs-btn-padding-x: 0.62rem;
+            --bs-btn-font-size: 0.84rem;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.35rem;
+        }
+
+        .host-monitor-content #endQuizBtn,
+        .host-monitor-content #setInactiveBtn,
+        .host-session-monitor #endSessionBtn,
+        .host-session-monitor .delete-step-btn {
+            margin-left: 0.25rem;
+        }
+
+        .host-monitor-content #endQuizBtn,
+        .host-session-monitor #endSessionBtn,
+        .host-session-monitor .delete-step-btn {
+            border-color: rgba(220, 38, 38, 0.42);
+            box-shadow: inset 0 0 0 1px rgba(220, 38, 38, 0.08);
+        }
+
+        .host-monitor-content #endQuizBtn::before,
+        .host-session-monitor #endSessionBtn::before {
+            content: "";
+            width: 1px;
+            align-self: stretch;
+            margin-right: 0.18rem;
+            background: rgba(220, 38, 38, 0.28);
+        }
+
+        .host-monitor-content > .row,
+        .host-session-monitor > .row {
+            --bs-gutter-x: var(--host-gap);
+            --bs-gutter-y: var(--host-gap);
+        }
+
+        .host-monitor-content .card,
+        .host-session-monitor .card {
+            border: 1px solid var(--host-card-border);
+            border-radius: var(--host-card-radius);
+            box-shadow: 0 10px 28px rgba(15, 23, 42, 0.045);
+            overflow: hidden;
+        }
+
+        .host-monitor-content .card-header,
+        .host-session-monitor .card-header {
+            padding: 0.72rem 0.9rem;
+            background: #fff;
+            border-bottom: 1px solid rgba(15, 23, 42, 0.08);
+        }
+
+        .host-monitor-content .card-body,
+        .host-session-monitor .card-body {
+            padding: 0.9rem;
+        }
+
+        .host-monitor-content .card-title,
+        .host-session-monitor .card-header h5,
+        .host-monitor-content .card-header h5 {
+            font-size: 0.98rem;
+            line-height: 1.2;
+        }
+
+        .host-monitor-content .mt-4,
+        .host-monitor-content .mb-4,
+        .host-session-monitor .mb-4 {
+            margin-top: var(--host-gap) !important;
+            margin-bottom: var(--host-gap) !important;
+        }
+
+        .host-monitor-content .question-list,
+        .host-monitor-content .set-overview-list,
+        .host-session-monitor .steps-list {
+            display: grid;
+            gap: 0.6rem;
+            max-height: min(58vh, 42rem);
+            overflow: auto;
+            padding-right: 0.15rem;
+        }
+
+        .host-monitor-content .question-item,
+        .host-monitor-content .set-overview-item,
+        .host-session-monitor .step-row {
+            border-radius: 0.75rem;
+            padding: 0.72rem;
+        }
+
+        .host-monitor-content .question-text,
+        .host-monitor-content .set-question-text,
+        .host-session-monitor .step-name {
+            line-height: 1.25;
+        }
+
+        .host-monitor-content .question-answers,
+        .host-monitor-content .question-meta,
+        .host-monitor-content .set-overview-meta {
+            font-size: 0.82rem;
+        }
+
+        .host-monitor-content .live-responses,
+        .host-monitor-content #liveResponses,
+        .host-monitor-content #participantsList,
+        .host-monitor-content #participantStatusList,
+        .host-monitor-content #participantsGrid {
+            max-height: min(46vh, 34rem);
+            overflow: auto;
+            scrollbar-gutter: stable;
+        }
+
+        .host-monitor-content .table-responsive,
+        .host-session-monitor .table-responsive,
+        .host-monitor-content [class*="score"][class*="box"],
+        .host-monitor-content [class*="score"][class*="grid"],
+        .host-monitor-content [class*="scoreboard"],
+        .host-monitor-content [id*="Score"],
+        .host-monitor-content [id*="score"] {
+            overflow-x: auto;
+        }
+
+        .host-monitor-content table,
+        .host-session-monitor table {
+            font-size: 0.86rem;
+        }
+
+        .host-monitor-content .table > :not(caption) > * > *,
+        .host-session-monitor .table > :not(caption) > * > * {
+            padding: 0.42rem 0.52rem;
+        }
+
+        .host-monitor-content .response-item,
+        .host-monitor-content .participant-item,
+        .host-monitor-content [class*="response-row"],
+        .host-monitor-content [class*="participant-row"] {
+            padding-top: 0.5rem;
+            padding-bottom: 0.5rem;
+        }
+
+        .host-monitor-content .timer-circle,
+        .host-monitor-content .target-circle-large {
+            transform: scale(0.86);
+            transform-origin: center;
+        }
+
+        .host-monitor-content .unit-tutorial-notice {
+            margin-bottom: var(--host-gap);
+        }
+
+        @media (min-width: 1200px) {
+            .host-monitor-content .col-lg-8 {
+                width: 66.666667%;
+            }
+
+            .host-monitor-content .col-lg-4 {
+                width: 33.333333%;
+            }
+        }
+
+        @media (max-width: 767.98px) {
+            .host-monitor-content .quiz-controls {
+                justify-content: flex-start;
+            }
+
+            .host-monitor-content .quiz-status-header,
+            .host-session-monitor > .card:first-child {
+                padding: 0.75rem;
+            }
+
+            .host-monitor-content .meta-item a {
+                max-width: 14rem;
+            }
         }
     </style>
 

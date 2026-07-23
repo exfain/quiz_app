@@ -37,6 +37,87 @@
     border-color: #0d6efd;
     background: #eef6ff;
 }
+.game-compact-card .card-body {
+    padding: 0.85rem 1rem;
+}
+.game-compact-grid {
+    align-items: end;
+}
+.game-compact-grid .form-label {
+    font-size: 0.78rem;
+    margin-bottom: 0.25rem;
+}
+.game-compact-grid .form-control,
+.game-compact-grid .form-select {
+    min-height: 2.15rem;
+    padding: 0.35rem 0.6rem;
+}
+.game-tutorial-card {
+    margin-top: 0.5rem;
+}
+.game-tutorial-card .card-header {
+    padding: 0.75rem 1rem;
+}
+.game-tutorial-card .card-body {
+    padding: 0.85rem 1rem;
+}
+.game-tutorial-card textarea {
+    min-height: 6.25rem;
+}
+.game-question-workspace {
+    margin-bottom: 1rem;
+}
+.game-tool-card,
+.assigned-questions-card {
+    margin-bottom: 0;
+}
+.game-tool-card .card-header,
+.assigned-questions-card .card-header {
+    padding: 0.65rem 0.9rem !important;
+}
+.game-tool-card .card-body {
+    padding: 0.75rem 0.9rem;
+}
+.game-tool-card .form-label {
+    font-size: 0.78rem;
+    margin-bottom: 0.2rem;
+}
+.game-tool-card .form-control,
+.game-tool-card .form-select {
+    min-height: 2.1rem;
+    padding: 0.32rem 0.55rem;
+}
+.game-tool-card textarea.form-control {
+    min-height: 4.25rem;
+}
+.game-tool-card .mb-3 {
+    margin-bottom: 0.65rem !important;
+}
+.estimation-manual-points-switch {
+    min-height: 2.1rem;
+    align-items: center;
+}
+.estimation-manual-points-switch .form-check-label {
+    line-height: 1.05;
+}
+.question-bank-scroll {
+    max-height: 34rem;
+    overflow: auto;
+}
+.assigned-questions-scroll {
+    max-height: 20rem;
+    overflow: auto;
+}
+@media (min-width: 1200px) {
+    .game-question-workspace > .question-form-column {
+        flex: 0 0 44%;
+        max-width: 44%;
+    }
+    .game-question-workspace > .question-bank-column {
+        flex: 0 0 56%;
+        max-width: 56%;
+    }
+}
 </style>
 <div class="container-fluid py-4">
 
@@ -49,15 +130,18 @@
     </div>
 
     <!-- Step 1: Name + Type -->
-    <div class="card border-0 shadow-sm mb-4">
+    <div class="card border-0 shadow-sm mb-3 game-compact-card">
         <div class="card-body">
-            <div class="row g-3">
-                <div class="col-md-5">
+            <div class="row g-2 game-compact-grid">
+                <div class="col-12 col-md-3">
                     <label class="form-label fw-semibold">Game Name *</label>
                     <input type="text" class="form-control" id="newGameTitle" placeholder="z.B. Geografie">
-                    <input type="text" class="form-control mt-2" id="newGameInternalDescription" placeholder="Interne Beschreibung (nur für Admins)">
                 </div>
-                <div class="col-md-4">
+                <div class="col-12 col-md-3">
+                    <label class="form-label fw-semibold" for="newGameInternalDescription">Interner Name</label>
+                    <input type="text" class="form-control" id="newGameInternalDescription" placeholder="Nur für Admins">
+                </div>
+                <div class="col-12 col-md-3">
                     <label class="form-label fw-semibold">Game Type *</label>
                     <select class="form-select" id="newGameType" {% if edit_mode %}disabled{% endif %}>
                         <option value="" disabled {% if not edit_mode %}selected{% endif %}>Select game type…</option>
@@ -70,17 +154,20 @@
                         <option value="blackjack" {% if game_type == 'blackjack' %}selected{% endif %}>Black Jack Quiz</option>
                         <option value="clue_rush" {% if game_type == 'clue_rush' %}selected{% endif %}>Clue Rush</option>
                         <option value="sorting_ladder" {% if game_type == 'sorting_ladder' %}selected{% endif %}>Sorting Ladder</option>
+                        <option value="buzzer" {% if game_type == 'buzzer' %}selected{% endif %}>Buzzer</option>
+                        <option value="host_points" {% if game_type == 'host_points' %}selected{% endif %}>Host-Punktevergabe</option>
+                        <option value="wann_war_das" {% if game_type == 'wann_war_das' %}selected{% endif %}>Wann war das?</option>
                         <option value="wer_weiss_mehr" {% if game_type == 'wer_weiss_mehr' %}selected{% endif %}>Wer weiß mehr?</option>
                     </select>
                 </div>
-                <div class="col-md-3 d-none" id="estimationGameModeWrap">
+                <div class="col-12 col-md-3 d-none" id="estimationGameModeWrap">
                     <label class="form-label fw-semibold">Default-Modus</label>
                     <select class="form-select" id="estimationScoringMode">
                         <option value="zones">Zonen</option>
                         <option value="rank">Ranking</option>
                     </select>
                 </div>
-                <div class="col-md-3 d-none" id="blackjackGameModeWrap">
+                <div class="col-12 col-md-3 d-none" id="blackjackGameModeWrap">
                     <label class="form-label fw-semibold">Bewertungsmodus</label>
                     <select class="form-select" id="blackjackScoringMode">
                         <option value="simple">einfach</option>
@@ -94,65 +181,14 @@
     <!-- Type-specific content (shown after type selection) -->
     <div id="gameTypeContent" style="display:none;">
 
-        <div class="card border-0 shadow-sm mb-4">
-            <div class="card-header bg-white border-0 py-3">
-                <h5 class="mb-0">
-                    <i data-lucide="book-open" style="width:18px;height:18px;" class="me-2"></i>Spielerläuterung
-                </h5>
-            </div>
-            <div class="card-body">
-                <p class="text-muted small mb-3">
-                    Optionaler Erklärungstext, den der Host zu Beginn des Spiels anzeigen kann. Leer lassen, wenn keine Spielerläuterung benötigt wird.
-                </p>
-                <div id="gameTutorialFields">
-                    <div class="mb-3">
-                        <label class="form-label fw-semibold" for="gameTutorialTitle">Titel der Spielerläuterung</label>
-                        <input type="text" class="form-control" id="gameTutorialTitle" placeholder="Kurzer Titel der Spielerläuterung">
-                    </div>
-                    <div class="mb-0">
-                        <label class="form-label fw-semibold" for="gameTutorialText">Text der Spielerläuterung</label>
-                        <textarea class="form-control" id="gameTutorialText" rows="5" placeholder="Erklärung, die Teilnehmer vor der ersten echten Frage oder dem ersten echten Set sehen sollen"></textarea>
-                    </div>
-                </div>
-            </div>
-        </div>
-
         <!-- ── QUICK QUIZ ─────────────────────────────────────────────── -->
         <div id="section-quiz" class="type-section" style="display:none;">
 
-            <!-- Assigned Questions -->
-            <div class="card border-0 shadow-sm mb-4">
-                <div class="card-header bg-white border-0 py-3 d-flex align-items-center gap-2">
-                    <h5 class="mb-0">
-                        <i data-lucide="list-checks" style="width:18px;height:18px;" class="me-2"></i>Assigned Questions
-                    </h5>
-                    <span class="badge bg-primary" id="assignedCountBadge">0</span>
-                </div>
-                <div class="card-body p-0">
-                    <div style="max-height: 490px; overflow-y: auto;">
-                        <table class="table table-hover mb-0">
-                            <thead class="table-light sticky-top">
-                                <tr>
-                                    <th style="width:28px;"></th>
-                                    <th style="width:190px;">Tutorial</th>
-                                    <th>Question</th>
-                                    <th>Type</th>
-                                    <th>Time (s)</th>
-                                    <th style="width:50px;"></th>
-                                </tr>
-                            </thead>
-                            <tbody id="assignedQuestionsBody">
-                                <tr id="assignedEmptyRow">
-                                    <td colspan="6" class="text-center py-3 text-muted">No questions assigned yet</td>
-                                </tr>
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
-            </div>
+            <div class="row g-3 game-question-workspace">
+                <div class="col-12 question-form-column">
 
             <!-- Add / Edit Question -->
-            <div class="card border-0 shadow-sm mb-4" id="quizQuestionFormCard">
+            <div class="card border-0 shadow-sm game-tool-card" id="quizQuestionFormCard">
                 <div class="card-header bg-white border-0 py-3 d-flex justify-content-between align-items-center">
                     <h5 class="mb-0" id="quizQuestionFormTitle">
                         <i data-lucide="help-circle" style="width:18px;height:18px;" class="me-2"></i>Add New Question
@@ -240,9 +276,11 @@
                     </form>
                 </div>
             </div>
+                </div>
+                <div class="col-12 question-bank-column">
 
             <!-- Question Bank with checkboxes -->
-            <div class="card border-0 shadow-sm mb-4">
+            <div class="card border-0 shadow-sm game-tool-card question-bank-card">
                 <div class="card-header bg-white border-0 py-3 d-flex justify-content-between align-items-center">
                     <div class="d-flex align-items-center gap-2">
                         <h5 class="mb-0">
@@ -257,7 +295,7 @@
                     </div>
                 </div>
                 <div class="card-body p-0">
-                    <div class="table-responsive">
+                    <div class="table-responsive question-bank-scroll">
                         <table class="table table-hover mb-0">
                             <thead class="table-light">
                                 <tr>
@@ -279,31 +317,44 @@
                     </div>
                 </div>
             </div>
-        </div>
-        <!-- ── END QUICK QUIZ ─────────────────────────────────────────── -->
-
-        <!-- ── OTHER TYPES ───────────────────────────────────────────── -->
-        <div id="section-generic" class="type-section" style="display:none;">
+                </div>
+            </div>
 
             <!-- Assigned Questions -->
-            <div class="card border-0 shadow-sm mb-4">
+            <div class="card border-0 shadow-sm mb-4 assigned-questions-card">
                 <div class="card-header bg-white border-0 py-3 d-flex align-items-center gap-2">
                     <h5 class="mb-0">
                         <i data-lucide="list-checks" style="width:18px;height:18px;" class="me-2"></i>Assigned Questions
                     </h5>
-                    <span class="badge bg-primary" id="genericAssignedCountBadge">0</span>
+                    <span class="badge bg-primary" id="assignedCountBadge">0</span>
                 </div>
                 <div class="card-body p-0">
-                    <div style="max-height:300px;overflow-y:auto;">
+                    <div class="assigned-questions-scroll">
                         <table class="table table-hover mb-0">
-                            <thead class="table-light sticky-top" id="genericAssignedHead"></thead>
-                            <tbody id="genericAssignedBody">
-                                <tr><td colspan="10" class="text-center py-3 text-muted">No questions assigned yet</td></tr>
+                            <thead class="table-light sticky-top">
+                                <tr>
+                                    <th style="width:28px;"></th>
+                                    <th style="width:190px;">Tutorial</th>
+                                    <th>Question</th>
+                                    <th>Type</th>
+                                    <th>Time (s)</th>
+                                    <th style="width:50px;"></th>
+                                </tr>
+                            </thead>
+                            <tbody id="assignedQuestionsBody">
+                                <tr id="assignedEmptyRow">
+                                    <td colspan="6" class="text-center py-3 text-muted">No questions assigned yet</td>
+                                </tr>
                             </tbody>
                         </table>
                     </div>
                 </div>
             </div>
+        </div>
+        <!-- ── END QUICK QUIZ ─────────────────────────────────────────── -->
+
+        <!-- ── OTHER TYPES ───────────────────────────────────────────── -->
+        <div id="section-generic" class="type-section" style="display:none;">
 
             <div class="card border-0 shadow-sm mb-4 d-none" id="blackjackSetBuilderCard">
                 <div class="card-body">
@@ -320,8 +371,11 @@
                 </div>
             </div>
 
+            <div class="row g-3 game-question-workspace">
+                <div class="col-12 question-form-column">
+
             <!-- Add New Question (per-type forms) -->
-            <div class="card border-0 shadow-sm mb-4" id="genericQuestionFormCard">
+            <div class="card border-0 shadow-sm game-tool-card" id="genericQuestionFormCard">
                 <div class="card-header bg-white border-0 py-3 d-flex justify-content-between align-items-center">
                     <h5 class="mb-0" id="genericFormTitle">
                         <i data-lucide="help-circle" style="width:18px;height:18px;" class="me-2"></i>Add New Question
@@ -381,9 +435,9 @@
                             <div class="col-md-3"><label class="form-label">Anzahl der Zonen</label>
                                 <input type="number" class="form-control" id="est-zone-count" value="5" min="1" step="1"></div>
                             <div class="col-md-3 d-flex align-items-end">
-                                <div class="form-check form-switch mb-2">
+                                <div class="form-check form-switch mb-0 d-flex gap-2 estimation-manual-points-switch">
                                     <input class="form-check-input" type="checkbox" id="est-manual-points-enabled">
-                                    <label class="form-check-label" for="est-manual-points-enabled">Punkte manuell definieren</label>
+                                    <label class="form-check-label" for="est-manual-points-enabled">max. Punktzahl ändern</label>
                                 </div>
                             </div>
                             <div class="col-md-3 d-none" id="est-manual-points-group"><label class="form-label">Punkte</label>
@@ -396,6 +450,44 @@
                         </div>
                         <div class="d-flex justify-content-end">
                             <button type="button" class="btn btn-primary generic-submit-btn" id="est-submit">
+                                <i data-lucide="plus" style="width:15px;height:15px;" class="me-1"></i>Add Question
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- WANN WAR DAS -->
+                    <div id="generic-form-wann_war_das" class="generic-type-form d-none">
+                        <input type="hidden" id="wwd-id">
+                        <div class="mb-3"><label class="form-label">Frage *</label>
+                            <textarea class="form-control" id="wwd-question" rows="2" placeholder="z.B. Wann wurde der Europaeische Gerichtshof gegruendet?"></textarea></div>
+                        <div class="row g-3 mb-3">
+                            <div class="col-md-3"><label class="form-label">Richtige Zahl *</label>
+                                <input type="number" step="any" class="form-control" id="wwd-answer" placeholder="1952"></div>
+                            <div class="col-md-3"><label class="form-label">Einheit</label>
+                                <input type="text" class="form-control" id="wwd-unit" value="Jahr"></div>
+                            <div class="col-md-3"><label class="form-label">Starttoleranz</label>
+                                <input type="number" step="any" class="form-control" id="wwd-start-tolerance" value="0" min="0"></div>
+                            <div class="col-md-3"><label class="form-label">Max. Toleranz</label>
+                                <input type="number" step="any" class="form-control" id="wwd-max-tolerance" value="10" min="0"></div>
+                        </div>
+                        <div class="row g-3 mb-3">
+                            <div class="col-md-3"><label class="form-label">Steigerung je Schritt</label>
+                                <input type="number" step="any" class="form-control" id="wwd-tolerance-increment" value="1" min="0.01"></div>
+                            <div class="col-md-3"><label class="form-label">Sekunden pro Schritt</label>
+                                <input type="number" class="form-control" id="wwd-seconds-per-step" value="5" min="1"></div>
+                            <div class="col-md-3"><label class="form-label">Max. Punkte</label>
+                                <input type="number" class="form-control" id="wwd-max-points" value="10" min="0"></div>
+                            <div class="col-md-3"><label class="form-label">Min. Punkte</label>
+                                <input type="number" class="form-control" id="wwd-min-points" value="1" min="0"></div>
+                        </div>
+                        <div class="row g-3 mb-3">
+                            <div class="col-md-3"><label class="form-label">Fragedauer <small class="text-muted">(optional)</small></label>
+                                <input type="number" class="form-control" id="wwd-time-limit" min="1" placeholder="auto"></div>
+                            <div class="col-md-9"><label class="form-label">Erklaerung fuer Reveal</label>
+                                <input type="text" class="form-control" id="wwd-explanation" placeholder="Optionaler Loesungstext"></div>
+                        </div>
+                        <div class="d-flex justify-content-end">
+                            <button type="button" class="btn btn-primary generic-submit-btn" id="wwd-submit">
                                 <i data-lucide="plus" style="width:15px;height:15px;" class="me-1"></i>Add Question
                             </button>
                         </div>
@@ -624,9 +716,11 @@
 
                 </div>
             </div>
+                </div>
+                <div class="col-12 question-bank-column">
 
             <!-- Question Bank -->
-            <div class="card border-0 shadow-sm mb-4">
+            <div class="card border-0 shadow-sm game-tool-card question-bank-card">
                 <div class="card-header bg-white border-0 py-3 d-flex justify-content-between align-items-center">
                     <div class="d-flex align-items-center gap-2">
                         <h5 class="mb-0">
@@ -641,7 +735,7 @@
                     </div>
                 </div>
                 <div class="card-body p-0">
-                    <div class="table-responsive">
+                    <div class="table-responsive question-bank-scroll">
                         <table class="table table-hover mb-0">
                             <thead class="table-light">
                                 <tr id="genericTableHead"></tr>
@@ -657,8 +751,83 @@
                     </div>
                 </div>
             </div>
+                </div>
+            </div>
+
+            <!-- Assigned Questions -->
+            <div class="card border-0 shadow-sm mb-4 assigned-questions-card">
+                <div class="card-header bg-white border-0 py-3 d-flex align-items-center gap-2">
+                    <h5 class="mb-0">
+                        <i data-lucide="list-checks" style="width:18px;height:18px;" class="me-2"></i>Assigned Questions
+                    </h5>
+                    <span class="badge bg-primary" id="genericAssignedCountBadge">0</span>
+                </div>
+                <div class="card-body p-0">
+                    <div class="assigned-questions-scroll">
+                        <table class="table table-hover mb-0">
+                            <thead class="table-light sticky-top" id="genericAssignedHead"></thead>
+                            <tbody id="genericAssignedBody">
+                                <tr><td colspan="10" class="text-center py-3 text-muted">No questions assigned yet</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
         </div>
         <!-- ── END OTHER TYPES ───────────────────────────────────────── -->
+
+        <div id="section-buzzer" class="type-section" style="display:none;">
+            <div class="card border-0 shadow-sm mb-4">
+                <div class="card-header bg-white border-0 py-3">
+                    <h5 class="mb-0">
+                        <i data-lucide="radio-tower" style="width:18px;height:18px;" class="me-2"></i>Buzzer-Einstellungen
+                    </h5>
+                </div>
+                <div class="card-body">
+                    <p class="text-muted small mb-3">Der Buzzer-Modus nutzt keine Fragebank. Der Host startet die mündlichen Runden live.</p>
+                    <div class="row g-3">
+                        <div class="col-md-4">
+                            <label class="form-label fw-semibold" for="buzzerPointsPerCorrect">Punkte pro korrekter Antwort</label>
+                            <input type="number" class="form-control" id="buzzerPointsPerCorrect" min="1" value="1">
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label fw-semibold" for="buzzerPlannedRounds">Geplante Runden <small class="text-muted">(optional)</small></label>
+                            <input type="number" class="form-control" id="buzzerPlannedRounds" min="1" placeholder="leer = beliebig">
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div id="section-host_points" class="type-section" style="display:none;">
+            <div class="card border-0 shadow-sm mb-4">
+                <div class="card-header bg-white border-0 py-3">
+                    <h5 class="mb-0">
+                        <i data-lucide="clipboard-list" style="width:18px;height:18px;" class="me-2"></i>Host-Punktevergabe
+                    </h5>
+                </div>
+                <div class="card-body">
+                    <p class="text-muted small mb-0">
+                        Dieser Spieltyp nutzt keine Fragebank. Das Spiel findet außerhalb der App statt, der Host vergibt Punkte manuell.
+                    </p>
+                </div>
+            </div>
+        </div>
+
+        <div class="card border-0 shadow-sm mb-3 game-tutorial-card">
+            <div class="card-header bg-white border-0">
+                <h5 class="mb-0">
+                    <i data-lucide="book-open" style="width:18px;height:18px;" class="me-2"></i>Spielerläuterung
+                </h5>
+            </div>
+            <div class="card-body">
+                <p class="text-muted small mb-2">
+                    Optionaler Erklärungstext, den der Host zu Beginn des Spiels anzeigen kann. Leer lassen, wenn keine Spielerläuterung benötigt wird.
+                </p>
+                <label class="form-label fw-semibold small mb-1" for="gameTutorialText">Text der Spielerläuterung</label>
+                <textarea class="form-control" id="gameTutorialText" rows="4" placeholder="Erklärung, die Teilnehmer vor der ersten echten Frage oder dem ersten echten Set sehen sollen"></textarea>
+            </div>
+        </div>
 
         <!-- Create Game Button -->
         <div class="d-flex justify-content-end gap-2 mb-5">
@@ -698,12 +867,13 @@ const EDIT_GAME_ID = {{ game_id|default:"null" }};
 const EDIT_GAME_TYPE = "{{ game_type|default:'' }}";
 const EDIT_GAME_TITLE = "{{ game_title|default:''|escapejs }}";
 const EDIT_GAME_INTERNAL_DESCRIPTION = "{{ game_internal_description|default:''|escapejs }}";
-const EDIT_TUTORIAL_TITLE = "{{ game_tutorial_title|default:''|escapejs }}";
 const EDIT_TUTORIAL_TEXT = "{{ game_tutorial_text|default:''|escapejs }}";
 const EDIT_TUTORIAL_QUESTION_ID = {{ game_tutorial_question_id|default:"null" }};
 const EDIT_TUTORIAL_SET_NUMBER = {{ game_tutorial_set_number|default:"null" }};
 const EDIT_ESTIMATION_SCORING_MODE = "{{ game_scoring_mode|default:'zones'|escapejs }}";
 const EDIT_BLACKJACK_SCORING_MODE = "{{ game_scoring_mode|default:'simple'|escapejs }}";
+const EDIT_BUZZER_POINTS_PER_CORRECT = {{ game_points_per_correct|default:1 }};
+const EDIT_BUZZER_PLANNED_ROUNDS = {{ game_planned_rounds|default:"null" }};
 const EDIT_SELECTED_IDS = new Set({{ selected_ids_json|default:"[]" }});
 
 // ── Game type config ──────────────────────────────────────────────────────────
@@ -712,7 +882,7 @@ const GAME_CONFIG = {
                       selectedUrl: id => `/admin-dashboard/quiz/${id}/selected-questions/` },
     estimation:     { questionsUrl: '/admin-dashboard/estimation/questions/',        createUrl: '/admin-dashboard/estimation/create-custom/',     updateUrl: '/admin-dashboard/estimation/update-custom/',     gameIdKey: 'quiz_id',  idKey: 'question_ids',
                       selectedUrl: id => `/admin-dashboard/estimation/${id}/selected-questions/`,
-                      columns: [{key:'question_text',label:'Question'},{key:'correct_answer',label:'Answer'},{key:'unit',label:'Unit'},{key:'points_display',label:'Zonenpunkte'}] },
+                      columns: [{key:'question_text',label:'Question'},{key:'correct_answer',label:'Answer'},{key:'unit_display',label:'Einheit'},{key:'points_display',label:'Zonenpunkte'}] },
     assign:         { questionsUrl: '/admin-dashboard/assign/questions/',            createUrl: '/admin-dashboard/assign/create-custom/',         updateUrl: '/admin-dashboard/assign/update-custom/',         gameIdKey: 'quiz_id',  idKey: 'question_ids',
                       selectedUrl: id => `/admin-dashboard/assign/${id}/selected-questions/`,
                       columns: [{key:'question_text',label:'Topic'},{key:'time_limit',label:'Time (s)'}] },
@@ -737,6 +907,11 @@ const GAME_CONFIG = {
     wer_weiss_mehr: { questionsUrl: '/admin-dashboard/wer-weiss-mehr/questions/',     createUrl: '/admin-dashboard/wer-weiss-mehr/create-custom/', updateUrl: '/admin-dashboard/wer-weiss-mehr/update-custom/', gameIdKey: 'quiz_id',  idKey: 'question_ids',
                       selectedUrl: id => `/admin-dashboard/wer-weiss-mehr/${id}/selected-questions/`,
                       columns: [{key:'question_text',label:'Question'},{key:'answer_count',label:'Answers'},{key:'round_time_limit',label:'Time (s)'}] },
+    wann_war_das:   { questionsUrl: '/admin-dashboard/wann-war-das/questions/',       createUrl: '/admin-dashboard/wann-war-das/create-custom/',   updateUrl: '/admin-dashboard/wann-war-das/update-custom/',   gameIdKey: 'game_id',  idKey: 'question_ids',
+                      selectedUrl: id => `/admin-dashboard/wann-war-das/${id}/selected-questions/`,
+                      columns: [{key:'question_text',label:'Question'},{key:'correct_answer',label:'Answer'},{key:'tolerance_display',label:'Tolerance'},{key:'points_display',label:'Points'}] },
+    buzzer:         { createUrl: '/admin-dashboard/buzzer/create-custom/',            updateUrl: '/admin-dashboard/buzzer/update-custom/',          gameIdKey: 'game_id',  idKey: 'question_ids' },
+    host_points:    { createUrl: '/admin-dashboard/host-points/create-custom/',       updateUrl: '/admin-dashboard/host-points/update-custom/',     gameIdKey: 'game_id',  idKey: 'question_ids' },
 };
 
 let currentType = null;
@@ -749,6 +924,45 @@ let tutorialSetNumber = normalizeTutorialSetNumber(EDIT_TUTORIAL_SET_NUMBER);
 let itemsRef = []; // reference to last loaded generic bank items
 let blackJackSetCount = 1;
 const blackJackQuestionSetAssignments = new Map();
+const lastQuestionTimeValues = {};
+
+function rememberQuestionTimeValue(type, fieldId, value) {
+    if (value === undefined || value === null) return;
+    if (!lastQuestionTimeValues[type]) lastQuestionTimeValues[type] = {};
+    lastQuestionTimeValues[type][fieldId] = String(value);
+}
+
+function getRememberedQuestionTimeValue(type, fieldId, defaultValue) {
+    return lastQuestionTimeValues[type]?.[fieldId] ?? defaultValue;
+}
+
+function clearRememberedQuestionTimeValues() {
+    Object.keys(lastQuestionTimeValues).forEach(type => delete lastQuestionTimeValues[type]);
+}
+
+function rememberQuestionTimeValues(type) {
+    const fieldIdsByType = {
+        quiz: ['quizTimeLimit'],
+        estimation: ['est-time'],
+        assign: ['asgn-time'],
+        where: ['where-time'],
+        who: ['who-time'],
+        who_that: ['whot-time'],
+        blackjack: ['bj-time'],
+        sorting_ladder: ['sl-time'],
+        wer_weiss_mehr: ['wwm-time'],
+        wann_war_das: ['wwd-time-limit'],
+    };
+    (fieldIdsByType[type] || []).forEach(fieldId => {
+        const el = document.getElementById(fieldId);
+        if (el) rememberQuestionTimeValue(type, fieldId, el.value);
+    });
+    if (type === 'clue_rush') {
+        const clueDurations = document.querySelectorAll('#cr-clues-container .cr-clue-dur');
+        const lastDuration = clueDurations[clueDurations.length - 1]?.value;
+        rememberQuestionTimeValue('clue_rush', 'cr-clue-dur', lastDuration);
+    }
+}
 
 function isBlackJackTypeActive() {
     return currentType === 'blackjack';
@@ -992,9 +1206,8 @@ function normalizeEstimationScoringMode(mode) {
 }
 
 function syncTutorialConfigUi() {
-    const wrapper = document.getElementById('gameTutorialFields');
-    if (!wrapper) return;
-    wrapper.classList.remove('d-none');
+    const tutorialText = document.getElementById('gameTutorialText');
+    if (!tutorialText) return;
 }
 
 function formatEstimationZoneNumber(value) {
@@ -1054,6 +1267,7 @@ const GENERIC_DETAIL_URL = {
     clue_rush:      id => `/admin-dashboard/clue-rush/question/${id}/`,
     sorting_ladder: id => `/admin-dashboard/sorting-ladder/topic/${id}/`,
     wer_weiss_mehr: id => `/admin-dashboard/wer-weiss-mehr/question/${id}/`,
+    wann_war_das:   id => `/admin-dashboard/wann-war-das/question/${id}/`,
 };
 
 const GENERIC_UPDATE_URL = {
@@ -1066,6 +1280,7 @@ const GENERIC_UPDATE_URL = {
     clue_rush:      '/admin-dashboard/clue-rush/update-question/',
     sorting_ladder: '/admin-dashboard/sorting-ladder/topics/update/',
     wer_weiss_mehr: '/admin-dashboard/wer-weiss-mehr/update-question/',
+    wann_war_das:   '/admin-dashboard/wann-war-das/update-question/',
 };
 
 // Fetch item details and populate form for editing
@@ -1104,6 +1319,19 @@ function setGenericFormForEdit(type, q) {
         document.getElementById('est-points').value = q.max_points ?? 10;
         document.getElementById('est-manual-points-enabled').checked = !!q.use_manual_points;
         updateEstimationScoringUi();
+    } else if (type === 'wann_war_das') {
+        document.getElementById('wwd-id').value = q.id;
+        document.getElementById('wwd-question').value = q.question_text || '';
+        document.getElementById('wwd-answer').value = q.correct_answer ?? '';
+        document.getElementById('wwd-unit').value = q.unit || 'Jahr';
+        document.getElementById('wwd-start-tolerance').value = q.start_tolerance ?? 0;
+        document.getElementById('wwd-max-tolerance').value = q.max_tolerance ?? 10;
+        document.getElementById('wwd-tolerance-increment').value = q.tolerance_increment ?? 1;
+        document.getElementById('wwd-seconds-per-step').value = q.seconds_per_step ?? 5;
+        document.getElementById('wwd-max-points').value = q.max_points ?? 10;
+        document.getElementById('wwd-min-points').value = q.min_points ?? 1;
+        document.getElementById('wwd-time-limit').value = q.time_limit ?? '';
+        document.getElementById('wwd-explanation').value = q.explanation || '';
     } else if (type === 'assign') {
         document.getElementById('asgn-id').value = q.id;
         document.getElementById('asgn-question').value = q.question_text || '';
@@ -1223,6 +1451,10 @@ function activateType(type) {
     if (currentType === 'quiz') {
         document.getElementById('section-quiz').style.display = 'block';
         loadQuizBank(1);
+    } else if (currentType === 'buzzer') {
+        document.getElementById('section-buzzer').style.display = 'block';
+    } else if (currentType === 'host_points') {
+        document.getElementById('section-host_points').style.display = 'block';
     } else {
         document.getElementById('section-generic').style.display = 'block';
         document.querySelectorAll('.generic-type-form').forEach(f => f.classList.add('d-none'));
@@ -1269,8 +1501,9 @@ document.getElementById('cancelGameBtn').addEventListener('click', () => {
     document.getElementById('newGameType').value = '';
     document.getElementById('estimationScoringMode').value = 'zones';
     document.getElementById('blackjackScoringMode').value = 'simple';
-    document.getElementById('gameTutorialTitle').value = '';
     document.getElementById('gameTutorialText').value = '';
+    document.getElementById('buzzerPointsPerCorrect').value = '1';
+    document.getElementById('buzzerPlannedRounds').value = '';
     document.getElementById('estimationGameModeWrap').classList.add('d-none');
     document.getElementById('blackjackGameModeWrap').classList.add('d-none');
     currentType = null;
@@ -1279,7 +1512,10 @@ document.getElementById('cancelGameBtn').addEventListener('click', () => {
     genericSelectedIds.clear();
     genericSelectedItems.clear();
     tutorialQuestionId = null;
+    clearRememberedQuestionTimeValues();
     resetManageBlackJackSetBuilder();
+    setQuizFormMode('add');
+    resetGenericForm();
     document.getElementById('gameTypeContent').style.display = 'none';
     document.querySelectorAll('.type-section').forEach(s => s.style.display = 'none');
     syncTutorialConfigUi();
@@ -1293,17 +1529,22 @@ document.getElementById('createGameBtn').addEventListener('click', function () {
 
     const cfg = GAME_CONFIG[currentType];
     const internalDescription = document.getElementById('newGameInternalDescription').value.trim();
-    const tutorialTitle = document.getElementById('gameTutorialTitle').value.trim();
     const tutorialText = document.getElementById('gameTutorialText').value.trim();
     const payload = {
         title,
         internal_description: internalDescription,
-        tutorial_enabled: Boolean(tutorialTitle || tutorialText),
-        tutorial_title: tutorialTitle,
+        tutorial_enabled: Boolean(tutorialText),
+        tutorial_title: '',
         tutorial_text: tutorialText,
     };
     if (currentType === 'quiz') {
         payload[cfg.idKey] = Array.from(quizSelectedIds);
+    } else if (currentType === 'buzzer') {
+        payload.points_per_correct = parseInt(document.getElementById('buzzerPointsPerCorrect').value, 10) || 1;
+        const plannedRounds = parseInt(document.getElementById('buzzerPlannedRounds').value, 10);
+        payload.planned_rounds = Number.isFinite(plannedRounds) && plannedRounds > 0 ? plannedRounds : null;
+    } else if (currentType === 'host_points') {
+        // No questions or runtime settings are stored for pure host scoring.
     } else if (currentType === 'blackjack') {
         const questionSets = buildManageBlackJackQuestionSets();
         payload[cfg.idKey] = questionSets.flat();
@@ -1362,6 +1603,7 @@ document.getElementById('createGameBtn').addEventListener('click', function () {
     .then(r => r.json())
     .then(data => {
         if (data.success) {
+            clearRememberedQuestionTimeValues();
             window.location.href = '{% url "admin_dashboard:manage_games" %}';
         } else {
             alert('Error: ' + (data.error || 'Unknown error'));
@@ -1385,8 +1627,9 @@ function initEditMode() {
     // Pre-fill title and internal description
     document.getElementById('newGameTitle').value = EDIT_GAME_TITLE;
     document.getElementById('newGameInternalDescription').value = EDIT_GAME_INTERNAL_DESCRIPTION;
-    document.getElementById('gameTutorialTitle').value = EDIT_TUTORIAL_TITLE;
     document.getElementById('gameTutorialText').value = EDIT_TUTORIAL_TEXT;
+    document.getElementById('buzzerPointsPerCorrect').value = EDIT_BUZZER_POINTS_PER_CORRECT || 1;
+    document.getElementById('buzzerPlannedRounds').value = EDIT_BUZZER_PLANNED_ROUNDS || '';
     syncTutorialConfigUi();
 
     // Pre-populate selected IDs from server
@@ -1651,6 +1894,7 @@ function setQuizFormMode(mode, question) {
         btn.dataset.mode = 'add';
         document.getElementById('quizQuestionId').value = '';
         document.getElementById('quizAddQuestionForm').reset();
+        document.getElementById('quizTimeLimit').value = getRememberedQuestionTimeValue('quiz', 'quizTimeLimit', '30');
         setQuizShortAnswerFieldState([{ answer: '', label: '' }]);
         quizQType.dispatchEvent(new Event('change'));
     }
@@ -1768,6 +2012,7 @@ document.getElementById('quizAddQuestionForm').addEventListener('submit', functi
         if (data.success) {
             showNotification(isEdit ? 'Question updated!' : 'Question added!', 'success');
             if (!isEdit && data.question_id) {
+                rememberQuestionTimeValues('quiz');
                 // Auto-assign new question to this game
                 const id = data.question_id;
                 quizSelectedIds.add(id);
@@ -2365,6 +2610,7 @@ function addCrClue() {
         <input type="number" class="form-control form-control-sm cr-clue-dur" placeholder="s" value="10" min="3" style="width:80px;">
         <button type="button" class="btn btn-sm btn-outline-danger" onclick="this.closest('.cr-clue-row').remove()">×</button>`;
     c.appendChild(row);
+    row.querySelector('.cr-clue-dur').value = getRememberedQuestionTimeValue('clue_rush', 'cr-clue-dur', '10');
     const textInput = row.querySelector('.cr-clue-text');
     textInput.addEventListener('keydown', function(e) {
         if (e.key === 'Tab' && !e.shiftKey && this.value.trim() !== '') {
@@ -2430,12 +2676,12 @@ function resetGenericForm() {
     document.getElementById('est-zone-count').value = 5;
     document.getElementById('est-points').value = 10;
     document.getElementById('est-manual-points-enabled').checked = false;
-    document.getElementById('est-time').value = 30;
+    document.getElementById('est-time').value = getRememberedQuestionTimeValue('estimation', 'est-time', '30');
     updateEstimationScoringUi();
 
     document.getElementById('asgn-id').value = '';
     document.getElementById('asgn-question').value = '';
-    document.getElementById('asgn-time').value = 30;
+    document.getElementById('asgn-time').value = getRememberedQuestionTimeValue('assign', 'asgn-time', '30');
     document.getElementById('asgn-left-container').innerHTML = '';
     document.getElementById('asgn-right-container').innerHTML = '';
     addAsgnLeft(); addAsgnRight();
@@ -2445,28 +2691,28 @@ function resetGenericForm() {
     document.getElementById('where-lat').value = '';
     document.getElementById('where-lng').value = '';
     document.getElementById('where-points').value = 10;
-    document.getElementById('where-time').value = 30;
+    document.getElementById('where-time').value = getRememberedQuestionTimeValue('where', 'where-time', '30');
     document.getElementById('where-image').value = '';
     document.getElementById('where-image-preview-container').style.display = 'none';
 
     document.getElementById('who-id').value = '';
     document.getElementById('who-statement').value = '';
     document.getElementById('who-points').value = 10;
-    document.getElementById('who-time').value = 30;
+    document.getElementById('who-time').value = getRememberedQuestionTimeValue('who', 'who-time', '30');
     document.getElementById('who-people-container').innerHTML = '';
     addWhoPerson(); addWhoPerson();
 
     document.getElementById('whot-id').value = '';
     document.getElementById('whot-answer').value = '';
     document.getElementById('whot-alt').value = '';
-    document.getElementById('whot-time').value = 30;
+    document.getElementById('whot-time').value = getRememberedQuestionTimeValue('who_that', 'whot-time', '30');
     document.getElementById('whot-image').value = '';
     document.getElementById('whot-image-preview-container').style.display = 'none';
 
     document.getElementById('bj-id').value = '';
     document.getElementById('bj-question').value = '';
     document.getElementById('bj-answer').value = '';
-    document.getElementById('bj-time').value = 30;
+    document.getElementById('bj-time').value = getRememberedQuestionTimeValue('blackjack', 'bj-time', '30');
 
     document.getElementById('cr-id').value = '';
     document.getElementById('cr-question-text').value = '';
@@ -2479,7 +2725,7 @@ function resetGenericForm() {
     document.getElementById('sl-title').value = '';
     document.getElementById('sl-desc').value = '';
     document.getElementById('sl-points').value = 10;
-    document.getElementById('sl-time').value = 60;
+    document.getElementById('sl-time').value = getRememberedQuestionTimeValue('sorting_ladder', 'sl-time', '60');
     document.getElementById('sl-upper').value = 'Aufsteigend';
     document.getElementById('sl-lower').value = 'Absteigend';
     document.getElementById('sl-items-container').innerHTML = '';
@@ -2488,8 +2734,21 @@ function resetGenericForm() {
 
     document.getElementById('wwm-id').value = '';
     document.getElementById('wwm-question').value = '';
-    document.getElementById('wwm-time').value = 30;
+    document.getElementById('wwm-time').value = getRememberedQuestionTimeValue('wer_weiss_mehr', 'wwm-time', '30');
     document.getElementById('wwm-answers').value = '';
+
+    document.getElementById('wwd-id').value = '';
+    document.getElementById('wwd-question').value = '';
+    document.getElementById('wwd-answer').value = '';
+    document.getElementById('wwd-unit').value = 'Jahr';
+    document.getElementById('wwd-start-tolerance').value = 0;
+    document.getElementById('wwd-max-tolerance').value = 10;
+    document.getElementById('wwd-tolerance-increment').value = 1;
+    document.getElementById('wwd-seconds-per-step').value = 5;
+    document.getElementById('wwd-max-points').value = 10;
+    document.getElementById('wwd-min-points').value = 1;
+    document.getElementById('wwd-time-limit').value = getRememberedQuestionTimeValue('wann_war_das', 'wwd-time-limit', '');
+    document.getElementById('wwd-explanation').value = '';
 
     document.getElementById('genericFormTitle').innerHTML =
         '<i data-lucide="help-circle" style="width:18px;height:18px;" class="me-2"></i>Add New Question';
@@ -2504,6 +2763,7 @@ document.getElementById('genericResetFormBtn').addEventListener('click', resetGe
 // ── Per-type submit handlers ─────────────────────────────────────────────────
 
 function genericAddSuccess(newId, displayItem, submitBtn) {
+    rememberQuestionTimeValues(currentType);
     genericSelectedIds.add(newId);
     genericSelectedItems.set(newId, { id: newId, ...displayItem });
     if (currentType === 'blackjack') {
@@ -2587,6 +2847,36 @@ document.getElementById('est-submit').addEventListener('click', function () {
     };
     genericPost('/admin-dashboard/estimation/add-question/', payload, true, this,
         p => ({ question_text: p.question_text, correct_answer: p.correct_answer, unit: p.unit, points_display: p.use_manual_points ? p.max_points : p.zone_count }),
+        'question_id');
+});
+
+// Wann war das?
+document.getElementById('wwd-submit').addEventListener('click', function () {
+    const question_text = document.getElementById('wwd-question').value.trim();
+    const correct_answer = document.getElementById('wwd-answer').value;
+    if (!question_text || correct_answer === '') { alert('Frage und richtige Zahl sind Pflichtfelder.'); return; }
+    const wwdId = parseInt(document.getElementById('wwd-id').value);
+    const payload = {
+        question_text,
+        correct_answer: parseFloat(correct_answer),
+        unit: document.getElementById('wwd-unit').value.trim() || 'Jahr',
+        start_tolerance: parseFloat(document.getElementById('wwd-start-tolerance').value) || 0,
+        max_tolerance: parseFloat(document.getElementById('wwd-max-tolerance').value) || 0,
+        tolerance_increment: parseFloat(document.getElementById('wwd-tolerance-increment').value) || 1,
+        seconds_per_step: parseInt(document.getElementById('wwd-seconds-per-step').value, 10) || 5,
+        max_points: parseInt(document.getElementById('wwd-max-points').value, 10) || 10,
+        min_points: parseInt(document.getElementById('wwd-min-points').value, 10) || 1,
+        time_limit: document.getElementById('wwd-time-limit').value || null,
+        explanation: document.getElementById('wwd-explanation').value.trim(),
+        ...(wwdId ? { question_id: wwdId } : {}),
+    };
+    genericPost('/admin-dashboard/wann-war-das/add-question/', payload, true, this,
+        p => ({
+            question_text: p.question_text,
+            correct_answer: p.correct_answer,
+            tolerance_display: `${p.start_tolerance} -> ${p.max_tolerance}`,
+            points_display: `${p.max_points}/${p.min_points}`,
+        }),
         'question_id');
 });
 
