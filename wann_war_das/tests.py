@@ -1,7 +1,9 @@
 import json
+from pathlib import Path
 
 from asgiref.sync import async_to_sync
 from django.contrib.auth.models import User
+from django.contrib.staticfiles import finders
 from django.core.exceptions import ValidationError
 from django.test import Client, TestCase, TransactionTestCase
 from django.urls import reverse
@@ -92,7 +94,7 @@ class WannWarDasStartFlowTests(TransactionTestCase):
         self.assertEqual(response.status_code, 200)
         participant = self.game.participants.get(name='Alice', hub_session_code=self.session.code)
         self.assertFalse(participant.is_active)
-        self.assertContains(response, 'Warte darauf, dass der Host das Spiel startet.')
+        self.assertContains(response, 'beginnt gleich!')
 
         consumer, sent_messages = self.make_consumer()
         async_to_sync(consumer.handle_admin_start_game)({'hub_session': self.session.code})
@@ -102,6 +104,98 @@ class WannWarDasStartFlowTests(TransactionTestCase):
         self.assertEqual(sent_messages, [])
         self.assertEqual(self.game.status, 'active')
         self.assertTrue(participant.is_active)
+
+    def test_player_template_has_scoped_vhs_chrome_scorebox_and_tolerance_scale(self):
+        response = Client().get(
+            reverse('wann_war_das:play', args=[self.game.room_code, 'Alice']),
+            {'hub_session': self.session.code},
+        )
+        content = response.content.decode('utf-8')
+
+        self.assertIn('<title>Wann war das?: Startflow - QuizMaster</title>', content)
+        self.assertIn('data-participant-name="Alice"', content)
+        self.assertIn('id="wannWarDasScoreRows"', content)
+        self.assertIn('id="toleranceScale"', content)
+        self.assertIn('class="wann-war-das-meta"', content)
+        self.assertIn('class="wann-war-das-game-line"', content)
+        self.assertIn('class="wann-war-das-round-meta text-secondary"', content)
+        self.assertIn('class="wann-war-das-score-box score-box d-none"', content)
+        self.assertIn('class="wann-war-das-reveal__hero"', content)
+        self.assertIn('class="wann-war-das-reveal__metrics"', content)
+        self.assertIn(
+            "document.getElementById('correctAnswerText').textContent = fmt(question.correct_answer);",
+            content,
+        )
+        self.assertNotIn(
+            "document.getElementById('correctAnswerText').textContent = question.formatted_correct_answer",
+            content,
+        )
+        self.assertIn('wann-war-das-tolerance__timer--top', content)
+        self.assertIn('wann-war-das-tolerance__timer--bottom', content)
+        self.assertEqual(
+            content.count('wann-war-das-tolerance__fill vhs-theme-timer-fill'),
+            2,
+        )
+        self.assertNotIn('>Restzeit<', content)
+        self.assertNotIn(
+            'Je frueher du innerhalb der Toleranz antwortest, desto mehr Punkte bekommst du.',
+            content,
+        )
+        self.assertIn('timer?.elapsed_seconds', content)
+        self.assertIn('timer?.step_index', content)
+        self.assertIn('const segmentStart = stepIndex === 0 ? 0 : stepIndex - 0.5;', content)
+        self.assertIn('const segmentEnd = stepIndex + 0.5;', content)
+        self.assertIn('const halfScaleWidth = sideCellCount + 0.5;', content)
+        self.assertIn(
+            'entry?.points !== null && entry?.points !== undefined',
+            content,
+        )
+
+        css_path = finders.find('themes/vhs/vhs.css')
+        self.assertIsNotNone(css_path)
+        css = Path(css_path).read_text(encoding='utf-8')
+        self.assertIn(
+            'body.wann-war-das-play-page .wann-war-das-tolerance__tick.is-active',
+            css,
+        )
+        self.assertIn(
+            'body.wann-war-das-play-page .vhs-theme-shell #questionArea .vhs-quick-quiz-submit',
+            css,
+        )
+        self.assertIn(
+            'body.wann-war-das-play-page .qa-score-widget\n'
+            '  #wannWarDasScoreRows .score-box__row',
+            css,
+        )
+        self.assertIn(
+            'background: linear-gradient(90deg, #efe4ba, #e7c84d, #cf6338, #78627e, #557d9b);',
+            css,
+        )
+        self.assertIn('grid-auto-rows: 42px;', css)
+        self.assertIn('height: 42px;', css)
+        self.assertIn('inset: 0 3px;', css)
+        self.assertIn('width: min(100%, 480px);', css)
+        self.assertIn('grid-template-columns: minmax(0, 1fr) minmax(138px, 170px);', css)
+        self.assertIn(
+            'body.wann-war-das-play-page .wann-war-das-game-line {\n'
+            '  display: grid;',
+            css,
+        )
+        self.assertNotIn(
+            'body.wann-war-das-play-page\n'
+            '  .wann-war-das-game-line .session-game-number::before',
+            css,
+        )
+        self.assertIn(
+            '#revealArea.wann-war-das-reveal {',
+            css,
+        )
+        self.assertNotIn(
+            'body.wann-war-das-play-page .wann-war-das-tolerance__tick.is-center {\n'
+            '  font-weight: 1000;\n'
+            '  box-shadow:',
+            css,
+        )
 
     def test_question_cannot_start_before_game_and_does_not_implicitly_start_it(self):
         consumer, sent_messages = self.make_consumer()
@@ -262,6 +356,10 @@ class WannWarDasEndFlowTests(TransactionTestCase):
         self.assertContains(host_response, 'Zur Session-Übersicht')
         self.assertContains(player_response, 'Zur Lobby zurückkehren')
         self.assertContains(player_response, 'participant-return-to-lobby')
+        player_content = player_response.content.decode('utf-8')
+        self.assertIn('class="d-none" id="returnToLobbyActions" hidden', player_content)
+        self.assertIn('id="returnToLobbyBtn" disabled aria-hidden="true"', player_content)
+        self.assertIn('setReturnToLobbyAvailable(gameEnded)', player_content)
 
     def test_participant_return_marks_inactive_and_lobby_suppresses_auto_redirect(self):
         response = Client().post(
@@ -478,6 +576,35 @@ class WannWarDasTests(TestCase):
         self.assertEqual(answer.tolerance_at_submit, 10)
         self.assertEqual(answer.points_earned, 1)
 
+    def test_timer_stages_match_tolerance_walls_and_finish_after_last_stage(self):
+        self.question.max_tolerance = 5
+        self.question.save(update_fields=['max_tolerance'])
+        started_at = timezone.now()
+
+        before_first_wall = self.question.get_timer_state(
+            started_at,
+            started_at + timezone.timedelta(seconds=4.999),
+        )
+        at_first_wall = self.question.get_timer_state(
+            started_at,
+            started_at + timezone.timedelta(seconds=5),
+        )
+        at_last_inner_wall = self.question.get_timer_state(
+            started_at,
+            started_at + timezone.timedelta(seconds=25),
+        )
+        before_outer_wall = self.question.get_timer_state(
+            started_at,
+            started_at + timezone.timedelta(seconds=29.999),
+        )
+
+        self.assertEqual(self.question.get_effective_time_limit(), 30)
+        self.assertEqual(before_first_wall['current_tolerance'], 0)
+        self.assertEqual(at_first_wall['current_tolerance'], 1)
+        self.assertEqual(at_last_inner_wall['current_tolerance'], 5)
+        self.assertEqual(before_outer_wall['current_tolerance'], 5)
+        self.assertEqual(before_outer_wall['remaining_seconds'], 1)
+
     def test_non_numeric_and_empty_answers_store_zero_points(self):
         started_at = self.start_question_at_elapsed(0)
 
@@ -571,6 +698,7 @@ class WannWarDasTests(TestCase):
         self.assertEqual(self.bob.total_score, 0)
         self.assertEqual(alice_row['entries'][0]['points'], 10)
         self.assertEqual(bob_row['entries'][0]['points'], 0)
+        self.assertEqual(state['scorebox']['questions'][0]['max_points'], 10)
         self.assertTrue(state['own_answer']['is_correct'])
 
     def test_tutorial_question_does_not_score_or_enter_regular_scorebox(self):

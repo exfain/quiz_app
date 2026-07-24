@@ -90,9 +90,9 @@ def _set_game_status(game, status: str):
     game.save(update_fields=update_fields)
 
 
-def _activate_target_game(game_key: str, game):
+def _activate_target_game(game_key: str, game, hub_session_code: str | None = None):
     if game_key == 'wer_weiss_mehr' and hasattr(game, 'start_quiz'):
-        game.start_quiz()
+        game.start_quiz(hub_session_code=hub_session_code)
         return
     _set_game_status(game, 'active')
 
@@ -259,7 +259,7 @@ def resolve_session_game_activation(
             HubGameParticipantSnapshot.create_for_step(target_step)
             _provision_target_game_participants(target_step, target_game)
         if target_needs_activation:
-            _activate_target_game(target_game_key, target_game)
+            _activate_target_game(target_game_key, target_game, hub_session_code=session.code)
 
         return {
             'success': True,

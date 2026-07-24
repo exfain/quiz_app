@@ -82,6 +82,13 @@
                                         <div class="timer-circle" id="playerTimerCircle">
                                             <span id="playerTimeLeft">30</span>
                                         </div>
+                                        <span
+                                            id="playerSetTimeLeft"
+                                            data-vhs-timer-key=""
+                                            data-vhs-timer-maximum=""
+                                            hidden
+                                            aria-hidden="true"
+                                        >0</span>
                                     </div>
                                 </div>
 
@@ -97,13 +104,33 @@
                                     <!-- Participant question label (set dynamically) -->
                                     <div id="participantQuestionLabel" class="participant-question-label d-none"></div>
 
+                                    <div
+                                        id="clueRushNextClueTimer"
+                                        class="clue-rush-next-clue-timer"
+                                        style="display: none;"
+                                        aria-hidden="true"
+                                    >
+                                        <div
+                                            class="who-person-switch-timer"
+                                            id="clueRushNextClueProgress"
+                                            role="progressbar"
+                                            aria-label="Zeit bis zum nächsten Hinweis"
+                                            aria-valuemin="0"
+                                            aria-valuemax="100"
+                                            aria-valuenow="0"
+                                        >
+                                            <span class="who-person-switch-timer__fill" aria-hidden="true"></span>
+                                        </div>
+                                        <span id="clueRushNextTimeLeft" class="visually-hidden" aria-hidden="true">-</span>
+                                    </div>
+
                                     <!-- Answer Options -->
                                     <div class="answer-options" id="answerOptions">
                                         <!-- Options will be dynamically populated -->
                                     </div>
 
                                     <!-- Submit Button -->
-                                    <button class="btn btn-primary btn-lg w-100 submit-answer" id="submitAnswerBtn" disabled>
+                                    <button class="btn btn-primary btn-lg w-100 submit-answer vhs-action-button clue-rush-submit" id="submitAnswerBtn" disabled>
                                         Einloggen
                                     </button>
                                 </div>
@@ -916,8 +943,26 @@
                     this.hasAnswered = false;
                     this.scoreHistory = [];
                     this.pendingInputTimer = null;
+                    this.serverClockOffsetMs = 0;
+                    this.currentQuestionId = null;
                     
                     this.init();
+                }
+
+                parseServerTimestamp(value) {
+                    if (!value) return null;
+                    const parsed = Date.parse(value);
+                    return Number.isNaN(parsed) ? null : parsed;
+                }
+
+                syncServerClock(serverNowValue) {
+                    const serverNowMs = this.parseServerTimestamp(serverNowValue);
+                    if (serverNowMs === null) return;
+                    this.serverClockOffsetMs = serverNowMs - Date.now();
+                }
+
+                getSynchronizedNowMs() {
+                    return Date.now() + this.serverClockOffsetMs;
                 }
 
                 showCorrectAnswer(correctAnswerData) {
@@ -1068,10 +1113,19 @@
                 }
 
                 onQuestionStarted(question, timeLimit) {
+                    clearInterval(this.questionTimer);
                     this.hasAnswered = false;
                     this.selectedAnswer = null;
                     this.questionStartTime = Date.now();
+                    this.currentQuestionId = question?.id || null;
+                    this.syncServerClock(question?.server_now);
                     if (this.pendingInputTimer) clearTimeout(this.pendingInputTimer);
+                    const totalTimer = document.getElementById('playerSetTimeLeft');
+                    if (totalTimer) {
+                        totalTimer.textContent = '0';
+                        totalTimer.dataset.vhsTimerKey = String(this.currentQuestionId || 'active');
+                        totalTimer.dataset.vhsTimerMaximum = '';
+                    }
                     
                     this.resetClues();
                     this.loadQuestion(question);
@@ -1082,6 +1136,8 @@
                 onQuestionEnded(data) {
                     clearInterval(this.questionTimer);
                     this.setClueTimerVisible(false);
+                    const totalTimer = document.getElementById('playerSetTimeLeft');
+                    if (totalTimer) totalTimer.textContent = '0';
                     if (this.pendingInputTimer) clearTimeout(this.pendingInputTimer);
 
                     const ownResult = (data?.answers || []).find(answer => answer.participant_name === this.participantName);
@@ -1177,17 +1233,39 @@
                         const list = document.getElementById('playerCluesList');
                         const listSubmitted = document.getElementById('playerCluesListSubmitted');
                         if (!list && !listSubmitted) return;
+
+                        const createClueItem = () => {
+                            const item = document.createElement('li');
+                            item.className = 'list-group-item d-flex justify-content-between align-items-center clue-rush-clue';
+
+                            const index = document.createElement('span');
+                            index.className = 'clue-rush-clue__index option-key d-none';
+                            index.textContent = String(clue.order);
+
+                            const content = document.createElement('div');
+                            content.className = 'clue-rush-clue__content';
+
+                            const legacyIndex = document.createElement('strong');
+                            legacyIndex.className = 'clue-rush-clue__legacy-index';
+                            legacyIndex.textContent = `#${clue.order}`;
+
+                            const text = document.createElement('span');
+                            text.className = 'clue-rush-clue__text';
+                            text.textContent = ` ${clue.clue_text || ''}`;
+
+                            const badge = document.createElement('span');
+                            badge.className = 'badge bg-primary';
+                            badge.textContent = 'New';
+
+                            content.append(legacyIndex, text);
+                            item.append(index, content, badge);
+                            return item;
+                        };
                         if (list) {
-                            const li = document.createElement('li');
-                            li.className = 'list-group-item d-flex justify-content-between align-items-center';
-                            li.innerHTML = `<div><strong>#${clue.order}</strong> ${clue.clue_text}</div><span class="badge bg-primary">New</span>`;
-                            list.appendChild(li);
+                            list.appendChild(createClueItem());
                         }
                         if (listSubmitted) {
-                            const li2 = document.createElement('li');
-                            li2.className = 'list-group-item d-flex justify-content-between align-items-center';
-                            li2.innerHTML = `<div><strong>#${clue.order}</strong> ${clue.clue_text}</div><span class="badge bg-primary">New</span>`;
-                            listSubmitted.appendChild(li2);
+                            listSubmitted.appendChild(createClueItem());
                         }
                     } catch (e) { console.error(e); }
                 }
@@ -1196,17 +1274,24 @@
                     try {
                         // Append clue to existing list (clues accumulate until next question)
                         this.addClue(clue);
+                        this.syncServerClock(clue?.server_now);
                         const hasNextClue = clue && clue.has_next_clue === true;
                         // Only show/run timer when another clue will follow.
                         if (hasNextClue) {
                             this.setClueTimerVisible(true);
-                            const duration = parseInt(clue.duration, 10);
-                            if (!isNaN(duration) && duration > 0) {
-                                this.startClueTimer(duration);
+                            if (clue.end_time) {
+                                this.startClueTimer(clue);
                             }
                         } else {
                             clearInterval(this.questionTimer);
                             this.setClueTimerVisible(false);
+                            const totalTimer = document.getElementById('playerSetTimeLeft');
+                            if (totalTimer) {
+                                totalTimer.textContent = '0';
+                                if (Number.isFinite(Number(clue?.sequence_duration))) {
+                                    totalTimer.dataset.vhsTimerMaximum = String(Math.max(1, Number(clue.sequence_duration)));
+                                }
+                            }
                         }
                     } catch (e) { console.error(e); }
                 }
@@ -1214,26 +1299,52 @@
                 setClueTimerVisible(isVisible) {
                     const wrapMain = document.getElementById('playerTimerCircle')?.closest('.question-timer');
                     const wrapSubmitted = document.getElementById('playerTimerCircleSubmitted')?.closest('.question-timer');
+                    const vhsTimer = document.getElementById('clueRushNextClueTimer');
                     const display = isVisible ? '' : 'none';
                     if (wrapMain) wrapMain.style.display = display;
                     if (wrapSubmitted) wrapSubmitted.style.display = display;
+                    if (vhsTimer) {
+                        vhsTimer.classList.toggle('is-visible', isVisible);
+                        vhsTimer.setAttribute('aria-hidden', isVisible ? 'false' : 'true');
+                    }
                     if (!isVisible) {
                         const t1 = document.getElementById('playerTimeLeft');
                         const t2 = document.getElementById('playerTimeLeftSubmitted');
+                        const vhsTime = document.getElementById('clueRushNextTimeLeft');
                         if (t1) t1.textContent = '-';
                         if (t2) t2.textContent = '-';
+                        if (vhsTime) vhsTime.textContent = '-';
                     }
                 }
 
-                startClueTimer(duration) {
+                startClueTimer(clue) {
                     clearInterval(this.questionTimer);
-                    let timeLeft = duration;
+                    this.syncServerClock(clue?.server_now);
+                    const duration = Math.max(1, parseInt(clue?.duration, 10) || 1);
+                    const clueEndMs = this.parseServerTimestamp(clue?.end_time);
+                    const sequenceEndMs = this.parseServerTimestamp(clue?.sequence_end_time);
+                    if (clueEndMs === null || sequenceEndMs === null) {
+                        this.setClueTimerVisible(false);
+                        return;
+                    }
                     const timerEl = document.getElementById('playerTimeLeft');
                     const circleEl = document.getElementById('playerTimerCircle');
                     const timerElSubmitted = document.getElementById('playerTimeLeftSubmitted');
                     const circleElSubmitted = document.getElementById('playerTimerCircleSubmitted');
+                    const nextTimerEl = document.getElementById('clueRushNextTimeLeft');
+                    const nextProgressEl = document.getElementById('clueRushNextClueProgress');
+                    const totalTimerEl = document.getElementById('playerSetTimeLeft');
+                    const sequenceDuration = Math.max(1, Number(clue?.sequence_duration) || 1);
+
+                    if (totalTimerEl) {
+                        totalTimerEl.dataset.vhsTimerKey = String(clue?.question_id || this.currentQuestionId || 'active');
+                        totalTimerEl.dataset.vhsTimerMaximum = String(sequenceDuration);
+                    }
 
                     const updateTimer = () => {
+                        const nowMs = this.getSynchronizedNowMs();
+                        const timeLeft = Math.max(Math.ceil((clueEndMs - nowMs) / 1000), 0);
+                        const totalTimeLeft = Math.max(Math.ceil((sequenceEndMs - nowMs) / 1000), 0);
                         const elements = [
                             { timer: timerEl, circle: circleEl },
                             { timer: timerElSubmitted, circle: circleElSubmitted },
@@ -1249,20 +1360,36 @@
                                 }
                             }
                         });
+                        if (nextTimerEl) nextTimerEl.textContent = timeLeft;
+                        if (totalTimerEl) totalTimerEl.textContent = totalTimeLeft;
+                        if (nextProgressEl) {
+                            const progress = Math.max(0, Math.min(1, 1 - (timeLeft / duration)));
+                            const clueKey = String(clue?.id || clue?.order || 'active');
+                            const clueChanged = nextProgressEl.dataset.clueKey !== clueKey;
+                            if (clueChanged) nextProgressEl.classList.add('is-resetting');
+                            nextProgressEl.dataset.clueKey = clueKey;
+                            nextProgressEl.style.setProperty('--who-person-progress', progress);
+                            nextProgressEl.setAttribute('aria-valuenow', String(Math.round(progress * 100)));
+                            nextProgressEl.setAttribute('aria-valuetext', `${timeLeft} Sekunden verbleibend`);
+                            if (clueChanged) {
+                                void nextProgressEl.offsetWidth;
+                                nextProgressEl.classList.remove('is-resetting');
+                            }
+                        }
+                        if (timeLeft <= 0 && totalTimeLeft <= 0) {
+                            clearInterval(this.questionTimer);
+                        }
                     };
 
                     updateTimer();
-                    this.questionTimer = setInterval(() => {
-                        timeLeft--;
-                        updateTimer();
-                        if (timeLeft <= 0) {
-                            clearInterval(this.questionTimer);
-                        }
-                    }, 1000);
+                    this.questionTimer = setInterval(updateTimer, 250);
                 }
 
                 onQuizEnded(data) {
                     clearInterval(this.questionTimer);
+                    this.setClueTimerVisible(false);
+                    const totalTimer = document.getElementById('playerSetTimeLeft');
+                    if (totalTimer) totalTimer.textContent = '0';
                     // If final scores are provided, update the displayed score for this participant
                     try {
                         if (data && Array.isArray(data.final_scores)) {
@@ -1312,7 +1439,7 @@
                     const input = document.createElement('input');
                     input.type = 'text';
                     input.className = 'short-answer-input';
-                    input.placeholder = 'Type your answer here...';
+                    input.placeholder = 'Antwort eingeben...';
                     input.id = 'shortAnswerInput';
                     input.autocomplete = 'off';
                     input.addEventListener('input', () => {

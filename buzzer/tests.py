@@ -10,7 +10,7 @@ from games_hub.models import HubGameParticipantSnapshot, HubGameStep, HubPartici
 from games_hub.views import get_leaderboard_data
 
 from .consumers import BuzzerConsumer
-from .models import BuzzerGame, BuzzerParticipant
+from .models import BuzzerGame, BuzzerParticipant, BuzzerRound
 
 
 class FakeChannelLayer:
@@ -319,6 +319,8 @@ class BuzzerEndFlowTests(TransactionTestCase):
         self.assertContains(host_response, 'Zur Session-Übersicht')
         self.assertContains(player_response, 'Zur Lobby zurückkehren')
         self.assertContains(player_response, 'participant-return-to-lobby')
+        self.assertContains(player_response, 'id="returnToLobbyActions" hidden')
+        self.assertContains(player_response, 'id="returnToLobbyBtn" disabled aria-hidden="true"')
 
     def test_participant_return_marks_inactive_and_lobby_suppresses_auto_redirect(self):
         response = Client().post(
@@ -543,6 +545,75 @@ class BuzzerGameTests(TestCase):
         self.assertEqual(state['round']['number'], 1)
         self.assertTrue(state['can_buzz'])
         self.assertEqual(state['participant']['score'], 0)
+
+    def test_round_scorebox_uses_current_session_and_preserves_zero(self):
+        self.game.start_round(self.session.code)
+        self.game.open_buzzer()
+        self.assertTrue(self.game.accept_buzz(self.alice)[0])
+        self.assertTrue(self.game.mark_current_correct())
+        BuzzerRound.objects.create(
+            quiz=self.game,
+            hub_session_code='OLD01',
+            round_number=1,
+            status='answered',
+            correct_participant=self.bob,
+        )
+
+        alice_state = self.game.serialize_state(self.session.code, 'Alice')
+        bob_state = self.game.serialize_state(self.session.code, 'Bob')
+
+        self.assertEqual(alice_state['round_results'], [{
+            'number': 1,
+            'status': 'answered',
+            'points_earned': 1,
+            'max_points': 1,
+        }])
+        self.assertEqual(bob_state['round_results'], [{
+            'number': 1,
+            'status': 'answered',
+            'points_earned': 0,
+            'max_points': 1,
+        }])
+
+    def test_buzzer_player_template_has_vhs_identity_and_scorebox_hooks(self):
+        response = Client().get(
+            reverse('buzzer:play', args=[self.game.room_code, self.alice.name]),
+            {'hub_session': self.session.code},
+        )
+
+        self.assertContains(response, '<title>Buzzer: Mündliche Fragen - QuizMaster</title>', html=True)
+        self.assertContains(response, 'data-participant-name="Alice"')
+        self.assertContains(response, 'id="buzzerScoreBox"')
+        self.assertContains(response, 'id="buzzerScoreRows"')
+        self.assertContains(response, 'class="buzzer-vhs-game-meta d-none"')
+        self.assertContains(
+            response,
+            '<span class="buzzer-vhs-game-meta d-none" title="Mündliche Fragen · Spiel 1">'
+            'MÜNDLICHE FRAGEN · SPIEL 1'
+            '</span>',
+            html=True,
+        )
+        self.assertContains(response, 'setBuzzedState(button, Boolean(participant.has_answer_right));')
+        self.assertContains(response, 'if (button.disabled || button.classList.contains(\'is-buzzed\')) return;')
+        self.assertNotContains(
+            response,
+            'window.setTimeout(() => button.classList.remove(\'is-buzzed\'), 260)',
+        )
+        self.assertNotContains(response, "querySelector('.buzzer-vhs-game-meta')")
+
+        self.game.title = 'Buzztest'
+        self.game.save(update_fields=['title'])
+        buzztest_response = Client().get(
+            reverse('buzzer:play', args=[self.game.room_code, self.alice.name]),
+            {'hub_session': self.session.code},
+        )
+        self.assertContains(
+            buzztest_response,
+            '<span class="buzzer-vhs-game-meta d-none" title="Buzztest · Spiel 1">'
+            'BUZZTEST · SPIEL 1'
+            '</span>',
+            html=True,
+        )
 
     def test_new_session_does_not_hydrate_old_current_round(self):
         self.game.start_round(self.session.code)

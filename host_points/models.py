@@ -3,6 +3,7 @@ import string
 
 from django.contrib.auth.models import User
 from django.db import models, transaction
+from django.db.models import Sum
 from django.utils import timezone
 
 from games_website.models import SyncBase
@@ -211,6 +212,28 @@ class HostPointsGame(SyncBase):
                 'official': self.is_official_participant(participant),
             })
         own = next((p for p in participants if p['name'] == participant_name), None)
+        round_scores = []
+        if own and not session_mismatch:
+            score_totals = {
+                row['round_number']: row['points']
+                for row in self.adjustments.filter(
+                    hub_session_code=session_code,
+                    participant_id=own['id'],
+                )
+                .values('round_number')
+                .annotate(points=Sum('points_delta'))
+            }
+            visible_round_count = max(
+                round_number or 0,
+                max(score_totals, default=0),
+            )
+            round_scores = [
+                {
+                    'number': number,
+                    'points': score_totals[number] if number in score_totals else None,
+                }
+                for number in range(1, visible_round_count + 1)
+            ]
 
         return {
             'game': {
@@ -224,6 +247,7 @@ class HostPointsGame(SyncBase):
             },
             'participants': participants,
             'participant': own,
+            'round_scores': round_scores,
             'scorebox': {
                 'rows': participants,
             },

@@ -399,8 +399,8 @@ html[data-participant-theme="vhs"] body.estimation-play-page .vhs-theme-shell
   min-width: 0;
 }
 
-html[data-participant-theme="vhs"] body.estimation-play-page .vhs-theme-shell
-  #questionState .estimation-interaction-area .estimate-input {
+html[data-participant-theme="vhs"] :is(body.estimation-play-page, body.blackjack-play-page)
+  .vhs-theme-shell #questionState .estimate-input {
   width: 100%;
   min-width: 0;
   height: 76px;
@@ -418,17 +418,17 @@ html[data-participant-theme="vhs"] body.estimation-play-page .vhs-theme-shell
   text-align: left;
 }
 
-html[data-participant-theme="vhs"] body.estimation-play-page .vhs-theme-shell
-  #questionState .estimation-interaction-area .estimate-input::placeholder {
+html[data-participant-theme="vhs"] :is(body.estimation-play-page, body.blackjack-play-page)
+  .vhs-theme-shell #questionState .estimate-input::placeholder {
   color: var(--vhs-muted) !important;
   opacity: 1;
   text-shadow: none;
 }
 
-html[data-participant-theme="vhs"] body.estimation-play-page .vhs-theme-shell
-  #questionState .estimation-interaction-area .estimate-input:focus,
-html[data-participant-theme="vhs"] body.estimation-play-page .vhs-theme-shell
-  #questionState .estimation-interaction-area .estimate-input:focus-visible {
+html[data-participant-theme="vhs"] :is(body.estimation-play-page, body.blackjack-play-page)
+  .vhs-theme-shell #questionState .estimate-input:focus,
+html[data-participant-theme="vhs"] :is(body.estimation-play-page, body.blackjack-play-page)
+  .vhs-theme-shell #questionState .estimate-input:focus-visible {
   border-color: var(--vhs-paper) !important;
   outline: none !important;
   box-shadow: 7px 7px 0 rgba(0, 0, 0, 0.22) !important;
@@ -476,15 +476,15 @@ html[data-participant-theme="vhs"] body.estimation-play-page .vhs-theme-shell
   padding-top: 410px;
 }
 
-html[data-participant-theme="vhs"] body.estimation-play-page .vhs-theme-shell
-  #questionState .estimation-interaction-area .estimate-input {
+html[data-participant-theme="vhs"] :is(body.estimation-play-page, body.blackjack-play-page)
+  .vhs-theme-shell #questionState .estimate-input {
   color-scheme: dark;
 }
 
-html[data-participant-theme="vhs"] body.estimation-play-page .vhs-theme-shell
-  #questionState .estimation-interaction-area .estimate-input::-webkit-inner-spin-button,
-html[data-participant-theme="vhs"] body.estimation-play-page .vhs-theme-shell
-  #questionState .estimation-interaction-area .estimate-input::-webkit-outer-spin-button {
+html[data-participant-theme="vhs"] :is(body.estimation-play-page, body.blackjack-play-page)
+  .vhs-theme-shell #questionState .estimate-input::-webkit-inner-spin-button,
+html[data-participant-theme="vhs"] :is(body.estimation-play-page, body.blackjack-play-page)
+  .vhs-theme-shell #questionState .estimate-input::-webkit-outer-spin-button {
   width: 28px;
   height: 48px;
   margin: 0 -8px 0 10px;
@@ -495,16 +495,16 @@ html[data-participant-theme="vhs"] body.estimation-play-page .vhs-theme-shell
   cursor: pointer;
 }
 
-html[data-participant-theme="vhs"] body.estimation-play-page .vhs-theme-shell
-  #questionState .estimation-interaction-area .estimate-input:hover::-webkit-inner-spin-button,
-html[data-participant-theme="vhs"] body.estimation-play-page .vhs-theme-shell
-  #questionState .estimation-interaction-area .estimate-input:focus::-webkit-inner-spin-button {
+html[data-participant-theme="vhs"] :is(body.estimation-play-page, body.blackjack-play-page)
+  .vhs-theme-shell #questionState .estimate-input:hover::-webkit-inner-spin-button,
+html[data-participant-theme="vhs"] :is(body.estimation-play-page, body.blackjack-play-page)
+  .vhs-theme-shell #questionState .estimate-input:focus::-webkit-inner-spin-button {
   background: rgba(233, 223, 202, 0.22);
   filter: invert(96%) sepia(7%) saturate(547%) hue-rotate(354deg) brightness(104%);
 }
 
-html[data-participant-theme="vhs"] body.estimation-play-page .vhs-theme-shell
-  #questionState .estimation-interaction-area .estimate-input:active::-webkit-inner-spin-button {
+html[data-participant-theme="vhs"] :is(body.estimation-play-page, body.blackjack-play-page)
+  .vhs-theme-shell #questionState .estimate-input:active::-webkit-inner-spin-button {
   background: rgba(233, 223, 202, 0.36);
   filter: invert(100%);
 }
@@ -3917,7 +3917,8 @@ html[data-participant-theme="vhs"] body.who-play-page .vhs-theme-shell #question
   text-align: center;
 }
 
-html[data-participant-theme="vhs"] body.who-play-page .vhs-theme-shell #questionState .who-person-switch-timer {
+html[data-participant-theme="vhs"] body.who-play-page .vhs-theme-shell #questionState .who-person-switch-timer,
+html[data-participant-theme="vhs"] body.clue-rush-play-page .vhs-theme-shell #questionState .who-person-switch-timer {
   position: absolute;
   inset: 0 0 auto;
   height: 5px;
@@ -3925,7 +3926,8 @@ html[data-participant-theme="vhs"] body.who-play-page .vhs-theme-shell #question
   background: rgba(255, 255, 255, 0.08);
 }
 
-html[data-participant-theme="vhs"] body.who-play-page .vhs-theme-shell #questionState .who-person-switch-timer__fill {
+html[data-participant-theme="vhs"] body.who-play-page .vhs-theme-shell #questionState .who-person-switch-timer__fill,
+html[data-participant-theme="vhs"] body.clue-rush-play-page .vhs-theme-shell #questionState .who-person-switch-timer__fill {
   display: block;
   width: 100%;
   height: 100%;
@@ -3935,7 +3937,8 @@ html[data-participant-theme="vhs"] body.who-play-page .vhs-theme-shell #question
   transition: transform 250ms linear;
 }
 
-html[data-participant-theme="vhs"] body.who-play-page .vhs-theme-shell #questionState .who-person-switch-timer.is-resetting .who-person-switch-timer__fill {
+html[data-participant-theme="vhs"] body.who-play-page .vhs-theme-shell #questionState .who-person-switch-timer.is-resetting .who-person-switch-timer__fill,
+html[data-participant-theme="vhs"] body.clue-rush-play-page .vhs-theme-shell #questionState .who-person-switch-timer.is-resetting .who-person-switch-timer__fill {
   transition: none;
 }
 
@@ -3953,8 +3956,13 @@ html[data-participant-theme="vhs"] body.who-play-page .vhs-theme-shell #question
 
 html[data-participant-theme="vhs"] body.who-play-page .vhs-theme-shell #questionState .vhs-who-liar-button,
 html[data-participant-theme="vhs"] body.quiz-play-page .vhs-theme-shell #questionState .vhs-quick-quiz-submit,
+html[data-participant-theme="vhs"] body.wann-war-das-play-page .vhs-theme-shell #questionArea .vhs-quick-quiz-submit,
 html[data-participant-theme="vhs"] body.estimation-play-page .vhs-theme-shell #questionState .vhs-action-button,
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell #questionState .vhs-action-button,
+html[data-participant-theme="vhs"] body.clue-rush-play-page .vhs-theme-shell #questionState .vhs-action-button,
 html[data-participant-theme="vhs"] body.who-that-play-page .vhs-theme-shell #questionState .vhs-who-that-submit,
+html[data-participant-theme="vhs"] body.sorting-ladder-play-page .vhs-theme-shell #topicState .vhs-action-button,
+html[data-participant-theme="vhs"] body.wer-weiss-mehr-play-page .vhs-theme-shell .wwm-answer-area .vhs-action-button,
 html[data-participant-theme="vhs"] body.assign-play-page .vhs-theme-shell #questionState :is(.assign-reset-button, .assign-submit-button) {
   min-width: 170px;
   margin: 0 !important;
@@ -3973,10 +3981,20 @@ html[data-participant-theme="vhs"] body.who-play-page .vhs-theme-shell #question
 html[data-participant-theme="vhs"] body.who-play-page .vhs-theme-shell #questionState .vhs-who-liar-button:not(:disabled):focus-visible,
 html[data-participant-theme="vhs"] body.quiz-play-page .vhs-theme-shell #questionState .vhs-quick-quiz-submit:not(:disabled):hover,
 html[data-participant-theme="vhs"] body.quiz-play-page .vhs-theme-shell #questionState .vhs-quick-quiz-submit:not(:disabled):focus-visible,
+html[data-participant-theme="vhs"] body.wann-war-das-play-page .vhs-theme-shell #questionArea .vhs-quick-quiz-submit:not(:disabled):hover,
+html[data-participant-theme="vhs"] body.wann-war-das-play-page .vhs-theme-shell #questionArea .vhs-quick-quiz-submit:not(:disabled):focus-visible,
 html[data-participant-theme="vhs"] body.estimation-play-page .vhs-theme-shell #questionState .vhs-action-button:not(:disabled):hover,
 html[data-participant-theme="vhs"] body.estimation-play-page .vhs-theme-shell #questionState .vhs-action-button:not(:disabled):focus-visible,
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell #questionState .vhs-action-button:not(:disabled):hover,
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell #questionState .vhs-action-button:not(:disabled):focus-visible,
+html[data-participant-theme="vhs"] body.clue-rush-play-page .vhs-theme-shell #questionState .vhs-action-button:not(:disabled):hover,
+html[data-participant-theme="vhs"] body.clue-rush-play-page .vhs-theme-shell #questionState .vhs-action-button:not(:disabled):focus-visible,
 html[data-participant-theme="vhs"] body.who-that-play-page .vhs-theme-shell #questionState .vhs-who-that-submit:not(:disabled):hover,
 html[data-participant-theme="vhs"] body.who-that-play-page .vhs-theme-shell #questionState .vhs-who-that-submit:not(:disabled):focus-visible,
+html[data-participant-theme="vhs"] body.sorting-ladder-play-page .vhs-theme-shell #topicState .vhs-action-button:not(:disabled):hover,
+html[data-participant-theme="vhs"] body.sorting-ladder-play-page .vhs-theme-shell #topicState .vhs-action-button:not(:disabled):focus-visible,
+html[data-participant-theme="vhs"] body.wer-weiss-mehr-play-page .vhs-theme-shell .wwm-answer-area .vhs-action-button:not(:disabled):hover,
+html[data-participant-theme="vhs"] body.wer-weiss-mehr-play-page .vhs-theme-shell .wwm-answer-area .vhs-action-button:not(:disabled):focus-visible,
 html[data-participant-theme="vhs"] body.assign-play-page .vhs-theme-shell #questionState :is(.assign-reset-button, .assign-submit-button):not(:disabled):hover,
 html[data-participant-theme="vhs"] body.assign-play-page .vhs-theme-shell #questionState :is(.assign-reset-button, .assign-submit-button):not(:disabled):focus-visible {
   transform: translate(-4px, -3px);
@@ -3994,12 +4012,20 @@ html[data-participant-theme="vhs"] body.who-play-page .vhs-theme-shell #question
 html[data-participant-theme="vhs"] body.quiz-play-page .vhs-theme-shell #questionState .vhs-quick-quiz-submit:not(:disabled):active,
 html[data-participant-theme="vhs"] body.quiz-play-page .vhs-theme-shell #questionState .vhs-quick-quiz-submit.is-selected,
 html[data-participant-theme="vhs"] body.quiz-play-page .vhs-theme-shell #questionState .vhs-quick-quiz-submit[aria-pressed="true"],
+html[data-participant-theme="vhs"] body.wann-war-das-play-page .vhs-theme-shell #questionArea .vhs-quick-quiz-submit:not(:disabled):active,
+html[data-participant-theme="vhs"] body.wann-war-das-play-page .vhs-theme-shell #questionArea .vhs-quick-quiz-submit.is-selected,
+html[data-participant-theme="vhs"] body.wann-war-das-play-page .vhs-theme-shell #questionArea .vhs-quick-quiz-submit[aria-pressed="true"],
 html[data-participant-theme="vhs"] body.estimation-play-page .vhs-theme-shell #questionState .vhs-action-button:not(:disabled):active,
 html[data-participant-theme="vhs"] body.estimation-play-page .vhs-theme-shell #questionState .vhs-action-button.loading,
 html[data-participant-theme="vhs"] body.estimation-play-page .vhs-theme-shell #questionState .vhs-action-button[aria-pressed="true"],
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell #questionState .vhs-action-button:not(:disabled):active,
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell #questionState .vhs-action-button.loading,
+html[data-participant-theme="vhs"] body.clue-rush-play-page .vhs-theme-shell #questionState .vhs-action-button:not(:disabled):active,
 html[data-participant-theme="vhs"] body.who-that-play-page .vhs-theme-shell #questionState .vhs-who-that-submit:not(:disabled):active,
 html[data-participant-theme="vhs"] body.who-that-play-page .vhs-theme-shell #questionState .vhs-who-that-submit.loading,
 html[data-participant-theme="vhs"] body.who-that-play-page .vhs-theme-shell #questionState .vhs-who-that-submit.loading:hover,
+html[data-participant-theme="vhs"] body.sorting-ladder-play-page .vhs-theme-shell #topicState .vhs-action-button:not(:disabled):active,
+html[data-participant-theme="vhs"] body.wer-weiss-mehr-play-page .vhs-theme-shell .wwm-answer-area .vhs-action-button:not(:disabled):active,
 html[data-participant-theme="vhs"] body.assign-play-page .vhs-theme-shell #questionState :is(.assign-reset-button, .assign-submit-button):not(:disabled):active,
 html[data-participant-theme="vhs"] body.assign-play-page .vhs-theme-shell #questionState .assign-submit-button.loading,
 html[data-participant-theme="vhs"] body.assign-play-page .vhs-theme-shell #questionState .assign-submit-button.loading:hover {
@@ -4016,6 +4042,11 @@ html[data-participant-theme="vhs"] body.who-play-page .vhs-theme-shell #question
 }
 
 html[data-participant-theme="vhs"] body.quiz-play-page .vhs-theme-shell #questionState .vhs-quick-quiz-submit.is-selected:disabled {
+  cursor: default;
+  opacity: 1;
+}
+
+html[data-participant-theme="vhs"] body.wann-war-das-play-page .vhs-theme-shell #questionArea .vhs-quick-quiz-submit.is-selected:disabled {
   cursor: default;
   opacity: 1;
 }
@@ -4895,6 +4926,2016 @@ html[data-participant-theme="vhs"] body.who-that-play-page .vhs-theme-shell :is(
 }
 
 /* Blackjack */
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  :is(#waitingQuizState, #waitingQuestionState).blackjack-vhs-wait-state {
+  width: 100%;
+  min-width: 0;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  :is(#waitingQuizState, #waitingQuestionState) .blackjack-vhs-signal-card {
+  display: grid !important;
+  grid-template-rows: auto 44px minmax(132px, auto) 8px auto;
+  align-content: center;
+  justify-items: center;
+  gap: 18px;
+  width: min(100%, 760px);
+  min-width: 0;
+  min-height: 520px;
+  box-sizing: border-box;
+  margin: 0 auto;
+  padding: 58px clamp(18px, 5vw, 58px) !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  backdrop-filter: none !important;
+  box-shadow: none !important;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  :is(#waitingQuizState, #waitingQuestionState) .blackjack-vhs-signal-kicker {
+  display: block !important;
+  margin: 0 !important;
+  color: var(--vhs-muted) !important;
+  font: 700 11px/1.2 "Courier New", Courier, monospace !important;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  :is(#waitingQuizState, #waitingQuestionState) .waiting-animation {
+  display: flex !important;
+  align-items: center;
+  justify-content: center;
+  width: 64px !important;
+  height: 44px !important;
+  min-height: 0 !important;
+  margin: 0 !important;
+  color: var(--vhs-orange) !important;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  :is(#waitingQuizState, #waitingQuestionState) .qa-wait-loader-frame {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 64px;
+  min-height: 0;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  :is(#waitingQuizState, #waitingQuestionState) .qa-wait-loader {
+  display: block !important;
+  width: 42px !important;
+  height: 3px !important;
+  min-height: 0 !important;
+  aspect-ratio: auto !important;
+  box-sizing: border-box !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: var(--vhs-orange) !important;
+  box-shadow: none !important;
+  filter: none !important;
+  mask: none !important;
+  animation: blackjack-vhs-signal-loader 1.4s steps(2, end) infinite !important;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  :is(#waitingQuizState, #waitingQuestionState) .qa-wait-loader::before,
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  :is(#waitingQuizState, #waitingQuestionState) .qa-wait-loader::after {
+  content: none !important;
+  display: none !important;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  :is(#waitingQuizState, #waitingQuestionState)
+  :is(.qa-start-waiting-title, .blackjack-vhs-signal-title) {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  max-width: 100%;
+  min-height: 132px;
+  margin: 0 !important;
+  color: var(--vhs-paper) !important;
+  font-family: var(--vhs-display-font, Arial, Helvetica, sans-serif) !important;
+  font-size: clamp(42px, 7vw, 78px) !important;
+  font-weight: 1000 !important;
+  font-style: normal;
+  line-height: 0.92;
+  letter-spacing: -0.04em;
+  text-align: center;
+  text-transform: uppercase;
+  overflow-wrap: anywhere;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #waitingQuizState .qa-start-waiting-game-name {
+  max-width: 100%;
+  font-size: inherit !important;
+  line-height: inherit;
+  overflow-wrap: anywhere;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #waitingQuizState .qa-start-waiting-subtitle,
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #waitingQuestionState .blackjack-wait-copy--default {
+  display: none !important;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #waitingQuestionState .blackjack-vhs-wait-copy {
+  display: inline !important;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  :is(#waitingQuizState, #waitingQuestionState) .blackjack-vhs-tracking-line {
+  position: relative;
+  display: block !important;
+  width: min(100%, 620px);
+  height: 8px;
+  overflow: hidden;
+  border-top: 1px dashed rgba(216, 216, 209, 0.34);
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  :is(#waitingQuizState, #waitingQuestionState) .blackjack-vhs-tracking-line > span {
+  position: absolute;
+  top: -1px;
+  left: 0;
+  width: 24%;
+  height: 2px;
+  background: var(--vhs-orange);
+  animation: blackjack-vhs-tracking 3.2s steps(12, end) infinite;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  :is(#waitingQuizState, #waitingQuestionState) .blackjack-vhs-signal-note {
+  display: block !important;
+  margin: 0 !important;
+  color: var(--vhs-muted) !important;
+  font: 700 clamp(13px, 1.7vw, 16px)/1.35 "Courier New", Courier, monospace !important;
+  letter-spacing: 0.1em;
+  text-align: center;
+  text-transform: uppercase;
+}
+
+@keyframes blackjack-vhs-signal-loader {
+  0%,
+  100% {
+    opacity: 0.42;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@keyframes blackjack-vhs-tracking {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(420%);
+  }
+}
+
+@media (max-width: 640px) {
+  html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+    :is(#waitingQuizState, #waitingQuestionState) .blackjack-vhs-signal-card {
+    grid-template-rows: auto 38px minmax(124px, auto) 8px auto;
+    gap: 15px;
+    min-height: 500px;
+    padding: 44px 12px !important;
+  }
+
+  html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+    :is(#waitingQuizState, #waitingQuestionState)
+    :is(.qa-start-waiting-title, .blackjack-vhs-signal-title) {
+    min-height: 124px;
+    font-size: clamp(36px, 12vw, 54px) !important;
+    line-height: 0.94;
+  }
+
+  html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+    :is(#waitingQuizState, #waitingQuestionState) .blackjack-vhs-signal-note {
+    font-size: 12px !important;
+    letter-spacing: 0.07em;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+    :is(#waitingQuizState, #waitingQuestionState) .qa-wait-loader,
+  html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+    :is(#waitingQuizState, #waitingQuestionState) .blackjack-vhs-tracking-line > span {
+    animation: none !important;
+  }
+
+  html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+    :is(#waitingQuizState, #waitingQuestionState) .blackjack-vhs-tracking-line > span {
+    left: 38%;
+    opacity: 0.72;
+  }
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  .quiz-header .participant-score {
+  display: none !important;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  .blackjack-vhs-score-header {
+  padding: 14px 0 !important;
+  border: 0 !important;
+  border-bottom: 1px dashed rgba(216, 216, 209, 0.3) !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  backdrop-filter: none !important;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  .blackjack-vhs-score-header .container {
+  width: 100%;
+  max-width: none;
+  padding-inline: 0;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  .blackjack-vhs-score-header .points-display {
+  display: grid !important;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: stretch;
+  gap: 0;
+  width: min(100%, 430px);
+  min-width: 0;
+  margin: 0 auto;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  .blackjack-vhs-score-header :is(.points-info, .progress-info) {
+  display: contents !important;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  .blackjack-vhs-score-header .blackjack-vhs-redundant-metric {
+  display: none !important;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  .blackjack-vhs-score-header .blackjack-header-copy--default {
+  display: none !important;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  .blackjack-vhs-score-header .blackjack-vhs-header-copy {
+  display: inline !important;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  .blackjack-vhs-score-header .blackjack-vhs-header-metric {
+  display: grid;
+  align-content: center;
+  justify-items: center;
+  gap: 7px;
+  min-width: 0;
+  min-height: 68px;
+  padding: 8px 16px;
+  border: 0;
+  border-right: 1px dashed rgba(216, 216, 209, 0.26);
+  background: transparent;
+  color: var(--vhs-answer-text);
+  text-align: center;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  .blackjack-vhs-score-header .question-progress {
+  border-right: 0;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  .blackjack-vhs-score-header :is(.points-value, .progress-value) {
+  display: block;
+  max-width: 100%;
+  color: var(--vhs-paper) !important;
+  font: 900 clamp(25px, 4vw, 34px)/1 "VCR OSD Mono", "Courier New", monospace !important;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  .blackjack-vhs-score-header :is(.points-label, .progress-label) {
+  color: var(--vhs-answer-text) !important;
+  font: 700 10px/1.2 "Courier New", Courier, monospace !important;
+  letter-spacing: 0.13em;
+  opacity: 1;
+  text-transform: uppercase;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #questionState.blackjack-vhs-question-state {
+  width: 100%;
+  min-width: 0;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #questionState .blackjack-vhs-question-card {
+  width: 100%;
+  min-width: 0;
+  min-height: 480px;
+  box-sizing: border-box;
+  padding: 16px 0 34px !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #questionState .blackjack-vhs-question-meta {
+  display: none !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #questionState .blackjack-question-copy--default {
+  display: none !important;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #questionState .blackjack-vhs-question-copy {
+  display: inline !important;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #questionState .question-timer {
+  display: none !important;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #questionState #playerTimerCircle {
+  display: flex;
+  align-items: baseline;
+  justify-content: flex-end;
+  gap: 5px;
+  width: auto !important;
+  height: auto !important;
+  min-width: 48px;
+  padding: 0 0 0 12px;
+  border: 0 !important;
+  border-left: 1px solid rgba(216, 216, 209, 0.34) !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  color: var(--vhs-paper) !important;
+  box-shadow: none !important;
+  font: 900 18px/1 "Courier New", Courier, monospace !important;
+  font-variant-numeric: tabular-nums;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #questionState #playerTimerCircle::after {
+  content: "S";
+  color: var(--vhs-muted);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #questionState #playerTimerCircle.warning {
+  color: var(--vhs-cream) !important;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #questionState #playerTimerCircle.danger {
+  color: var(--vhs-orange) !important;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #questionState .blackjack-vhs-question-content {
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: start;
+  gap: 24px;
+  width: min(100%, 780px);
+  min-width: 0;
+  min-height: 0;
+  margin: 0 auto;
+  padding: 0 !important;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #questionState .blackjack-vhs-question-content > * {
+  grid-column: 1 !important;
+  min-width: 0;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #questionState .vhs-question-kicker {
+  display: none;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #questionState #questionText {
+  width: 100%;
+  max-width: none;
+  margin: 0 !important;
+  padding: 0 0 28px;
+  border-bottom: 1px dashed rgba(216, 216, 209, 0.34);
+  color: var(--vhs-paper) !important;
+  text-align: left !important;
+  overflow-wrap: anywhere;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #questionState #questionText .vhs-question-lead {
+  font-size: clamp(48px, 7vw, 82px);
+  line-height: 0.88;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #questionState #questionText .vhs-question-body {
+  margin-top: 22px;
+  font-size: clamp(22px, 2.5vw, 31px);
+  line-height: 1.2;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #questionState .blackjack-vhs-answer-interface {
+  width: min(100%, 560px);
+  margin: 0 auto !important;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #questionState .blackjack-vhs-counter {
+  width: 100%;
+  max-width: none;
+  margin: 0;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #questionState .blackjack-vhs-counter .answer-label {
+  display: none !important;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  .blackjack-vhs-score-header #starsBustResetNotice {
+  grid-column: 1 / -1;
+  margin-top: 3px;
+  color: var(--vhs-orange);
+  font: 700 10px/1.3 "Courier New", Courier, monospace;
+  letter-spacing: 0.1em;
+  overflow-wrap: anywhere;
+  text-align: center;
+  text-transform: uppercase;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  .quiz-header .status-badge.bust {
+  display: none !important;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #questionState .blackjack-vhs-integer-help {
+  display: none !important;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #questionState :is(
+    .blackjack-vhs-submit,
+    .qa-theme-button-shell:has(> .blackjack-vhs-submit)
+  ) {
+  width: min(100%, 560px) !important;
+  max-width: 100%;
+  justify-self: center;
+  margin: 0 auto;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #questionState .blackjack-vhs-submit:disabled {
+  border-color: var(--vhs-plastic-line) !important;
+  background: transparent !important;
+  color: var(--vhs-muted) !important;
+  box-shadow: none !important;
+  opacity: 0.62;
+  cursor: not-allowed;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #questionState .blackjack-vhs-busted-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  width: min(100%, 620px);
+  margin: 0 auto !important;
+  padding: 16px 0 !important;
+  border: 0 !important;
+  border-top: 1px dashed rgba(216, 216, 209, 0.34) !important;
+  border-bottom: 1px dashed rgba(216, 216, 209, 0.34) !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  color: var(--vhs-answer-text) !important;
+  box-shadow: none !important;
+  font: 700 14px/1.45 "Courier New", Courier, monospace !important;
+  text-align: left;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #questionState .blackjack-vhs-busted-notice :is(i, svg) {
+  width: 20px;
+  height: 20px;
+  flex: 0 0 20px;
+  color: var(--vhs-violet);
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell:has(
+  #questionState:not(.d-none)
+) .qa-score-widget {
+  position: relative !important;
+  inset: auto !important;
+  justify-content: flex-end;
+  width: 100%;
+  max-width: 100%;
+  margin: 18px 0 0 !important;
+}
+
+@media (max-width: 640px) {
+  html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+    #questionState .blackjack-vhs-question-card {
+    min-height: 0;
+    padding: 18px 0 26px !important;
+  }
+
+  html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+    #questionState .blackjack-vhs-question-content {
+    gap: 20px;
+    width: 100%;
+  }
+
+  html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+    #questionState #questionText {
+    padding-bottom: 22px;
+  }
+
+  html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+    #questionState #questionText .vhs-question-lead {
+    font-size: clamp(38px, 13vw, 52px);
+    line-height: 0.92;
+  }
+
+  html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+    #questionState #questionText .vhs-question-body {
+    margin-top: 16px;
+    font-size: clamp(19px, 5.6vw, 24px);
+  }
+
+  html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell:has(
+    #questionState:not(.d-none)
+  ) .qa-score-widget {
+    align-items: flex-end;
+    gap: 10px;
+    margin-top: 14px !important;
+  }
+
+  html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell:has(
+    #questionState:not(.d-none)
+  ) .qa-score-widget__toggle {
+    width: 92px;
+    font-size: 22px;
+  }
+
+  html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell:has(
+    #questionState:not(.d-none)
+  ) .qa-score-widget__body {
+    max-width: 100%;
+    max-height: 220px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+    #questionState #playerTimerCircle.danger {
+    animation: none !important;
+  }
+
+  html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+    #questionState .vhs-action-button {
+    transition: none !important;
+    transform: none !important;
+  }
+}
+
+/* Black Jack recorded answer states */
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  :is(#answerSubmittedState, #questionSubmitFeedback) .blackjack-standard-copy {
+  display: none !important;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  :is(#answerSubmittedState, #questionSubmitFeedback) .blackjack-vhs-copy {
+  display: inline !important;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #answerSubmittedState {
+  width: 100%;
+  min-width: 0;
+  padding: clamp(18px, 4vw, 48px) 0;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #answerSubmittedState .blackjack-vhs-recorded-card {
+  display: grid;
+  justify-items: center;
+  width: min(100%, 780px);
+  min-width: 0;
+  margin: 0 auto;
+  padding: clamp(24px, 5vw, 54px) clamp(16px, 4vw, 42px) !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  backdrop-filter: none !important;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #answerSubmittedState .blackjack-vhs-recorded-signal {
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  margin: 0 0 16px;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #answerSubmittedState .blackjack-vhs-recorded-check {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  border: 1px solid var(--vhs-orange);
+  border-radius: 0;
+  background: transparent;
+  color: var(--vhs-paper);
+  animation: none !important;
+  transform: none !important;
+  box-shadow: none !important;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #answerSubmittedState .blackjack-vhs-recorded-check::before {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 5px;
+  height: 5px;
+  background: var(--vhs-orange);
+  content: "";
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #answerSubmittedState .blackjack-vhs-recorded-check .check-icon {
+  width: 19px;
+  height: 19px;
+  color: var(--vhs-paper);
+  animation: none !important;
+  transform: none !important;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #answerSubmittedState .blackjack-vhs-recorded-title {
+  margin: 0;
+  color: var(--vhs-paper) !important;
+  font-family: "VCR OSD Mono", "Courier New", monospace !important;
+  font-size: clamp(38px, 7vw, 72px) !important;
+  font-style: normal;
+  font-weight: 900;
+  line-height: 0.92;
+  letter-spacing: 0.04em;
+  text-align: center;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #answerSubmittedState .blackjack-vhs-recorded-status {
+  margin: 14px 0 26px;
+  color: var(--vhs-answer-text) !important;
+  font-family: "Courier New", monospace;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.35;
+  letter-spacing: 0.12em;
+  text-align: center;
+  text-transform: uppercase;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #answerSubmittedState .blackjack-vhs-recorded-panel {
+  width: min(100%, 680px);
+  min-width: 0;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  border-block: 1px solid rgba(216, 216, 209, 0.38) !important;
+  border-radius: 0 !important;
+  background: rgba(40, 47, 44, 0.38) !important;
+  box-shadow: none !important;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #answerSubmittedState .blackjack-vhs-recorded-data {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0;
+  min-width: 0;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #answerSubmittedState .blackjack-vhs-recorded-data .summary-item {
+  min-width: 0;
+  margin: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #answerSubmittedState .blackjack-vhs-recorded-answer-row {
+  grid-column: 1 / -1;
+  display: grid;
+  justify-items: center;
+  gap: 6px;
+  padding: clamp(20px, 4vw, 34px) 16px;
+  border-bottom: 1px dashed rgba(216, 216, 209, 0.28);
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #answerSubmittedState .blackjack-vhs-recorded-answer-row .summary-label,
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #answerSubmittedState .blackjack-vhs-recorded-metric .summary-label {
+  min-width: 0;
+  color: var(--vhs-answer-text) !important;
+  font-family: "Courier New", monospace;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.25;
+  letter-spacing: 0.1em;
+  overflow-wrap: anywhere;
+  text-transform: uppercase;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #answerSubmittedState .blackjack-vhs-recorded-answer-row #submittedAnswer {
+  min-width: 0;
+  color: var(--vhs-paper) !important;
+  font-family: "VCR OSD Mono", "Courier New", monospace !important;
+  font-size: clamp(64px, 12vw, 116px) !important;
+  font-style: normal;
+  font-weight: 900;
+  font-variant-numeric: tabular-nums;
+  line-height: 0.9;
+  letter-spacing: 0.03em;
+  overflow-wrap: anywhere;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #answerSubmittedState .blackjack-vhs-recorded-metric {
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 12px;
+  min-height: 74px;
+  padding: 14px 16px;
+  border-bottom: 1px dashed rgba(216, 216, 209, 0.2);
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #answerSubmittedState .blackjack-vhs-recorded-metric:nth-child(even) {
+  border-right: 1px dashed rgba(216, 216, 209, 0.2);
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #answerSubmittedState .blackjack-vhs-recorded-metric .summary-value {
+  min-width: 0;
+  color: var(--vhs-paper) !important;
+  font-family: "VCR OSD Mono", "Courier New", monospace !important;
+  font-size: clamp(22px, 4vw, 30px) !important;
+  font-weight: 900;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  overflow-wrap: anywhere;
+  text-align: right;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #questionState #questionSubmitFeedback.blackjack-vhs-recorded-feedback {
+  display: grid;
+  justify-items: center;
+  width: min(100%, 560px);
+  min-width: 0;
+  margin: 20px auto 0;
+  padding: 16px;
+  border: 0;
+  border-block: 1px dashed rgba(216, 216, 209, 0.34);
+  border-radius: 0;
+  background: rgba(40, 47, 44, 0.38);
+  box-shadow: none;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #questionState #questionSubmitFeedback.blackjack-vhs-recorded-feedback.d-none {
+  display: none !important;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #questionSubmitFeedback .blackjack-vhs-recorded-answer {
+  display: grid;
+  justify-items: center;
+  gap: 4px;
+  min-width: 0;
+  color: var(--vhs-answer-text);
+  font-family: "Courier New", monospace;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #questionSubmitFeedback #questionSubmittedAnswer {
+  min-width: 0;
+  color: var(--vhs-paper);
+  font-family: "VCR OSD Mono", "Courier New", monospace;
+  font-size: clamp(34px, 7vw, 48px);
+  font-weight: 900;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  overflow-wrap: anywhere;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #questionSubmitFeedback .blackjack-vhs-recorded-waiting {
+  display: none !important;
+}
+
+@media (max-width: 640px) {
+  html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+    #answerSubmittedState {
+    padding-block: 10px;
+  }
+
+  html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+    #answerSubmittedState .blackjack-vhs-recorded-card {
+    padding: 18px 0 22px !important;
+  }
+
+  html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+    #answerSubmittedState .blackjack-vhs-recorded-metric {
+    grid-template-columns: minmax(0, 1fr);
+    align-content: center;
+    gap: 7px;
+    min-height: 82px;
+    padding: 12px;
+  }
+
+  html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+    #answerSubmittedState .blackjack-vhs-recorded-metric .summary-value {
+    text-align: left;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+    #answerSubmittedState :is(
+      .blackjack-vhs-recorded-signal,
+      .blackjack-vhs-recorded-check,
+      .blackjack-vhs-recorded-check .check-icon
+    ) {
+    animation: none !important;
+    transition: none !important;
+    transform: none !important;
+  }
+}
+
+/* Black Jack answer evaluation */
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #correctAnswerState .blackjack-standard-copy {
+  display: none !important;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #correctAnswerState .blackjack-vhs-copy {
+  display: inline !important;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #correctAnswerState {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  padding: clamp(16px, 4vw, 42px) 0;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #correctAnswerState .blackjack-vhs-evaluation-monitor {
+  display: grid;
+  justify-items: center;
+  width: min(100%, 860px);
+  max-width: 100%;
+  min-width: 0;
+  margin: 0 auto;
+  padding: clamp(22px, 4vw, 46px) clamp(14px, 4vw, 38px) !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  color: var(--vhs-answer-text) !important;
+  box-shadow: none !important;
+  backdrop-filter: none !important;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #correctAnswerState .blackjack-vhs-evaluation-focus {
+  display: grid;
+  justify-items: center;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  margin: 0 0 clamp(26px, 5vw, 42px) !important;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #correctAnswerState .blackjack-vhs-evaluation-signal {
+  display: grid;
+  place-items: center;
+  width: auto;
+  height: auto;
+  margin: 0 0 12px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--vhs-paper);
+  animation: none !important;
+  transform: none !important;
+  box-shadow: none !important;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #correctAnswerState .blackjack-vhs-evaluation-signal :is(i, svg) {
+  width: clamp(38px, 6vw, 54px);
+  height: clamp(38px, 6vw, 54px);
+  color: var(--vhs-paper) !important;
+  stroke: currentColor !important;
+  animation: none !important;
+  transform: none !important;
+  filter: none !important;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #correctAnswerState .blackjack-vhs-evaluation-label {
+  margin: 0 0 14px;
+  color: var(--vhs-answer-text) !important;
+  font: 700 12px/1.25 "Courier New", Courier, monospace !important;
+  font-style: normal;
+  letter-spacing: 0.14em;
+  text-align: center;
+  text-transform: uppercase;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #correctAnswerState .answer-display {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  margin: 0 !important;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #correctAnswerState #correctAnswerDisplay {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  color: var(--vhs-paper) !important;
+  font-family: "VCR OSD Mono", "Courier New", monospace !important;
+  font-size: clamp(58px, 13vw, 118px) !important;
+  font-style: normal;
+  font-weight: 900;
+  font-variant-numeric: tabular-nums;
+  line-height: 0.9;
+  letter-spacing: 0.025em;
+  overflow-wrap: anywhere;
+  word-break: normal;
+  white-space: normal;
+  text-align: center;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #correctAnswerState .blackjack-vhs-evaluation-strip {
+  display: grid !important;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: stretch;
+  gap: 0;
+  box-sizing: border-box;
+  width: min(100%, 720px);
+  max-width: 100%;
+  min-width: 0;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  border-block: 1px solid rgba(216, 216, 209, 0.38) !important;
+  border-radius: 0 !important;
+  background: rgba(40, 47, 44, 0.38) !important;
+  box-shadow: none !important;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #correctAnswerState .comparison-vs,
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #correctAnswerState .blackjack-standard-comparison {
+  display: none !important;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #correctAnswerState .blackjack-vhs-evaluation-metric {
+  display: grid !important;
+  align-content: center;
+  justify-items: center;
+  gap: 8px;
+  min-width: 0;
+  min-height: 90px;
+  padding: 14px 12px;
+  background: transparent !important;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #correctAnswerState .blackjack-vhs-evaluation-metric:not(:last-child) {
+  border-right: 1px dashed rgba(216, 216, 209, 0.24);
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #correctAnswerState .blackjack-vhs-evaluation-metric .comparison-label {
+  min-width: 0;
+  margin: 0 !important;
+  color: var(--vhs-answer-text) !important;
+  font: 700 11px/1.2 "Courier New", Courier, monospace !important;
+  letter-spacing: 0.1em;
+  overflow-wrap: anywhere;
+  text-align: center;
+  text-transform: uppercase;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #correctAnswerState .blackjack-vhs-evaluation-metric .comparison-value {
+  max-width: 100%;
+  min-width: 0;
+  color: var(--vhs-paper) !important;
+  font-family: "VCR OSD Mono", "Courier New", monospace !important;
+  font-size: clamp(22px, 4vw, 34px) !important;
+  font-style: normal;
+  font-weight: 900;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  overflow-wrap: anywhere;
+  word-break: normal;
+  text-align: center;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #correctAnswerState .blackjack-vhs-evaluation-details {
+  display: grid;
+  gap: 16px;
+  width: min(100%, 720px);
+  max-width: 100%;
+  min-width: 0;
+  margin: 24px auto 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #correctAnswerState .blackjack-vhs-evaluation-text-block {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  margin: 0 !important;
+  padding: 14px 16px 16px !important;
+  border: 0 !important;
+  border-top: 1px dashed rgba(216, 216, 209, 0.34) !important;
+  border-radius: 0 !important;
+  background: rgba(40, 47, 44, 0.28) !important;
+  color: var(--vhs-answer-text) !important;
+  box-shadow: none !important;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #correctAnswerState .blackjack-vhs-evaluation-text-block :is(
+    .calc-label,
+    .blackjack-vhs-evaluation-block-label
+  ) {
+  display: block !important;
+  margin: 0 0 9px;
+  color: var(--vhs-answer-text) !important;
+  font: 700 11px/1.2 "Courier New", Courier, monospace !important;
+  letter-spacing: 0.12em;
+  text-align: left;
+  text-transform: uppercase;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #correctAnswerState #calculationDisplay,
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #correctAnswerState #explanationText {
+  display: block;
+  max-width: 100%;
+  min-width: 0;
+  margin: 0;
+  color: var(--vhs-paper) !important;
+  font-family: "Courier New", Courier, monospace !important;
+  font-size: clamp(14px, 2.4vw, 18px) !important;
+  font-style: normal;
+  font-weight: 700;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  word-break: normal;
+  white-space: normal;
+  text-align: left;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #correctAnswerState .blackjack-vhs-explanation-block:has(
+    #explanationText[style*="display: none"]
+  ) {
+  display: none;
+}
+
+@media (max-width: 640px) {
+  html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+    #correctAnswerState {
+    padding-block: 8px;
+  }
+
+  html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+    #correctAnswerState .blackjack-vhs-evaluation-monitor {
+    padding: 18px 0 24px !important;
+  }
+
+  html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+    #correctAnswerState #correctAnswerDisplay {
+    font-size: clamp(48px, 17vw, 76px) !important;
+    line-height: 0.94;
+  }
+
+  html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+    #correctAnswerState .blackjack-vhs-evaluation-metric {
+    gap: 7px;
+    min-height: 84px;
+    padding: 12px 7px;
+  }
+
+  html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+    #correctAnswerState .blackjack-vhs-evaluation-metric .comparison-label {
+    font-size: 10px !important;
+    letter-spacing: 0.06em;
+  }
+
+  html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+    #correctAnswerState .blackjack-vhs-evaluation-metric .comparison-value {
+    font-size: clamp(19px, 6vw, 28px) !important;
+  }
+
+  html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+    #correctAnswerState .blackjack-vhs-evaluation-details {
+    gap: 12px;
+    margin-top: 18px !important;
+  }
+
+  html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+    #correctAnswerState .blackjack-vhs-evaluation-text-block {
+    padding: 13px 12px 14px !important;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+    #correctAnswerState :is(
+      .blackjack-vhs-evaluation-signal,
+      .blackjack-vhs-evaluation-signal i,
+      .blackjack-vhs-evaluation-signal svg
+    ) {
+    animation: none !important;
+    transition: none !important;
+    transform: none !important;
+  }
+}
+
+/* Black Jack busted state */
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #bustedState .blackjack-standard-copy {
+  display: none !important;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #bustedState .blackjack-vhs-copy {
+  display: inline !important;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #bustedState {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  padding: clamp(14px, 4vw, 40px) 0;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #bustedState .blackjack-vhs-bust-monitor {
+  display: grid;
+  justify-items: center;
+  width: min(100%, 820px);
+  max-width: 100%;
+  min-width: 0;
+  margin: 0 auto;
+  padding: clamp(24px, 5vw, 52px) clamp(14px, 4vw, 38px) !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  color: var(--vhs-answer-text) !important;
+  box-shadow: none !important;
+  backdrop-filter: none !important;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #bustedState .blackjack-vhs-bust-signal {
+  display: grid;
+  place-items: center;
+  width: auto;
+  height: auto;
+  margin: 0 0 14px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--vhs-orange);
+  animation: none !important;
+  transform: none !important;
+  box-shadow: none !important;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #bustedState .blackjack-vhs-bust-signal :is(i, svg) {
+  width: clamp(38px, 6vw, 54px);
+  height: clamp(38px, 6vw, 54px);
+  color: currentColor !important;
+  stroke: currentColor !important;
+  animation: none !important;
+  transform: none !important;
+  filter: none !important;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #bustedState .blackjack-vhs-bust-title {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  margin: 0;
+  color: var(--vhs-orange) !important;
+  font-family: "VCR OSD Mono", "Courier New", monospace !important;
+  font-size: clamp(34px, 8vw, 78px) !important;
+  font-style: normal;
+  font-weight: 900;
+  line-height: 0.88;
+  letter-spacing: 0.02em;
+  overflow-wrap: anywhere;
+  text-align: center;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #bustedState .blackjack-vhs-bust-title > .blackjack-vhs-copy {
+  display: flex !important;
+  align-items: baseline;
+  justify-content: center;
+  gap: 0.65ch;
+  max-width: 100%;
+  min-width: 0;
+  color: var(--vhs-orange) !important;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #bustedState .blackjack-vhs-bust-title .blackjack-vhs-copy > span {
+  color: inherit;
+  font: inherit;
+  line-height: inherit;
+  letter-spacing: inherit;
+  white-space: nowrap;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #bustedState .blackjack-vhs-bust-data {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  width: min(100%, 700px);
+  max-width: 100%;
+  min-width: 0;
+  border-block: 1px solid rgba(216, 216, 209, 0.38);
+  background: rgba(40, 47, 44, 0.36);
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #bustedState :is(.bust-details, .bust-info, .bust-points, .bust-message) {
+  display: contents;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #bustedState .bust-label {
+  display: flex !important;
+  align-items: center;
+  min-width: 0;
+  margin: 0 !important;
+  padding: 14px 16px;
+  border-bottom: 0;
+  color: var(--vhs-answer-text) !important;
+  font: 700 11px/1.3 "Courier New", Courier, monospace !important;
+  letter-spacing: 0.11em;
+  overflow-wrap: anywhere;
+  text-align: left;
+  text-transform: uppercase;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #bustedState .bust-label {
+  grid-column: 1;
+  grid-row: 1;
+  justify-content: center;
+  padding-bottom: 5px;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #bustedState #bustPoints {
+  grid-column: 1;
+  grid-row: 2;
+  justify-content: center;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #bustedState #bustedReasonText {
+  grid-column: 1;
+  grid-row: 3;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #bustedState #bustedHelpText {
+  grid-column: 1;
+  grid-row: 4;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #bustedState #bustPoints,
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #bustedState :is(#bustedReasonText, #bustedHelpText) {
+  display: flex;
+  align-items: center;
+  max-width: 100%;
+  min-width: 0;
+  margin: 0 !important;
+  padding: 14px 16px;
+  border-bottom: 1px dashed rgba(216, 216, 209, 0.22);
+  color: var(--vhs-paper) !important;
+  font-family: "Courier New", Courier, monospace !important;
+  font-style: normal;
+  font-size: clamp(15px, 2.2vw, 18px) !important;
+  font-weight: 700;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+  word-break: normal;
+  white-space: normal;
+  text-align: left;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #bustedState #bustPoints {
+  font-family: "VCR OSD Mono", "Courier New", monospace !important;
+  font-size: clamp(28px, 4vw, 40px) !important;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #bustedState :is(#bustedReasonText, #bustedHelpText) {
+  border-bottom: 0;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #bustedState #bustedReasonText {
+  padding-bottom: 7px;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #bustedState #bustedHelpText {
+  padding-top: 7px;
+}
+
+@media (max-width: 640px) {
+  html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+    #bustedState {
+    padding-block: 8px;
+  }
+
+  html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+    #bustedState .blackjack-vhs-bust-monitor {
+    padding: 20px 0 24px !important;
+  }
+
+  html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+    #bustedState .blackjack-vhs-bust-title {
+    font-size: clamp(32px, 10vw, 44px) !important;
+  }
+
+  html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+    #bustedState .blackjack-vhs-bust-title > .blackjack-vhs-copy {
+    gap: 0.5ch;
+  }
+
+  html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+    #bustedState .blackjack-vhs-bust-data {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+    #bustedState .bust-label {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+    #bustedState #bustPoints {
+    grid-column: 1;
+    grid-row: 2;
+  }
+
+  html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+    #bustedState #bustedReasonText {
+    grid-column: 1;
+    grid-row: 3;
+  }
+
+  html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+    #bustedState #bustedHelpText {
+    grid-column: 1;
+    grid-row: 4;
+  }
+
+  html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+    #bustedState .bust-label {
+    padding: 11px 12px 7px;
+    border-bottom: 0;
+  }
+
+  html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+    #bustedState #bustPoints,
+  html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+    #bustedState :is(#bustedReasonText, #bustedHelpText) {
+    padding: 4px 12px 13px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+    #bustedState :is(
+      .blackjack-vhs-bust-signal,
+      .blackjack-vhs-bust-signal i,
+      .blackjack-vhs-bust-signal svg
+    ) {
+    animation: none !important;
+    transition: none !important;
+    transform: none !important;
+  }
+}
+
+/* Black Jack set and quiz credits */
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  :is(#setEndedState, #quizEndedState) .blackjack-standard-copy {
+  display: none !important;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  :is(#setEndedState, #quizEndedState) .blackjack-vhs-copy {
+  display: inline !important;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  :is(#setEndedState, #quizEndedState) {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  padding: clamp(12px, 3vw, 34px) 0;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  :is(#setEndedState, #quizEndedState) .blackjack-vhs-credits {
+  display: grid;
+  align-content: start;
+  justify-items: center;
+  width: min(100%, 860px);
+  max-width: 100%;
+  min-width: 0;
+  margin: 0 auto;
+  padding: clamp(24px, 5vw, 50px) clamp(14px, 4vw, 38px) !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  color: var(--vhs-answer-text) !important;
+  box-shadow: none !important;
+  backdrop-filter: none !important;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  :is(#setEndedState, #quizEndedState) .blackjack-vhs-credits-signal {
+  order: 1;
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  margin: 0 0 14px;
+  border: 1px solid var(--vhs-orange);
+  border-radius: 0;
+  background: transparent;
+  color: var(--vhs-paper);
+  animation: none !important;
+  transform: none !important;
+  box-shadow: none !important;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  :is(#setEndedState, #quizEndedState) .blackjack-vhs-credits-signal :is(i, svg) {
+  width: 21px;
+  height: 21px;
+  color: currentColor !important;
+  stroke: currentColor !important;
+  animation: none !important;
+  transform: none !important;
+  filter: none !important;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #setEndedState .blackjack-vhs-set-end-signal {
+  width: auto;
+  height: auto;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--vhs-paper) !important;
+  box-shadow: none !important;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #setEndedState .blackjack-vhs-set-end-signal :is(i, svg) {
+  width: clamp(38px, 6vw, 54px) !important;
+  height: clamp(38px, 6vw, 54px) !important;
+  color: var(--vhs-paper) !important;
+  stroke: var(--vhs-paper) !important;
+  filter: none !important;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #quizEndedState .blackjack-vhs-quiz-end-signal {
+  width: auto;
+  height: auto;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--vhs-paper) !important;
+  box-shadow: none !important;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #quizEndedState .blackjack-vhs-quiz-end-signal :is(i, svg) {
+  width: clamp(38px, 6vw, 54px) !important;
+  height: clamp(38px, 6vw, 54px) !important;
+  color: var(--vhs-paper) !important;
+  stroke: var(--vhs-paper) !important;
+  filter: none !important;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  :is(#setEndedState, #quizEndedState) .blackjack-vhs-credits-title {
+  order: 2;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  margin: 0;
+  color: var(--vhs-paper) !important;
+  font-family: "VCR OSD Mono", "Courier New", monospace !important;
+  font-size: clamp(40px, 6.5vw, 64px) !important;
+  font-style: normal;
+  font-weight: 900;
+  line-height: 0.92;
+  letter-spacing: 0.015em;
+  overflow-wrap: anywhere;
+  text-align: center;
+  text-transform: uppercase;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  :is(#setEndedState, #quizEndedState) .blackjack-vhs-credits > .quiz-actions {
+  order: 0;
+  display: flex !important;
+  justify-content: center;
+  width: 100%;
+  max-width: 100%;
+  margin: 0 0 clamp(34px, 6vw, 58px) !important;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page
+  .qa-score-widget #blackjackScoreBox .score-box__badge::before {
+  content: none;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  :is(#setEndedState, #quizEndedState) .blackjack-vhs-credits-subtitle {
+  order: 3;
+  max-width: 100%;
+  min-width: 0;
+  margin: 14px 0 28px;
+  color: var(--vhs-answer-text) !important;
+  font: 700 11px/1.35 "Courier New", Courier, monospace !important;
+  letter-spacing: 0.13em;
+  overflow-wrap: anywhere;
+  text-align: center;
+  text-transform: uppercase;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  :is(#setEndedState, #quizEndedState) .blackjack-vhs-credits-metrics {
+  order: 4;
+  display: grid !important;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0 !important;
+  box-sizing: border-box;
+  width: min(100%, 720px);
+  max-width: 100%;
+  min-width: 0;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  border-block: 1px solid rgba(216, 216, 209, 0.38) !important;
+  border-radius: 0 !important;
+  background: rgba(40, 47, 44, 0.36) !important;
+  box-shadow: none !important;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #setEndedState .blackjack-vhs-set-index,
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #quizEndedState .blackjack-vhs-final-total-stat {
+  display: none !important;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  :is(#setEndedState, #quizEndedState) .blackjack-vhs-credits-metric {
+  display: grid;
+  align-content: center;
+  justify-items: center;
+  gap: 8px;
+  min-width: 0;
+  min-height: 88px;
+  padding: 14px 12px !important;
+  border: 0 !important;
+  border-right: 1px dashed rgba(216, 216, 209, 0.22) !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  :is(#setEndedState, #quizEndedState) .blackjack-vhs-credits-metric:last-child {
+  border-right: 0 !important;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #quizEndedState .blackjack-vhs-credits-metric:nth-child(3) {
+  border-right: 0 !important;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  :is(#setEndedState, #quizEndedState)
+  .blackjack-vhs-credits-metric .summary-stat-label {
+  min-width: 0;
+  color: var(--vhs-answer-text) !important;
+  font: 700 10px/1.25 "Courier New", Courier, monospace !important;
+  letter-spacing: 0.09em;
+  overflow-wrap: anywhere;
+  text-align: center;
+  text-transform: uppercase;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  :is(#setEndedState, #quizEndedState)
+  .blackjack-vhs-credits-metric .summary-stat-value {
+  max-width: 100%;
+  min-width: 0;
+  color: var(--vhs-paper) !important;
+  font-family: "VCR OSD Mono", "Courier New", monospace !important;
+  font-size: clamp(24px, 4vw, 34px) !important;
+  font-style: normal;
+  font-weight: 900;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  overflow-wrap: anywhere;
+  text-align: center;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #setEndedState .blackjack-vhs-credits-waiting {
+  order: 5;
+  display: block;
+  width: min(100%, 720px);
+  max-width: 100%;
+  min-width: 0;
+  margin: 26px 0 0 !important;
+  padding-top: 16px;
+  border-top: 1px dashed rgba(216, 216, 209, 0.28);
+  color: var(--vhs-answer-text) !important;
+  font: 700 clamp(13px, 1.8vw, 16px)/1.4 "Courier New", Courier, monospace !important;
+  letter-spacing: 0.07em;
+  opacity: 1;
+  overflow-wrap: anywhere;
+  text-align: center;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #quizEndedState .blackjack-vhs-final-total {
+  order: 4;
+  width: min(100%, 720px);
+  max-width: 100%;
+  min-width: 0;
+  margin: 0 0 20px !important;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #quizEndedState .blackjack-vhs-final-total-frame {
+  display: grid;
+  justify-items: center;
+  gap: 8px;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  height: auto;
+  margin: 0;
+  padding: 20px 14px 22px;
+  border: 0;
+  border-block: 1px solid rgba(216, 216, 209, 0.42);
+  border-radius: 0;
+  background: rgba(40, 47, 44, 0.3);
+  box-shadow: none;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #quizEndedState .blackjack-vhs-final-total-frame .score-value {
+  max-width: 100%;
+  min-width: 0;
+  color: var(--vhs-paper) !important;
+  font-family: "VCR OSD Mono", "Courier New", monospace !important;
+  font-size: clamp(58px, 11vw, 104px) !important;
+  font-style: normal;
+  font-weight: 900;
+  font-variant-numeric: tabular-nums;
+  line-height: 0.9;
+  overflow-wrap: anywhere;
+  text-align: center;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #quizEndedState .blackjack-vhs-final-total-frame .score-label {
+  color: var(--vhs-answer-text) !important;
+  font: 700 11px/1.25 "Courier New", Courier, monospace !important;
+  letter-spacing: 0.12em;
+  text-align: center;
+  text-transform: uppercase;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #quizEndedState #finalLastSetGrid {
+  order: 5;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #quizEndedState .blackjack-vhs-tape-log {
+  order: 6;
+  width: min(100%, 720px);
+  max-width: 100%;
+  min-width: 0;
+  max-height: 310px;
+  margin: 20px 0 0 !important;
+  padding: 0 !important;
+  overflow-x: hidden;
+  overflow-y: auto;
+  border: 0 !important;
+  border-block: 1px solid rgba(216, 216, 209, 0.36) !important;
+  border-radius: 0 !important;
+  background: rgba(40, 47, 44, 0.28) !important;
+  color: var(--vhs-answer-text) !important;
+  box-shadow: none !important;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #quizEndedState .blackjack-vhs-tape-log > h3 {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  margin: 0;
+  padding: 13px 16px;
+  border-bottom: 1px dashed rgba(216, 216, 209, 0.28);
+  background: var(--vhs-ink);
+  color: var(--vhs-answer-text) !important;
+  font: 700 11px/1.25 "Courier New", Courier, monospace !important;
+  letter-spacing: 0.12em;
+  text-align: left;
+  text-transform: uppercase;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #quizEndedState .blackjack-vhs-tape-log > .blackjack-vhs-tape-log-heading {
+  display: none !important;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #quizEndedState .final-set-summary-list {
+  display: grid;
+  gap: 0;
+  width: 100%;
+  min-width: 0;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #quizEndedState .final-set-summary-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) max-content;
+  align-items: center;
+  gap: 18px;
+  min-width: 0;
+  padding: 12px 16px;
+  border: 0;
+  border-bottom: 1px dashed rgba(216, 216, 209, 0.2);
+  border-radius: 0;
+  background: transparent;
+  color: var(--vhs-paper);
+  font-family: "Courier New", Courier, monospace;
+  font-size: 14px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.3;
+  text-align: left;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #quizEndedState .final-set-summary-row:last-child {
+  border-bottom: 0;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #quizEndedState .final-set-summary-row > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #quizEndedState .post-game-results-card {
+  order: 7;
+  width: min(100%, 720px);
+  max-width: 100%;
+  min-width: 0;
+  margin: 20px 0 0 !important;
+  padding: 14px 0 0 !important;
+  border: 0 !important;
+  border-top: 1px dashed rgba(216, 216, 209, 0.3) !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  color: var(--vhs-answer-text) !important;
+  box-shadow: none !important;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #quizEndedState .post-game-results-card :is(h3, .post-game-results-meta) {
+  color: var(--vhs-answer-text) !important;
+  font-family: "Courier New", Courier, monospace !important;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #quizEndedState .post-game-results-table-wrap {
+  width: 100%;
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #quizEndedState .post-game-results-table {
+  min-width: 640px;
+  border-collapse: collapse;
+  color: var(--vhs-paper);
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #quizEndedState .post-game-results-table :is(th, td) {
+  border-bottom: 1px dashed rgba(216, 216, 209, 0.2) !important;
+  background: transparent !important;
+  color: var(--vhs-paper) !important;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #quizEndedState .post-game-results-table th {
+  color: var(--vhs-answer-text) !important;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #quizEndedState .post-game-results-table tr.is-current-player {
+  background: rgba(233, 223, 202, 0.08) !important;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+  #quizEndedState :is(.post-game-results-loading, .post-game-results-empty) {
+  color: var(--vhs-answer-text) !important;
+  font-family: "Courier New", Courier, monospace;
+}
+
+@media (max-width: 640px) {
+  html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+    :is(#setEndedState, #quizEndedState) {
+    padding-block: 6px;
+  }
+
+  html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+    :is(#setEndedState, #quizEndedState) .blackjack-vhs-credits {
+    padding: 20px 0 26px !important;
+  }
+
+  html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+    :is(#setEndedState, #quizEndedState) .blackjack-vhs-credits-title {
+    font-size: clamp(34px, 11vw, 48px) !important;
+  }
+
+  html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+    :is(#setEndedState, #quizEndedState) .blackjack-vhs-credits-subtitle {
+    margin-bottom: 22px;
+    font-size: 10px !important;
+    letter-spacing: 0.09em;
+  }
+
+  html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+    :is(#setEndedState, #quizEndedState) .blackjack-vhs-credits-metric {
+    min-height: 82px;
+    padding: 12px 7px !important;
+  }
+
+  html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+    :is(#setEndedState, #quizEndedState)
+    .blackjack-vhs-credits-metric .summary-stat-label {
+    font-size: 9px !important;
+    letter-spacing: 0.05em;
+  }
+
+  html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+    :is(#setEndedState, #quizEndedState)
+    .blackjack-vhs-credits-metric .summary-stat-value {
+    font-size: clamp(21px, 7vw, 29px) !important;
+  }
+
+  html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+    #quizEndedState .blackjack-vhs-final-total-frame .score-value {
+    font-size: clamp(52px, 18vw, 76px) !important;
+  }
+
+  html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+    #quizEndedState .blackjack-vhs-tape-log {
+    max-height: 250px;
+  }
+
+  html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+    #quizEndedState .post-game-results-card {
+    max-width: 100%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell
+    :is(#setEndedState, #quizEndedState) :is(
+      .blackjack-vhs-credits-signal,
+      .blackjack-vhs-credits-signal i,
+      .blackjack-vhs-credits-signal svg
+    ) {
+    animation: none !important;
+    transition: none !important;
+    transform: none !important;
+  }
+}
+
 html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell :is(
   .number-input-container,
   .answer-input-container,
@@ -4915,29 +6956,912 @@ html[data-participant-theme="vhs"] body.blackjack-play-page .vhs-theme-shell :is
 }
 
 /* Clue Rush */
-html[data-participant-theme="vhs"] body.clue-rush-play-page .vhs-theme-shell .list-group {
-  border-block: 1px solid rgba(216, 216, 209, 0.25);
+html[data-participant-theme="vhs"]
+  body.clue-rush-play-page:has(#questionState:not(.d-none)) {
+  align-items: start !important;
 }
 
-html[data-participant-theme="vhs"] body.clue-rush-play-page .vhs-theme-shell .list-group-item {
+html[data-participant-theme="vhs"]
+  body.clue-rush-play-page:has(#questionState:not(.d-none))
+  .vhs-theme-shell {
+  overflow: visible;
+}
+
+html[data-participant-theme="vhs"] body.clue-rush-play-page .vhs-theme-shell
+  #questionState {
+  --clue-card-gap: 10px;
+  --clue-card-min-height: 58px;
+  --clue-card-padding-y: 11px;
+  --clue-card-padding-x: 14px;
+  --clue-card-font-size: clamp(15px, 1.35vw, 18px);
+  --clue-number-size: 34px;
+  --clue-number-font-size: 16px;
+  --clue-number-text-gap: 14px;
+  --clue-answer-width: 560px;
+  --clue-rush-score-safe-area: clamp(220px, 21vw, 310px);
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  padding-right: var(--clue-rush-score-safe-area);
+  padding-bottom: 96px;
+}
+
+html[data-participant-theme="vhs"] body.clue-rush-play-page .vhs-theme-shell
+  #questionState .question-card {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  margin: 0 auto !important;
+  padding: 0 !important;
   border: 0 !important;
-  border-bottom: 1px dashed rgba(216, 216, 209, 0.25) !important;
   border-radius: 0 !important;
-  background: rgba(40, 47, 44, 0.46) !important;
-  color: var(--vhs-answer-text) !important;
+  background: transparent !important;
+  box-shadow: none !important;
 }
 
-html[data-participant-theme="vhs"] body.clue-rush-play-page .vhs-theme-shell .list-group-item:last-child {
-  border-bottom: 0 !important;
+html[data-participant-theme="vhs"] body.clue-rush-play-page .vhs-theme-shell
+  #questionState .question-header {
+  display: none !important;
+}
+
+html[data-participant-theme="vhs"] body.clue-rush-play-page .vhs-theme-shell
+  #questionState .question-content {
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) !important;
+  align-content: start !important;
+  justify-items: center;
+  gap: 0 !important;
+  box-sizing: border-box;
+  width: min(100%, 760px);
+  min-width: 0;
+  margin-inline: auto;
+  padding: clamp(8px, 1.5vh, 16px) 0 0 !important;
+}
+
+html[data-participant-theme="vhs"] body.clue-rush-play-page .vhs-theme-shell
+  #questionState .question-content > * {
+  grid-column: 1 !important;
+  min-width: 0;
+}
+
+html[data-participant-theme="vhs"] body.clue-rush-play-page .vhs-theme-shell
+  #questionState #questionText {
+  display: none !important;
+}
+
+html[data-participant-theme="vhs"] body.clue-rush-play-page .vhs-theme-shell
+  #questionState #participantQuestionLabel {
+  grid-row: 1;
+  width: min(100%, 680px);
+  min-width: 0;
+  margin: 0 0 12px !important;
+  padding: 0 !important;
+  color: var(--vhs-paper) !important;
+  text-align: center;
+  font-family: Georgia, "Times New Roman", serif !important;
+  font-size: clamp(26px, 3.4vw, 46px) !important;
+  font-weight: 800 !important;
+  line-height: 1.08 !important;
+  overflow-wrap: anywhere;
+}
+
+html[data-participant-theme="vhs"] body.clue-rush-play-page .vhs-theme-shell
+  #questionState .clue-rush-next-clue-timer {
+  grid-row: 3;
+  display: block !important;
+  box-sizing: border-box;
+  width: min(100%, 680px);
+  height: 5px;
+  min-height: 5px;
+  margin: 8px 0 18px !important;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.16s ease;
+}
+
+html[data-participant-theme="vhs"] body.clue-rush-play-page .vhs-theme-shell
+  #questionState .clue-rush-next-clue-timer.is-visible {
+  opacity: 1;
+  visibility: visible;
+}
+
+html[data-participant-theme="vhs"] body.clue-rush-play-page .vhs-theme-shell
+  #questionState .clue-rush-next-clue-timer .who-person-switch-timer {
+  position: relative;
+  inset: auto;
+  width: 100%;
+  height: 5px;
+}
+
+html[data-participant-theme="vhs"] body.clue-rush-play-page .vhs-theme-shell
+  #questionState #cluesContainer {
+  grid-row: 2;
+  box-sizing: border-box;
+  width: min(100%, 680px);
+  min-width: 0;
+  margin: 0 !important;
+}
+
+html[data-participant-theme="vhs"] body.clue-rush-play-page .vhs-theme-shell
+  :is(#playerCluesList, #playerCluesListSubmitted) {
+  display: grid;
+  gap: var(--clue-card-gap);
+  width: 100%;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  list-style: none;
+  align-content: start;
+}
+
+html[data-participant-theme="vhs"] body.clue-rush-play-page .vhs-theme-shell
+  .clue-rush-clue {
+  display: grid !important;
+  grid-template-columns: var(--clue-number-size) minmax(0, 1fr);
+  align-items: center;
+  gap: var(--clue-number-text-gap);
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  min-height: var(--clue-card-min-height);
+  padding: var(--clue-card-padding-y) var(--clue-card-padding-x) !important;
+  border: 1px solid rgba(216, 216, 209, 0.42) !important;
+  border-radius: 0 !important;
+  background: rgba(40, 47, 44, 0.58) !important;
+  color: var(--vhs-paper) !important;
+  box-shadow: none !important;
+}
+
+html[data-participant-theme="vhs"] body.clue-rush-play-page .vhs-theme-shell
+  .clue-rush-clue__index {
+  display: grid !important;
+  place-items: center;
+  box-sizing: border-box;
+  width: var(--clue-number-size);
+  min-width: var(--clue-number-size);
+  height: var(--clue-number-size);
+  padding: 0;
+  border: 1px solid var(--vhs-ink);
+  border-radius: 0;
+  background: var(--vhs-paper);
+  color: var(--vhs-ink);
+  font: 900 var(--clue-number-font-size)/1 Arial, Helvetica, sans-serif;
+  font-variant-numeric: tabular-nums;
+}
+
+html[data-participant-theme="vhs"] body.clue-rush-play-page .vhs-theme-shell
+  .clue-rush-clue__content {
+  display: contents;
+}
+
+html[data-participant-theme="vhs"] body.clue-rush-play-page .vhs-theme-shell
+  .clue-rush-clue :is(.clue-rush-clue__legacy-index, .badge) {
+  display: none !important;
+}
+
+html[data-participant-theme="vhs"] body.clue-rush-play-page .vhs-theme-shell
+  .clue-rush-clue__text {
+  min-width: 0;
+  color: var(--vhs-paper);
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: var(--clue-card-font-size);
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+html[data-participant-theme="vhs"] body.clue-rush-play-page .vhs-theme-shell
+  #questionState #answerOptions {
+  grid-row: 4;
+  box-sizing: border-box;
+  width: min(100%, var(--clue-answer-width));
+  min-width: 0;
+  margin: 0;
+}
+
+html[data-participant-theme="vhs"] body.clue-rush-play-page .vhs-theme-shell
+  #questionState .short-answer-input {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  min-height: 58px;
+  padding: 13px 16px;
+  border: 1px solid rgba(216, 216, 209, 0.55);
+  border-radius: 0;
+  background: rgba(25, 31, 29, 0.76);
+  color: var(--vhs-paper);
+  box-shadow: none;
+  font: 700 clamp(17px, 1.7vw, 21px)/1.25 Georgia, "Times New Roman", serif;
+}
+
+html[data-participant-theme="vhs"] body.clue-rush-play-page .vhs-theme-shell
+  #questionState .short-answer-input::placeholder {
+  color: var(--vhs-answer-text);
+  opacity: 0.72;
+}
+
+html[data-participant-theme="vhs"] body.clue-rush-play-page .vhs-theme-shell
+  #questionState .short-answer-input:focus-visible {
+  border-color: var(--vhs-paper);
+  outline: 2px solid var(--vhs-paper);
+  outline-offset: 3px;
+}
+
+html[data-participant-theme="vhs"] body.clue-rush-play-page .vhs-theme-shell
+  #questionState :is(
+    #submitAnswerBtn,
+    .qa-theme-button-shell:has(> #submitAnswerBtn)
+  ) {
+  grid-row: 5;
+  box-sizing: border-box;
+  width: min(100%, var(--clue-answer-width));
+  min-width: 0;
+  margin-top: 10px !important;
+}
+
+html[data-participant-theme="vhs"] body.clue-rush-play-page .vhs-theme-shell
+  #questionState #submitAnswerBtn:not(:disabled) {
+  background: var(--vhs-paper) !important;
+  color: var(--vhs-ink) !important;
+}
+
+html[data-participant-theme="vhs"] body.clue-rush-play-page .vhs-theme-shell
+  #questionState #submitAnswerBtn:disabled {
+  border-color: rgba(216, 216, 209, 0.22) !important;
+  background: rgba(40, 47, 44, 0.4) !important;
+  color: rgba(216, 216, 209, 0.45) !important;
+  box-shadow: none !important;
+  opacity: 1;
+  cursor: not-allowed;
+  transform: none !important;
+}
+
+html[data-participant-theme="vhs"] body.clue-rush-play-page .vhs-theme-shell
+  #answerSubmittedState #submittedCluesContainer {
+  box-sizing: border-box;
+  width: min(100%, 680px);
+  min-width: 0;
+  margin-inline: auto;
+}
+
+html[data-participant-theme="vhs"] body.clue-rush-play-page
+  .vhs-theme-shell:has(.qa-score-widget:not(.is-collapsed))
+  #questionState {
+  padding-top: 350px;
+  padding-right: 0;
+}
+
+html[data-participant-theme="vhs"] body.clue-rush-play-page .vhs-theme-shell
+  #questionState:has(#playerCluesList > :nth-child(7)) {
+  --clue-card-gap: 6px;
+  --clue-card-min-height: 48px;
+  --clue-card-padding-y: 7px;
+  --clue-card-padding-x: 10px;
+  --clue-card-font-size: clamp(14px, 1.15vw, 16px);
+  --clue-number-size: 28px;
+  --clue-number-font-size: 14px;
+  --clue-number-text-gap: 10px;
+}
+
+@media (max-width: 1180px) {
+  html[data-participant-theme="vhs"] body.clue-rush-play-page .vhs-theme-shell
+    #questionState {
+    --clue-rush-score-safe-area: clamp(270px, 27vw, 290px);
+    padding-top: 0;
+  }
+
+  html[data-participant-theme="vhs"] body.clue-rush-play-page
+    .vhs-theme-shell:has(.qa-score-widget:not(.is-collapsed))
+    #questionState {
+    padding-top: 330px;
+  }
+}
+
+@media (max-width: 880px) {
+  html[data-participant-theme="vhs"] body.clue-rush-play-page .vhs-theme-shell
+    #questionState,
+  html[data-participant-theme="vhs"] body.clue-rush-play-page
+    .vhs-theme-shell:has(.qa-score-widget:not(.is-collapsed))
+    #questionState {
+    --clue-rush-score-safe-area: 0px;
+    padding-top: 0;
+  }
+}
+
+@media (max-height: 780px) {
+  html[data-participant-theme="vhs"] body.clue-rush-play-page .vhs-theme-shell
+    #questionState {
+    --clue-card-gap: 6px;
+    --clue-card-min-height: 48px;
+    --clue-card-padding-y: 7px;
+    --clue-card-padding-x: 10px;
+    --clue-card-font-size: clamp(14px, 1.15vw, 16px);
+    --clue-number-size: 28px;
+    --clue-number-font-size: 14px;
+    --clue-number-text-gap: 10px;
+  }
+
+  html[data-participant-theme="vhs"] body.clue-rush-play-page .vhs-theme-shell
+    #questionState .question-content {
+    padding-top: 8px !important;
+  }
+}
+
+@media (max-width: 640px) {
+  html[data-participant-theme="vhs"] body.clue-rush-play-page .vhs-theme-shell
+    #questionState {
+    padding-bottom: 82px;
+  }
+
+  html[data-participant-theme="vhs"] body.clue-rush-play-page .vhs-theme-shell
+    #questionState .question-content {
+    padding-top: 10px !important;
+  }
+
+  html[data-participant-theme="vhs"] body.clue-rush-play-page .vhs-theme-shell
+    #questionState .clue-rush-next-clue-timer {
+    margin-bottom: 16px !important;
+  }
+
+  html[data-participant-theme="vhs"] body.clue-rush-play-page .vhs-theme-shell
+    .clue-rush-clue {
+    --clue-card-font-size: 14px;
+  }
+
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html[data-participant-theme="vhs"] body.clue-rush-play-page .vhs-theme-shell
+    #questionState :is(
+      .clue-rush-next-clue-timer,
+      .who-person-switch-timer__fill
+    ) {
+    transition: none !important;
+  }
 }
 
 /* Sorting Ladder */
-html[data-participant-theme="vhs"] body.sorting-ladder-play-page .vhs-theme-shell :is(.ladder-row, .answer-card, .final-order-item) {
+html[data-participant-theme="vhs"] body.sorting-ladder-play-page .vhs-theme-shell
+#finalOrderState {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+}
+
+html[data-participant-theme="vhs"] body.sorting-ladder-play-page .vhs-theme-shell
+  #finalOrderState .sorting-ladder-reveal {
+  display: grid;
+  justify-items: center;
+  box-sizing: border-box;
+  width: min(100%, 440px);
+  min-width: 0;
+  margin: 0 auto !important;
+  padding: clamp(24px, 5vh, 44px) 0 !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+html[data-participant-theme="vhs"] body.sorting-ladder-play-page .vhs-theme-shell
+  #finalOrderState .sorting-ladder-reveal-symbol {
+  width: 38px;
+  height: 38px;
+  margin: 0 0 10px !important;
+}
+
+html[data-participant-theme="vhs"] body.sorting-ladder-play-page .vhs-theme-shell
+  #finalOrderState .sorting-ladder-reveal-symbol .check-animation {
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+html[data-participant-theme="vhs"] body.sorting-ladder-play-page .vhs-theme-shell
+  #finalOrderState .sorting-ladder-reveal-symbol :is(i, svg) {
+  width: 30px;
+  height: 30px;
+  color: var(--vhs-paper) !important;
+  stroke: currentColor !important;
+}
+
+html[data-participant-theme="vhs"] body.sorting-ladder-play-page .vhs-theme-shell
+  #finalOrderState .sorting-ladder-reveal-title {
+  margin: 0 !important;
+  color: var(--vhs-paper) !important;
+  font: 900 clamp(22px, 3.2vw, 34px)/1.05 Arial, Helvetica, sans-serif !important;
+  letter-spacing: 0.04em;
+  text-align: center;
+  text-transform: uppercase;
+}
+
+html[data-participant-theme="vhs"] body.sorting-ladder-play-page .vhs-theme-shell
+  #finalOrderState .sorting-ladder-reveal-helper {
+  display: none !important;
+}
+
+html[data-participant-theme="vhs"] body.sorting-ladder-play-page .vhs-theme-shell
+  #finalOrderState .sorting-ladder-reveal-ladder {
+  display: grid;
+  justify-items: stretch;
+  box-sizing: border-box;
+  width: min(100%, 360px);
+  min-width: 0;
+  margin-top: clamp(26px, 4vh, 38px);
+}
+
+html[data-participant-theme="vhs"] body.sorting-ladder-play-page .vhs-theme-shell
+  #finalOrderState .sorting-ladder-reveal-label {
+  display: block !important;
+  width: 100%;
+  min-width: 0;
+  margin: 0 !important;
+  padding: 0 !important;
+  color: var(--vhs-muted) !important;
+  font: 700 11px/1.25 "Courier New", Courier, monospace !important;
+  letter-spacing: 0.13em;
+  text-align: center;
+  text-transform: uppercase;
+}
+
+html[data-participant-theme="vhs"] body.sorting-ladder-play-page .vhs-theme-shell
+  #finalOrderState .sorting-ladder-reveal-label--upper {
+  margin-bottom: 10px !important;
+}
+
+html[data-participant-theme="vhs"] body.sorting-ladder-play-page .vhs-theme-shell
+  #finalOrderState .sorting-ladder-reveal-label--lower {
+  margin-top: 10px !important;
+}
+
+html[data-participant-theme="vhs"] body.sorting-ladder-play-page .vhs-theme-shell
+  #finalOrderState .final-order-list {
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: stretch;
+  justify-content: stretch;
+  gap: 12px !important;
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  margin: 0 !important;
+}
+
+html[data-participant-theme="vhs"] body.sorting-ladder-play-page .vhs-theme-shell
+  #finalOrderState .final-order-item {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  min-height: 58px;
+  margin: 0 !important;
+  padding: 9px 14px !important;
   border: 1px solid rgba(216, 216, 209, 0.48) !important;
   border-radius: 0 !important;
-  background: rgba(40, 47, 44, 0.5) !important;
-  color: var(--vhs-answer-text) !important;
+  background: rgba(233, 223, 202, 0.9) !important;
+  color: var(--vhs-ink) !important;
   box-shadow: none !important;
+  font: 900 clamp(12px, 1.2vw, 16px)/1.2 Arial, Helvetica, sans-serif !important;
+  hyphens: auto;
+  overflow-wrap: anywhere;
+  text-align: center;
+}
+
+html[data-participant-theme="vhs"] body.sorting-ladder-play-page .vhs-theme-shell
+  #finalOrderState .final-order-arrow {
+  display: none !important;
+}
+
+html[data-participant-theme="vhs"] body.sorting-ladder-play-page .vhs-theme-shell
+  #topicState {
+  --sorting-ladder-card-height: 58px;
+  --sorting-ladder-card-padding-block: 8px;
+  --sorting-ladder-card-font-size: clamp(12px, 1.1vw, 15px);
+  --sorting-ladder-triangle-width: 40px;
+  --sorting-ladder-column-gap: 12px;
+  --sorting-ladder-row-gap: 16px;
+  --sorting-ladder-label-font-size: 11px;
+  --sorting-ladder-marker-font-size: 15px;
+}
+
+html[data-participant-theme="vhs"] body.sorting-ladder-play-page .vhs-theme-shell
+  #topicState .question-content {
+  grid-template-columns: minmax(0, 1fr) !important;
+  justify-items: start;
+  gap: 0 !important;
+  min-height: 0;
+  padding-top: clamp(44px, 7vh, 72px) !important;
+}
+
+html[data-participant-theme="vhs"] body.sorting-ladder-play-page .vhs-theme-shell
+  #topicState .question-content > * {
+  grid-column: 1 !important;
+  min-width: 0;
+}
+
+html[data-participant-theme="vhs"] body.sorting-ladder-play-page .vhs-theme-shell
+  #topicState :is(.vhs-question-kicker, .question-text, .round-indicators) {
+  width: min(100%, 760px);
+  margin-inline: 0 auto !important;
+}
+
+html[data-participant-theme="vhs"] body.sorting-ladder-play-page .vhs-theme-shell
+  #topicState .vhs-question-kicker {
+  margin-bottom: 8px !important;
+}
+
+html[data-participant-theme="vhs"] body.sorting-ladder-play-page .vhs-theme-shell
+  #topicState .question-text .vhs-question-body {
+  margin-top: 12px;
+}
+
+html[data-participant-theme="vhs"] body.sorting-ladder-play-page .vhs-theme-shell
+  #topicState .round-indicators {
+  gap: 8px;
+  margin-top: clamp(30px, 5vh, 46px) !important;
+  margin-bottom: 0 !important;
+}
+
+html[data-participant-theme="vhs"] body.sorting-ladder-play-page .vhs-theme-shell
+  #topicState .round-indicator {
+  width: 26px;
+  height: 26px;
+  border: 1px dashed rgba(155, 161, 156, 0.7) !important;
+  border-radius: 0 !important;
+  background: rgba(25, 31, 29, 0.54) !important;
+  color: var(--vhs-muted) !important;
+  box-shadow: none !important;
+  font: 800 15px/1 "Courier New", Courier, monospace !important;
+}
+
+html[data-participant-theme="vhs"] body.sorting-ladder-play-page .vhs-theme-shell
+  #topicState .round-indicator.round-success {
+  border-style: solid !important;
+  border-color: rgba(233, 223, 202, 0.72) !important;
+  background: rgba(233, 223, 202, 0.12) !important;
+  color: var(--vhs-paper) !important;
+}
+
+html[data-participant-theme="vhs"] body.sorting-ladder-play-page .vhs-theme-shell
+  #topicState .round-indicator.round-fail {
+  border-style: solid !important;
+  border-color: rgba(207, 99, 56, 0.72) !important;
+  background: rgba(207, 99, 56, 0.1) !important;
+  color: var(--vhs-orange) !important;
+}
+
+html[data-participant-theme="vhs"] body.sorting-ladder-play-page .vhs-theme-shell
+  #topicState:not(.set-awaiting-reveal) #roundLockBanner {
+  box-sizing: border-box;
+  width: fit-content;
+  max-width: min(
+    calc(100% - var(--sorting-ladder-triangle-width) - var(--sorting-ladder-column-gap)),
+    390px
+  );
+  min-height: 0;
+  margin: 12px
+    calc(var(--sorting-ladder-triangle-width) + var(--sorting-ladder-column-gap))
+    0 auto !important;
+  padding: 7px 12px !important;
+  border: 1px solid rgba(216, 216, 209, 0.28) !important;
+  border-radius: 0 !important;
+  background: rgba(25, 31, 29, 0.78) !important;
+  color: var(--vhs-muted) !important;
+  box-shadow: none !important;
+  font: 700 11px/1.3 "Courier New", Courier, monospace !important;
+  letter-spacing: 0.06em;
+  text-align: center;
+}
+
+html[data-participant-theme="vhs"] body.sorting-ladder-play-page .vhs-theme-shell
+  #topicState.set-awaiting-reveal #roundLockBanner {
+  display: block;
+  box-sizing: border-box;
+  width: min(100%, 760px);
+  min-width: 0;
+  margin: 28px auto 0 0 !important;
+  padding: 14px 0 !important;
+  border: 0 !important;
+  border-block: 1px dashed rgba(155, 161, 156, 0.5) !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  color: var(--vhs-muted) !important;
+  box-shadow: none !important;
+  font: 700 clamp(11px, 1.3vw, 13px)/1.45 "Courier New", Courier, monospace !important;
+  letter-spacing: 0.08em;
+  text-align: center;
+}
+
+html[data-participant-theme="vhs"] body.sorting-ladder-play-page .vhs-theme-shell
+  #topicState .topic-layout {
+  display: grid !important;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
+  gap: clamp(20px, 3vw, 34px) !important;
+  box-sizing: border-box;
+  width: min(100%, 760px);
+  min-width: 0;
+  margin: 28px auto 0 0 !important;
+}
+
+html[data-participant-theme="vhs"] body.sorting-ladder-play-page .vhs-theme-shell
+  #topicState:has(.topic-layout .ladder-slot-row:nth-child(n + 8)) {
+  --sorting-ladder-card-height: 50px;
+  --sorting-ladder-card-padding-block: 6px;
+  --sorting-ladder-card-font-size: 13px;
+  --sorting-ladder-triangle-width: 34px;
+  --sorting-ladder-column-gap: 10px;
+  --sorting-ladder-row-gap: 10px;
+  --sorting-ladder-label-font-size: 10px;
+  --sorting-ladder-marker-font-size: 13px;
+}
+
+html[data-participant-theme="vhs"] body.sorting-ladder-play-page .vhs-theme-shell
+  #topicState :is(.ladder-column, .pool-column) {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  margin: 0 !important;
+}
+
+html[data-participant-theme="vhs"] body.sorting-ladder-play-page .vhs-theme-shell
+  #topicState .pool-column {
+  padding-inline-end: calc(
+    var(--sorting-ladder-triangle-width) + var(--sorting-ladder-column-gap)
+  );
+}
+
+html[data-participant-theme="vhs"] body.sorting-ladder-play-page .vhs-theme-shell
+  #topicState .answer-options {
+  display: grid !important;
+  gap: var(--sorting-ladder-row-gap) !important;
+  width: 100%;
+  min-width: 0;
+  margin: 0 !important;
+  padding-block: calc(
+    (var(--sorting-ladder-triangle-width) + var(--sorting-ladder-row-gap)) / 2
+  ) !important;
+  padding-inline: 0 !important;
+}
+
+html[data-participant-theme="vhs"] body.sorting-ladder-play-page .vhs-theme-shell
+  #topicState .ladder-slot-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) var(--sorting-ladder-triangle-width);
+  align-items: start;
+  gap: var(--sorting-ladder-column-gap);
+  width: 100%;
+  min-width: 0;
+  min-height: var(--sorting-ladder-card-height);
+  margin: 0 !important;
+  position: relative;
+}
+
+html[data-participant-theme="vhs"] body.sorting-ladder-play-page .vhs-theme-shell
+  #topicState .ladder-slot-row:last-child {
+  height: 0;
+  min-height: 0;
+}
+
+html[data-participant-theme="vhs"] body.sorting-ladder-play-page .vhs-theme-shell
+  #topicState .ladder-label {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  margin: 0 !important;
+  padding-inline-end: calc(
+    var(--sorting-ladder-triangle-width) + var(--sorting-ladder-column-gap)
+  );
+  color: var(--vhs-muted) !important;
+  font: 700 var(--sorting-ladder-label-font-size)/1.25 "Courier New", Courier, monospace !important;
+  letter-spacing: 0.13em;
+  text-align: center;
+  text-transform: uppercase;
+}
+
+html[data-participant-theme="vhs"] body.sorting-ladder-play-page .vhs-theme-shell
+  #topicState .ladder-label-upper {
+  margin-bottom: 10px !important;
+}
+
+html[data-participant-theme="vhs"] body.sorting-ladder-play-page .vhs-theme-shell
+  #topicState .ladder-label-lower {
+  margin-top: 10px !important;
+}
+
+html[data-participant-theme="vhs"] body.sorting-ladder-play-page .vhs-theme-shell
+  #topicState .ladder-row {
+  box-sizing: border-box;
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  min-width: 0;
+  height: var(--sorting-ladder-card-height);
+  min-height: var(--sorting-ladder-card-height);
+  max-height: var(--sorting-ladder-card-height);
+  padding: var(--sorting-ladder-card-padding-block) 36px !important;
+  overflow: hidden;
+  border: 1px solid rgba(216, 216, 209, 0.48) !important;
+  border-radius: 0 !important;
+  background: rgba(233, 223, 202, 0.9) !important;
+  color: var(--vhs-ink) !important;
+  box-shadow: none !important;
+}
+
+html[data-participant-theme="vhs"] body.sorting-ladder-play-page .vhs-theme-shell
+  #topicState .ladder-row-text {
+  width: 100%;
+  min-width: 0;
+  color: var(--vhs-ink) !important;
+  font: 900 var(--sorting-ladder-card-font-size)/1.15 Arial, Helvetica, sans-serif !important;
+  hyphens: auto;
+  overflow-wrap: anywhere;
+  text-align: center;
+}
+
+html[data-participant-theme="vhs"] body.sorting-ladder-play-page .vhs-theme-shell
+  #topicState .answer-pool {
+  display: grid;
+  gap: 10px;
+  width: 100%;
+  min-width: 0;
+  margin: 0;
+  padding: 0 !important;
+  border: 0 !important;
+}
+
+html[data-participant-theme="vhs"] body.sorting-ladder-play-page .vhs-theme-shell
+  #topicState .answer-card {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  min-width: 0;
+  height: var(--sorting-ladder-card-height);
+  min-height: var(--sorting-ladder-card-height);
+  max-height: var(--sorting-ladder-card-height);
+  padding: var(--sorting-ladder-card-padding-block) 12px !important;
+  overflow: hidden;
+  border: 1px solid rgba(216, 216, 209, 0.48) !important;
+  border-radius: 0 !important;
+  background: rgba(25, 31, 29, 0.72) !important;
+  color: var(--vhs-paper) !important;
+  box-shadow: none !important;
+  transition: transform 0.18s ease, background 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
+}
+
+html[data-participant-theme="vhs"] body.sorting-ladder-play-page .vhs-theme-shell
+  #topicState .answer-card .option-key {
+  display: none !important;
+}
+
+html[data-participant-theme="vhs"] body.sorting-ladder-play-page .vhs-theme-shell
+  #topicState .answer-card .option-text {
+  flex: 1 1 auto;
+  width: 100%;
+  min-width: 0;
+  color: inherit !important;
+  font: 800 var(--sorting-ladder-card-font-size)/1.15 Arial, Helvetica, sans-serif !important;
+  hyphens: auto;
+  overflow-wrap: anywhere;
+  text-align: center;
+}
+
+html[data-participant-theme="vhs"] body.sorting-ladder-play-page .vhs-theme-shell
+  #topicState .answer-card:not(.disabled):hover,
+html[data-participant-theme="vhs"] body.sorting-ladder-play-page .vhs-theme-shell
+  #topicState .answer-card:not(.disabled):focus-visible {
+  transform: translate(-4px, -3px);
+  border-color: var(--vhs-paper) !important;
+  background: rgba(233, 223, 202, 0.9) !important;
+  color: var(--vhs-ink) !important;
+  box-shadow: 9px 9px 0 rgba(0, 0, 0, 0.24) !important;
+  outline: 1px solid var(--vhs-paper);
+  outline-offset: 3px;
+}
+
+html[data-participant-theme="vhs"] body.sorting-ladder-play-page .vhs-theme-shell
+  #topicState .answer-card.dragging {
+  opacity: 0.72;
+  border-color: var(--vhs-paper) !important;
+  background: rgba(233, 223, 202, 0.2) !important;
+  color: var(--vhs-paper) !important;
+  box-shadow: 12px 12px 0 rgba(0, 0, 0, 0.28) !important;
+}
+
+html[data-participant-theme="vhs"] body.sorting-ladder-play-page .vhs-theme-shell
+  #topicState .triangle-container {
+  align-self: start;
+  flex: none;
+  width: var(--sorting-ladder-triangle-width);
+  height: var(--sorting-ladder-triangle-width);
+  margin: 0 !important;
+  background: var(--vhs-muted) !important;
+  color: var(--vhs-ink) !important;
+  transform: translateY(calc(
+    -50% - (var(--sorting-ladder-row-gap) / 2)
+  ));
+}
+
+html[data-participant-theme="vhs"] body.sorting-ladder-play-page .vhs-theme-shell
+  #topicState .triangle-container .number {
+  padding-left: 20px;
+  color: var(--vhs-ink) !important;
+  font: 800 var(--sorting-ladder-marker-font-size)/1 "Courier New", Courier, monospace !important;
+  font-variant-numeric: tabular-nums;
+}
+
+html[data-participant-theme="vhs"] body.sorting-ladder-play-page .vhs-theme-shell
+  #topicState .triangle-container.over {
+  background: var(--vhs-paper) !important;
+}
+
+html[data-participant-theme="vhs"] body.sorting-ladder-play-page .vhs-theme-shell
+  #topicState .sorting-ladder-actions {
+  display: flex !important;
+  align-items: center;
+  justify-content: flex-end;
+  box-sizing: border-box;
+  width: min(100%, 760px) !important;
+  min-width: 0;
+  margin: 20px auto 0 0 !important;
+  padding: 0
+    calc(var(--sorting-ladder-triangle-width) + var(--sorting-ladder-column-gap))
+    0 0 !important;
+}
+
+html[data-participant-theme="vhs"] body.sorting-ladder-play-page .vhs-theme-shell
+  #topicState .sorting-ladder-actions > .qa-theme-button-shell:has(> .sorting-ladder-submit) {
+  width: min(100%, 220px);
+  max-width: 100%;
+  margin: 0 0 0 auto !important;
+}
+
+html[data-participant-theme="vhs"] body.sorting-ladder-play-page .vhs-theme-shell
+  #topicState .sorting-ladder-submit {
+  width: min(100%, 220px) !important;
+  min-width: 170px;
+  margin: 0 !important;
+  background: rgba(233, 223, 202, 0.92) !important;
+  color: var(--vhs-ink) !important;
+}
+
+html[data-participant-theme="vhs"] body.sorting-ladder-play-page .vhs-theme-shell
+  #topicState .sorting-ladder-submit:disabled {
+  transform: none !important;
+  cursor: not-allowed;
+  opacity: 0.48;
+  border-color: rgba(155, 161, 156, 0.46) !important;
+  background: rgba(40, 47, 44, 0.52) !important;
+  color: var(--vhs-muted) !important;
+  box-shadow: none !important;
+  outline: 0 !important;
+}
+
+html[data-participant-theme="vhs"] body.sorting-ladder-play-page .vhs-theme-shell
+  #topicState .slot-clear-btn {
+  position: absolute;
+  top: 50%;
+  right: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  margin: 0;
+  padding: 0;
+  line-height: 1;
+  transform: translateY(-50%);
 }
 
 html[data-participant-theme="vhs"] body.sorting-ladder-play-page .vhs-theme-shell :is(.ladder-slot-row, .drop-target, .ladder-drop-zone) {
@@ -4947,6 +7871,89 @@ html[data-participant-theme="vhs"] body.sorting-ladder-play-page .vhs-theme-shel
 html[data-participant-theme="vhs"] body.sorting-ladder-play-page .vhs-theme-shell :is(.draggable-over, .preview-before, .preview-after) {
   border-color: var(--vhs-paper) !important;
   background: rgba(233, 223, 202, 0.14) !important;
+}
+
+@media (min-width: 1001px) and (max-width: 1120px) {
+  html[data-participant-theme="vhs"] body.sorting-ladder-play-page .vhs-theme-shell
+    #topicState .topic-layout {
+    margin-top: 220px !important;
+  }
+
+  html[data-participant-theme="vhs"] body.sorting-ladder-play-page .vhs-theme-shell:has(.qa-score-widget:not(.is-collapsed))
+    #topicState .topic-layout {
+    margin-top: 400px !important;
+  }
+}
+
+@media (min-width: 1001px) {
+  html[data-participant-theme="vhs"] body.sorting-ladder-play-page
+    .vhs-theme-shell:has(.qa-score-widget:not(.is-collapsed))
+    #topicState .topic-layout {
+    margin-top: 400px !important;
+  }
+
+  html[data-participant-theme="vhs"] body.sorting-ladder-play-page
+    .vhs-theme-shell:has(.qa-score-widget:not(.is-collapsed))
+    #finalOrderState {
+    padding-top: 350px;
+  }
+}
+
+@media (max-height: 820px) and (min-width: 761px) {
+  html[data-participant-theme="vhs"] body.sorting-ladder-play-page .vhs-theme-shell
+    #topicState {
+    --sorting-ladder-card-height: 50px;
+    --sorting-ladder-card-padding-block: 6px;
+    --sorting-ladder-card-font-size: 13px;
+    --sorting-ladder-triangle-width: 34px;
+    --sorting-ladder-column-gap: 10px;
+    --sorting-ladder-row-gap: 10px;
+    --sorting-ladder-label-font-size: 10px;
+    --sorting-ladder-marker-font-size: 13px;
+  }
+}
+
+@media (max-width: 760px) {
+  html[data-participant-theme="vhs"] body.sorting-ladder-play-page .vhs-theme-shell
+    #topicState .topic-layout {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 28px !important;
+    width: 100%;
+    margin-inline: auto !important;
+  }
+
+  html[data-participant-theme="vhs"] body.sorting-ladder-play-page .vhs-theme-shell
+    #topicState :is(.vhs-question-kicker, .question-text, .round-indicators) {
+    width: 100%;
+    margin-inline: auto !important;
+  }
+
+  html[data-participant-theme="vhs"] body.sorting-ladder-play-page .vhs-theme-shell
+    #topicState .sorting-ladder-actions {
+    width: 100% !important;
+    margin-inline: auto !important;
+  }
+
+  html[data-participant-theme="vhs"] body.sorting-ladder-play-page .vhs-theme-shell
+    #topicState :is(
+      .sorting-ladder-submit,
+      .qa-theme-button-shell:has(> .sorting-ladder-submit)
+    ) {
+    width: 100% !important;
+    min-width: 0;
+  }
+
+  html[data-participant-theme="vhs"] body.sorting-ladder-play-page .vhs-theme-shell
+    #finalOrderState .sorting-ladder-reveal {
+    width: 100%;
+    padding-block: 20px 28px !important;
+  }
+
+  html[data-participant-theme="vhs"] body.sorting-ladder-play-page .vhs-theme-shell
+    #finalOrderState .sorting-ladder-reveal-ladder {
+    width: 100%;
+    margin-top: 24px;
+  }
 }
 
 /* Buzzer, Host Points, Wann war das and Wer weiss mehr */
@@ -4960,9 +7967,164 @@ html[data-participant-theme="vhs"] body.buzzer-play-page .vhs-theme-shell .buzze
   box-shadow: 14px 14px 0 rgba(0, 0, 0, 0.28) !important;
 }
 
+html[data-participant-theme="vhs"] body.buzzer-play-page .vhs-theme-shell .buzzer-shell {
+  display: block;
+  width: 100%;
+  max-width: none;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+}
+
+html[data-participant-theme="vhs"] body.buzzer-play-page .vhs-theme-shell .buzzer-card {
+  display: grid;
+  place-items: center;
+  align-content: center;
+  width: 100%;
+  min-width: 0;
+  min-height: 520px;
+  padding-inline: clamp(0px, 3vw, 32px) !important;
+}
+
+html[data-participant-theme="vhs"] body.buzzer-play-page .vhs-theme-shell .buzzer-summary,
+html[data-participant-theme="vhs"] body.buzzer-play-page .vhs-theme-shell #connectionStatus {
+  display: none !important;
+}
+
+html[data-participant-theme="vhs"] body.buzzer-play-page .vhs-theme-shell
+  .qa-score-widget .buzzer-score-box {
+  display: block !important;
+}
+
+html[data-participant-theme="vhs"] body.buzzer-play-page .vhs-theme-shell #gameArea,
+html[data-participant-theme="vhs"] body.buzzer-play-page .vhs-theme-shell #waitingArea {
+  width: min(100%, 620px);
+  min-width: 0;
+  margin-inline: auto;
+}
+
+html[data-participant-theme="vhs"] body.buzzer-play-page .vhs-theme-shell #gameArea {
+  text-align: center;
+}
+
+html[data-participant-theme="vhs"] body.buzzer-play-page .vhs-theme-shell
+  #waitingArea .qa-local-start-subtitle {
+  display: none !important;
+}
+
+html[data-participant-theme="vhs"] body.buzzer-play-page .vhs-theme-shell
+  #waitingArea .buzzer-vhs-wait-copy {
+  display: block !important;
+  margin-top: 14px;
+  color: var(--vhs-muted);
+  font: 700 11px/1.4 "Courier New", Courier, monospace;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+}
+
+html[data-participant-theme="vhs"] body.buzzer-play-page .vhs-theme-shell .buzzer-round-display {
+  margin: 0 auto 14px !important;
+}
+
+html[data-participant-theme="vhs"] body.buzzer-play-page .vhs-theme-shell
+  .buzzer-round-display .status-pill {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 7px;
+  padding: 6px 0 !important;
+  border: 0 !important;
+  border-block: 1px dashed rgba(216, 216, 209, 0.28) !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  color: var(--vhs-muted) !important;
+  font: 700 11px/1.2 "Courier New", Courier, monospace !important;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+}
+
+html[data-participant-theme="vhs"] body.buzzer-play-page .vhs-theme-shell
+  .buzzer-round-display #roundNumber {
+  margin: 0 !important;
+  color: var(--vhs-paper);
+  font: 900 18px/1 "VCR OSD Mono", "Courier New", monospace;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.04em;
+}
+
+html[data-participant-theme="vhs"] body.buzzer-play-page .vhs-theme-shell #statusText {
+  margin: 0 auto 22px !important;
+  color: var(--vhs-answer-text) !important;
+  font-size: clamp(17px, 2.2vw, 22px);
+  line-height: 1.3;
+}
+
+html[data-participant-theme="vhs"] body.buzzer-play-page .vhs-theme-shell
+  .qa-theme-button-shell:has(> .buzzer-button) {
+  display: inline-grid;
+  width: max-content;
+  max-width: 100%;
+  margin-inline: auto;
+}
+
+html[data-participant-theme="vhs"] body.buzzer-play-page .vhs-theme-shell
+  .buzzer-button:not(:disabled):active,
+html[data-participant-theme="vhs"] body.buzzer-play-page .vhs-theme-shell
+  .buzzer-button.is-buzzed {
+  border-color: var(--vhs-paper) !important;
+  background: var(--vhs-paper) !important;
+  color: var(--vhs-ink) !important;
+  box-shadow: 5px 7px 0 rgba(0, 0, 0, 0.32), inset 0 -5px 0 rgba(25, 31, 29, 0.2) !important;
+  transform: translate(8px, 8px);
+}
+
+html[data-participant-theme="vhs"] body.buzzer-play-page .vhs-theme-shell
+  .buzzer-button:not(:disabled):focus-visible {
+  outline: 3px solid var(--vhs-paper) !important;
+  outline-offset: 6px;
+}
+
+html[data-participant-theme="vhs"] body.buzzer-play-page .vhs-theme-shell .buzzer-vhs-game-meta {
+  display: block !important;
+  width: min(100%, 645px);
+  max-width: 100%;
+  min-width: 0;
+  margin: 8px auto 0;
+  overflow: hidden;
+  color: var(--vhs-muted);
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 1.25;
+  letter-spacing: 0.055em;
+  text-align: center;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
 html[data-participant-theme="vhs"] body.buzzer-play-page .vhs-theme-shell .buzzer-button:disabled {
   opacity: 0.42;
   filter: grayscale(0.55) !important;
+}
+
+html[data-participant-theme="vhs"] body.buzzer-play-page .vhs-theme-shell
+  .buzzer-button.is-buzzed:disabled {
+  cursor: default;
+  opacity: 1;
+  filter: none !important;
+}
+
+html[data-participant-theme="vhs"] body.buzzer-play-page .vhs-theme-shell
+  #returnToLobbyActions[hidden],
+html[data-participant-theme="vhs"] body.buzzer-play-page .vhs-theme-shell
+  #returnToLobbyActions.d-none {
+  display: none !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html[data-participant-theme="vhs"] body.buzzer-play-page .vhs-theme-shell .buzzer-button {
+    transition: none !important;
+  }
 }
 
 html[data-participant-theme="vhs"] body:is(.host-points-play-page, .wann-war-das-play-page) .vhs-theme-shell .metric strong,
@@ -4970,6 +8132,442 @@ html[data-participant-theme="vhs"] body:is(.host-points-play-page, .wann-war-das
 html[data-participant-theme="vhs"] body.wer-weiss-mehr-play-page .vhs-theme-shell .scorebox strong {
   color: var(--vhs-paper) !important;
   font-variant-numeric: tabular-nums;
+}
+
+html[data-participant-theme="vhs"] body.host-points-play-page .vhs-theme-shell {
+  width: min(100%, 980px);
+}
+
+html[data-participant-theme="vhs"] body.host-points-play-page .points-shell,
+html[data-participant-theme="vhs"] body.host-points-play-page .points-card {
+  width: 100%;
+  min-width: 0;
+}
+
+html[data-participant-theme="vhs"] body.host-points-play-page .points-card {
+  display: grid;
+  justify-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+html[data-participant-theme="vhs"] body.host-points-play-page :is(
+  .host-points-summary,
+  #connectionStatus,
+  #statusText
+) {
+  display: none !important;
+}
+
+html[data-participant-theme="vhs"] body.host-points-play-page .qa-score-widget .host-points-score-box {
+  display: block !important;
+}
+
+html[data-participant-theme="vhs"] body.host-points-play-page :is(#waitingArea, #gameArea) {
+  width: 100%;
+  min-width: 0;
+}
+
+html[data-participant-theme="vhs"] body.host-points-play-page .host-points-stage {
+  display: grid;
+  justify-items: center;
+  width: min(100%, 520px);
+  min-width: 0;
+  margin-inline: auto;
+}
+
+html[data-participant-theme="vhs"] body.host-points-play-page .host-points-vhs-game-meta {
+  display: block !important;
+  width: min(100%, 420px);
+  margin: 0 auto 12px;
+  overflow: hidden;
+  color: var(--vhs-muted);
+  font: 700 12px/1.25 "Courier New", monospace;
+  letter-spacing: 0.12em;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+html[data-participant-theme="vhs"] body.host-points-play-page .host-points-round-box {
+  display: grid;
+  justify-items: center;
+  width: min(100%, 420px) !important;
+  padding: 18px 20px !important;
+  border: 1px solid rgba(216, 216, 209, 0.35) !important;
+  border-radius: 0 !important;
+  background: rgba(40, 47, 44, 0.42) !important;
+  box-shadow: none !important;
+}
+
+html[data-participant-theme="vhs"] body.host-points-play-page .host-points-round-box .small {
+  color: var(--vhs-muted) !important;
+  font: 700 11px/1.2 "Courier New", monospace;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+html[data-participant-theme="vhs"] body.host-points-play-page .host-points-round-box #roundNumber {
+  margin-top: 4px;
+  color: var(--vhs-paper) !important;
+  font-variant-numeric: tabular-nums;
+}
+
+html[data-participant-theme="vhs"] body.host-points-play-page .qa-score-widget .host-points-score-amount {
+  min-width: 4.5ch;
+  color: var(--vhs-answer-text);
+  text-align: right;
+  font-size: 13px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+
+html[data-participant-theme="vhs"] body.host-points-play-page .qa-score-widget .host-points-score-unit {
+  color: var(--vhs-answer-text);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+@media (max-width: 430px) {
+  html[data-participant-theme="vhs"] body.host-points-play-page .host-points-stage,
+  html[data-participant-theme="vhs"] body.host-points-play-page .host-points-vhs-game-meta,
+  html[data-participant-theme="vhs"] body.host-points-play-page .host-points-round-box {
+    width: 100% !important;
+  }
+}
+
+html[data-participant-theme="vhs"] body.wann-war-das-play-page .vhs-theme-shell {
+  width: min(100%, 980px);
+}
+
+html[data-participant-theme="vhs"] body.wann-war-das-play-page .game-shell,
+html[data-participant-theme="vhs"] body.wann-war-das-play-page .game-card,
+html[data-participant-theme="vhs"] body.wann-war-das-play-page #questionArea {
+  width: 100%;
+  min-width: 0;
+}
+
+html[data-participant-theme="vhs"] body.wann-war-das-play-page .game-card {
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+html[data-participant-theme="vhs"] body.wann-war-das-play-page :is(
+  .wann-war-das-type-label,
+  .wann-war-das-summary > .metric
+) {
+  display: none !important;
+}
+
+html[data-participant-theme="vhs"] body.wann-war-das-play-page .qa-score-widget .wann-war-das-score-total {
+  display: none !important;
+}
+
+html[data-participant-theme="vhs"] body.wann-war-das-play-page .qa-score-widget .wann-war-das-score-box {
+  display: block !important;
+}
+
+html[data-participant-theme="vhs"] body.wann-war-das-play-page .wann-war-das-summary {
+  justify-content: center !important;
+  width: 100%;
+}
+
+html[data-participant-theme="vhs"] body.wann-war-das-play-page .wann-war-das-meta {
+  display: grid;
+  justify-items: center;
+  width: min(100%, 760px);
+  min-width: 0;
+  text-align: center;
+}
+
+html[data-participant-theme="vhs"] body.wann-war-das-play-page .wann-war-das-game-line {
+  display: grid;
+  justify-items: center;
+  gap: 5px;
+  width: 100%;
+  min-width: 0;
+  text-align: center;
+}
+
+html[data-participant-theme="vhs"] body.wann-war-das-play-page .wann-war-das-game-line h1 {
+  width: 100%;
+  min-width: 0;
+  margin: 0 !important;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+html[data-participant-theme="vhs"] body.wann-war-das-play-page
+  .wann-war-das-game-line .session-game-number {
+  display: block !important;
+  width: auto !important;
+  max-width: 100%;
+  margin: 0 !important;
+  color: var(--vhs-muted) !important;
+  font: 700 12px/1.2 "Courier New", monospace !important;
+  letter-spacing: 0.14em;
+  text-align: center;
+  text-transform: uppercase;
+  opacity: 1;
+}
+
+html[data-participant-theme="vhs"] body.wann-war-das-play-page .wann-war-das-round-meta {
+  width: 100%;
+  margin-top: 6px;
+  color: var(--vhs-muted) !important;
+  font: 700 11px/1.2 "Courier New", monospace;
+  letter-spacing: 0.14em;
+  text-align: center;
+  text-transform: uppercase;
+}
+
+html[data-participant-theme="vhs"] body.wann-war-das-play-page .qa-score-widget
+  #wannWarDasScoreRows .score-box__row {
+  padding: 7px 0 !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  outline: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+html[data-participant-theme="vhs"] body.wann-war-das-play-page .qa-score-widget
+  #wannWarDasScoreRows .vhs-points-column .score-box__row:not(:last-child) {
+  border-bottom: 1px dashed rgba(216, 216, 209, 0.22) !important;
+}
+
+html[data-participant-theme="vhs"] body.wann-war-das-play-page #questionArea {
+  display: grid;
+  justify-items: center;
+  gap: 18px;
+}
+
+html[data-participant-theme="vhs"] body.wann-war-das-play-page #questionArea.d-none {
+  display: none !important;
+}
+
+html[data-participant-theme="vhs"] body.wann-war-das-play-page #questionText {
+  width: min(100%, 760px);
+  margin: 0;
+  color: var(--vhs-paper);
+  text-align: center;
+  line-height: 1.2;
+  overflow-wrap: anywhere;
+}
+
+html[data-participant-theme="vhs"] body.wann-war-das-play-page .wann-war-das-current-points {
+  display: inline-grid;
+  justify-items: center;
+  width: max-content !important;
+  min-width: 116px !important;
+  margin: 0 !important;
+  padding: 9px 16px !important;
+  border: 1px solid rgba(216, 216, 209, 0.28) !important;
+  border-radius: 0 !important;
+  background: rgba(40, 47, 44, 0.4) !important;
+  box-shadow: none !important;
+}
+
+html[data-participant-theme="vhs"] body.wann-war-das-play-page .wann-war-das-current-points .small {
+  color: var(--vhs-muted) !important;
+  font: 700 10px/1.2 "Courier New", monospace;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+html[data-participant-theme="vhs"] body.wann-war-das-play-page .wann-war-das-current-points #pointsText {
+  color: var(--vhs-paper);
+  font-size: 20px;
+  font-variant-numeric: tabular-nums;
+}
+
+html[data-participant-theme="vhs"] body.wann-war-das-play-page .wann-war-das-tolerance {
+  --tolerance-progress: 0;
+  --tolerance-inset: 50%;
+  --tolerance-tick-count: 1;
+  --tolerance-transition-duration: 1s;
+  box-sizing: border-box;
+  width: min(100%, 760px);
+  min-width: 0;
+  padding: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(216, 216, 209, 0.35) transparent;
+}
+
+html[data-participant-theme="vhs"] body.wann-war-das-play-page .wann-war-das-tolerance__timer {
+  position: relative;
+  width: max(100%, calc(var(--tolerance-tick-count) * 42px));
+  height: 5px;
+  overflow: hidden;
+  background: rgba(216, 216, 209, 0.14);
+}
+
+html[data-participant-theme="vhs"] body.wann-war-das-play-page .wann-war-das-tolerance__fill {
+  position: absolute;
+  inset: 0;
+  width: 100% !important;
+  height: 100%;
+  clip-path: inset(0 var(--tolerance-inset) 0 var(--tolerance-inset));
+  transform: none !important;
+  transform-origin: center;
+  transition: clip-path var(--tolerance-transition-duration) linear;
+}
+
+html[data-participant-theme="vhs"] body.wann-war-das-play-page .wann-war-das-tolerance.is-syncing
+  .wann-war-das-tolerance__fill {
+  transition: none;
+}
+
+html[data-participant-theme="vhs"] body.wann-war-das-play-page .wann-war-das-tolerance__ticks {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(42px, 1fr);
+  grid-auto-rows: 42px;
+  align-items: stretch;
+  width: max(100%, calc(var(--tolerance-tick-count) * 42px));
+  min-width: 0;
+  padding: 8px 0;
+}
+
+html[data-participant-theme="vhs"] body.wann-war-das-play-page .wann-war-das-tolerance__tick {
+  box-sizing: border-box;
+  position: relative;
+  z-index: 0;
+  isolation: isolate;
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 42px;
+  min-height: 42px;
+  padding: 0 8px;
+  border-left: 1px solid rgba(216, 216, 209, 0.28);
+  color: var(--vhs-muted);
+  background: rgba(40, 47, 44, 0.28);
+  font: 700 12px/1 "Courier New", monospace;
+  font-variant-numeric: tabular-nums;
+  transition: background 0.18s ease, color 0.18s ease;
+}
+
+html[data-participant-theme="vhs"] body.wann-war-das-play-page .wann-war-das-tolerance__tick::before {
+  content: "";
+  position: absolute;
+  inset: 0 3px;
+  z-index: -1;
+  background: transparent;
+  pointer-events: none;
+}
+
+html[data-participant-theme="vhs"] body.wann-war-das-play-page .wann-war-das-tolerance__tick:last-child {
+  border-right: 1px solid rgba(216, 216, 209, 0.28);
+}
+
+html[data-participant-theme="vhs"] body.wann-war-das-play-page .wann-war-das-tolerance__tick.is-active {
+  color: var(--vhs-ink);
+  background: rgba(40, 47, 44, 0.28);
+}
+
+html[data-participant-theme="vhs"] body.wann-war-das-play-page .wann-war-das-tolerance__tick.is-active::before {
+  background: var(--vhs-paper);
+}
+
+html[data-participant-theme="vhs"] body.wann-war-das-play-page .wann-war-das-tolerance__tick.is-center {
+  font-weight: 1000;
+}
+
+html[data-participant-theme="vhs"] body.wann-war-das-play-page #answerForm {
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) minmax(138px, 170px);
+  align-items: stretch;
+  gap: 10px;
+  width: min(100%, 480px);
+  margin: 0;
+}
+
+html[data-participant-theme="vhs"] body.wann-war-das-play-page
+  #answerForm > [class*="col-"] {
+  width: 100%;
+  max-width: none;
+  min-width: 0;
+  padding: 0;
+}
+
+html[data-participant-theme="vhs"] body.wann-war-das-play-page #answerInput {
+  box-sizing: border-box;
+  display: block;
+  width: 100%;
+  height: 54px;
+  min-height: 54px;
+  padding-block: 0;
+  padding-inline: 16px;
+  border: 1px solid rgba(216, 216, 209, 0.48);
+  border-radius: 0;
+  background: rgba(40, 47, 44, 0.54);
+  color: var(--vhs-paper);
+  box-shadow: none;
+  line-height: 52px;
+}
+
+html[data-participant-theme="vhs"] body.wann-war-das-play-page #answerInput::placeholder {
+  color: var(--vhs-muted);
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 52px;
+  opacity: 0.8;
+}
+
+html[data-participant-theme="vhs"] body.wann-war-das-play-page #submitBtn {
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  min-width: 138px;
+  height: 54px;
+  min-height: 54px;
+  padding: 0 18px !important;
+  line-height: 1;
+}
+
+html[data-participant-theme="vhs"] body.wann-war-das-play-page #answerInput:focus-visible {
+  border-color: var(--vhs-paper);
+  outline: 2px solid var(--vhs-paper);
+  outline-offset: 3px;
+}
+
+html[data-participant-theme="vhs"] body.wann-war-das-play-page #returnToLobbyActions[hidden],
+html[data-participant-theme="vhs"] body.wann-war-das-play-page #returnToLobbyActions.d-none {
+  display: none !important;
+}
+
+@media (max-width: 575px) {
+  html[data-participant-theme="vhs"] body.wann-war-das-play-page #questionArea {
+    gap: 14px;
+  }
+
+  html[data-participant-theme="vhs"] body.wann-war-das-play-page #answerForm {
+    grid-template-columns: minmax(0, 1fr) minmax(138px, 42%);
+  }
+
+  html[data-participant-theme="vhs"] body.wann-war-das-play-page #answerForm > [class*="col-"] {
+    width: 100%;
+    min-width: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html[data-participant-theme="vhs"] body.wann-war-das-play-page .wann-war-das-tolerance__fill,
+  html[data-participant-theme="vhs"] body.wann-war-das-play-page .wann-war-das-tolerance__tick {
+    transition: none;
+  }
 }
 
 html[data-participant-theme="vhs"] body.wann-war-das-play-page .vhs-theme-shell #revealArea,
@@ -4981,7 +8579,137 @@ html[data-participant-theme="vhs"] body.wer-weiss-mehr-play-page .vhs-theme-shel
   color: var(--vhs-answer-text) !important;
 }
 
-html[data-participant-theme="vhs"] body.wer-weiss-mehr-play-page .vhs-theme-shell :is(.player-pill, .tile, .scorebox) {
+html[data-participant-theme="vhs"] body.wann-war-das-play-page .vhs-theme-shell
+  #revealArea.wann-war-das-reveal {
+  display: grid;
+  gap: 0;
+  width: min(100%, 760px);
+  min-width: 0;
+  margin: 18px auto 0 !important;
+  padding: 0 !important;
+  overflow: hidden;
+  border: 1px solid rgba(216, 216, 209, 0.32) !important;
+  background: rgba(40, 47, 44, 0.48) !important;
+  text-align: center;
+}
+
+html[data-participant-theme="vhs"] body.wann-war-das-play-page .vhs-theme-shell
+  #revealArea.wann-war-das-reveal.d-none {
+  display: none !important;
+}
+
+html[data-participant-theme="vhs"] body.wann-war-das-play-page
+  .wann-war-das-reveal__hero {
+  display: grid;
+  justify-items: center;
+  gap: 7px;
+  padding: clamp(24px, 5vw, 42px) clamp(16px, 4vw, 34px);
+  border-bottom: 1px dashed rgba(216, 216, 209, 0.28);
+}
+
+html[data-participant-theme="vhs"] body.wann-war-das-play-page
+  .wann-war-das-reveal__kicker,
+html[data-participant-theme="vhs"] body.wann-war-das-play-page
+  .wann-war-das-reveal__metric > span,
+html[data-participant-theme="vhs"] body.wann-war-das-play-page
+  .wann-war-das-reveal__explanation > span {
+  color: var(--vhs-muted);
+  font: 700 10px/1.2 "Courier New", monospace;
+  letter-spacing: 0.14em;
+}
+
+html[data-participant-theme="vhs"] body.wann-war-das-play-page
+  .wann-war-das-reveal__hero h2 {
+  margin: 0;
+  color: var(--vhs-muted);
+  font: 700 clamp(14px, 2vw, 18px)/1.2 "Courier New", monospace;
+  letter-spacing: 0.12em;
+}
+
+html[data-participant-theme="vhs"] body.wann-war-das-play-page
+  .wann-war-das-reveal__answer {
+  max-width: 100%;
+  color: var(--vhs-paper);
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: clamp(48px, 10vw, 86px);
+  font-weight: 1000;
+  line-height: 0.95;
+  overflow-wrap: anywhere;
+  font-variant-numeric: tabular-nums;
+}
+
+html[data-participant-theme="vhs"] body.wann-war-das-play-page
+  .wann-war-das-reveal__metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+html[data-participant-theme="vhs"] body.wann-war-das-play-page
+  .wann-war-das-reveal__metric {
+  display: grid;
+  align-content: center;
+  gap: 7px;
+  min-width: 0;
+  padding: 16px 12px;
+  border-right: 1px dashed rgba(216, 216, 209, 0.24);
+}
+
+html[data-participant-theme="vhs"] body.wann-war-das-play-page
+  .wann-war-das-reveal__metric:last-child {
+  border-right: 0;
+}
+
+html[data-participant-theme="vhs"] body.wann-war-das-play-page
+  .wann-war-das-reveal__metric strong {
+  min-width: 0;
+  color: var(--vhs-answer-text);
+  font-size: clamp(17px, 3vw, 25px);
+  font-weight: 800;
+  line-height: 1.1;
+  overflow-wrap: anywhere;
+  font-variant-numeric: tabular-nums;
+}
+
+html[data-participant-theme="vhs"] body.wann-war-das-play-page
+  .wann-war-das-reveal__explanation {
+  display: grid;
+  gap: 9px;
+  padding: 18px clamp(16px, 4vw, 34px);
+  border-top: 1px dashed rgba(216, 216, 209, 0.28);
+  color: var(--vhs-answer-text);
+  text-align: left;
+}
+
+html[data-participant-theme="vhs"] body.wann-war-das-play-page
+  .wann-war-das-reveal__explanation:has(#explanationText:empty) {
+  display: none;
+}
+
+html[data-participant-theme="vhs"] body.wann-war-das-play-page #explanationText {
+  color: var(--vhs-answer-text);
+  font-size: clamp(15px, 2vw, 19px);
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 575px) {
+  html[data-participant-theme="vhs"] body.wann-war-das-play-page
+    .wann-war-das-reveal__metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  html[data-participant-theme="vhs"] body.wann-war-das-play-page
+    .wann-war-das-reveal__metric:nth-child(2) {
+    border-right: 0;
+  }
+
+  html[data-participant-theme="vhs"] body.wann-war-das-play-page
+    .wann-war-das-reveal__metric:nth-child(-n + 2) {
+    border-bottom: 1px dashed rgba(216, 216, 209, 0.24);
+  }
+}
+
+html[data-participant-theme="vhs"] body.wer-weiss-mehr-play-page .vhs-theme-shell :is(.player-pill, .scorebox) {
   border: 1px solid rgba(216, 216, 209, 0.42) !important;
   border-radius: 0 !important;
   background: rgba(40, 47, 44, 0.5) !important;
@@ -4989,9 +8717,258 @@ html[data-participant-theme="vhs"] body.wer-weiss-mehr-play-page .vhs-theme-shel
   box-shadow: none !important;
 }
 
-html[data-participant-theme="vhs"] body.wer-weiss-mehr-play-page .vhs-theme-shell .tile.revealed {
-  border-color: var(--vhs-paper) !important;
+html[data-participant-theme="vhs"] body.wer-weiss-mehr-play-page .vhs-theme-shell
+  :is(.wwm-game-type-label, .player-pill) {
+  display: none !important;
+}
+
+html[data-participant-theme="vhs"] body.wer-weiss-mehr-play-page .vhs-theme-shell {
+  min-height: min(92vh, 820px);
+}
+
+html[data-participant-theme="vhs"] body.wer-weiss-mehr-play-page .vhs-theme-shell
+  .wwm-header {
+  justify-content: center;
+  width: 100%;
+  max-width: 820px;
+  margin: 24px auto 12px;
+}
+
+html[data-participant-theme="vhs"] body.wer-weiss-mehr-play-page .vhs-theme-shell
+  .wwm-header > div:first-child {
+  width: min(100%, 760px);
+  min-width: 0;
+  text-align: center !important;
+}
+
+html[data-participant-theme="vhs"] body.wer-weiss-mehr-play-page .vhs-theme-shell
+  .wwm-page {
+  --wwm-tile-height: 48px;
+  --wwm-tile-row-gap: 7px;
+  --wwm-tile-column-gap: 26px;
+  --wwm-tile-min-width: 132px;
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+  padding: 0 !important;
+}
+
+html[data-participant-theme="vhs"] body.wer-weiss-mehr-play-page .vhs-theme-shell
+  .wwm-card {
+  display: grid;
+  grid-template-rows: auto auto minmax(0, auto) auto auto auto;
+  align-content: start;
+  box-sizing: border-box;
+  width: min(100%, 820px);
+  min-width: 0;
+  min-height: 0;
+  margin: 0 auto;
+  padding: 18px 0 0 !important;
+}
+
+html[data-participant-theme="vhs"] body.wer-weiss-mehr-play-page .vhs-theme-shell
+  .wwm-card .status-text {
+  margin-bottom: 9px;
+  color: var(--vhs-muted);
+  font: 700 11px/1.25 "Courier New", Courier, monospace;
+  letter-spacing: 0.13em;
+}
+
+html[data-participant-theme="vhs"] body.wer-weiss-mehr-play-page .vhs-theme-shell
+  .wwm-card .question-text {
+  max-width: 100%;
+  margin: 0 0 16px !important;
   color: var(--vhs-paper) !important;
+  font-size: clamp(24px, 3.2vw, 38px);
+  line-height: 1.08;
+  text-align: left !important;
+}
+
+html[data-participant-theme="vhs"] body.wer-weiss-mehr-play-page .vhs-theme-shell
+  .wwm-target-grid {
+  display: grid;
+  grid-template-rows: repeat(var(--wwm-tile-rows, 1), var(--wwm-tile-height));
+  grid-template-columns: repeat(var(--wwm-tile-columns, 1), minmax(0, 1fr));
+  grid-auto-flow: column;
+  align-content: start;
+  width: 100%;
+  min-width: 0;
+  height: auto;
+  max-height: none;
+  margin: 0 0 18px;
+  padding: 0;
+  overflow: visible;
+  row-gap: var(--wwm-tile-row-gap);
+  column-gap: var(--wwm-tile-column-gap);
+  scrollbar-color: var(--vhs-muted) transparent;
+  scrollbar-width: thin;
+}
+
+html[data-participant-theme="vhs"] body.wer-weiss-mehr-play-page .vhs-theme-shell
+  .wwm-target-grid[data-single-column="true"] {
+  width: min(100%, 420px);
+  justify-self: center;
+}
+
+html[data-participant-theme="vhs"] body.wer-weiss-mehr-play-page .vhs-theme-shell
+  .wwm-target-grid[data-scrollable="true"] {
+  height: var(--wwm-tile-viewport-height);
+  max-height: var(--wwm-tile-viewport-height);
+  padding-right: 4px;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+html[data-participant-theme="vhs"] body.wer-weiss-mehr-play-page .vhs-theme-shell
+  .wwm-target-grid .tile {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  height: var(--wwm-tile-height);
+  min-height: var(--wwm-tile-height);
+  margin: 0;
+  padding: 4px 8px !important;
+  overflow: hidden;
+  border: 1px solid rgba(216, 216, 209, 0.48) !important;
+  border-radius: 0 !important;
+  background: rgba(233, 223, 202, 0.9) !important;
+  color: var(--vhs-ink) !important;
+  box-shadow: none !important;
+  font: 900 clamp(12px, 1.05vw, 15px)/1.1 Arial, Helvetica, sans-serif !important;
+  overflow-wrap: anywhere;
+  text-align: center;
+}
+
+html[data-participant-theme="vhs"] body.wer-weiss-mehr-play-page .vhs-theme-shell
+  .wwm-target-grid .tile.hidden {
+  border-style: dashed !important;
+  background: rgba(25, 31, 29, 0.5) !important;
+  color: var(--vhs-muted) !important;
+  font-size: 18px !important;
+}
+
+html[data-participant-theme="vhs"] body.wer-weiss-mehr-play-page .vhs-theme-shell
+  .wwm-target-grid .tile.revealed {
+  border-color: var(--vhs-paper) !important;
+  background: rgba(233, 223, 202, 0.92) !important;
+  color: var(--vhs-ink) !important;
+}
+
+html[data-participant-theme="vhs"] body.wer-weiss-mehr-play-page .vhs-theme-shell
+  .wwm-answer-area {
+  box-sizing: border-box;
+  width: min(100%, 680px);
+  min-width: 0;
+  margin: 0 auto;
+  padding: 15px 0 0 !important;
+  border: 0 !important;
+  border-top: 1px dashed rgba(216, 216, 209, 0.32) !important;
+  background: transparent !important;
+}
+
+html[data-participant-theme="vhs"] body.wer-weiss-mehr-play-page .vhs-theme-shell
+  .wwm-answer-label {
+  margin: 0 0 8px;
+  color: var(--vhs-muted) !important;
+  font: 700 11px/1.25 "Courier New", Courier, monospace;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+html[data-participant-theme="vhs"] body.wer-weiss-mehr-play-page .vhs-theme-shell
+  .wwm-answer-controls {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) max-content;
+  align-items: stretch;
+  gap: 12px;
+  width: 100%;
+  min-width: 0;
+}
+
+html[data-participant-theme="vhs"] body.wer-weiss-mehr-play-page .vhs-theme-shell
+  .wwm-answer-input {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  min-height: 50px;
+  margin: 0;
+  padding: 12px 15px;
+  border: 1px solid rgba(216, 216, 209, 0.5) !important;
+  border-radius: 0 !important;
+  background: rgba(25, 31, 29, 0.72) !important;
+  color: var(--vhs-paper) !important;
+  box-shadow: none !important;
+  font: 800 17px/1.2 Arial, Helvetica, sans-serif !important;
+}
+
+html[data-participant-theme="vhs"] body.wer-weiss-mehr-play-page .vhs-theme-shell
+  .wwm-answer-input:focus-visible {
+  border-color: var(--vhs-paper) !important;
+  outline: 2px solid var(--vhs-paper) !important;
+  outline-offset: 3px;
+  box-shadow: 7px 7px 0 rgba(0, 0, 0, 0.22) !important;
+}
+
+html[data-participant-theme="vhs"] body.wer-weiss-mehr-play-page .vhs-theme-shell
+  .wwm-submit-button {
+  min-height: 50px;
+  background: var(--vhs-paper) !important;
+  color: var(--vhs-ink) !important;
+}
+
+html[data-participant-theme="vhs"] body.wer-weiss-mehr-play-page .vhs-theme-shell
+  .wwm-submit-button:disabled {
+  cursor: not-allowed;
+  border-color: rgba(216, 216, 209, 0.22) !important;
+  background: rgba(40, 47, 44, 0.48) !important;
+  color: rgba(216, 216, 209, 0.45) !important;
+  box-shadow: none !important;
+  opacity: 1;
+  transform: none !important;
+}
+
+@media (min-width: 1001px) {
+  html[data-participant-theme="vhs"] body.wer-weiss-mehr-play-page
+    .vhs-theme-shell:has(.qa-score-widget:not(.is-collapsed))
+    .wwm-page {
+    padding-right: clamp(230px, 25vw, 290px) !important;
+  }
+}
+
+@media (max-width: 700px) {
+  html[data-participant-theme="vhs"] body.wer-weiss-mehr-play-page .vhs-theme-shell
+    .wwm-page {
+    --wwm-tile-height: 44px;
+    --wwm-tile-row-gap: 6px;
+    --wwm-tile-column-gap: 18px;
+    --wwm-tile-min-width: 116px;
+  }
+
+  html[data-participant-theme="vhs"] body.wer-weiss-mehr-play-page .vhs-theme-shell
+    .wwm-header {
+    margin-top: 16px;
+  }
+
+  html[data-participant-theme="vhs"] body.wer-weiss-mehr-play-page .vhs-theme-shell
+    .wwm-card {
+    padding-top: 10px !important;
+  }
+
+  html[data-participant-theme="vhs"] body.wer-weiss-mehr-play-page .vhs-theme-shell
+    .wwm-answer-controls {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 9px;
+  }
+
+  html[data-participant-theme="vhs"] body.wer-weiss-mehr-play-page .vhs-theme-shell
+    .wwm-submit-button {
+    width: 100%;
+    min-width: 0;
+  }
 }
 
 html[data-participant-theme="vhs"] body.wer-weiss-mehr-play-page .vhs-theme-shell .timer-box {
@@ -5255,6 +9232,527 @@ html[data-participant-theme="vhs"] body.participant-result-page .vhs-theme-shell
   box-shadow: none !important;
 }
 
+/* Black Jack participant result: final signal, personal data and set tape log. */
+html[data-participant-theme="vhs"] body.blackjack-result-page {
+  overflow-x: hidden;
+  background: var(--vhs-ink) !important;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-result-page .vhs-theme-shell
+  .blackjack-standard-copy {
+  display: none !important;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-result-page .vhs-theme-shell
+  .blackjack-vhs-copy {
+  display: inline !important;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-result-page .vhs-theme-shell
+  .blackjack-vhs-result {
+  width: 100%;
+  max-width: 1180px;
+  min-width: 0;
+  margin: 0 auto !important;
+  padding-inline: clamp(14px, 3vw, 34px) !important;
+  background: transparent !important;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-result-page .vhs-theme-shell
+  :is(.blackjack-vhs-result-header, .result-main, .result-footer) > .container {
+  width: 100% !important;
+  max-width: none !important;
+  min-width: 0;
+  padding-inline: 0 !important;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-result-page .vhs-theme-shell
+  .blackjack-vhs-result-header {
+  padding: 16px 0 14px !important;
+  border-bottom: 1px dashed rgba(216, 216, 209, 0.28) !important;
+  background: transparent !important;
+  backdrop-filter: none !important;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-result-page .vhs-theme-shell
+  .blackjack-vhs-result-header .header-content {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) max-content;
+  align-items: end;
+  gap: 20px;
+  min-width: 0;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-result-page .vhs-theme-shell
+  .blackjack-vhs-result-header .quiz-title {
+  margin: 0;
+  color: var(--vhs-paper) !important;
+  font-family: "VCR OSD Mono", "Courier New", monospace !important;
+  font-size: clamp(22px, 4vw, 38px) !important;
+  font-style: normal;
+  font-weight: 900;
+  line-height: 1;
+  overflow-wrap: anywhere;
+  text-transform: uppercase;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-result-page .vhs-theme-shell
+  .blackjack-vhs-result-header .quiz-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  margin-top: 10px;
+  color: var(--vhs-answer-text) !important;
+  font: 700 10px/1.3 "Courier New", Courier, monospace !important;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-result-page .vhs-theme-shell
+  .blackjack-vhs-result-header :is(.brand-logo i, .meta-item i) {
+  display: none !important;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-result-page .vhs-theme-shell
+  .blackjack-vhs-result-header .brand-logo {
+  color: var(--vhs-answer-text) !important;
+  font: 700 11px/1.2 "Courier New", Courier, monospace !important;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-result-page .vhs-theme-shell
+  .result-main {
+  padding: clamp(28px, 5vw, 56px) 0 !important;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-result-page .vhs-theme-shell
+  .result-main > .container > .row {
+  margin-inline: 0 !important;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-result-page .vhs-theme-shell
+  .result-main .row > * {
+  min-width: 0;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-result-page .vhs-theme-shell
+  .blackjack-vhs-result-hero {
+  padding: 0 !important;
+  overflow: hidden;
+  border: 1px solid rgba(216, 216, 209, 0.42) !important;
+  border-radius: 0 !important;
+  background: rgba(40, 47, 44, 0.42) !important;
+  box-shadow: none !important;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-result-page .vhs-theme-shell
+  .blackjack-vhs-result-hero::before,
+html[data-participant-theme="vhs"] body.blackjack-result-page .vhs-theme-shell
+  .blackjack-vhs-result-hero::after {
+  content: none !important;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-result-page .vhs-theme-shell
+  .blackjack-vhs-result-hero > .row {
+  display: grid;
+  grid-template-columns: minmax(220px, 0.72fr) minmax(0, 1.55fr);
+  gap: 0;
+  margin: 0 !important;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-result-page .vhs-theme-shell
+  .blackjack-vhs-result-hero > .row > [class*="col-"] {
+  width: 100%;
+  max-width: none;
+  padding: 0 !important;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-result-page .vhs-theme-shell
+  .blackjack-vhs-result-total {
+  display: grid !important;
+  place-items: center;
+  width: 100% !important;
+  min-height: 260px;
+  height: 100% !important;
+  margin: 0 !important;
+  padding: 28px 18px !important;
+  border: 0 !important;
+  border-right: 1px dashed rgba(216, 216, 209, 0.3) !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-result-page .vhs-theme-shell
+  .blackjack-vhs-result-total .score-inner {
+  position: static;
+  display: grid;
+  justify-items: center;
+  gap: 10px;
+  width: 100%;
+  transform: none;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-result-page .vhs-theme-shell
+  .blackjack-vhs-result-total .score-value {
+  max-width: 100%;
+  color: var(--vhs-paper) !important;
+  font-family: "VCR OSD Mono", "Courier New", monospace !important;
+  font-size: clamp(72px, 12vw, 126px) !important;
+  font-style: normal;
+  font-weight: 900;
+  font-variant-numeric: tabular-nums;
+  line-height: 0.82;
+  overflow-wrap: anywhere;
+  text-align: center;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-result-page .vhs-theme-shell
+  .blackjack-vhs-result-total .score-label {
+  color: var(--vhs-answer-text) !important;
+  font: 700 11px/1.3 "Courier New", Courier, monospace !important;
+  letter-spacing: 0.13em;
+  text-align: center;
+  text-transform: uppercase;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-result-page .vhs-theme-shell
+  .blackjack-vhs-result-total .score-status {
+  margin-top: 6px;
+  padding: 7px 10px;
+  border: 1px solid var(--vhs-orange) !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  color: var(--vhs-paper) !important;
+  font: 800 11px/1.2 "Courier New", Courier, monospace !important;
+  letter-spacing: 0.09em;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-result-page .vhs-theme-shell
+  .blackjack-vhs-result-total .target-ring {
+  display: none !important;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-result-page .vhs-theme-shell
+  .blackjack-vhs-personal-summary {
+  display: grid;
+  align-content: center;
+  min-height: 260px;
+  padding: clamp(24px, 4vw, 44px) !important;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-result-page .vhs-theme-shell
+  .blackjack-vhs-personal-summary > h2 {
+  margin: 0 0 22px;
+  color: var(--vhs-answer-text) !important;
+  font: 700 12px/1.35 "Courier New", Courier, monospace !important;
+  letter-spacing: 0.12em;
+  overflow-wrap: anywhere;
+  text-transform: uppercase;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-result-page .vhs-theme-shell
+  .blackjack-vhs-result-metrics {
+  display: grid !important;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0 !important;
+  min-width: 0;
+  border-block: 1px solid rgba(216, 216, 209, 0.3);
+}
+
+html[data-participant-theme="vhs"] body.blackjack-result-page .vhs-theme-shell
+  .blackjack-vhs-result-metric {
+  display: grid !important;
+  min-width: 0;
+  min-height: 92px;
+  padding: 14px 10px !important;
+  border: 0 !important;
+  border-right: 1px dashed rgba(216, 216, 209, 0.24) !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  text-align: center;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-result-page .vhs-theme-shell
+  .blackjack-vhs-result-metric:last-child {
+  border-right: 0 !important;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-result-page .vhs-theme-shell
+  .blackjack-vhs-result-metric .stat-icon {
+  display: none !important;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-result-page .vhs-theme-shell
+  .blackjack-vhs-result-metric .stat-content {
+  display: grid;
+  align-content: center;
+  justify-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-result-page .vhs-theme-shell
+  .blackjack-vhs-result-metric .stat-value {
+  color: var(--vhs-paper) !important;
+  font-family: "VCR OSD Mono", "Courier New", monospace !important;
+  font-size: clamp(24px, 4vw, 34px) !important;
+  font-weight: 900;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  overflow-wrap: anywhere;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-result-page .vhs-theme-shell
+  .blackjack-vhs-result-metric .stat-label {
+  color: var(--vhs-answer-text) !important;
+  font: 700 9px/1.25 "Courier New", Courier, monospace !important;
+  letter-spacing: 0.08em;
+  overflow-wrap: anywhere;
+  text-transform: uppercase;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-result-page .vhs-theme-shell
+  .blackjack-vhs-set-log-wrap {
+  display: block !important;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-result-page .vhs-theme-shell
+  .blackjack-vhs-set-log {
+  width: 100%;
+  min-width: 0;
+  border-block: 1px solid rgba(216, 216, 209, 0.4);
+  background: rgba(40, 47, 44, 0.3);
+}
+
+html[data-participant-theme="vhs"] body.blackjack-result-page .vhs-theme-shell
+  .blackjack-vhs-set-log-heading {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) max-content;
+  align-items: end;
+  gap: 16px;
+  padding: 15px 18px;
+  border-bottom: 1px dashed rgba(216, 216, 209, 0.26);
+}
+
+html[data-participant-theme="vhs"] body.blackjack-result-page .vhs-theme-shell
+  .blackjack-vhs-set-log-heading :is(p, h2) {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-result-page .vhs-theme-shell
+  .blackjack-vhs-set-log-heading p {
+  color: var(--vhs-answer-text) !important;
+  font: 700 10px/1.25 "Courier New", Courier, monospace !important;
+  letter-spacing: 0.11em;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-result-page .vhs-theme-shell
+  .blackjack-vhs-set-log-heading h2 {
+  color: var(--vhs-paper) !important;
+  font-family: "VCR OSD Mono", "Courier New", monospace !important;
+  font-size: clamp(20px, 3vw, 28px) !important;
+  font-weight: 900;
+  letter-spacing: 0.04em;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-result-page .vhs-theme-shell
+  .blackjack-vhs-set-log-rows {
+  max-height: min(42vh, 360px);
+  overflow-y: auto;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-result-page .vhs-theme-shell
+  .blackjack-vhs-set-log-row {
+  display: grid;
+  grid-template-columns: 96px minmax(0, 1fr) minmax(70px, max-content);
+  align-items: center;
+  gap: 16px;
+  min-width: 0;
+  min-height: 54px;
+  padding: 10px 18px;
+  border-bottom: 1px dashed rgba(216, 216, 209, 0.2);
+  color: var(--vhs-answer-text);
+}
+
+html[data-participant-theme="vhs"] body.blackjack-result-page .vhs-theme-shell
+  .blackjack-vhs-set-log-row:last-child {
+  border-bottom: 0;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-result-page .vhs-theme-shell
+  .blackjack-vhs-set-log-row.is-busted {
+  padding-left: 15px;
+  border-left: 3px solid var(--vhs-orange);
+}
+
+html[data-participant-theme="vhs"] body.blackjack-result-page .vhs-theme-shell
+  :is(.blackjack-vhs-set-log-index, .blackjack-vhs-set-log-status) {
+  min-width: 0;
+  font: 700 11px/1.3 "Courier New", Courier, monospace;
+  letter-spacing: 0.08em;
+  overflow-wrap: anywhere;
+  text-transform: uppercase;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-result-page .vhs-theme-shell
+  .blackjack-vhs-set-log-row.is-busted .blackjack-vhs-set-log-status {
+  color: var(--vhs-orange);
+}
+
+html[data-participant-theme="vhs"] body.blackjack-result-page .vhs-theme-shell
+  .blackjack-vhs-set-log-points {
+  color: var(--vhs-paper) !important;
+  font: 900 18px/1 "VCR OSD Mono", "Courier New", monospace !important;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-result-page .vhs-theme-shell
+  .blackjack-vhs-set-log-empty {
+  margin: 0;
+  padding: 18px;
+  color: var(--vhs-answer-text);
+  font: 700 11px/1.3 "Courier New", Courier, monospace;
+  letter-spacing: 0.09em;
+  text-align: center;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-result-page .vhs-theme-shell
+  :is(.blackjack-vhs-question-log, .blackjack-vhs-leaderboard) {
+  overflow: hidden;
+  border: 1px solid rgba(216, 216, 209, 0.36) !important;
+  border-radius: 0 !important;
+  background: rgba(40, 47, 44, 0.38) !important;
+  box-shadow: none !important;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-result-page .vhs-theme-shell
+  :is(.blackjack-vhs-question-log, .blackjack-vhs-leaderboard)
+  :is(.card-header, .card-body) {
+  border-radius: 0 !important;
+  background: transparent !important;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-result-page .vhs-theme-shell
+  :is(.blackjack-vhs-question-log, .blackjack-vhs-leaderboard) .card-title > svg {
+  display: none !important;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-result-page .vhs-theme-shell
+  .blackjack-vhs-question-log .answer-item {
+  margin: 0 !important;
+  padding: 18px !important;
+  border: 0 !important;
+  border-bottom: 1px dashed rgba(216, 216, 209, 0.24) !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-result-page .vhs-theme-shell
+  .blackjack-vhs-question-log .answer-item:last-child {
+  border-bottom: 0 !important;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-result-page .vhs-theme-shell
+  .blackjack-vhs-question-log :is(.question-content, .comparison-display, .explanation) {
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-result-page .vhs-theme-shell
+  .blackjack-vhs-leaderboard .leaderboard-item {
+  margin: 0 !important;
+  border: 0 !important;
+  border-bottom: 1px dashed rgba(216, 216, 209, 0.22) !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-result-page .vhs-theme-shell
+  .blackjack-vhs-leaderboard .leaderboard-item:last-child {
+  border-bottom: 0 !important;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-result-page .vhs-theme-shell
+  :is(.blackjack-vhs-rules, .blackjack-vhs-insights) {
+  display: none !important;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-result-page .vhs-theme-shell
+  .blackjack-vhs-result-actions {
+  display: grid;
+  gap: 10px;
+  padding-top: 18px;
+  border-top: 1px dashed rgba(216, 216, 209, 0.3);
+}
+
+html[data-participant-theme="vhs"] body.blackjack-result-page .vhs-theme-shell
+  .blackjack-vhs-result-actions .btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  width: 100%;
+  min-width: 0;
+  min-height: 48px;
+  margin: 0 !important;
+  padding: 12px 16px !important;
+  border: 1px solid var(--vhs-paper) !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  color: var(--vhs-paper) !important;
+  font: 800 12px/1.2 "Courier New", Courier, monospace !important;
+  letter-spacing: 0.08em;
+  box-shadow: none !important;
+  text-transform: uppercase;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-result-page .vhs-theme-shell
+  .blackjack-vhs-result-actions .btn-primary {
+  background: var(--vhs-paper) !important;
+  color: var(--vhs-ink) !important;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-result-page .vhs-theme-shell
+  .blackjack-vhs-result-actions .btn:not(:disabled):hover,
+html[data-participant-theme="vhs"] body.blackjack-result-page .vhs-theme-shell
+  .blackjack-vhs-result-actions .btn:not(:disabled):focus-visible {
+  border-color: var(--vhs-orange) !important;
+  outline: 2px solid var(--vhs-orange);
+  outline-offset: 3px;
+  transform: translate(-2px, -2px);
+}
+
+html[data-participant-theme="vhs"] body.blackjack-result-page .vhs-theme-shell
+  .blackjack-vhs-result-actions .btn:not(:disabled):active {
+  transform: translate(1px, 1px);
+}
+
+html[data-participant-theme="vhs"] body.blackjack-result-page .vhs-theme-shell
+  .blackjack-vhs-result-actions .btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+html[data-participant-theme="vhs"] body.blackjack-result-page .vhs-theme-shell
+  .result-footer {
+  margin-top: auto;
+  padding: 18px 0 !important;
+  border-top: 1px dashed rgba(216, 216, 209, 0.22) !important;
+  background: transparent !important;
+  color: var(--vhs-answer-text) !important;
+  font: 700 10px/1.4 "Courier New", Courier, monospace !important;
+  letter-spacing: 0.06em;
+  box-shadow: none !important;
+}
+
 @media (max-width: 1000px) {
   html[data-participant-theme="vhs"] body:is(
     .assign-play-page,
@@ -5288,6 +9786,18 @@ html[data-participant-theme="vhs"] body.participant-result-page .vhs-theme-shell
     max-width: 100%;
     overflow-x: auto;
   }
+
+  html[data-participant-theme="vhs"] body.blackjack-result-page .vhs-theme-shell
+    .blackjack-vhs-result-hero > .row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  html[data-participant-theme="vhs"] body.blackjack-result-page .vhs-theme-shell
+    .blackjack-vhs-result-total {
+    min-height: 220px;
+    border-right: 0 !important;
+    border-bottom: 1px dashed rgba(216, 216, 209, 0.3) !important;
+  }
 }
 
 @media (max-width: 640px) {
@@ -5319,5 +9829,87 @@ html[data-participant-theme="vhs"] body.participant-result-page .vhs-theme-shell
 
   html[data-participant-theme="vhs"] body.participant-result-page .vhs-theme-shell :is(.performance-card, .card, .answer-item) {
     padding-inline: 14px !important;
+  }
+
+  html[data-participant-theme="vhs"] body.blackjack-result-page .vhs-theme-shell
+    .blackjack-vhs-result {
+    padding-inline: 12px !important;
+  }
+
+  html[data-participant-theme="vhs"] body.blackjack-result-page .vhs-theme-shell
+    .blackjack-vhs-result-header .header-content {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 12px;
+  }
+
+  html[data-participant-theme="vhs"] body.blackjack-result-page .vhs-theme-shell
+    .blackjack-vhs-result-total {
+    min-height: 188px;
+    padding: 22px 12px !important;
+  }
+
+  html[data-participant-theme="vhs"] body.blackjack-result-page .vhs-theme-shell
+    .blackjack-vhs-result-total .score-value {
+    font-size: clamp(62px, 24vw, 92px) !important;
+  }
+
+  html[data-participant-theme="vhs"] body.blackjack-result-page .vhs-theme-shell
+    .blackjack-vhs-personal-summary {
+    min-height: 0;
+    padding: 22px 14px !important;
+  }
+
+  html[data-participant-theme="vhs"] body.blackjack-result-page .vhs-theme-shell
+    .blackjack-vhs-result-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  html[data-participant-theme="vhs"] body.blackjack-result-page .vhs-theme-shell
+    .blackjack-vhs-result-metric:nth-child(2) {
+    border-right: 0 !important;
+  }
+
+  html[data-participant-theme="vhs"] body.blackjack-result-page .vhs-theme-shell
+    .blackjack-vhs-result-metric:nth-child(-n+2) {
+    border-bottom: 1px dashed rgba(216, 216, 209, 0.24) !important;
+  }
+
+  html[data-participant-theme="vhs"] body.blackjack-result-page .vhs-theme-shell
+    .blackjack-vhs-set-log-heading {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 6px;
+    padding-inline: 12px;
+  }
+
+  html[data-participant-theme="vhs"] body.blackjack-result-page .vhs-theme-shell
+    .blackjack-vhs-set-log-row {
+    grid-template-columns: 72px minmax(0, 1fr) minmax(54px, max-content);
+    gap: 8px;
+    padding-inline: 12px;
+  }
+
+  html[data-participant-theme="vhs"] body.blackjack-result-page .vhs-theme-shell
+    .blackjack-vhs-set-log-row.is-busted {
+    padding-left: 9px;
+  }
+
+  html[data-participant-theme="vhs"] body.blackjack-result-page .vhs-theme-shell
+    :is(.blackjack-vhs-set-log-index, .blackjack-vhs-set-log-status) {
+    font-size: 9px;
+    letter-spacing: 0.04em;
+  }
+
+  html[data-participant-theme="vhs"] body.blackjack-result-page .vhs-theme-shell
+    .blackjack-vhs-set-log-points {
+    font-size: 15px !important;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html[data-participant-theme="vhs"] body.blackjack-result-page .vhs-theme-shell
+    :is(.answer-item, .blackjack-vhs-result-actions .btn) {
+    opacity: 1 !important;
+    transition: none !important;
+    transform: none !important;
   }
 }

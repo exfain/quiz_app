@@ -114,6 +114,8 @@ let hubWs = null;
 let hubReconnectTimer = null;
 let hostSessionEnded = false;
 let liveResponsePollTimer = null;
+const correctionDrafts = new Map();
+let correctionDraftContext = null;
 
 function socketUrl() {
     const scheme = window.location.protocol === 'https:' ? 'wss' : 'ws';
@@ -502,6 +504,7 @@ function applyCorrection(responseId, targetAnswerId) {
             if (!response.ok || !payload.success) {
                 throw new Error(payload.error || payload.message || 'Die Korrektur konnte nicht uebernommen werden.');
             }
+            correctionDrafts.delete(responseId);
             renderState(payload);
         })
         .catch(error => {
@@ -631,70 +634,101 @@ function renderQuestionArea(s) {
     document.getElementById('clearSetBtn')?.addEventListener('click', clearSetSelection);
     document.getElementById('finishSetBtn')?.addEventListener('click', finishSet);
 }
-/*
-function renderResponsesLegacy(s) {
-    const responses = s.responses || [];
-    if (!responses.length) {
-        document.getElementById('responsesBox').innerHTML = 'Noch keine Antworten.';
-        return;
-    }
-    const options = (s.target_answers || []).map(answer =>
-        `<option value="${answer.id}">${escapeHtml(answer.text)}${answer.revealed ? ' (aufgedeckt)' : ''}</option>`
-    ).join('');
-    document.getElementById('responsesBox').innerHTML = `
+function ensureResponseTable(responsesBox) {
+    let tbody = responsesBox.querySelector('[data-response-rows]');
+    if (tbody) return tbody;
+    responsesBox.innerHTML = `
         <div class="table-responsive"><table class="table align-middle">
             <thead><tr><th>Teilnehmer</th><th>Antwort</th><th>Runde/Zeit</th><th>Auto</th><th>Zielantwort</th><th>Status</th><th>Korrektur</th></tr></thead>
-            <tbody>${responses.map(response => {
-                const canCorrect = response.id && !response.is_correct && ['round_active', 'review'].includes(s.phase);
-                return `
-                <tr>
-                    <td>${escapeHtml(response.participant_name)}</td>
-                    <td>${escapeHtml(response.answer_text || (response.has_pending_input ? '(Pending Input)' : ''))}</td>
-                    <td><div>Runde ${escapeHtml(response.round_number || s.current_round || '-')}</div><div class="small text-muted">${escapeHtml(formatTime(response.submitted_at))}</div></td>
-                    <td><span class="badge bg-${responseBadgeClass(response.auto_status)}">${escapeHtml(responseStatusLabel(response.auto_status))}</span></td>
-                    <td>${escapeHtml(response.matched_answer_text || '-')}</td>
-                    <td>${response.id && !response.is_correct ? `<div class="d-flex gap-2"><select class="form-select form-select-sm correction-target" data-response-id="${response.id}">${options}</select><button class="btn btn-sm btn-outline-primary correction-btn" data-response-id="${response.id}">Übernehmen</button></div>` : ''}</td>
-                </tr>
-            `}).join('')}</tbody>
+            <tbody data-response-rows></tbody>
         </table></div>
     `;
-    document.querySelectorAll('.correction-btn').forEach(btn => btn.addEventListener('click', () => {
-        const select = document.querySelector(`.correction-target[data-response-id="${btn.dataset.responseId}"]`);
-        applyCorrection(parseInt(btn.dataset.responseId), parseInt(select.value));
-    }));
+    tbody = responsesBox.querySelector('[data-response-rows]');
+    if (!responsesBox.dataset.correctionEventsBound) {
+        responsesBox.addEventListener('change', event => {
+            const select = event.target.closest('.correction-target');
+            if (!select) return;
+            correctionDrafts.set(Number(select.dataset.responseId), Number(select.value));
+        });
+        responsesBox.addEventListener('click', event => {
+            const button = event.target.closest('.correction-btn');
+            if (!button) return;
+            const responseId = Number(button.dataset.responseId);
+            const select = responsesBox.querySelector(`.correction-target[data-response-id="${responseId}"]`);
+            applyCorrection(responseId, Number(select.value));
+        });
+        responsesBox.dataset.correctionEventsBound = 'true';
+    }
+    return tbody;
 }
-*/
+
+function renderResponseRow(row, response, s, options) {
+    const canCorrect = response.id && !response.is_correct && ['round_active', 'review'].includes(s.phase);
+    row.innerHTML = `
+        <td>${escapeHtml(response.participant_name)}</td>
+        <td>${escapeHtml(response.answer_text || '')}</td>
+        <td><div>Runde ${escapeHtml(response.round_number || s.current_round || '-')}</div><div class="small text-muted">${escapeHtml(formatTime(response.submitted_at))}</div></td>
+        <td><span class="badge bg-${responseBadgeClass(response.auto_status)}">${escapeHtml(responseStatusLabel(response.auto_status))}</span></td>
+        <td>${escapeHtml(response.matched_answer_text || '-')}</td>
+        <td><span class="badge bg-${response.is_manual_override ? 'primary' : (response.id ? 'info' : 'secondary')}">${escapeHtml(response.is_manual_override ? 'manuell korrigiert' : (response.id ? 'eingeloggt / bewertet' : 'pending'))}</span></td>
+        <td>${canCorrect && options ? `<div class="d-flex gap-2"><select class="form-select form-select-sm correction-target" data-response-id="${response.id}">${options}</select><button class="btn btn-sm btn-outline-primary correction-btn" data-response-id="${response.id}">Uebernehmen</button></div>` : ''}</td>
+    `;
+    const responseId = Number(response.id);
+    const select = row.querySelector('.correction-target');
+    const selectedTargetId = correctionDrafts.has(responseId)
+        ? correctionDrafts.get(responseId)
+        : response.matched_answer_id;
+    if (select && selectedTargetId !== null && selectedTargetId !== undefined) {
+        select.value = String(selectedTargetId);
+    }
+}
+
 function renderResponses(s) {
     const responses = s.responses || [];
+    const responsesBox = document.getElementById('responsesBox');
+    const nextDraftContext = `${s.question?.id || ''}:${s.current_round || 0}`;
+    if (correctionDraftContext !== nextDraftContext) {
+        correctionDrafts.clear();
+        correctionDraftContext = nextDraftContext;
+    }
     if (!responses.length) {
-        document.getElementById('responsesBox').innerHTML = 'Noch keine Antworten.';
+        correctionDrafts.clear();
+        responsesBox.replaceChildren(document.createTextNode('Noch keine Antworten.'));
         return;
     }
     const options = (s.target_answers || []).map(answer =>
         `<option value="${answer.id}">${escapeHtml(answer.text)}${answer.revealed ? ' (aufgedeckt)' : ''}</option>`
     ).join('');
-    document.getElementById('responsesBox').innerHTML = `
-        <div class="table-responsive"><table class="table align-middle">
-            <thead><tr><th>Teilnehmer</th><th>Antwort</th><th>Runde/Zeit</th><th>Auto</th><th>Zielantwort</th><th>Status</th><th>Korrektur</th></tr></thead>
-            <tbody>${responses.map(response => {
-                const canCorrect = response.id && !response.is_correct && ['round_active', 'review'].includes(s.phase);
-                return `
-                <tr>
-                    <td>${escapeHtml(response.participant_name)}</td>
-                    <td>${escapeHtml(response.answer_text || '')}</td>
-                    <td><div>Runde ${escapeHtml(response.round_number || s.current_round || '-')}</div><div class="small text-muted">${escapeHtml(formatTime(response.submitted_at))}</div></td>
-                    <td><span class="badge bg-${responseBadgeClass(response.auto_status)}">${escapeHtml(responseStatusLabel(response.auto_status))}</span></td>
-                    <td>${escapeHtml(response.matched_answer_text || '-')}</td>
-                    <td><span class="badge bg-${response.is_manual_override ? 'primary' : (response.id ? 'info' : 'secondary')}">${escapeHtml(response.is_manual_override ? 'manuell korrigiert' : (response.id ? 'eingeloggt / bewertet' : 'pending'))}</span></td>
-                    <td>${canCorrect && options ? `<div class="d-flex gap-2"><select class="form-select form-select-sm correction-target" data-response-id="${response.id}">${options}</select><button class="btn btn-sm btn-outline-primary correction-btn" data-response-id="${response.id}">Uebernehmen</button></div>` : ''}</td>
-                </tr>
-            `}).join('')}</tbody>
-        </table></div>
-    `;
-    document.querySelectorAll('.correction-btn').forEach(btn => btn.addEventListener('click', () => {
-        const select = document.querySelector(`.correction-target[data-response-id="${btn.dataset.responseId}"]`);
-        applyCorrection(parseInt(btn.dataset.responseId), parseInt(select.value));
-    }));
+    const tbody = ensureResponseTable(responsesBox);
+    const responseRows = new Map(
+        Array.from(tbody.querySelectorAll('tr[data-response-id]'))
+            .map(row => [Number(row.dataset.responseId), row])
+    );
+    const visibleResponseIds = new Set(responses.map(response => Number(response.id)));
+    for (const responseId of correctionDrafts.keys()) {
+        if (!visibleResponseIds.has(responseId)) correctionDrafts.delete(responseId);
+    }
+
+    responses.forEach((response, index) => {
+        const responseId = Number(response.id);
+        const signature = JSON.stringify([response, s.phase, s.current_round, s.target_answers || []]);
+        let row = responseRows.get(responseId);
+        if (!row) {
+            row = document.createElement('tr');
+            row.dataset.responseId = String(responseId);
+            renderResponseRow(row, response, s, options);
+            row._serverSignature = signature;
+        } else if (!correctionDrafts.has(responseId) && row._serverSignature !== signature) {
+            renderResponseRow(row, response, s, options);
+            row._serverSignature = signature;
+        }
+        const currentRow = tbody.children[index];
+        if (currentRow !== row) tbody.insertBefore(row, currentRow || null);
+    });
+
+    responseRows.forEach((row, responseId) => {
+        if (!visibleResponseIds.has(responseId)) row.remove();
+    });
 }
 function renderParticipants(participants) {
     document.getElementById('participantsBox').innerHTML = participants.map(p => `

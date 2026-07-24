@@ -235,12 +235,13 @@ class ClueRushGameConsumer(AsyncWebsocketConsumer):
                 return
 
         # Update quiz with new question
-        await self.update_quiz_question(quiz, question, custom_time_limit)
+        question_started_at = await self.update_quiz_question(quiz, question, custom_time_limit)
         
         # Determine the effective time limit for this send (do NOT persist on the question)
         effective_time_limit = custom_time_limit if custom_time_limit is not None else question.time_limit
 
         # Broadcast new question to all participants
+        server_now = timezone.now().isoformat()
         await self.channel_layer.group_send(
             self.room_group_name,
             {
@@ -251,6 +252,8 @@ class ClueRushGameConsumer(AsyncWebsocketConsumer):
                     'time_limit': effective_time_limit,
                     'points': 0 if is_tutorial_round else question.points,
                     'is_tutorial_round': is_tutorial_round,
+                    'question_started_at': question_started_at,
+                    'server_now': server_now,
                 }
             }
         )
@@ -264,6 +267,8 @@ class ClueRushGameConsumer(AsyncWebsocketConsumer):
                 'time_limit': effective_time_limit,
                 'points': 0 if is_tutorial_round else question.points,
                 'is_tutorial_round': is_tutorial_round,
+                'question_started_at': question_started_at,
+                'server_now': server_now,
             }
         })
 
@@ -1010,6 +1015,7 @@ class ClueRushGameConsumer(AsyncWebsocketConsumer):
         quiz.current_clue = None
         quiz.clue_start_time = None
         quiz.save()
+        return started_at.isoformat()
 
     @database_sync_to_async
     def clear_current_question(self, quiz_id):
@@ -1304,24 +1310,41 @@ class ClueRushGameConsumer(AsyncWebsocketConsumer):
             quiz.current_clue = next_obj
             quiz.clue_start_time = clue_started_at
             runtime_duration = next_obj.duration
+            runtime_override = None
+            session = None
             if hasattr(quiz, 'session') and quiz.session:
                 session = quiz.session
                 if quiz.question_start_time and session.question_end_time:
                     override_seconds = int((session.question_end_time - quiz.question_start_time).total_seconds())
                     if override_seconds > 0:
                         runtime_duration = override_seconds
+                        runtime_override = override_seconds
                 session.current_clue_number = next_index + 1
                 session.is_clue_active = True
                 session.clue_end_time = clue_started_at + timezone.timedelta(seconds=runtime_duration)
                 session.save()
             quiz.save()
             has_next_clue = next_index < (len(clues) - 1)
+            if runtime_override is not None:
+                total_sequence_duration = runtime_override * max(len(clues) - 1, 0)
+                remaining_sequence_duration = runtime_override * max(len(clues) - next_index - 1, 0)
+            else:
+                total_sequence_duration = sum(max(0, int(clue.duration)) for clue in clues[:-1])
+                remaining_sequence_duration = sum(
+                    max(0, int(clue.duration))
+                    for clue in clues[next_index:-1]
+                )
+            sequence_end_time = clue_started_at + timezone.timedelta(seconds=remaining_sequence_duration)
             return {
                 'id': next_obj.id,
+                'question_id': quiz.current_question_id,
                 'order': next_index + 1,
                 'clue_text': next_obj.clue_text,
                 'duration': runtime_duration,
-                'end_time': session.clue_end_time.isoformat() if hasattr(quiz, 'session') and quiz.session and quiz.session.clue_end_time else None,
+                'end_time': session.clue_end_time.isoformat() if session and session.clue_end_time else None,
+                'sequence_end_time': sequence_end_time.isoformat(),
+                'sequence_duration': total_sequence_duration,
+                'server_now': timezone.now().isoformat(),
                 'has_next_clue': has_next_clue,
             }
         except ClueRushGame.DoesNotExist:
@@ -1500,6 +1523,8 @@ class ClueRushGameConsumer(AsyncWebsocketConsumer):
                 'time_limit': current_question.time_limit,
                 'points': 0 if is_tutorial_round else current_question.points,
                 'is_tutorial_round': is_tutorial_round,
+                'question_started_at': quiz.question_start_time.isoformat() if quiz.question_start_time else None,
+                'server_now': timezone.now().isoformat(),
             }
 
             clues_qs = list(current_question.clues.order_by('order', 'id'))
@@ -1517,13 +1542,45 @@ class ClueRushGameConsumer(AsyncWebsocketConsumer):
                 current_clue=current_clue,
                 current_clue_order=current_clue_order,
             )
+            current_index = max(revealed_count - 1, 0)
+            runtime_override = None
+            if session and quiz.question_start_time and session.question_end_time:
+                override_seconds = int((session.question_end_time - quiz.question_start_time).total_seconds())
+                if override_seconds > 0:
+                    runtime_override = override_seconds
+            if runtime_override is not None:
+                total_sequence_duration = runtime_override * max(len(clues_qs) - 1, 0)
+                future_sequence_duration = runtime_override * max(len(clues_qs) - current_index - 2, 0)
+            else:
+                total_sequence_duration = sum(max(0, int(clue.duration)) for clue in clues_qs[:-1])
+                future_sequence_duration = sum(
+                    max(0, int(clue.duration))
+                    for clue in clues_qs[current_index + 1:-1]
+                )
+            current_sequence_end_time = None
+            if current_clue and current_index < len(clues_qs) - 1 and session and session.clue_end_time:
+                current_sequence_end_time = (
+                    session.clue_end_time + timezone.timedelta(seconds=future_sequence_duration)
+                ).isoformat()
+            elif current_clue and quiz.clue_start_time:
+                current_sequence_end_time = quiz.clue_start_time.isoformat()
 
             for position, clue in enumerate(clues_qs[:revealed_count], start=1):
+                is_current_clue = position == revealed_count
                 revealed_clues.append({
                     'id': clue.id,
+                    'question_id': current_question.id,
                     'order': position,
                     'clue_text': clue.clue_text,
-                    'duration': clue.duration,
+                    'duration': runtime_override if runtime_override is not None else clue.duration,
+                    'end_time': (
+                        session.clue_end_time.isoformat()
+                        if is_current_clue and session and session.clue_end_time
+                        else None
+                    ),
+                    'sequence_end_time': current_sequence_end_time if is_current_clue else None,
+                    'sequence_duration': total_sequence_duration,
+                    'server_now': timezone.now().isoformat(),
                     'has_next_clue': position < len(clues_qs),
                 })
 

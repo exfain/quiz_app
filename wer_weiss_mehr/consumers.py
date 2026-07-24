@@ -162,7 +162,7 @@ class WerWeissMehrConsumer(AsyncWebsocketConsumer):
             play_tutorial,
             validate=False,
         )
-        await self.start_quiz_db()
+        await self.start_quiz_db(hub_session_code)
         tutorial_payload = await self.activate_tutorial_runtime_db(
             hub_session_code,
             bool(data.get('show_tutorial', False)),
@@ -369,9 +369,9 @@ class WerWeissMehrConsumer(AsyncWebsocketConsumer):
         return WerWeissMehrGame.objects.get(room_code=self.room_code)
 
     @database_sync_to_async
-    def start_quiz_db(self):
+    def start_quiz_db(self, hub_session_code=None):
         quiz = WerWeissMehrGame.objects.get(room_code=self.room_code)
-        quiz.start_quiz()
+        quiz.start_quiz(hub_session_code=hub_session_code)
         WerWeissMehrSession.objects.get_or_create(quiz=quiz)
 
     @database_sync_to_async

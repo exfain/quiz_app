@@ -147,6 +147,14 @@ class SortingLadderPendingSelectionTest(TransactionTestCase):
         self.assertIsNotNone(round_started)
         self.assertEqual(round_started['round']['question_id'], question.id)
         self.assertEqual(round_started['round']['round_number'], 2)
+        self.assertFalse(any(
+            message.get('type') in {
+                'question_rounds_complete',
+                'show_solution',
+                'question_ended',
+            }
+            for message in new_messages
+        ))
 
         submission = RoundSubmission.objects.get(
             quiz=self.quiz,
@@ -181,7 +189,7 @@ class SortingLadderPendingSelectionTest(TransactionTestCase):
             'answer_status': 'eingeloggt',
         }])
 
-    def test_host_early_end_question_evaluates_pending_final_round_selection(self):
+    def test_final_round_completion_waits_for_idempotent_host_reveal(self):
         """Frühes Fragenende in der letzten Runde wertet die vorhandene Auswahl vor dem Reveal aus."""
         question, items = self._create_question_with_items(
             [('Earlier', 1), ('Later', 2)],
@@ -201,8 +209,8 @@ class SortingLadderPendingSelectionTest(TransactionTestCase):
             (message for message in new_messages if message.get('type') == 'round_result'),
             None,
         )
-        question_ended = next(
-            (message for message in new_messages if message.get('type') == 'question_ended'),
+        rounds_complete = next(
+            (message for message in new_messages if message.get('type') == 'question_rounds_complete'),
             None,
         )
 
@@ -212,9 +220,14 @@ class SortingLadderPendingSelectionTest(TransactionTestCase):
         self.assertTrue(round_result['is_correct'])
         self.assertFalse(round_result['is_eliminated'])
         self.assertFalse(round_result['has_more_rounds'])
+        self.assertEqual(round_result['correct_order_ids'], [])
 
-        self.assertIsNotNone(question_ended)
-        self.assertEqual(question_ended['correct_order_ids'], [earlier.id, later.id])
+        self.assertIsNotNone(rounds_complete)
+        self.assertNotIn('correct_order_ids', rounds_complete)
+        self.assertFalse(any(
+            message.get('type') in {'question_ended', 'show_solution'}
+            for message in new_messages
+        ))
 
         submission = RoundSubmission.objects.get(
             quiz=self.quiz,
@@ -226,9 +239,104 @@ class SortingLadderPendingSelectionTest(TransactionTestCase):
         self.assertEqual(self.participant.rounds_survived, 1)
         self.assertFalse(self.participant.is_eliminated)
         self.quiz.refresh_from_db()
-        self.assertIsNone(self.quiz.current_question_id)
+        self.assertEqual(self.quiz.current_question_id, question.id)
         self.quiz.session.refresh_from_db()
         self.assertFalse(self.quiz.session.is_round_active)
+        self.assertEqual(
+            self.quiz.session.reveal_state,
+            SortingLadderSession.REVEAL_AWAITING,
+        )
+        awaiting_snapshot = async_to_sync(self.consumer.get_rejoin_snapshot)(
+            self.participant.name,
+            self.participant.hub_session_code,
+        )
+        self.assertEqual(
+            awaiting_snapshot['reveal_state'],
+            SortingLadderSession.REVEAL_AWAITING,
+        )
+        self.assertEqual(awaiting_snapshot['reveal_order_ids'], [])
+        self.assertEqual(
+            awaiting_snapshot['latest_round_result']['correct_order_ids'],
+            [],
+        )
+
+        reveal_start = len(self.consumer.channel_layer.sent)
+        async_to_sync(self.consumer.handle_admin_show_solution)({})
+        reveal_messages = [
+            message for _, message in self.consumer.channel_layer.sent[reveal_start:]
+        ]
+        self.assertEqual(
+            [
+                message['correct_order_ids']
+                for message in reveal_messages
+                if message.get('type') == 'show_solution'
+            ],
+            [[earlier.id, later.id]],
+        )
+
+        duplicate_start = len(self.consumer.channel_layer.sent)
+        async_to_sync(self.consumer.handle_admin_show_solution)({})
+        self.assertEqual(self.consumer.channel_layer.sent[duplicate_start:], [])
+
+        self.quiz.session.refresh_from_db()
+        self.assertEqual(
+            self.quiz.session.reveal_state,
+            SortingLadderSession.REVEAL_REVEALED,
+        )
+        revealed_snapshot = async_to_sync(self.consumer.get_rejoin_snapshot)(
+            self.participant.name,
+            self.participant.hub_session_code,
+        )
+        self.assertEqual(
+            revealed_snapshot['reveal_order_ids'],
+            [earlier.id, later.id],
+        )
+
+        clear_start = len(self.consumer.channel_layer.sent)
+        async_to_sync(self.consumer.handle_admin_end_question)({})
+        clear_messages = [
+            message for _, message in self.consumer.channel_layer.sent[clear_start:]
+        ]
+        self.assertEqual(
+            len([
+                message
+                for message in clear_messages
+                if message.get('type') == 'question_ended'
+            ]),
+            1,
+        )
+        self.quiz.refresh_from_db()
+        self.assertIsNone(self.quiz.current_question_id)
+
+    def test_set_cannot_complete_before_its_last_round(self):
+        question, items = self._create_question_with_items(
+            [('Small', 1), ('Medium', 2), ('Large', 3)],
+            starting_index=1,
+        )
+        self._set_live_round(question, [items[1], items[0], items[2]], current_round=1)
+
+        previous_count = len(self.consumer.channel_layer.sent)
+        async_to_sync(self.consumer.handle_admin_end_question)({})
+        new_messages = [
+            message for _, message in self.consumer.channel_layer.sent[previous_count:]
+        ]
+
+        self.assertFalse(any(
+            message.get('type') in {
+                'question_rounds_complete',
+                'show_solution',
+                'question_ended',
+            }
+            for message in new_messages
+        ))
+        self.quiz.refresh_from_db()
+        self.quiz.session.refresh_from_db()
+        self.assertEqual(self.quiz.current_question_id, question.id)
+        self.assertTrue(self.quiz.session.is_round_active)
+        self.assertEqual(
+            self.quiz.session.reveal_state,
+            SortingLadderSession.REVEAL_ACTIVE,
+        )
 
     def test_starting_next_question_clears_pending_selection_state(self):
         """Neue Fragen starten ohne Pending-Auswahl aus dem vorherigen Set."""
@@ -290,7 +398,10 @@ class SortingLadderPendingSelectionTest(TransactionTestCase):
             self.assertEqual(result['round_number'], round_number)
             self.assertTrue(result['is_correct'])
             self.assertFalse(result['is_eliminated'])
-            self.assertEqual(result['correct_order_ids'], ordered_ids)
+            expected_visible_order = (
+                ordered_ids if round_number < len(shuffled_ids) - 1 else []
+            )
+            self.assertEqual(result['correct_order_ids'], expected_visible_order)
 
             self.participant.refresh_from_db()
             self.assertFalse(self.participant.is_eliminated)
@@ -362,7 +473,8 @@ class SortingLadderPendingSelectionTest(TransactionTestCase):
         self.assertIsNotNone(result)
         self.assertFalse(result['is_correct'])
         self.assertTrue(result['is_eliminated'])
-        self.assertEqual(result['correct_order_ids'], [small.id, medium.id, items[2].id])
+        self.assertTrue(result['set_has_more_rounds'])
+        self.assertEqual(result['correct_order_ids'], [small.id, medium.id])
 
         submission = RoundSubmission.objects.get(
             quiz=self.quiz,
@@ -514,6 +626,268 @@ class SortingLadderScoreBoxTimingTemplateTests(TestCase):
         self.assertIn('this.setProgressHistory(pendingRoundResult.progress_history);', template_source)
 
 
+class SortingLadderVhsLayoutTemplateTests(TestCase):
+    def setUp(self):
+        base_dir = Path(__file__).resolve().parent.parent
+        self.template_source = (
+            base_dir / 'templates' / 'sorting_ladder' / 'play.html'
+        ).read_text(encoding='utf-8')
+        self.vhs_css = (
+            base_dir / 'static' / 'themes' / 'vhs' / 'vhs.css'
+        ).read_text(encoding='utf-8')
+        self.accessibility_source = (
+            base_dir / 'templates' / 'includes' / 'accessibility_widget.html'
+        ).read_text(encoding='utf-8')
+
+    def test_vhs_layout_keeps_runtime_hooks_and_internal_item_ids(self):
+        self.assertEqual(self.template_source.count('id="topicLayout"'), 1)
+        self.assertEqual(self.template_source.count('id="ladderContainer"'), 1)
+        self.assertEqual(self.template_source.count('id="itemPool"'), 1)
+        self.assertEqual(self.template_source.count("submitBtn.id = 'submitRoundBtn';"), 1)
+        self.assertIn(
+            "submit-answer vhs-action-button sorting-ladder-submit",
+            self.template_source,
+        )
+        self.assertIn("submitBtn.addEventListener('click', () => this.submitCurrentRound());", self.template_source)
+        self.assertIn('card.dataset.itemId = item.id;', self.template_source)
+        self.assertIn('<div class="option-key">${index + 1}</div>', self.template_source)
+
+    def test_vhs_cards_hide_only_the_visible_pool_number(self):
+        scope = (
+            'html[data-participant-theme="vhs"] '
+            'body.sorting-ladder-play-page .vhs-theme-shell'
+        )
+        self.assertIn(f'{scope}\n  #topicState .answer-card .option-key {{', self.vhs_css)
+        number_rule = self.vhs_css.split(
+            f'{scope}\n  #topicState .answer-card .option-key {{',
+            1,
+        )[1].split('}', 1)[0]
+        self.assertIn('display: none !important;', number_rule)
+        self.assertIn(
+            f'{scope}\n  #topicState .answer-card .option-text {{',
+            self.vhs_css,
+        )
+        self.assertIn(f'{scope}\n  #finalOrderState .final-order-item {{', self.vhs_css)
+        self.assertIn('background: rgba(233, 223, 202, 0.9) !important;', self.vhs_css)
+        self.assertIn('background: rgba(25, 31, 29, 0.72) !important;', self.vhs_css)
+
+    def test_vhs_reveal_uses_vertical_ladder_with_authoritative_end_labels(self):
+        scope = (
+            'html[data-participant-theme="vhs"] '
+            'body.sorting-ladder-play-page .vhs-theme-shell'
+        )
+        self.assertEqual(self.template_source.count('id="finalOrderItems"'), 1)
+        self.assertEqual(self.template_source.count('id="finalOrderUpperLabel"'), 1)
+        self.assertEqual(self.template_source.count('id="finalOrderLowerLabel"'), 1)
+        self.assertIn(
+            "upperLabelEl.textContent = this.currentQuestion?.upper_label || '';",
+            self.template_source,
+        )
+        self.assertIn(
+            "lowerLabelEl.textContent = this.currentQuestion?.lower_label || '';",
+            self.template_source,
+        )
+        self.assertIn(
+            'this.ladderItems.forEach((item, index) => {',
+            self.template_source,
+        )
+        self.assertIn(
+            f'{scope}\n  #finalOrderState .sorting-ladder-reveal-helper {{\n'
+            '  display: none !important;',
+            self.vhs_css,
+        )
+        self.assertIn(
+            f'{scope}\n  #finalOrderState .final-order-list {{\n'
+            '  display: grid !important;\n'
+            '  grid-template-columns: minmax(0, 1fr);',
+            self.vhs_css,
+        )
+        self.assertIn(
+            f'{scope}\n  #finalOrderState .final-order-arrow {{\n'
+            '  display: none !important;',
+            self.vhs_css,
+        )
+        self.assertIn('min-height: 58px;', self.vhs_css)
+        self.assertIn(
+            '#finalOrderState .sorting-ladder-reveal-label {\n'
+            '  display: block !important;',
+            self.vhs_css,
+        )
+
+    def test_vhs_layout_centers_labels_on_card_column_and_is_responsive(self):
+        scope = (
+            'html[data-participant-theme="vhs"] '
+            'body.sorting-ladder-play-page .vhs-theme-shell'
+        )
+        self.assertIn(
+            'grid-template-columns: minmax(0, 1fr) var(--sorting-ladder-triangle-width);',
+            self.vhs_css,
+        )
+        self.assertIn(
+            'grid-template-columns: repeat(2, minmax(0, 1fr));',
+            self.vhs_css,
+        )
+        self.assertIn(
+            '#topicState .pool-column {\n'
+            '  padding-inline-end: calc(',
+            self.vhs_css,
+        )
+        self.assertIn(
+            'var(--sorting-ladder-triangle-width) + var(--sorting-ladder-column-gap)',
+            self.vhs_css,
+        )
+        self.assertIn(f'{scope}\n  #topicState .topic-layout {{', self.vhs_css)
+        self.assertIn('width: min(100%, 760px);', self.vhs_css)
+        self.assertIn('@media (max-width: 760px)', self.vhs_css)
+        self.assertIn(
+            '.vhs-theme-shell:has(.qa-score-widget:not(.is-collapsed))\n'
+            '    #topicState .topic-layout',
+            self.vhs_css,
+        )
+        self.assertIn(
+            f'{scope}\n  #topicState .sorting-ladder-actions',
+            self.vhs_css,
+        )
+
+    def test_position_markers_use_card_and_gap_geometry(self):
+        self.assertIn('--sorting-ladder-card-height: 58px;', self.vhs_css)
+        self.assertIn('--sorting-ladder-row-gap: 16px;', self.vhs_css)
+        self.assertIn(
+            'padding-block: calc(\n'
+            '    (var(--sorting-ladder-triangle-width) + var(--sorting-ladder-row-gap)) / 2',
+            self.vhs_css,
+        )
+        self.assertIn(
+            'transform: translateY(calc(\n'
+            '    -50% - (var(--sorting-ladder-row-gap) / 2)',
+            self.vhs_css,
+        )
+        self.assertIn('#topicState .ladder-slot-row:last-child {', self.vhs_css)
+        self.assertIn(
+            '#topicState .triangle-container .number {',
+            self.vhs_css,
+        )
+        self.assertIn(
+            'font: 800 15px/1 "Courier New", Courier, monospace !important;',
+            self.vhs_css,
+        )
+
+    def test_submit_uses_shared_vhs_button_states(self):
+        self.assertIn(
+            'body.sorting-ladder-play-page .vhs-theme-shell #topicState '
+            '.vhs-action-button:not(:disabled):hover',
+            self.vhs_css,
+        )
+        self.assertIn(
+            'body.sorting-ladder-play-page .vhs-theme-shell #topicState '
+            '.vhs-action-button:not(:disabled):focus-visible',
+            self.vhs_css,
+        )
+        self.assertIn(
+            'body.sorting-ladder-play-page .vhs-theme-shell #topicState '
+            '.vhs-action-button:not(:disabled):active',
+            self.vhs_css,
+        )
+        self.assertIn(
+            '#topicState .sorting-ladder-submit:disabled',
+            self.vhs_css,
+        )
+        self.assertIn('hasPlacedCurrentRoundItem() {', self.template_source)
+        self.assertIn('updateSubmitAvailability() {', self.template_source)
+        self.assertIn('|| !this.hasPlacedCurrentRoundItem();', self.template_source)
+        self.assertIn('const hasPlacedRoundItem = this.hasPlacedCurrentRoundItem();', self.template_source)
+        self.assertGreaterEqual(self.template_source.count('this.updateSubmitAvailability();'), 2)
+
+    def test_logged_answer_keeps_one_stable_waiting_message(self):
+        self.assertNotIn(
+            'Warte darauf, dass der Host die nächste Runde startet.',
+            self.template_source,
+        )
+        self.assertGreaterEqual(
+            self.template_source.count(
+                "this.setInteractionLock(true, 'Warte auf die nächste Runde.');"
+            ),
+            3,
+        )
+        timer_match = re.search(
+            r"startPlayerTimer\(seconds\)\s*\{(?P<body>.*?)\n\s*\}\n\n\s*renderCurrentRound",
+            self.template_source,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(timer_match)
+        self.assertNotIn('setInteractionLock(true,', timer_match.group('body'))
+
+    def test_wait_banner_and_submit_align_to_compact_source_column(self):
+        self.assertIn(
+            '#topicState:not(.set-awaiting-reveal) #roundLockBanner {',
+            self.vhs_css,
+        )
+        self.assertIn('width: fit-content;', self.vhs_css)
+        self.assertIn('padding: 7px 12px !important;', self.vhs_css)
+        self.assertIn('font: 700 11px/1.3 "Courier New", Courier, monospace !important;', self.vhs_css)
+        self.assertIn(
+            'padding: 0\n'
+            '    calc(var(--sorting-ladder-triangle-width) + var(--sorting-ladder-column-gap))\n'
+            '    0 0 !important;',
+            self.vhs_css,
+        )
+
+    def test_dense_ladder_uses_shared_count_and_height_responsive_card_variables(self):
+        self.assertIn('--sorting-ladder-card-padding-block: 8px;', self.vhs_css)
+        self.assertIn(
+            '--sorting-ladder-card-font-size: clamp(12px, 1.1vw, 15px);',
+            self.vhs_css,
+        )
+        self.assertIn(
+            '#topicState:has(.topic-layout .ladder-slot-row:nth-child(n + 8)) {',
+            self.vhs_css,
+        )
+        self.assertIn('--sorting-ladder-card-height: 50px;', self.vhs_css)
+        self.assertIn('@media (max-height: 820px) and (min-width: 761px)', self.vhs_css)
+        self.assertIn(
+            'padding: var(--sorting-ladder-card-padding-block) 36px !important;',
+            self.vhs_css,
+        )
+        self.assertIn(
+            'padding: var(--sorting-ladder-card-padding-block) 12px !important;',
+            self.vhs_css,
+        )
+        self.assertGreaterEqual(
+            self.vhs_css.count('height: var(--sorting-ladder-card-height);'),
+            2,
+        )
+
+    def test_delete_control_timer_and_question_spacing_use_existing_vhs_system(self):
+        self.assertIn('#topicState .slot-clear-btn {', self.vhs_css)
+        self.assertIn('position: absolute;', self.vhs_css)
+        self.assertIn('top: 50%;', self.vhs_css)
+        self.assertIn('transform: translateY(-50%);', self.vhs_css)
+        self.assertIn(
+            "document.body.classList.contains('sorting-ladder-play-page')",
+            self.accessibility_source,
+        )
+        self.assertIn(
+            "getVisibleVhsElement('#topicState #playerTimeLeft')",
+            self.accessibility_source,
+        )
+        self.assertIn(
+            '#topicState .question-text .vhs-question-body {',
+            self.vhs_css,
+        )
+        self.assertIn(
+            '#topicState .round-indicators {',
+            self.vhs_css,
+        )
+        self.assertIn(
+            '#topicState .round-indicator.round-success {',
+            self.vhs_css,
+        )
+        self.assertIn(
+            '#topicState .round-indicator.round-fail {',
+            self.vhs_css,
+        )
+
+
 class SortingLadderRoundInteractionScopeTemplateTests(TestCase):
     def test_player_template_resets_round_state_for_new_question_and_ignores_stale_round_events(self):
         template_path = Path(__file__).resolve().parent.parent / 'templates' / 'sorting_ladder' / 'play.html'
@@ -524,6 +898,36 @@ class SortingLadderRoundInteractionScopeTemplateTests(TestCase):
         self.assertIn('this.latestResolvedRound = 0;', template_source)
         self.assertIn('if (data.question_id && this.currentQuestion?.id && Number(data.question_id) !== Number(this.currentQuestion.id)) {', template_source)
         self.assertIn('if (roundData?.question_id && this.currentQuestion?.id && Number(roundData.question_id) !== Number(this.currentQuestion.id)) {', template_source)
+
+    def test_set_completion_and_reveal_are_distinct_authoritative_events(self):
+        base_dir = Path(__file__).resolve().parent.parent
+        player_source = (
+            base_dir / 'templates' / 'sorting_ladder' / 'play.html'
+        ).read_text(encoding='utf-8')
+        monitor_source = (
+            base_dir / 'templates' / 'admin_dashboard' / 'sorting_ladder_monitor.html'
+        ).read_text(encoding='utf-8')
+
+        self.assertIn("case 'question_rounds_complete':", player_source)
+        self.assertIn("case 'show_solution':", player_source)
+        self.assertIn(
+            "'Warte darauf, dass der Host die Reihenfolge zeigt.'",
+            player_source,
+        )
+        self.assertIn("this.setPhase = 'awaiting_reveal';", player_source)
+        self.assertIn("this.setPhase = 'revealed';", player_source)
+        self.assertIn(
+            "if (this.setPhase && this.setPhase !== 'active') {",
+            player_source,
+        )
+        self.assertNotIn(
+            'Waiting for host to end and reveal this question...',
+            player_source,
+        )
+        self.assertIn('Reihenfolge zeigen', monitor_source)
+        self.assertIn("type: 'admin_show_solution'", monitor_source)
+        self.assertIn("this.onRoundsComplete();", monitor_source)
+        self.assertIn("this.onSolutionShown();", monitor_source)
 
     def test_round_result_ui_keeps_timer_running_after_logged_answer(self):
         """Die Round-Result-UI darf den lokalen Countdown nach dem Einloggen nicht stoppen."""
@@ -552,11 +956,53 @@ class SortingLadderRoundInteractionScopeTemplateTests(TestCase):
         self.assertIn("window.addEventListener('pointercancel'", template_source)
         self.assertIn('requestAnimationFrame(() => this.renderSortingPointerDrag())', template_source)
         self.assertIn('translate3d(${deltaX}px, ${deltaY}px, 0)', template_source)
-        self.assertIn('releasePointerCapture(drag.pointerId)', template_source)
+        self.assertIn('releasePointerCapture(pointerDrag.pointerId)', template_source)
         self.assertIn('transition: none;', template_source)
         self.assertIn('this.placeSortingItemAtPosition(drag.itemId, position);', template_source)
         self.assertIn('this.placeSortingItemAtPosition(droppedId, position);', template_source)
         self.assertIn("if (event.pointerType === 'mouse') return;", template_source)
+
+    def test_cancelled_drag_releases_transient_item_selection(self):
+        template_path = Path(__file__).resolve().parent.parent / 'templates' / 'sorting_ladder' / 'play.html'
+        template_source = template_path.read_text(encoding='utf-8')
+
+        self.assertIn('claimCurrentRoundDragItem(itemId) {', template_source)
+        self.assertIn('cleanupSortingDragState(itemId, element = null, pointerDrag = null) {', template_source)
+        self.assertIn('this.cleanupSortingDragState(id, card);', template_source)
+        self.assertIn('if (!this.hasPlacedCurrentRoundItem()) {', template_source)
+        self.assertIn('this.currentRoundItemId = null;', template_source)
+        self.assertIn('this.updateSubmitAvailability();', template_source)
+
+    def test_new_drag_replaces_only_an_unplaced_stale_selection(self):
+        template_path = Path(__file__).resolve().parent.parent / 'templates' / 'sorting_ladder' / 'play.html'
+        template_source = template_path.read_text(encoding='utf-8')
+        match = re.search(
+            r"claimCurrentRoundDragItem\(itemId\)\s*\{(?P<body>.*?)\n\s*\}\n\n\s*cleanupSortingDragState",
+            template_source,
+            re.DOTALL,
+        )
+
+        self.assertIsNotNone(match)
+        body = match.group('body')
+        self.assertIn('this.hasPlacedCurrentRoundItem()', body)
+        self.assertIn('Number(this.currentRoundItemId) !== Number(itemId)', body)
+        self.assertIn('this.currentRoundItemId = itemId;', body)
+
+    def test_pointer_cancel_and_stale_pointer_events_use_guarded_cleanup(self):
+        template_path = Path(__file__).resolve().parent.parent / 'templates' / 'sorting_ladder' / 'play.html'
+        template_source = template_path.read_text(encoding='utf-8')
+
+        self.assertIn(
+            'cancelHandler = (cancelEvent) => this.finishSortingPointerDrag(cancelEvent, false, drag);',
+            template_source,
+        )
+        self.assertIn('this.pointerDrag !== drag', template_source)
+        self.assertIn('event.pointerId !== drag.pointerId', template_source)
+        self.assertIn("window.removeEventListener('pointercancel', pointerDrag.cancelHandler);", template_source)
+        self.assertIn("window.removeEventListener('keydown', pointerDrag.escapeHandler);", template_source)
+        self.assertIn('releasePointerCapture(pointerDrag.pointerId)', template_source)
+        self.assertIn("if (keyEvent.key !== 'Escape' || this.pointerDrag !== drag) return;", template_source)
+        self.assertIn('this.cancelActiveSortingDrag();', template_source)
 
 
 class SortingLadderConsumerEventPayloadTests(TestCase):
@@ -582,6 +1028,7 @@ class SortingLadderConsumerEventPayloadTests(TestCase):
             'is_eliminated': False,
             'points': 20,
             'has_more_rounds': True,
+            'set_has_more_rounds': True,
             'per_question_rounds': 2,
             'correct_order_ids': [7, 8, 9],
             'progress_history': [],
@@ -596,7 +1043,9 @@ class SortingLadderConsumerEventPayloadTests(TestCase):
             'rounds_survived': 2,
             'is_eliminated': False,
             'points': 20,
+            'is_tutorial_round': False,
             'has_more_rounds': True,
+            'set_has_more_rounds': True,
             'per_question_rounds': 2,
             'correct_order_ids': [7, 8, 9],
             'progress_history': [],

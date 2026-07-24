@@ -181,6 +181,8 @@ def apply_manual_correction(quiz, response_id, target_answer_id, hub_session_cod
     ).filter(id=response_id, quiz=quiz).first()
     if not response:
         raise ValueError('Antwort wurde nicht gefunden.')
+    if hub_session_code is not None and response.participant.hub_session_code != hub_session_code:
+        raise ValueError('Diese Antwort gehoert nicht zur aktuellen Hub-Session.')
     if response.question_id != quiz.current_question_id or response.round_number != session.current_round:
         raise ValueError('Diese Antwort gehoert nicht zur aktuellen Review-Runde.')
     effective_hub_session = hub_session_code or response.participant.hub_session_code

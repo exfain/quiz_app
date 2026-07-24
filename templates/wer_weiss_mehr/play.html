@@ -3,14 +3,14 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Wer weiß mehr? - {{ quiz.room_code }}</title>
+    <title>{{ quiz.title }} - QuizMaster</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
 </head>
 <body class="wer-weiss-mehr-play-page">
-<main class="wwm-page">
+<main class="wwm-page" data-participant-name="{{ participant.name }}">
     <header class="wwm-header">
         <div>
-            <div class="text-muted small">Wer weiß mehr?</div>
+            <div class="wwm-game-type-label text-muted small">Wer weiß mehr?</div>
             <h1 class="qa-game-title-font">{{ quiz.title }}</h1>
             {% include 'includes/_session_game_number.html' with game_key='wer_weiss_mehr' room_code=quiz.room_code %}
         </div>
@@ -23,11 +23,13 @@
         <div id="statusText" class="status-text">Verbinde...</div>
         <div id="timerBox" class="timer-box d-none"><span id="timerValue">0</span>s</div>
         <h2 id="questionText" class="question-text"></h2>
-        <div id="tiles" class="tiles"></div>
-        <div id="answerArea" class="answer-area d-none">
-            <label class="form-label fw-semibold">Deine Antwort für diese Runde</label>
-            <input class="form-control form-control-lg" id="answerInput" autocomplete="off">
-            <button class="btn btn-primary btn-lg mt-3 w-100" id="submitBtn">Einloggen</button>
+        <div id="tiles" class="tiles wwm-target-grid" role="list" aria-label="Gesuchte Begriffe"></div>
+        <div id="answerArea" class="answer-area wwm-answer-area d-none">
+            <label class="form-label fw-semibold wwm-answer-label" for="answerInput">Deine Antwort für diese Runde</label>
+            <div class="wwm-answer-controls">
+                <input class="form-control form-control-lg wwm-answer-input" id="answerInput" autocomplete="off">
+                <button class="btn btn-primary btn-lg vhs-action-button wwm-submit-button" id="submitBtn">Einloggen</button>
+            </div>
         </div>
         <div id="messageBox" class="alert mt-4 d-none"></div>
         <div id="quizEndedState" class="end-screen d-none">
@@ -103,6 +105,7 @@ let reconnectTimer = null;
 let pollTimer = null;
 let hubWs = null;
 let lobbyReturnController = null;
+let tileLayoutFrame = null;
 
 function socketUrl() {
     const scheme = window.location.protocol === 'https:' ? 'wss' : 'ws';
@@ -295,8 +298,9 @@ function renderState(state) {
 
     document.getElementById('questionText').textContent = question.question_text;
     document.getElementById('tiles').innerHTML = question.tiles.map(tile => `
-        <div class="tile ${tile.revealed ? 'revealed' : 'hidden'}">${tile.revealed ? escapeHtml(tile.text) : '?'}</div>
+        <div class="tile ${tile.revealed ? 'revealed' : 'hidden'}" role="listitem" data-tile-position="${tile.position}">${tile.revealed ? escapeHtml(tile.text) : '?'}</div>
     `).join('');
+    scheduleTileLayout();
 
     if (gameEnded) {
         setStatus('Spiel beendet');
@@ -374,6 +378,64 @@ function stopTimer() {
     if (timerInterval) clearInterval(timerInterval);
     timerInterval = null;
     document.getElementById('timerBox').classList.add('d-none');
+}
+
+function scheduleTileLayout() {
+    if (tileLayoutFrame) cancelAnimationFrame(tileLayoutFrame);
+    tileLayoutFrame = requestAnimationFrame(() => {
+        tileLayoutFrame = null;
+        updateVhsTileLayout();
+    });
+}
+
+function updateVhsTileLayout() {
+    const tiles = document.getElementById('tiles');
+    const tileCount = tiles.children.length;
+    if (document.documentElement.dataset.participantTheme !== 'vhs' || !tileCount) {
+        tiles.style.removeProperty('--wwm-tile-rows');
+        tiles.style.removeProperty('--wwm-tile-columns');
+        tiles.style.removeProperty('--wwm-tile-viewport-height');
+        delete tiles.dataset.tileCount;
+        delete tiles.dataset.singleColumn;
+        delete tiles.dataset.scrollable;
+        return;
+    }
+
+    const styles = getComputedStyle(tiles);
+    const tileHeight = parseFloat(styles.getPropertyValue('--wwm-tile-height')) || 48;
+    const rowGap = parseFloat(styles.getPropertyValue('--wwm-tile-row-gap')) || 7;
+    const columnGap = parseFloat(styles.getPropertyValue('--wwm-tile-column-gap')) || 26;
+    const minTileWidth = parseFloat(styles.getPropertyValue('--wwm-tile-min-width')) || 132;
+    const answerArea = document.getElementById('answerArea');
+    const answerHeight = answerArea.classList.contains('d-none') ? 0 : answerArea.getBoundingClientRect().height;
+    const shell = tiles.closest('.vhs-theme-shell');
+    const shellBottom = shell ? shell.getBoundingClientRect().bottom - 58 : window.innerHeight - 58;
+    const usableBottom = Math.min(window.innerHeight - 58, shellBottom);
+    const availableHeight = Math.max(
+        tileHeight,
+        usableBottom - tiles.getBoundingClientRect().top - answerHeight - 28
+    );
+    const heightRows = Math.max(1, Math.floor((availableHeight + rowGap) / (tileHeight + rowGap)));
+    const availableWidth = tiles.parentElement?.clientWidth || tiles.clientWidth;
+    const maxColumns = Math.max(
+        1,
+        Math.floor((availableWidth + columnGap) / (minTileWidth + columnGap))
+    );
+    const rows = Math.min(tileCount, Math.max(heightRows, Math.ceil(tileCount / maxColumns)));
+    const columns = Math.ceil(tileCount / rows);
+    const contentHeight = (rows * tileHeight) + ((rows - 1) * rowGap);
+    const needsScroll = contentHeight > availableHeight + 2;
+
+    tiles.dataset.tileCount = String(tileCount);
+    tiles.dataset.singleColumn = columns === 1 ? 'true' : 'false';
+    tiles.dataset.scrollable = needsScroll ? 'true' : 'false';
+    tiles.style.setProperty('--wwm-tile-rows', String(rows));
+    tiles.style.setProperty('--wwm-tile-columns', String(columns));
+    if (needsScroll) {
+        tiles.style.setProperty('--wwm-tile-viewport-height', `${availableHeight}px`);
+    } else {
+        tiles.style.removeProperty('--wwm-tile-viewport-height');
+    }
 }
 
 function disableAnswerControls() {
@@ -479,6 +541,7 @@ lobbyReturnController = createHubLobbyReturnController({
     buttonId: 'wwmReturnToLobbyBtn',
 });
 showLobbyAction(false);
+window.addEventListener('resize', scheduleTileLayout);
 fetchState();
 connectSocket();
 connectHubSocket();

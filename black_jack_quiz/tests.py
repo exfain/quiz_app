@@ -1,10 +1,12 @@
 import json
 from datetime import timedelta
+from pathlib import Path
 from unittest.mock import patch
 
 from asgiref.sync import async_to_sync
+from django.conf import settings
 from django.contrib.auth.models import User
-from django.test import TestCase, TransactionTestCase
+from django.test import SimpleTestCase, TestCase, TransactionTestCase
 from django.urls import reverse
 from django.utils import timezone
 
@@ -22,6 +24,638 @@ class FakeChannelLayer:
 
     async def group_send(self, group_name, message):
         self.group_messages.append((group_name, message))
+
+
+class BlackJackVhsWaitingScreenTests(SimpleTestCase):
+    def setUp(self):
+        base_dir = Path(settings.BASE_DIR)
+        self.template = (base_dir / 'templates' / 'black_jack_quiz' / 'play.html').read_text(
+            encoding='utf-8'
+        )
+        self.vhs_css = (base_dir / 'static' / 'themes' / 'vhs' / 'vhs.css').read_text(
+            encoding='utf-8'
+        )
+    def test_waiting_states_keep_hooks_and_add_vhs_signal_structure(self):
+        self.assertEqual(self.template.count('id="waitingQuizState"'), 1)
+        self.assertEqual(self.template.count('id="waitingQuestionState"'), 1)
+        self.assertIn(
+            "{% include 'includes/_participant_start_waiting.html' with waiting_game_title=quiz.title %}",
+            self.template,
+        )
+        self.assertEqual(self.template.count('blackjack-vhs-signal-card'), 2)
+        self.assertEqual(self.template.count('blackjack-vhs-tracking-line'), 2)
+        self.assertIn('Host startet gleich', self.template)
+        self.assertIn('NÄCHSTE FRAGE WIRD EINGELEGT', self.template)
+        self.assertIn('Waiting for Next Question', self.template)
+        self.assertIn("this.showState('waitingQuestionState')", self.template)
+
+    def test_vhs_rules_are_blackjack_scoped_and_responsive(self):
+        scope = (
+            'html[data-participant-theme="vhs"] body.blackjack-play-page '
+            '.vhs-theme-shell'
+        )
+        self.assertIn(
+            f'{scope}\n  :is(#waitingQuizState, #waitingQuestionState) '
+            '.blackjack-vhs-signal-card',
+            self.vhs_css,
+        )
+        self.assertIn('grid-template-rows: auto 44px minmax(132px, auto) 8px auto;', self.vhs_css)
+        self.assertIn('@media (max-width: 640px)', self.vhs_css)
+        self.assertIn('@media (prefers-reduced-motion: reduce)', self.vhs_css)
+        self.assertNotIn('.blackjack-vhs-signal-card', self.template.split('<style>', 1)[-1])
+
+
+class BlackJackVhsQuestionScreenTests(SimpleTestCase):
+    def setUp(self):
+        base_dir = Path(settings.BASE_DIR)
+        self.template = (base_dir / 'templates' / 'black_jack_quiz' / 'play.html').read_text(
+            encoding='utf-8'
+        )
+        self.vhs_css = (base_dir / 'static' / 'themes' / 'vhs' / 'vhs.css').read_text(
+            encoding='utf-8'
+        )
+        self.accessibility = (
+            base_dir / 'templates' / 'includes' / 'accessibility_widget.html'
+        ).read_text(encoding='utf-8')
+
+    def test_question_markup_keeps_runtime_hooks_and_non_vhs_copy(self):
+        for element_id in (
+            'questionState',
+            'currentQuestionNumber',
+            'currentSetQuestionCount',
+            'playerTimerCircle',
+            'playerTimeLeft',
+            'questionText',
+            'answerInterface',
+            'answerInput',
+            'bustedQuestionNotice',
+            'submitAnswerBtn',
+            'currentPointsVhs',
+            'questionProgressVhs',
+            'starsBustResetNotice',
+        ):
+            self.assertEqual(self.template.count(f'id="{element_id}"'), 1)
+
+        self.assertIn('blackjack-vhs-question-meta', self.template)
+        self.assertNotIn('blackjack-vhs-meta-set', self.template)
+        self.assertNotIn('blackjack-vhs-meta-status', self.template)
+        self.assertNotIn('ANTWORT OFFEN', self.template)
+        self.assertNotIn('Danger Zone!', self.template)
+        self.assertNotIn('id="bustWarning"', self.template)
+        self.assertIn('estimate-input blackjack-vhs-counter-input', self.template)
+        self.assertIn('blackjack-vhs-busted-notice', self.template)
+        self.assertIn('vhs-action-button blackjack-vhs-submit', self.template)
+        self.assertIn('FRAGE', self.template)
+        self.assertIn('STERNE', self.template)
+        self.assertNotIn('ZAHLENEINGABE', self.template)
+        self.assertIn('Question', self.template)
+        self.assertIn('Your Answer:', self.template)
+        self.assertIn('aria-label="Zahleneingabe"', self.template)
+        self.assertIn('min="0"', self.template)
+        self.assertIn('max="10000"', self.template)
+        self.assertIn("currentPointsVhs.textContent = `${this.currentPoints}/21`;", self.template)
+        self.assertIn(
+            "questionProgressVhs.textContent = `${questionInSet}/${this.totalQuestions}`;",
+            self.template,
+        )
+        self.assertIn('ÜBER 21 – STERNE ZURÜCKGESETZT', self.template)
+        self.assertIn(
+            'this.isBusted && Number(this.pendingAnswerResult.total_points) === 0',
+            self.template,
+        )
+        self.assertGreaterEqual(self.template.count('this.setBustResetNotice(false);'), 2)
+        self.assertIn('id="bustedQuestionNotice" role="status"', self.template)
+        self.assertIn(
+            'Du bist für dieses Set bereits ausgeschieden. Du kannst die restlichen '
+            'Fragen dieses Sets weiter ansehen, musst aber nicht mehr antworten.',
+            self.template,
+        )
+        self.assertIn('data-blackjack-current-set="{{ current_set_number }}"', self.template)
+        self.assertIn('data-blackjack-total-sets="{{ total_sets }}"', self.template)
+        self.assertIn('data-participant-name="{{ participant.name }}"', self.template)
+        self.assertIn('syncVhsSetProgress()', self.template)
+        self.assertIn(
+            'root.dataset.blackjackCurrentSet = String(this.currentSetNumber);',
+            self.template,
+        )
+        self.assertIn(
+            'root.dataset.blackjackTotalSets = String(this.totalSets);',
+            self.template,
+        )
+        self.assertIn('data-blackjack-score-mode="{{ quiz.scoring_mode }}"', self.template)
+        self.assertIn('data-current-stars="{{ participant.total_points }}"', self.template)
+        self.assertIn('data-vhs-round-number="S{{ set_entry.set_number }}"', self.template)
+        self.assertNotIn('blackjack-vhs-live-score', self.template)
+        self.assertIn(
+            "blackjackScoreBox.dataset.currentStars = String(this.currentPoints);",
+            self.template,
+        )
+        self.assertIn(
+            'questionInSet === 1 && setNumber !== this.currentSetNumber',
+            self.template,
+        )
+        self.assertIn(
+            "scoreBox?.dataset.blackjackScoreMode === 'rank'\n"
+            "                                ? me.awarded_points\n"
+            "                                : me.set_stars",
+            self.template,
+        )
+        self.assertIn(
+            "document.getElementById('submitAnswerBtn').addEventListener('click'",
+            self.template,
+        )
+        self.assertIn("circleElement.className = 'timer-circle';", self.template)
+
+    def test_question_vhs_rules_are_scoped_responsive_and_accessible(self):
+        scope = (
+            'html[data-participant-theme="vhs"] body.blackjack-play-page '
+            '.vhs-theme-shell'
+        )
+        self.assertIn(
+            f'{scope}\n  #questionState .blackjack-vhs-question-meta',
+            self.vhs_css,
+        )
+        question_meta_css = self.vhs_css.split(
+            f'{scope}\n  #questionState .blackjack-vhs-question-meta {{',
+            1,
+        )[1].split('}', 1)[0]
+        self.assertIn('display: none !important;', question_meta_css)
+        self.assertIn('margin: 0 !important;', question_meta_css)
+        self.assertIn('padding: 0 !important;', question_meta_css)
+        self.assertIn(
+            'html[data-participant-theme="vhs"] '
+            ':is(body.estimation-play-page, body.blackjack-play-page)\n'
+            '  .vhs-theme-shell #questionState .estimate-input:focus',
+            self.vhs_css,
+        )
+        self.assertIn(
+            f'{scope}\n  #questionState .blackjack-vhs-submit:disabled',
+            self.vhs_css,
+        )
+        self.assertIn(
+            f'{scope}\n  .blackjack-vhs-score-header .blackjack-vhs-redundant-metric',
+            self.vhs_css,
+        )
+        self.assertIn(
+            f'{scope}\n  #questionState .blackjack-vhs-integer-help',
+            self.vhs_css,
+        )
+        self.assertIn(
+            f'{scope} #questionState .vhs-action-button',
+            self.vhs_css,
+        )
+        self.assertIn('grid-template-columns: repeat(2, minmax(0, 1fr));', self.vhs_css)
+        self.assertIn('display: contents !important;', self.vhs_css)
+        self.assertIn(
+            f'{scope}\n  #questionState .question-timer {{\n  display: none !important;',
+            self.vhs_css,
+        )
+        self.assertIn(
+            f'{scope}\n  .quiz-header .status-badge.bust {{\n  display: none !important;',
+            self.vhs_css,
+        )
+        self.assertIn('width: min(100%, 560px) !important;', self.vhs_css)
+        self.assertIn('.qa-score-widget__toggle', self.vhs_css)
+        self.assertIn("document.body.classList.contains('blackjack-play-page')", self.accessibility)
+        self.assertIn("'REC · SET '", self.accessibility)
+        self.assertIn(
+            "'[data-blackjack-current-set][data-blackjack-total-sets]'",
+            self.accessibility,
+        )
+        self.assertIn(
+            'blackjackSetState && blackjackSetState.dataset.blackjackCurrentSet',
+            self.accessibility,
+        )
+        self.assertIn(
+            'blackjackSetState && blackjackSetState.dataset.blackjackTotalSets',
+            self.accessibility,
+        )
+        self.assertIn("'data-blackjack-current-set'", self.accessibility)
+        self.assertIn("'data-blackjack-total-sets'", self.accessibility)
+        self.assertNotIn('.blackjack-vhs-live-score', self.vhs_css)
+        self.assertIn(
+            'body.blackjack-play-page\n'
+            '  .qa-score-widget #blackjackScoreBox .score-box__badge::before {\n'
+            '  content: none;',
+            self.vhs_css,
+        )
+        self.assertIn(
+            'row.dataset.pointsEarned ?? row.dataset.earnedPoints',
+            self.accessibility,
+        )
+        self.assertIn("blackjackScoreMode === 'simple'", self.accessibility)
+        self.assertIn('blackjackScoreBox.dataset.currentStars', self.accessibility)
+        self.assertIn("blackjackScoreMode === 'rank'", self.accessibility)
+        self.assertIn(
+            "unitText = blackjackScoreMode === 'simple' ? '' : 'P'",
+            self.accessibility,
+        )
+        self.assertIn("'data-earned-points'", self.accessibility)
+        self.assertIn("'data-current-stars'", self.accessibility)
+        self.assertNotIn('#bustWarning.show', self.vhs_css)
+        self.assertNotIn('.blackjack-vhs-question-meta', self.template.split('<style>', 1)[-1])
+
+
+class BlackJackVhsSubmittedScreenTests(SimpleTestCase):
+    def setUp(self):
+        base_dir = Path(settings.BASE_DIR)
+        self.template = (base_dir / 'templates' / 'black_jack_quiz' / 'play.html').read_text(
+            encoding='utf-8'
+        )
+        self.vhs_css = (base_dir / 'static' / 'themes' / 'vhs' / 'vhs.css').read_text(
+            encoding='utf-8'
+        )
+
+    def test_submitted_markup_keeps_runtime_hooks_and_four_metrics(self):
+        for element_id in (
+            'answerSubmittedState',
+            'questionSubmitFeedback',
+            'questionSubmittedAnswer',
+            'submittedAnswer',
+            'pointsEarned',
+            'totalPoints',
+            'overallPointsSummary',
+            'statusItem',
+            'statusValue',
+        ):
+            self.assertEqual(self.template.count(f'id="{element_id}"'), 1)
+
+        self.assertIn('blackjack-vhs-recorded-card', self.template)
+        self.assertIn('blackjack-vhs-recorded-signal', self.template)
+        self.assertEqual(self.template.count('blackjack-vhs-recorded-metric'), 4)
+        self.assertIn('RECORDED', self.template)
+        self.assertIn('STERNE DIESER FRAGE', self.template)
+        self.assertIn('STERNE DIESES SETS', self.template)
+        self.assertIn('VERGEBENE GESAMTPUNKTE', self.template)
+        self.assertIn('Answer Submitted!', self.template)
+        self.assertIn('Waiting for other participants...', self.template)
+        self.assertIn(
+            "document.getElementById('submittedAnswer').textContent = data.user_answer;",
+            self.template,
+        )
+        self.assertIn(
+            "document.getElementById('questionSubmitFeedback').classList.remove('d-none');",
+            self.template,
+        )
+        self.assertNotIn('Signal gespeichert', self.template)
+
+    def test_submitted_vhs_rules_are_scoped_responsive_and_static(self):
+        scope = (
+            'html[data-participant-theme="vhs"] body.blackjack-play-page '
+            '.vhs-theme-shell'
+        )
+        self.assertIn(
+            f'{scope}\n  #answerSubmittedState .blackjack-vhs-recorded-card',
+            self.vhs_css,
+        )
+        self.assertIn(
+            f'{scope}\n  #questionState #questionSubmitFeedback.blackjack-vhs-recorded-feedback',
+            self.vhs_css,
+        )
+        self.assertIn(
+            f'{scope}\n  #questionSubmitFeedback .blackjack-vhs-recorded-waiting '
+            '{\n  display: none !important;',
+            self.vhs_css,
+        )
+        self.assertIn('grid-template-columns: repeat(2, minmax(0, 1fr));', self.vhs_css)
+        self.assertIn('font-size: clamp(64px, 12vw, 116px) !important;', self.vhs_css)
+        self.assertIn('@media (max-width: 640px)', self.vhs_css)
+        self.assertIn('@media (prefers-reduced-motion: reduce)', self.vhs_css)
+        self.assertIn('animation: none !important;', self.vhs_css)
+        inline_styles = self.template.split('<style>', 1)[-1]
+        self.assertNotIn('.blackjack-vhs-recorded-card', inline_styles)
+
+
+class BlackJackVhsCorrectAnswerScreenTests(SimpleTestCase):
+    def setUp(self):
+        base_dir = Path(settings.BASE_DIR)
+        self.template = (base_dir / 'templates' / 'black_jack_quiz' / 'play.html').read_text(
+            encoding='utf-8'
+        )
+        self.vhs_css = (base_dir / 'static' / 'themes' / 'vhs' / 'vhs.css').read_text(
+            encoding='utf-8'
+        )
+
+    def test_reveal_markup_keeps_hooks_and_adds_evaluation_monitor(self):
+        for element_id in (
+            'correctAnswerState',
+            'correctAnswerDisplay',
+            'userAnswerDisplay',
+            'correctAnswerComparison',
+            'revealStarsDisplay',
+            'calculationDisplay',
+            'explanationText',
+        ):
+            self.assertEqual(self.template.count(f'id="{element_id}"'), 1)
+
+        self.assertIn('blackjack-vhs-evaluation-monitor', self.template)
+        self.assertIn('blackjack-vhs-evaluation-focus', self.template)
+        self.assertIn('blackjack-vhs-evaluation-strip', self.template)
+        self.assertEqual(self.template.count('blackjack-vhs-evaluation-metric'), 2)
+        self.assertIn('data-lucide="target"', self.template)
+        self.assertIn('DIE RICHTIGE ANTWORT IST', self.template)
+        self.assertIn('DEINE ANTWORT', self.template)
+        self.assertNotIn('ABSTAND', self.template)
+        self.assertNotIn('revealDistanceDisplay', self.template)
+        self.assertIn('STERNE', self.template)
+        self.assertIn('BERECHNUNG', self.template)
+        self.assertIn('ERKLÄRUNG', self.template)
+        self.assertIn('Correct Answer Revealed!', self.template)
+        self.assertIn(
+            "document.getElementById('revealStarsDisplay').textContent = "
+            "this.pendingAnswerResult?.points_earned ?? '-';",
+            self.template,
+        )
+        self.assertIn("const starLabel = difference === 1 ? 'Stern' : 'Sterne';", self.template)
+        self.assertNotIn('${Math.abs(userAnswer - correctAnswer)} stars', self.template)
+        self.assertIn("this.showState('correctAnswerState');", self.template)
+
+    def test_reveal_vhs_rules_are_scoped_and_guard_long_content(self):
+        scope = (
+            'html[data-participant-theme="vhs"] body.blackjack-play-page '
+            '.vhs-theme-shell'
+        )
+        self.assertIn(
+            f'{scope}\n  #correctAnswerState .blackjack-vhs-evaluation-monitor',
+            self.vhs_css,
+        )
+        self.assertIn(
+            f'{scope}\n  #correctAnswerState .blackjack-vhs-evaluation-strip',
+            self.vhs_css,
+        )
+        self.assertIn('grid-template-columns: repeat(2, minmax(0, 1fr));', self.vhs_css)
+        self.assertIn(
+            f'{scope}\n  #correctAnswerState .blackjack-vhs-evaluation-signal {{',
+            self.vhs_css,
+        )
+        signal_rule = self.vhs_css.split(
+            f'{scope}\n  #correctAnswerState .blackjack-vhs-evaluation-signal {{',
+            1,
+        )[1].split('}', 1)[0]
+        self.assertIn('border: 0;', signal_rule)
+        self.assertIn('background: transparent;', signal_rule)
+        self.assertIn('box-shadow: none !important;', signal_rule)
+        signal_icon_rule = self.vhs_css.split(
+            f'{scope}\n  #correctAnswerState '
+            '.blackjack-vhs-evaluation-signal :is(i, svg) {',
+            1,
+        )[1].split('}', 1)[0]
+        self.assertIn('width: clamp(38px, 6vw, 54px);', signal_icon_rule)
+        self.assertIn('color: var(--vhs-paper) !important;', signal_icon_rule)
+        self.assertIn('overflow-wrap: anywhere;', self.vhs_css)
+        self.assertIn('font-size: clamp(48px, 17vw, 76px) !important;', self.vhs_css)
+        self.assertIn('@media (max-width: 640px)', self.vhs_css)
+        self.assertIn('@media (prefers-reduced-motion: reduce)', self.vhs_css)
+        inline_styles = self.template.split('<style>', 1)[-1]
+        self.assertNotIn('.blackjack-vhs-evaluation-monitor', inline_styles)
+
+
+class BlackJackVhsBustedScreenTests(SimpleTestCase):
+    def setUp(self):
+        base_dir = Path(settings.BASE_DIR)
+        self.template = (base_dir / 'templates' / 'black_jack_quiz' / 'play.html').read_text(
+            encoding='utf-8'
+        )
+        self.vhs_css = (base_dir / 'static' / 'themes' / 'vhs' / 'vhs.css').read_text(
+            encoding='utf-8'
+        )
+
+    def test_busted_markup_keeps_runtime_hooks_and_accessible_consequence(self):
+        for element_id in (
+            'bustedState',
+            'bustedTitle',
+            'bustedReasonText',
+            'bustPoints',
+            'bustedHelpText',
+        ):
+            self.assertEqual(self.template.count(f'id="{element_id}"'), 1)
+
+        self.assertIn('blackjack-vhs-bust-monitor', self.template)
+        self.assertIn('blackjack-vhs-bust-signal', self.template)
+        self.assertNotIn('blackjack-vhs-bust-track', self.template)
+        self.assertNotIn('blackjack-vhs-bust-field-label', self.template)
+        self.assertIn('<span>BUST</span>', self.template)
+        self.assertIn('<span>/ ÜBER 21</span>', self.template)
+        self.assertNotIn('SIGNALFEHLER', self.template)
+        self.assertIn('SET-STERNE', self.template)
+        self.assertNotIn('>GRUND<', self.template)
+        self.assertNotIn('>FOLGE<', self.template)
+        self.assertIn(
+            'data-lucide="x-circle" class="bust-icon blackjack-standard-copy"',
+            self.template,
+        )
+        self.assertIn(
+            'data-lucide="x" class="bust-icon blackjack-vhs-copy d-none"',
+            self.template,
+        )
+        self.assertIn('data-participant-name="{{ participant.name }}"', self.template)
+        self.assertIn('Ausgeschieden für dieses Set', self.template)
+        self.assertIn(
+            'Du kannst die restlichen Fragen dieses Sets weiter ansehen, '
+            'aber nicht mehr antworten.',
+            self.template,
+        )
+        self.assertIn(
+            "document.getElementById('bustPoints').textContent = this.currentPoints;",
+            self.template,
+        )
+        self.assertIn(
+            "if (reasonText) reasonText.textContent = "
+            "'Keine Antwort wurde abgegeben. Du bist für dieses Set ausgeschieden.';",
+            self.template,
+        )
+        self.assertIn("this.showState('bustedState');", self.template)
+
+    def test_busted_vhs_rules_are_scoped_responsive_and_not_continuous(self):
+        scope = (
+            'html[data-participant-theme="vhs"] body.blackjack-play-page '
+            '.vhs-theme-shell'
+        )
+        self.assertIn(
+            f'{scope}\n  #bustedState .blackjack-vhs-bust-monitor',
+            self.vhs_css,
+        )
+        self.assertIn(
+            f'{scope}\n  #bustedState .blackjack-vhs-bust-data',
+            self.vhs_css,
+        )
+        busted_css = self.vhs_css.split('/* Black Jack busted state */', 1)[1].split(
+            '/* Black Jack set and quiz credits */',
+            1,
+        )[0]
+        self.assertNotIn('blackjack-vhs-bust-track', busted_css)
+        self.assertNotIn('infinite', busted_css)
+        self.assertIn('border: 0;', busted_css)
+        self.assertIn('font: inherit;', busted_css)
+        self.assertIn('color: var(--vhs-orange) !important;', busted_css)
+        self.assertIn(
+            '#bustedState :is(#bustedReasonText, #bustedHelpText)',
+            busted_css,
+        )
+        self.assertIn('font-size: clamp(15px, 2.2vw, 18px) !important;', busted_css)
+        self.assertIn('grid-template-columns: minmax(0, 1fr);', busted_css)
+        self.assertIn('@media (max-width: 640px)', busted_css)
+        self.assertIn('@media (prefers-reduced-motion: reduce)', busted_css)
+        self.assertIn('overflow-wrap: anywhere;', busted_css)
+        inline_styles = self.template.split('<style>', 1)[-1]
+        self.assertNotIn('.blackjack-vhs-bust-monitor', inline_styles)
+
+
+class BlackJackVhsEndScreenTests(SimpleTestCase):
+    def setUp(self):
+        base_dir = Path(settings.BASE_DIR)
+        self.template = (base_dir / 'templates' / 'black_jack_quiz' / 'play.html').read_text(
+            encoding='utf-8'
+        )
+        self.vhs_css = (base_dir / 'static' / 'themes' / 'vhs' / 'vhs.css').read_text(
+            encoding='utf-8'
+        )
+        self.accessibility = (
+            base_dir / 'templates' / 'includes' / 'accessibility_widget.html'
+        ).read_text(encoding='utf-8')
+
+    def test_end_markup_keeps_hooks_and_adds_shared_credits_structure(self):
+        for element_id in (
+            'setEndedState',
+            'setSummaryGrid',
+            'setEndedNumber',
+            'setEndedStars',
+            'setEndedAwardedPoints',
+            'setEndedOverallPoints',
+            'quizEndedState',
+            'finalLastSetGrid',
+            'finalLastSetNumber',
+            'finalSetStars',
+            'finalSetAwardedPoints',
+            'finalOverallPoints',
+            'finalSetSummaryList',
+        ):
+            self.assertEqual(self.template.count(f'id="{element_id}"'), 1)
+
+        self.assertEqual(self.template.count('blackjack-vhs-end-state'), 2)
+        self.assertEqual(self.template.count('blackjack-vhs-credits-title'), 2)
+        self.assertEqual(self.template.count('blackjack-vhs-credits-metrics'), 2)
+        self.assertEqual(
+            self.template.count('class="summary-stat blackjack-vhs-credits-metric'),
+            8,
+        )
+        self.assertIn('SET BEENDET', self.template)
+        self.assertIn('SPIEL BEENDET', self.template)
+        self.assertIn('data-vhs-end-label="SET BEENDET"', self.template)
+        self.assertIn('blackjack-vhs-set-end-signal', self.template)
+        self.assertIn('id="returnToLobbyAfterSetBtn"', self.template)
+        self.assertIn('SET-STERNE', self.template)
+        self.assertIn('SETPUNKTE', self.template)
+        self.assertIn('GESAMTPUNKTE', self.template)
+        self.assertIn('Warte auf das nächste Set oder die nächste Frage.', self.template)
+        self.assertNotIn('TAPE-LOG', self.template)
+        self.assertIn('blackjack-vhs-quiz-end-signal', self.template)
+        self.assertIn('blackjack-vhs-tape-log-heading', self.template)
+        self.assertIn('Set Complete!', self.template)
+        self.assertIn('BlackJack Quiz Complete!', self.template)
+        self.assertIn(
+            "{% include 'includes/_post_game_results.html'",
+            self.template,
+        )
+        self.assertIn('this.renderCompletedSetScreens();', self.template)
+        self.assertIn('this.renderFinalSetSummaryList();', self.template)
+        self.assertIn("this.showState('setEndedState');", self.template)
+        self.assertIn("this.showState('quizEndedState');", self.template)
+
+    def test_end_vhs_rules_are_shared_scoped_and_mobile_safe(self):
+        scope = (
+            'html[data-participant-theme="vhs"] body.blackjack-play-page '
+            '.vhs-theme-shell'
+        )
+        self.assertIn(
+            f'{scope}\n  :is(#setEndedState, #quizEndedState) .blackjack-vhs-credits',
+            self.vhs_css,
+        )
+        self.assertIn(
+            f'{scope}\n  :is(#setEndedState, #quizEndedState) '
+            '.blackjack-vhs-credits-metrics',
+            self.vhs_css,
+        )
+        self.assertIn('grid-template-columns: repeat(3, minmax(0, 1fr));', self.vhs_css)
+        self.assertIn('max-height: 310px;', self.vhs_css)
+        self.assertIn('overflow-y: auto;', self.vhs_css)
+        self.assertIn('min-width: 640px;', self.vhs_css)
+        self.assertIn(
+            f'{scope}\n  #quizEndedState .blackjack-vhs-quiz-end-signal {{',
+            self.vhs_css,
+        )
+        self.assertIn(
+            f'{scope}\n  #setEndedState .blackjack-vhs-set-end-signal {{',
+            self.vhs_css,
+        )
+        set_signal_css = self.vhs_css.split(
+            f'{scope}\n  #setEndedState .blackjack-vhs-set-end-signal {{',
+            1,
+        )[1].split('}', 1)[0]
+        self.assertIn('border: 0;', set_signal_css)
+        self.assertIn('background: transparent;', set_signal_css)
+        self.assertIn(
+            "card.dataset.vhsEndLabel || 'SPIEL BEENDET'",
+            self.accessibility,
+        )
+        self.assertIn('font-size: clamp(40px, 6.5vw, 64px) !important;', self.vhs_css)
+        self.assertIn('font-size: clamp(34px, 11vw, 48px) !important;', self.vhs_css)
+        self.assertIn(
+            ':is(#setEndedState, #quizEndedState) .blackjack-vhs-credits > .quiz-actions',
+            self.vhs_css,
+        )
+        self.assertIn('margin: 0 0 clamp(34px, 6vw, 58px) !important;', self.vhs_css)
+        self.assertIn(
+            f'{scope}\n  #quizEndedState .blackjack-vhs-tape-log '
+            '> .blackjack-vhs-tape-log-heading {\n  display: none !important;',
+            self.vhs_css,
+        )
+        self.assertIn('@media (max-width: 640px)', self.vhs_css)
+        self.assertIn('@media (prefers-reduced-motion: reduce)', self.vhs_css)
+        inline_styles = self.template.split('<style>', 1)[-1]
+        self.assertNotIn('.blackjack-vhs-credits', inline_styles)
+        self.assertNotIn('.blackjack-vhs-tape-log', inline_styles)
+
+
+class BlackJackVhsResultPageTests(SimpleTestCase):
+    def setUp(self):
+        base_dir = Path(settings.BASE_DIR)
+        self.template = (base_dir / 'templates' / 'black_jack_quiz' / 'result.html').read_text(
+            encoding='utf-8'
+        )
+        self.vhs_css = (base_dir / 'static' / 'themes' / 'vhs' / 'vhs.css').read_text(
+            encoding='utf-8'
+        )
+
+    def test_result_markup_keeps_actions_and_adds_vhs_result_structure(self):
+        self.assertEqual(self.template.count('id="shareResultsBtn"'), 1)
+        self.assertIn('href="/blackjack/join/"', self.template)
+        self.assertIn('href="/"', self.template)
+        self.assertIn('blackjack-vhs-result-hero', self.template)
+        self.assertIn('blackjack-vhs-personal-summary', self.template)
+        self.assertIn('blackjack-vhs-set-log-wrap d-none', self.template)
+        self.assertIn('for set_entry in result_set_log', self.template)
+        self.assertIn('data-set-busted=', self.template)
+        self.assertIn('FINALE GESAMTPUNKTE', self.template)
+        self.assertIn('SET-VERLAUF', self.template)
+        self.assertIn('BUST / ÜBER 21', self.template)
+        self.assertIn("document.getElementById('shareResultsBtn')", self.template)
+
+    def test_result_vhs_rules_are_blackjack_scoped_and_mobile_safe(self):
+        scope = (
+            'html[data-participant-theme="vhs"] body.blackjack-result-page '
+            '.vhs-theme-shell'
+        )
+        self.assertIn(f'{scope}\n  .blackjack-vhs-result-hero', self.vhs_css)
+        self.assertIn(f'{scope}\n  .blackjack-vhs-set-log-row', self.vhs_css)
+        self.assertIn('grid-template-columns: repeat(4, minmax(0, 1fr));', self.vhs_css)
+        self.assertIn('grid-template-columns: repeat(2, minmax(0, 1fr));', self.vhs_css)
+        self.assertIn('overflow-x: hidden;', self.vhs_css)
+        self.assertIn('@media (max-width: 640px)', self.vhs_css)
+        self.assertIn('@media (prefers-reduced-motion: reduce)', self.vhs_css)
+        inline_styles = self.template.split('<style>', 1)[-1]
+        self.assertNotIn('.blackjack-vhs-result-hero', inline_styles)
+        self.assertNotIn('.blackjack-vhs-set-log', inline_styles)
 
 
 class BlackJackSetLogicTests(TestCase):
@@ -842,11 +1476,9 @@ class BlackJackMultiSetTransitionTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, 'id="questionProgress">1/2')
-        self.assertContains(
-            response,
-            'Question <span id="currentQuestionNumber">1</span>/<span id="currentSetQuestionCount">2</span>',
-            html=True,
-        )
+        self.assertContains(response, 'blackjack-question-copy--default">Question', html=False)
+        self.assertContains(response, 'id="currentQuestionNumber">1</span>', html=False)
+        self.assertContains(response, 'id="currentSetQuestionCount">2</span>', html=False)
 
     def test_public_participants_api_uses_ranking_mode_ordering(self):
         quiz = BlackJackQuiz.objects.create(
@@ -908,6 +1540,17 @@ class BlackJackExplicitSetRuntimeTests(TestCase):
             user_answer=user_answer,
         )
 
+    def test_simple_mode_scorebox_renders_zero_as_zero_of_twenty_one(self):
+        response = self.client.get(
+            reverse('black_jack_quiz:play', args=[self.quiz.room_code, self.participant.name])
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'data-blackjack-score-mode="simple"')
+        self.assertContains(response, 'data-current-stars="0"')
+        self.assertContains(response, 'data-vhs-round-number="S1"')
+        self.assertContains(response, 'data-earned-points=""')
+
     def test_single_question_explicit_set_finalizes_after_first_question(self):
         self.session.send_question(self.questions[0])
         self._answer_current_question(9)  # 1 star
@@ -935,6 +1578,51 @@ class BlackJackExplicitSetRuntimeTests(TestCase):
         self.assertEqual(self.participant.total_points, 4)
         self.assertEqual(self.participant.overall_points, 1)
         self.assertEqual(self.participant.questions_answered, 1)
+
+    def test_result_page_uses_chronological_set_log_and_marks_busted_set(self):
+        self.session.send_question(self.questions[0])
+        self._answer_current_question(32)  # 22 stars => bust
+        self.session.end_current_question()
+
+        self.session.send_question(self.questions[1])
+        self._answer_current_question(18)  # 2 stars
+        self.session.end_current_question()
+        self.session.send_question(self.questions[2])
+        self._answer_current_question(27)  # 3 stars
+        self.session.end_current_question()
+
+        self.quiz.refresh_from_db()
+        self.participant.refresh_from_db()
+        response = self.client.get(
+            reverse('black_jack_quiz:result', args=[self.quiz.room_code, self.participant.name])
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.quiz.status, 'completed')
+        self.assertEqual(
+            response.context['result_set_log'],
+            [
+                {
+                    'set_number': 1,
+                    'earned_points': 0,
+                    'max_points': 21,
+                    'status': 'played',
+                    'is_busted': True,
+                },
+                {
+                    'set_number': 2,
+                    'earned_points': 5,
+                    'max_points': 21,
+                    'status': 'played',
+                    'is_busted': False,
+                },
+            ],
+        )
+        self.assertContains(response, 'data-set-number="1"')
+        self.assertContains(response, 'data-set-busted="true"')
+        self.assertContains(response, 'data-set-number="2"')
+        self.assertContains(response, 'data-set-busted="false"')
+        self.assertContains(response, f'>{self.participant.overall_points}</span>', html=False)
 
     def test_out_of_order_selected_set_needs_all_its_questions_before_completion(self):
         self.session.set_selected_set_number(2)
@@ -1168,15 +1856,18 @@ class BlackJackExplicitSetRuntimeTests(TestCase):
         self.assertEqual(response.context['score_total_earned'], 1)
         self.assertEqual(response.context['score_total_max'], 21)
         self.assertContains(response, 'class="blackjack-score-box score-box"')
+        self.assertContains(response, 'data-blackjack-score-mode="simple"')
+        self.assertContains(response, 'data-earned-points="1"')
+        self.assertContains(response, '1/21')
         self.assertContains(response, 'id="blackjackScoreTotal"')
         self.assertContains(response, 'id="blackjackScoreTotal">1/21</div>', html=False)
         self.assertRegex(
             response.content.decode('utf-8'),
-            r'(?s)data-set-number="1"[^>]*>.*?<div class="blackjack-score-badge score-box__badge">1</div>',
+            r'(?s)data-set-number="1"[^>]*>.*?data-vhs-round-number="S1"',
         )
         self.assertRegex(
             response.content.decode('utf-8'),
-            r'(?s)data-set-number="2"[^>]*>.*?<div class="blackjack-score-badge score-box__badge">2</div>',
+            r'(?s)data-set-number="2"[^>]*>.*?data-vhs-round-number="S2"',
         )
 
     def test_play_view_renders_set_end_screen_with_last_completed_set_summary(self):
@@ -1237,7 +1928,7 @@ class BlackJackExplicitSetRuntimeTests(TestCase):
         self.assertEqual(response.context['current_question_in_set'], 1)
         self.assertContains(
             response,
-            'Question <span id="currentQuestionNumber">1</span>/<span id="currentSetQuestionCount">4</span>',
+            '<span id="currentQuestionNumber">1</span>/<span id="currentSetQuestionCount">4</span>',
         )
 
         session.end_current_question()
@@ -1250,7 +1941,7 @@ class BlackJackExplicitSetRuntimeTests(TestCase):
         self.assertEqual(response.context['current_question_in_set'], 2)
         self.assertContains(
             response,
-            'Question <span id="currentQuestionNumber">2</span>/<span id="currentSetQuestionCount">4</span>',
+            '<span id="currentQuestionNumber">2</span>/<span id="currentSetQuestionCount">4</span>',
         )
 
     def test_play_view_renders_final_quiz_end_screen_with_last_set_and_all_sets_summary(self):
@@ -1337,11 +2028,11 @@ class BlackJackExplicitSetRuntimeTests(TestCase):
         self.assertContains(response, 'this.renumberSetScoreRows();')
         self.assertRegex(
             response.content.decode('utf-8'),
-            r'(?s)data-set-number="2"[^>]*>.*?<div class="blackjack-score-badge score-box__badge">1</div>',
+            r'(?s)data-set-number="2"[^>]*>.*?data-vhs-round-number="S2">1</div>',
         )
         self.assertRegex(
             response.content.decode('utf-8'),
-            r'(?s)data-set-number="1"[^>]*>.*?<div class="blackjack-score-badge score-box__badge">2</div>',
+            r'(?s)data-set-number="1"[^>]*>.*?data-vhs-round-number="S1">2</div>',
         )
 
     def test_play_view_updates_set_and_quiz_end_states_from_question_end_payload(self):
@@ -1521,8 +2212,43 @@ class BlackJackRankingModeSetScoringTests(TestCase):
             response.context['set_scoreboard'],
             [{'set_number': 1, 'earned_points': 2, 'max_points': 2, 'status': 'played'}],
         )
+        self.assertContains(response, 'data-blackjack-score-mode="rank"')
+        self.assertContains(response, 'data-earned-points="2"')
+        self.assertContains(response, 'data-vhs-round-number="S1"')
         self.assertEqual(response.context['score_total_earned'], 2)
         self.assertEqual(response.context['score_total_max'], 2)
+
+    def test_running_ranking_set_scorebox_stays_neutral_until_finalized(self):
+        question = BlackJackQuestion.objects.create(
+            question_text='Current ranking question',
+            correct_answer=10,
+            created_by=self.user,
+        )
+        quiz = BlackJackQuiz.objects.create(
+            creator=self.user,
+            title='Running Ranking Scorebox Quiz',
+            status='active',
+            scoring_mode='rank',
+            question_order=[[question.id]],
+        )
+        quiz.selected_questions.set([question])
+        session = BlackJackSession.objects.create(quiz=quiz)
+        participant = BlackJackParticipant.objects.create(
+            quiz=quiz,
+            name='Alice',
+            total_points=8,
+        )
+        session.send_question(question)
+
+        response = self.client.get(
+            reverse('black_jack_quiz:play', args=[quiz.room_code, participant.name])
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'data-blackjack-score-mode="rank"')
+        self.assertContains(response, 'data-current-stars="8"')
+        self.assertContains(response, 'data-earned-points=""')
+        self.assertNotContains(response, 'blackjack-vhs-live-score')
 
 
 class BlackJackHostSetProgressTests(TransactionTestCase):
@@ -2893,7 +3619,8 @@ class BlackJackHostSetProgressTests(TransactionTestCase):
         self.assertEqual(response.context['score_total_earned'], 0)
         self.assertEqual(response.context['score_total_max'], 0)
         self.assertFalse(response.context['show_initial_set_end_state'])
-        self.assertContains(response, 'Waiting for BlackJack Quiz to Start')
+        self.assertContains(response, quiz.title)
+        self.assertContains(response, 'blackjack-vhs-signal-card')
         self.assertContains(response, 'blackjack-score-empty')
         self.assertContains(response, 'this.hasActiveQuestionAtLoad = false;', html=False)
 

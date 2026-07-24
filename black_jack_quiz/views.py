@@ -459,6 +459,31 @@ def blackjack_result(request, room_code, participant_name):
         tutorial_question_id = tutorial_state.get('tutorial_question_id') if tutorial_state.get('requested') else None
         if tutorial_question_id:
             participant_answers = participant_answers.exclude(question_id=tutorial_question_id)
+
+        set_scoreboard, _, _ = _build_participant_set_scoreboard(
+            quiz,
+            participant,
+            participant.hub_session_code,
+        )
+        set_raw_points = {}
+        for answer in participant_answers:
+            set_number = quiz.get_set_number_for_question_id(answer.question_id, active_only=False)
+            if not set_number:
+                continue
+            set_raw_points[set_number] = set_raw_points.get(set_number, 0) + answer.points_earned
+        busted_set_numbers = {
+            set_number
+            for set_number, raw_points in set_raw_points.items()
+            if raw_points > 21
+        }
+        result_set_log = [
+            {
+                **set_entry,
+                'is_busted': set_entry['set_number'] in busted_set_numbers,
+            }
+            for set_entry in set_scoreboard
+            if set_entry['status'] == 'played'
+        ]
         
         # Calculate statistics
         total_answers = participant_answers.count()
@@ -499,6 +524,7 @@ def blackjack_result(request, room_code, participant_name):
             'quiz': quiz,
             'participant': participant,
             'participant_answers': participant_answers,
+            'result_set_log': result_set_log,
             'total_answers': total_answers,
             'participant_rank': participant_rank,
             'leaderboard': leaderboard,

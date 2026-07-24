@@ -155,7 +155,7 @@
                         </div>
                     {% else %}
                         <!-- Active Question Display -->
-                        <div id="activeQuestion" data-total-rounds="{{ quiz.current_question.elements.count|add:'-1' }}" data-current-round="{{ session.current_round }}" data-time-left="{{ current_round_time_left }}" data-round-active="{% if session.is_round_active %}1{% else %}0{% endif %}">
+                        <div id="activeQuestion" data-total-rounds="{{ quiz.current_question.elements.count|add:'-1' }}" data-current-round="{{ session.current_round }}" data-time-left="{{ current_round_time_left }}" data-round-active="{% if session.is_round_active %}1{% else %}0{% endif %}" data-reveal-state="{{ session.reveal_state }}">
                             <div class="active-question-header">
                                 <h6>Current Question</h6>
                                 <div class="question-timer" id="questionTimerWrapper" {% if not session.is_round_active %}style="display:none;"{% endif %}>
@@ -173,14 +173,26 @@
                                 <div class="question-text">{{ quiz.current_question.question_text }}</div>
                                 
                                 <div class="question-actions question-actions--split">
+                                    {% if session.reveal_state == 'awaiting_reveal' %}
+                                    <button class="btn btn-success primary-action" id="showSolutionBtn">
+                                        <i data-lucide="eye"></i>
+                                        Reihenfolge zeigen
+                                    </button>
+                                    {% elif session.reveal_state == 'revealed' %}
+                                    <button class="btn btn-warning secondary-action" id="endQuestionBtn">
+                                        <i data-lucide="check-square"></i>
+                                        Set abschließen
+                                    </button>
+                                    {% else %}
                                     <button class="btn btn-primary primary-action" id="startNextRoundBtn">
                                         <i data-lucide="play-circle"></i>
                                         Nächste Runde starten
                                     </button>
                                     <button class="btn btn-warning secondary-action" id="endQuestionBtn">
                                         <i data-lucide="skip-forward"></i>
-                                        End Question Early
+                                        Set abschließen
                                     </button>
+                                    {% endif %}
                                 </div>
                             </div>
                         </div>
@@ -910,6 +922,7 @@ document.addEventListener('DOMContentLoaded', function() {
             this.currentPhaseLabel = 'Warte auf Antworten';
             this.totalRoundsForQuestion = parseInt(activeQuestion?.dataset?.totalRounds || '0', 10) || 0;
             this.currentRoundNumber = parseInt(activeQuestion?.dataset?.currentRound || '0', 10) || 0;
+            this.revealState = activeQuestion?.dataset?.revealState || 'active';
             this.nextRoundEnabled = true;
             this.allAnswersInRound = false;
             this.roundTimerExpired = false;
@@ -983,6 +996,14 @@ document.addEventListener('DOMContentLoaded', function() {
             this.applySentStates();
             this.initializeLiveResponseState();
             this.initializeRoundTimer();
+            if (this.revealState === 'awaiting_reveal') {
+                this.onRoundsComplete();
+            } else if (this.revealState === 'revealed') {
+                this.onSolutionShown();
+            } else {
+                this.setNextRoundButtonEnabled(this.nextRoundEnabled);
+                this.updateQuestionActionLabels();
+            }
             this.updateMonitorPhase();
         }
 
@@ -1151,6 +1172,14 @@ document.addEventListener('DOMContentLoaded', function() {
                     this.updateMonitorPhase();
                     break;
 
+                case 'question_rounds_complete':
+                    this.onRoundsComplete();
+                    break;
+
+                case 'show_solution':
+                    this.onSolutionShown();
+                    break;
+
                 case 'round_answer_status':
                     this.renderRoundAnswerStatus(data);
                     break;
@@ -1293,6 +1322,9 @@ document.addEventListener('DOMContentLoaded', function() {
             document.getElementById('endQuestionBtn')?.addEventListener('click', () => {
                 this.endCurrentQuestion();
             });
+            document.getElementById('showSolutionBtn')?.addEventListener('click', () => {
+                this.showSolution();
+            });
 
             // Manual next-round button
             document.getElementById('startNextRoundBtn')?.addEventListener('click', () => {
@@ -1428,6 +1460,54 @@ document.addEventListener('DOMContentLoaded', function() {
             }
         }
 
+        showSolution() {
+            const btn = document.getElementById('showSolutionBtn');
+            if (btn) {
+                btn.disabled = true;
+            }
+            if (this.websocket && this.websocket.readyState === WebSocket.OPEN) {
+                this.websocket.send(JSON.stringify({
+                    type: 'admin_show_solution'
+                }));
+            }
+        }
+
+        onRoundsComplete() {
+            this.revealState = 'awaiting_reveal';
+            this.stopRoundTimer();
+            this.currentPhaseLabel = 'Set abgeschlossen – wartet auf Reveal';
+            const actions = document.querySelector('#activeQuestion .question-actions');
+            if (actions) {
+                actions.innerHTML = `
+                    <button class="btn btn-success primary-action" id="showSolutionBtn">
+                        <i data-lucide="eye"></i>
+                        Reihenfolge zeigen
+                    </button>
+                `;
+                document.getElementById('showSolutionBtn')?.addEventListener('click', () => this.showSolution());
+                try { lucide.createIcons(); } catch(_) {}
+            }
+            this.updateMonitorPhase();
+        }
+
+        onSolutionShown() {
+            this.revealState = 'revealed';
+            this.stopRoundTimer();
+            this.currentPhaseLabel = 'Reihenfolge angezeigt';
+            const actions = document.querySelector('#activeQuestion .question-actions');
+            if (actions) {
+                actions.innerHTML = `
+                    <button class="btn btn-warning secondary-action" id="endQuestionBtn">
+                        <i data-lucide="check-square"></i>
+                        Set abschließen
+                    </button>
+                `;
+                document.getElementById('endQuestionBtn')?.addEventListener('click', () => this.endCurrentQuestion());
+                try { lucide.createIcons(); } catch(_) {}
+            }
+            this.updateMonitorPhase();
+        }
+
         startNextRound() {
             if (this.websocket && this.websocket.readyState === WebSocket.OPEN) {
                 if (!this.allAnswersInRound) {
@@ -1473,8 +1553,8 @@ document.addEventListener('DOMContentLoaded', function() {
             if (!endBtn) return;
             const icon = endBtn.querySelector('i');
             const isLastRound = this.totalRoundsForQuestion > 0 && this.currentRoundNumber >= this.totalRoundsForQuestion;
-            const shouldUseFinalLabel = isLastRound && (this.roundTimerExpired || this.allAnswersInRound || !this.nextRoundEnabled);
-            endBtn.innerHTML = `${icon ? icon.outerHTML : '<i data-lucide="skip-forward"></i>'} ${shouldUseFinalLabel ? 'End Question' : 'End Question Early'}`;
+            endBtn.classList.toggle('d-none', !isLastRound);
+            endBtn.innerHTML = `${icon ? icon.outerHTML : '<i data-lucide="skip-forward"></i>'} Set abschließen`;
             try { lucide.createIcons(); } catch(_) {}
         }
 

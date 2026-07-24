@@ -248,12 +248,26 @@ class SortingLadderSession(SyncBase):
     """
     Manages the live state of the quiz rounds.
     """
+    REVEAL_ACTIVE = 'active'
+    REVEAL_AWAITING = 'awaiting_reveal'
+    REVEAL_REVEALED = 'revealed'
+    REVEAL_STATE_CHOICES = [
+        (REVEAL_ACTIVE, 'Rounds active'),
+        (REVEAL_AWAITING, 'Waiting for reveal'),
+        (REVEAL_REVEALED, 'Solution revealed'),
+    ]
+
     quiz = models.OneToOneField(SortingLadderGame, on_delete=models.CASCADE, related_name='session')
     
     current_round = models.PositiveIntegerField(default=0)
     
     # State flags
     is_round_active = models.BooleanField(default=False)
+    reveal_state = models.CharField(
+        max_length=24,
+        choices=REVEAL_STATE_CHOICES,
+        default=REVEAL_ACTIVE,
+    )
     round_start_time = models.DateTimeField(null=True, blank=True)
     round_end_time = models.DateTimeField(null=True, blank=True)
     time_limit_seconds = models.IntegerField(default=30)

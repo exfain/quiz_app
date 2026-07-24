@@ -1,6 +1,9 @@
+from pathlib import Path
+
 from asgiref.sync import async_to_sync
+from django.conf import settings
 from django.contrib.auth.models import User
-from django.test import TransactionTestCase
+from django.test import SimpleTestCase, TransactionTestCase
 from django.urls import reverse
 from django.utils import timezone
 
@@ -330,6 +333,9 @@ class ClueRushScoreBoxTests(TransactionTestCase):
         self.assertEqual(second['duration'], 9)
         self.assertTrue(first['has_next_clue'])
         self.assertTrue(first['end_time'])
+        self.assertTrue(first['sequence_end_time'])
+        self.assertEqual(first['sequence_duration'], 18)
+        self.assertTrue(first['server_now'])
         self.assertIsNotNone(session.question_end_time)
         self.assertEqual(int((session.question_end_time - quiz.question_start_time).total_seconds()), 9)
 
@@ -349,7 +355,38 @@ class ClueRushScoreBoxTests(TransactionTestCase):
         self.assertEqual(first['duration'], 5)
         self.assertEqual(second['duration'], 8)
         self.assertEqual(third['duration'], 11)
+        self.assertEqual(first['sequence_duration'], 13)
+        self.assertEqual(second['sequence_duration'], 13)
+        self.assertEqual(third['sequence_duration'], 13)
         self.assertIsNone(session.question_end_time)
+
+    def test_rejoin_snapshot_restores_authoritative_clue_and_sequence_deadlines(self):
+        user = User.objects.create_user(username='clue-timer-rejoin')
+        question = self._create_question_with_durations(user, durations=[5, 8, 11], time_limit=90)
+        quiz, session = self._create_active_quiz(user, question, room_code='8435')
+        participant = ClueRushParticipant.objects.create(
+            quiz=quiz,
+            name='Ada',
+            hub_session_code=None,
+        )
+        consumer = ClueRushGameConsumer()
+        consumer.room_code = quiz.room_code
+
+        async_to_sync(consumer.update_quiz_question)(quiz, question, None)
+        live_clue = async_to_sync(consumer.advance_next_clue)()
+        snapshot = async_to_sync(consumer.get_rejoin_snapshot)(
+            participant.name,
+            participant.hub_session_code,
+        )
+
+        self.assertTrue(snapshot['question']['question_started_at'])
+        self.assertTrue(snapshot['question']['server_now'])
+        self.assertEqual(len(snapshot['revealed_clues']), 1)
+        rejoined_clue = snapshot['revealed_clues'][0]
+        self.assertEqual(rejoined_clue['question_id'], question.id)
+        self.assertEqual(rejoined_clue['end_time'], live_clue['end_time'])
+        self.assertEqual(rejoined_clue['sequence_end_time'], live_clue['sequence_end_time'])
+        self.assertEqual(rejoined_clue['sequence_duration'], 13)
 
     def test_monitor_uses_clue_end_time_for_running_timer_and_hides_editor(self):
         admin_user = User.objects.create_user(
@@ -775,3 +812,82 @@ class ClueRushScoreBoxTests(TransactionTestCase):
         self.assertContains(response, "type: 'participant_input_changed'", html=False)
         self.assertContains(response, "const ownResult = (data?.answers || []).find", html=False)
         self.assertContains(response, "this.showCorrectAnswer(data.correct_answer);", html=False)
+
+
+class ClueRushVhsParticipantSafeguardTests(SimpleTestCase):
+    def test_clue_rush_vhs_hooks_are_scoped_and_use_authoritative_timers(self):
+        base_dir = Path(settings.BASE_DIR)
+        template = (base_dir / 'templates' / 'clue_rush' / 'play.html').read_text(encoding='utf-8')
+        who_template = (
+            base_dir / 'templates' / 'who_is_lying' / 'play.html'
+        ).read_text(encoding='utf-8')
+        css = (base_dir / 'static' / 'themes' / 'vhs' / 'vhs.css').read_text(encoding='utf-8')
+        accessibility = (
+            base_dir / 'templates' / 'includes' / 'accessibility_widget.html'
+        ).read_text(encoding='utf-8')
+
+        self.assertIn("index.className = 'clue-rush-clue__index option-key d-none';", template)
+        self.assertIn('vhs-action-button clue-rush-submit', template)
+        self.assertIn('id="clueRushNextClueTimer"', template)
+        for shared_timer_class in (
+            'who-person-switch-timer',
+            'who-person-switch-timer__fill',
+        ):
+            self.assertIn(shared_timer_class, who_template)
+            self.assertIn(shared_timer_class, template)
+        clue_timer_start = template.index('id="clueRushNextClueTimer"')
+        clue_timer_end = template.index('id="answerOptions"', clue_timer_start)
+        clue_timer_markup = template[clue_timer_start:clue_timer_end]
+        self.assertNotIn('who-person-name-panel', clue_timer_markup)
+        self.assertNotIn('class="person-name"', clue_timer_markup)
+        self.assertIn('class="visually-hidden"', clue_timer_markup)
+        self.assertIn("this.parseServerTimestamp(clue?.end_time)", template)
+        self.assertIn("this.parseServerTimestamp(clue?.sequence_end_time)", template)
+        self.assertIn("nextProgressEl.style.setProperty('--who-person-progress', progress)", template)
+        self.assertIn("nextProgressEl.classList.add('is-resetting')", template)
+        self.assertIn("input.placeholder = 'Antwort eingeben...';", template)
+        self.assertNotIn('Type your answer here...', template)
+        self.assertIn("legacyIndex.textContent = `#${clue.order}`;", template)
+        self.assertIn("badge.textContent = 'New';", template)
+        self.assertNotIn('let timeLeft = duration;', template)
+        self.assertNotIn('--clue-rush-next-progress', template)
+
+        clue_scope = (
+            'html[data-participant-theme="vhs"] body.clue-rush-play-page '
+            '.vhs-theme-shell'
+        )
+        self.assertIn(f'{clue_scope}\n  #questionState', css)
+        self.assertIn(
+            'body.clue-rush-play-page .vhs-theme-shell #questionState '
+            '.who-person-switch-timer',
+            css,
+        )
+        self.assertIn('grid-template-columns: minmax(0, 1fr) !important;', css)
+        self.assertIn('align-content: start !important;', css)
+        self.assertIn('#questionState .question-content > *', css)
+        self.assertIn('--clue-answer-width: 560px;', css)
+        self.assertNotIn('--clue-stack-height:', css)
+        self.assertNotIn('height: var(--clue-stack-height);', css)
+        self.assertIn('align-content: start;', css)
+        self.assertIn(
+            'body.clue-rush-play-page:has(#questionState:not(.d-none))',
+            css,
+        )
+        self.assertIn('width: min(100%, var(--clue-answer-width));', css)
+        self.assertIn(
+            '--clue-rush-score-safe-area: clamp(270px, 27vw, 290px);',
+            css,
+        )
+        self.assertNotIn('.clue-rush-next-clue-timer__track', css)
+        self.assertIn('.clue-rush-clue__index', css)
+        self.assertIn('.clue-rush-clue__legacy-index, .badge', css)
+        self.assertIn('#questionState:has(#playerCluesList > :nth-child(7))', css)
+        self.assertNotIn(
+            '#questionState:has(#playerCluesList > :nth-child(7))\n'
+            '  #participantQuestionLabel',
+            css,
+        )
+        self.assertIn('@media (max-height: 780px)', css)
+        self.assertIn('#submitAnswerBtn:disabled', css)
+        self.assertIn("document.body.classList.contains('clue-rush-play-page')", accessibility)
+        self.assertIn("document.getElementById('playerSetTimeLeft')", accessibility)

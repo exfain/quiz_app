@@ -74,7 +74,8 @@ class WerWeissMehrGame(SyncBase):
             if not WerWeissMehrGame.objects.filter(room_code=code).exists():
                 return code
 
-    def start_quiz(self):
+    @transaction.atomic
+    def start_quiz(self, hub_session_code=None):
         if self.status != 'active' or self.started_at is None:
             self.status = 'active'
             self.started_at = timezone.now()
@@ -86,7 +87,34 @@ class WerWeissMehrGame(SyncBase):
             session.current_round = 0
             session.round_start_time = None
             session.round_end_time = None
-            session.save(update_fields=['phase', 'current_round', 'round_start_time', 'round_end_time'])
+            session.completed_question_ids = []
+            session.save(update_fields=[
+                'phase',
+                'current_round',
+                'round_start_time',
+                'round_end_time',
+                'completed_question_ids',
+            ])
+            session.revealed_answers.clear()
+
+            participants = self.participants.all()
+            if hub_session_code is not None:
+                participants = participants.filter(hub_session_code=hub_session_code)
+            participant_ids = list(participants.values_list('id', flat=True))
+            WerWeissMehrParticipantState.objects.filter(
+                quiz=self,
+                participant_id__in=participant_ids,
+            ).delete()
+            WerWeissMehrRoundResponse.objects.filter(
+                quiz=self,
+                participant_id__in=participant_ids,
+            ).delete()
+            WerWeissMehrPendingInput.objects.filter(
+                quiz=self,
+                participant_id__in=participant_ids,
+            ).delete()
+            participants.update(total_score=0)
+            WerWeissMehrRound.objects.filter(quiz=self).delete()
 
     def set_inactive(self):
         self.status = 'inactive'

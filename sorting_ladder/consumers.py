@@ -3,6 +3,7 @@ import asyncio
 import random
 from channels.generic.websocket import AsyncWebsocketConsumer
 from channels.db import database_sync_to_async
+from django.db import transaction
 from django.utils import timezone
 from games_hub.active_game_guard import resolve_session_game_activation_for_room
 from games_hub.lobby_return_flow import ensure_session_players_ready_for_game_start_for_room
@@ -129,6 +130,8 @@ class SortingLadderGameConsumer(AsyncWebsocketConsumer):
             await self.handle_admin_send_question(data)
         elif msg_type == 'admin_end_question':
             await self.handle_admin_end_question(data)
+        elif msg_type == 'admin_show_solution':
+            await self.handle_admin_show_solution(data)
         elif msg_type == 'participant_join':
             await self.handle_participant_join(data)
         elif msg_type == 'tutorial_completed':
@@ -452,14 +455,45 @@ class SortingLadderGameConsumer(AsyncWebsocketConsumer):
         })
 
     async def handle_admin_end_question(self, data):
-        """Ends the current question early, preventing further round submissions."""
+        """Complete the final round, or clear an already revealed set."""
         quiz = await self.get_quiz()
         if not quiz:
             return
 
         end_payload = await self.end_question_db(quiz.id)
+        if not end_payload:
+            return
 
-        for auto_result in (end_payload or {}).get('auto_results', []):
+        if end_payload.get('status') == 'rounds_remaining':
+            await self.send(text_data=json.dumps({
+                'type': 'error',
+                'message': 'Dieses Set besitzt noch weitere Runden.',
+            }))
+            return
+
+        if end_payload.get('status') == SortingLadderSession.REVEAL_REVEALED:
+            cleared = await self.clear_revealed_question_db(quiz.id)
+            if not cleared:
+                return
+            await self.channel_layer.group_send(
+                self.room_group_name,
+                {
+                    'type': 'question_ended',
+                    'message': 'Set has ended.',
+                    'is_tutorial_round': bool(end_payload.get('is_tutorial_round')),
+                }
+            )
+            await self.hub_mirror_event('question_ended', {
+                'room_code': self.room_code,
+                'game_key': 'sorting_ladder',
+                'is_tutorial_round': bool(end_payload.get('is_tutorial_round')),
+            })
+            return
+
+        if not end_payload.get('transitioned'):
+            return
+
+        for auto_result in end_payload.get('auto_results', []):
             progress_history = await self.get_participant_progress_history_for_round_result(
                 auto_result['participant_name'],
                 auto_result['hub_session_code'],
@@ -477,18 +511,42 @@ class SortingLadderGameConsumer(AsyncWebsocketConsumer):
         await self.channel_layer.group_send(
             self.room_group_name,
             {
-                'type': 'question_ended',
-                'message': 'Question has ended.',
-                'reveal_solution': True,
-                'correct_order_ids': (end_payload or {}).get('correct_order_ids', []),
-                'is_tutorial_round': bool((end_payload or {}).get('is_tutorial_round')),
+                'type': 'question_rounds_complete',
+                'message': 'Set abgeschlossen. Warte auf die Reveal-Freigabe.',
+                'reveal_state': SortingLadderSession.REVEAL_AWAITING,
+                'is_tutorial_round': bool(end_payload.get('is_tutorial_round')),
             }
         )
 
-        await self.hub_mirror_event('question_ended', {
+        await self.hub_mirror_event('question_rounds_complete', {
             'room_code': self.room_code,
             'game_key': 'sorting_ladder',
-            'is_tutorial_round': bool((end_payload or {}).get('is_tutorial_round')),
+            'is_tutorial_round': bool(end_payload.get('is_tutorial_round')),
+        })
+
+    async def handle_admin_show_solution(self, data):
+        """Reveal the completed set exactly once."""
+        quiz = await self.get_quiz()
+        if not quiz:
+            return
+
+        reveal_payload = await self.reveal_solution_db(quiz.id)
+        if not reveal_payload or not reveal_payload.get('transitioned'):
+            return
+
+        await self.channel_layer.group_send(
+            self.room_group_name,
+            {
+                'type': 'show_solution',
+                'correct_order_ids': reveal_payload['correct_order_ids'],
+                'reveal_state': SortingLadderSession.REVEAL_REVEALED,
+                'is_tutorial_round': bool(reveal_payload.get('is_tutorial_round')),
+            }
+        )
+        await self.hub_mirror_event('show_solution', {
+            'room_code': self.room_code,
+            'game_key': 'sorting_ladder',
+            'is_tutorial_round': bool(reveal_payload.get('is_tutorial_round')),
         })
 
     # -------- Participant handlers --------
@@ -563,6 +621,18 @@ class SortingLadderGameConsumer(AsyncWebsocketConsumer):
                     'type': 'round_result',
                     'participant_name': name,
                     **snapshot['latest_round_result'],
+                }))
+            if snapshot.get('reveal_state') == SortingLadderSession.REVEAL_AWAITING:
+                await self.send(text_data=json.dumps({
+                    'type': 'question_rounds_complete',
+                    'message': 'Set abgeschlossen. Warte auf die Reveal-Freigabe.',
+                    'reveal_state': SortingLadderSession.REVEAL_AWAITING,
+                }))
+            elif snapshot.get('reveal_state') == SortingLadderSession.REVEAL_REVEALED:
+                await self.send(text_data=json.dumps({
+                    'type': 'show_solution',
+                    'correct_order_ids': snapshot.get('reveal_order_ids', []),
+                    'reveal_state': SortingLadderSession.REVEAL_REVEALED,
                 }))
             if snapshot.get('round_started'):
                 await self.send(text_data=json.dumps({
@@ -857,8 +927,28 @@ class SortingLadderGameConsumer(AsyncWebsocketConsumer):
         await self.send(text_data=json.dumps({
             'type': 'question_ended',
             'message': event.get('message', ''),
-            'reveal_solution': bool(event.get('reveal_solution')),
+            'is_tutorial_round': event.get('is_tutorial_round', False),
+        }))
+
+    async def question_rounds_complete(self, event):
+        await self.send(text_data=json.dumps({
+            'type': 'question_rounds_complete',
+            'message': event.get('message', ''),
+            'reveal_state': event.get(
+                'reveal_state',
+                SortingLadderSession.REVEAL_AWAITING,
+            ),
+            'is_tutorial_round': event.get('is_tutorial_round', False),
+        }))
+
+    async def show_solution(self, event):
+        await self.send(text_data=json.dumps({
+            'type': 'show_solution',
             'correct_order_ids': event.get('correct_order_ids', []),
+            'reveal_state': event.get(
+                'reveal_state',
+                SortingLadderSession.REVEAL_REVEALED,
+            ),
             'is_tutorial_round': event.get('is_tutorial_round', False),
         }))
 
@@ -874,6 +964,7 @@ class SortingLadderGameConsumer(AsyncWebsocketConsumer):
             'points': event['points'],
             'is_tutorial_round': event.get('is_tutorial_round', False),
             'has_more_rounds': event['has_more_rounds'],
+            'set_has_more_rounds': event.get('set_has_more_rounds', False),
             'per_question_rounds': event.get('per_question_rounds'),
             'correct_order_ids': event.get('correct_order_ids'),
             'progress_history': event.get('progress_history', []),
@@ -1000,6 +1091,7 @@ class SortingLadderGameConsumer(AsyncWebsocketConsumer):
         session.active_element = None
         session.current_round = 0
         session.is_round_active = False
+        session.reveal_state = SortingLadderSession.REVEAL_ACTIVE
 
         if time_limit_seconds:
             try:
@@ -1062,6 +1154,7 @@ class SortingLadderGameConsumer(AsyncWebsocketConsumer):
         session.shuffled_item_ids = ",".join(shuffled_ids)
         session.current_round = 1
         session.is_round_active = True
+        session.reveal_state = SortingLadderSession.REVEAL_ACTIVE
 
         # Determine the effective per-round time limit: explicit override from
         # the admin/session if provided, otherwise fall back to the
@@ -1140,7 +1233,10 @@ class SortingLadderGameConsumer(AsyncWebsocketConsumer):
 
         # Do not accept submissions if question is no longer active.
         now = timezone.now()
-        if not session.is_round_active:
+        if (
+            not session.is_round_active
+            or session.reveal_state != SortingLadderSession.REVEAL_ACTIVE
+        ):
             return None
         round_has_timed_out = bool(session.round_end_time and now > session.round_end_time)
         if round_has_timed_out and not round_time_out:
@@ -1192,10 +1288,9 @@ class SortingLadderGameConsumer(AsyncWebsocketConsumer):
                 except Exception:
                     pass
 
-            has_more_rounds = (not participant.is_eliminated) and total_rounds_for_participant < len(shuffled_ids) - 1
-
-            full_sorted_ids = list(SortingItem.objects.filter(topic=question).order_by('correct_rank'))
-            full_sorted_ids = [item.id for item in full_sorted_ids]
+            max_rounds = max(len(shuffled_ids) - 1, 0)
+            set_has_more_rounds = round_number < max_rounds
+            has_more_rounds = (not participant.is_eliminated) and set_has_more_rounds
 
             return {
                 'question_id': question.id,
@@ -1206,8 +1301,9 @@ class SortingLadderGameConsumer(AsyncWebsocketConsumer):
                 'points': points_for_question,
                 'is_tutorial_round': is_tutorial_round,
                 'has_more_rounds': bool(has_more_rounds),
+                'set_has_more_rounds': bool(set_has_more_rounds),
                 'per_question_rounds': correct_rounds_for_question,
-                'correct_order_ids': [] if bool(has_more_rounds) else full_sorted_ids,
+                'correct_order_ids': [],
             }
 
         try:
@@ -1298,7 +1394,8 @@ class SortingLadderGameConsumer(AsyncWebsocketConsumer):
             participant=participant,
             question=question,
         ).count()
-        has_more_rounds = (not participant.is_eliminated) and total_rounds_for_participant < len(shuffled_ids) - 1
+        set_has_more_rounds = expected_round < max_rounds
+        has_more_rounds = (not participant.is_eliminated) and set_has_more_rounds
 
         correct_rounds_for_question = RoundSubmission.objects.filter(
             quiz=quiz,
@@ -1314,10 +1411,6 @@ class SortingLadderGameConsumer(AsyncWebsocketConsumer):
             except Exception:
                 pass
 
-        full_sorted_ids = list(
-            SortingItem.objects.filter(topic=question).order_by('correct_rank').values_list('id', flat=True)
-        )
-
         return {
             'question_id': question.id,
             'round_number': expected_round,
@@ -1327,8 +1420,9 @@ class SortingLadderGameConsumer(AsyncWebsocketConsumer):
             'points': points_for_question,
             'is_tutorial_round': is_tutorial_round,
             'has_more_rounds': bool(has_more_rounds),
+            'set_has_more_rounds': bool(set_has_more_rounds),
             'per_question_rounds': correct_rounds_for_question,
-            'correct_order_ids': sorted_visible_ids if bool(has_more_rounds) else full_sorted_ids,
+            'correct_order_ids': sorted_visible_ids if set_has_more_rounds else [],
         }
 
     def _finalize_pending_round_for_participant(self, quiz, session, question, participant):
@@ -1399,6 +1493,8 @@ class SortingLadderGameConsumer(AsyncWebsocketConsumer):
             return None
 
         if not topic:
+            return None
+        if session.reveal_state != SortingLadderSession.REVEAL_ACTIVE:
             return None
 
         # Current question-based flow: advance round marker/timer without
@@ -1560,24 +1656,46 @@ class SortingLadderGameConsumer(AsyncWebsocketConsumer):
 
     @database_sync_to_async
     def end_question_db(self, quiz_id):
-        """Mark the current question as ended on the session."""
-        try:
-            quiz = SortingLadderGame.objects.select_related('session').get(id=quiz_id)
-            session = quiz.session
-        except (SortingLadderGame.DoesNotExist, SortingLadderSession.DoesNotExist, AttributeError):
-            return
+        """Atomically complete the final round without revealing its solution."""
+        with transaction.atomic():
+            try:
+                quiz = (
+                    SortingLadderGame.objects
+                    .select_for_update()
+                    .select_related('current_question')
+                    .get(id=quiz_id)
+                )
+                session = SortingLadderSession.objects.select_for_update().get(quiz=quiz)
+            except (SortingLadderGame.DoesNotExist, SortingLadderSession.DoesNotExist):
+                return None
 
-        auto_results = []
-        correct_order_ids = []
-        resolved_session_code = self._get_hub_session_code_for_room_sync()
-        is_tutorial_round = False
-        if quiz.current_question:
-            is_tutorial_round = is_unit_tutorial_question(
-                'sorting_ladder',
-                self.room_code,
-                resolved_session_code,
-                quiz.current_question_id,
-            )
+            question = quiz.current_question
+            if not question:
+                return None
+
+            if session.reveal_state == SortingLadderSession.REVEAL_REVEALED:
+                return {
+                    'status': SortingLadderSession.REVEAL_REVEALED,
+                    'transitioned': False,
+                }
+            if session.reveal_state == SortingLadderSession.REVEAL_AWAITING:
+                return {
+                    'status': SortingLadderSession.REVEAL_AWAITING,
+                    'transitioned': False,
+                }
+
+            try:
+                shuffled_ids = [int(value) for value in session.shuffled_item_ids.split(',') if value]
+            except ValueError:
+                shuffled_ids = []
+            max_rounds = max(len(shuffled_ids) - 1, 0)
+            if max_rounds <= 0 or int(session.current_round or 0) < max_rounds:
+                return {
+                    'status': 'rounds_remaining',
+                    'transitioned': False,
+                }
+
+            auto_results = []
             if session.is_round_active:
                 active_participants = list(
                     quiz.participants.filter(is_active=True, is_eliminated=False)
@@ -1586,32 +1704,119 @@ class SortingLadderGameConsumer(AsyncWebsocketConsumer):
                     auto_result = self._finalize_pending_round_for_participant(
                         quiz,
                         session,
-                        quiz.current_question,
+                        question,
                         participant,
                     )
                     if auto_result:
                         auto_results.append(auto_result)
-            correct_order_ids = list(
-                SortingItem.objects.filter(topic=quiz.current_question)
-                .order_by('correct_rank')
-                .values_list('id', flat=True)
-            )
 
-        # Reset current question to None
-        quiz.current_question = None
-        quiz.save()
-        
-        session.is_round_active = False
-        session.round_end_time = timezone.now()
-        session.save(update_fields=['is_round_active', 'round_end_time'])
+            session.is_round_active = False
+            session.round_end_time = timezone.now()
+            session.reveal_state = SortingLadderSession.REVEAL_AWAITING
+            session.save(update_fields=[
+                'is_round_active',
+                'round_end_time',
+                'reveal_state',
+            ])
+
         self._clear_room_pending_round_orders(quiz.room_code)
-        unit_tutorial = finish_current_unit_tutorial('sorting_ladder', self.room_code, resolved_session_code)
-
+        resolved_session_code = self._get_hub_session_code_for_room_sync()
+        is_tutorial_round = is_unit_tutorial_question(
+            'sorting_ladder',
+            self.room_code,
+            resolved_session_code,
+            question.id,
+        )
+        unit_tutorial = finish_current_unit_tutorial(
+            'sorting_ladder',
+            self.room_code,
+            resolved_session_code,
+        )
         return {
-            'correct_order_ids': correct_order_ids,
+            'status': SortingLadderSession.REVEAL_AWAITING,
+            'transitioned': True,
             'auto_results': auto_results,
             'is_tutorial_round': bool(unit_tutorial.get('is_tutorial_round')) or is_tutorial_round,
         }
+
+    @database_sync_to_async
+    def reveal_solution_db(self, quiz_id):
+        """Move an awaiting set to revealed and return its solution once."""
+        with transaction.atomic():
+            try:
+                quiz = (
+                    SortingLadderGame.objects
+                    .select_for_update()
+                    .select_related('current_question')
+                    .get(id=quiz_id)
+                )
+                session = SortingLadderSession.objects.select_for_update().get(quiz=quiz)
+            except (SortingLadderGame.DoesNotExist, SortingLadderSession.DoesNotExist):
+                return None
+
+            question = quiz.current_question
+            if not question or session.reveal_state != SortingLadderSession.REVEAL_AWAITING:
+                return {
+                    'transitioned': False,
+                    'status': session.reveal_state,
+                }
+
+            correct_order_ids = list(
+                SortingItem.objects.filter(topic=question)
+                .order_by('correct_rank')
+                .values_list('id', flat=True)
+            )
+            session.reveal_state = SortingLadderSession.REVEAL_REVEALED
+            session.save(update_fields=['reveal_state'])
+
+        resolved_session_code = self._get_hub_session_code_for_room_sync()
+        return {
+            'transitioned': True,
+            'status': SortingLadderSession.REVEAL_REVEALED,
+            'correct_order_ids': correct_order_ids,
+            'is_tutorial_round': is_unit_tutorial_question(
+                'sorting_ladder',
+                self.room_code,
+                resolved_session_code,
+                question.id,
+            ),
+        }
+
+    @database_sync_to_async
+    def clear_revealed_question_db(self, quiz_id):
+        """Clear a revealed set so the host can select the next one."""
+        with transaction.atomic():
+            try:
+                quiz = SortingLadderGame.objects.select_for_update().get(id=quiz_id)
+                session = SortingLadderSession.objects.select_for_update().get(quiz=quiz)
+            except (SortingLadderGame.DoesNotExist, SortingLadderSession.DoesNotExist):
+                return False
+
+            if (
+                not quiz.current_question_id
+                or session.reveal_state != SortingLadderSession.REVEAL_REVEALED
+            ):
+                return False
+
+            quiz.current_question = None
+            quiz.save(update_fields=['current_question'])
+            session.reveal_state = SortingLadderSession.REVEAL_ACTIVE
+            session.is_round_active = False
+            session.current_round = 0
+            session.round_start_time = None
+            session.round_end_time = None
+            session.shuffled_item_ids = ''
+            session.save(update_fields=[
+                'reveal_state',
+                'is_round_active',
+                'current_round',
+                'round_start_time',
+                'round_end_time',
+                'shuffled_item_ids',
+            ])
+
+        self._clear_room_pending_round_orders(quiz.room_code)
+        return True
 
     @database_sync_to_async
     def get_or_create_participant(self, name, hub_session_code):
@@ -1693,6 +1898,13 @@ class SortingLadderGameConsumer(AsyncWebsocketConsumer):
         latest_round_result = None
         round_started = None
         max_rounds = max(len(shuffled_ids) - 1, 0)
+        reveal_order_ids = []
+        if session.reveal_state == SortingLadderSession.REVEAL_REVEALED:
+            reveal_order_ids = list(
+                SortingItem.objects.filter(topic=question)
+                .order_by('correct_rank')
+                .values_list('id', flat=True)
+            )
 
         if submissions:
             latest = submissions[-1]
@@ -1713,21 +1925,21 @@ class SortingLadderGameConsumer(AsyncWebsocketConsumer):
             else:
                 sorted_visible = []
 
-            full_sorted = list(
-                SortingItem.objects.filter(topic=question).order_by('correct_rank').values_list('id', flat=True)
-            )
+            result_round = len(submissions)
+            set_has_more_rounds = result_round < max_rounds
 
             latest_round_result = {
                 'question_id': question.id,
-                'round_number': len(submissions),
+                'round_number': result_round,
                 'is_correct': latest.is_correct,
                 'rounds_survived': participant.rounds_survived,
                 'is_eliminated': participant.is_eliminated,
                 'points': points_for_question,
                 'is_tutorial_round': is_tutorial_round,
                 'has_more_rounds': bool(has_more_rounds),
+                'set_has_more_rounds': bool(set_has_more_rounds),
                 'per_question_rounds': correct_rounds,
-                'correct_order_ids': sorted_visible if has_more_rounds else full_sorted,
+                'correct_order_ids': sorted_visible if set_has_more_rounds else [],
                 'progress_history': self._build_participant_progress_history_sync(
                     quiz,
                     participant,
@@ -1737,7 +1949,12 @@ class SortingLadderGameConsumer(AsyncWebsocketConsumer):
 
         # If participant has not submitted the current server round yet and is
         # still active, explicitly sync round start so interaction unlocks.
-        if session.is_round_active and not participant.is_eliminated and len(submissions) < int(session.current_round or 0):
+        if (
+            session.reveal_state == SortingLadderSession.REVEAL_ACTIVE
+            and session.is_round_active
+            and not participant.is_eliminated
+            and len(submissions) < int(session.current_round or 0)
+        ):
             round_started = {
                 'question_id': question.id,
                 'round_number': session.current_round,
@@ -1749,6 +1966,8 @@ class SortingLadderGameConsumer(AsyncWebsocketConsumer):
             'question_payload': question_payload,
             'latest_round_result': latest_round_result,
             'round_started': round_started,
+            'reveal_state': session.reveal_state,
+            'reveal_order_ids': reveal_order_ids,
         }
 
     @database_sync_to_async
@@ -1763,7 +1982,12 @@ class SortingLadderGameConsumer(AsyncWebsocketConsumer):
 
         if quiz.status != 'active':
             return False
-        if not question or not session.is_round_active or participant.is_eliminated:
+        if (
+            not question
+            or not session.is_round_active
+            or session.reveal_state != SortingLadderSession.REVEAL_ACTIVE
+            or participant.is_eliminated
+        ):
             return False
 
         try:

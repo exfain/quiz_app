@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Wann war das?: {{ game.title }}</title>
+    <title>Wann war das?: {{ game.title }} - QuizMaster</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
     <style>
         @font-face { font-family: "Walkway Condensed"; src: url("/static/fonts/Walkway%20Condensed%20SemiBold.ttf") format("truetype"); font-style: normal; font-weight: 400 700; font-display: swap; }
@@ -23,36 +23,57 @@
     </style>
 </head>
 <body class="wann-war-das-play-page">
-<main class="game-shell">
+<main class="game-shell" data-participant-name="{{ participant.name }}">
     {% include 'includes/_unit_tutorial_notice.html' with tutorial_notice_label='Tutorialfrage' %}
     <div class="game-card">
-        <div class="d-flex flex-wrap justify-content-between gap-3 align-items-start mb-4">
-            <div>
-                <div class="text-info text-uppercase fw-bold small">Wann war das?</div>
-                <h1 class="h3 mb-1 qa-game-title-font">{{ game.title }}</h1>
-                {% include 'includes/_session_game_number.html' with game_key='wann_war_das' room_code=game.room_code %}
-                <div class="text-secondary">Runde <span id="questionNumber">{{ game.current_question_number|default:0 }}</span></div>
+        <div class="wann-war-das-summary d-flex flex-wrap justify-content-between gap-3 align-items-start mb-4">
+            <div class="wann-war-das-meta">
+                <div class="wann-war-das-type-label text-info text-uppercase fw-bold small">Wann war das?</div>
+                <div class="wann-war-das-game-line" title="{{ game.title }}">
+                    <h1 class="h3 mb-1 qa-game-title-font">{{ game.title }}</h1>
+                    {% include 'includes/_session_game_number.html' with game_key='wann_war_das' room_code=game.room_code %}
+                </div>
+                <div class="wann-war-das-round-meta text-secondary">Runde <span id="questionNumber">{{ game.current_question_number|default:0 }}</span></div>
             </div>
-            <div class="metric text-end">
-                <div class="small text-secondary">Deine Punkte</div>
-                <div class="h3 mb-0" id="ownScore">{{ participant.total_score }}</div>
+            <div class="wann-war-das-score-metric metric text-end">
+                <div class="wann-war-das-score-total">
+                    <div class="small text-secondary">Deine Punkte</div>
+                    <div class="h3 mb-0" id="ownScore">{{ participant.total_score }}</div>
+                </div>
+                <div class="wann-war-das-score-box score-box d-none" aria-label="Punkte pro Runde">
+                    <h2 class="score-box__title">Punkte</h2>
+                    <div class="score-box__list" id="wannWarDasScoreRows" aria-live="polite"></div>
+                </div>
             </div>
         </div>
 
         <div id="questionArea" class="d-none">
             <p class="lead fs-3" id="questionText"></p>
-            <div class="row g-2 mb-3">
-                <div class="col-4"><div class="metric"><div class="small text-secondary">Toleranz</div><strong id="toleranceText">-</strong></div></div>
-                <div class="col-4"><div class="metric"><div class="small text-secondary">Punkte jetzt</div><strong id="pointsText">-</strong></div></div>
-                <div class="col-4"><div class="metric"><div class="small text-secondary">Restzeit</div><strong id="remainingText">-</strong></div></div>
+            <div class="wann-war-das-current-points metric mb-3">
+                <div class="small text-secondary">Punkte jetzt</div>
+                <strong id="pointsText">-</strong>
             </div>
-            <p class="small text-secondary">Je frueher du innerhalb der Toleranz antwortest, desto mehr Punkte bekommst du.</p>
+            <div
+                class="wann-war-das-tolerance"
+                id="toleranceScale"
+                role="img"
+                aria-label="Aktuelle Toleranz"
+                style="--tolerance-progress: 0"
+            >
+                <div class="wann-war-das-tolerance__timer wann-war-das-tolerance__timer--top" aria-hidden="true">
+                    <span class="wann-war-das-tolerance__fill vhs-theme-timer-fill"></span>
+                </div>
+                <div class="wann-war-das-tolerance__ticks" id="toleranceTicks"></div>
+                <div class="wann-war-das-tolerance__timer wann-war-das-tolerance__timer--bottom" aria-hidden="true">
+                    <span class="wann-war-das-tolerance__fill vhs-theme-timer-fill"></span>
+                </div>
+            </div>
             <div id="answerForm" class="row g-2 align-items-center">
                 <div class="col-sm-8">
                     <input type="number" step="any" class="form-control answer-input" id="answerInput" placeholder="Jahreszahl / Zahl">
                 </div>
                 <div class="col-sm-4">
-                    <button class="btn btn-info w-100 btn-lg fw-bold" id="submitBtn">Einloggen</button>
+                    <button class="btn btn-info w-100 btn-lg fw-bold vhs-quick-quiz-submit" id="submitBtn" aria-pressed="false">Einloggen</button>
                 </div>
             </div>
             <div class="alert alert-success mt-3 d-none" id="submittedAlert">Antwort abgegeben. Warte auf Aufloesung.</div>
@@ -65,18 +86,38 @@
             </p>
         </div>
 
-        <div id="revealArea" class="alert alert-light mt-4 d-none text-dark">
-            <h2 class="h5">Aufloesung</h2>
-            <div>Richtige Antwort: <strong id="correctAnswerText"></strong></div>
-            <div>Deine Antwort: <strong id="ownAnswerText"></strong></div>
-            <div>Abweichung: <strong id="deviationText"></strong></div>
-            <div>Toleranz beim Submit: <strong id="answerToleranceText"></strong></div>
-            <div>Punkte: <strong id="answerPointsText"></strong></div>
-            <p class="mb-0 mt-2" id="explanationText"></p>
+        <div id="revealArea" class="alert alert-light mt-4 d-none text-dark wann-war-das-reveal" role="status" aria-live="polite">
+            <div class="wann-war-das-reveal__hero">
+                <span class="wann-war-das-reveal__kicker">AUFL&Ouml;SUNG</span>
+                <h2>RICHTIGE ANTWORT</h2>
+                <strong class="wann-war-das-reveal__answer" id="correctAnswerText"></strong>
+            </div>
+            <div class="wann-war-das-reveal__metrics">
+                <div class="wann-war-das-reveal__metric">
+                    <span>DEINE ANTWORT</span>
+                    <strong id="ownAnswerText"></strong>
+                </div>
+                <div class="wann-war-das-reveal__metric">
+                    <span>ABWEICHUNG</span>
+                    <strong id="deviationText"></strong>
+                </div>
+                <div class="wann-war-das-reveal__metric">
+                    <span>TOLERANZ BEIM SUBMIT</span>
+                    <strong id="answerToleranceText"></strong>
+                </div>
+                <div class="wann-war-das-reveal__metric">
+                    <span>PUNKTE</span>
+                    <strong id="answerPointsText"></strong>
+                </div>
+            </div>
+            <div class="wann-war-das-reveal__explanation">
+                <span>ERKL&Auml;RUNG</span>
+                <p class="mb-0" id="explanationText"></p>
+            </div>
         </div>
 
-        <div class="mt-4">
-            <button type="button" class="btn btn-outline-light btn-sm" id="returnToLobbyBtn">Zur Lobby zurückkehren</button>
+        <div class="d-none" id="returnToLobbyActions" hidden>
+            <button type="button" class="btn btn-outline-light btn-sm" id="returnToLobbyBtn" disabled aria-hidden="true">Zur Lobby zurückkehren</button>
         </div>
     </div>
 </main>
@@ -91,6 +132,7 @@ const HUB_SESSION = '{{ hub_session|escapejs }}';
 const GAME_TITLE = '{{ game.title|escapejs }}';
 let socket = null;
 let currentState = null;
+let toleranceBoundaryTimer = null;
 const lobbyReturnController = createHubLobbyReturnController({
     sessionCode: '{{ hub_session|default_if_none:""|escapejs }}',
     gameKey: 'wann_war_das',
@@ -111,6 +153,163 @@ function send(payload) {
     socket.send(JSON.stringify({ hub_session: HUB_SESSION, participant_name: PARTICIPANT_NAME, ...payload }));
 }
 
+function setReturnToLobbyAvailable(isAvailable) {
+    const actions = document.getElementById('returnToLobbyActions');
+    const button = document.getElementById('returnToLobbyBtn');
+    if (!actions || !button) return;
+    actions.hidden = !isAvailable;
+    actions.classList.toggle('d-none', !isAvailable);
+    button.disabled = !isAvailable;
+    button.setAttribute('aria-hidden', isAvailable ? 'false' : 'true');
+}
+
+function renderRoundScores(state) {
+    const list = document.getElementById('wannWarDasScoreRows');
+    if (!list) return;
+    const questions = Array.isArray(state.scorebox?.questions) ? state.scorebox.questions : [];
+    const participant = state.participant || {};
+    const participantRows = Array.isArray(state.scorebox?.rows) ? state.scorebox.rows : [];
+    const ownRow = participantRows.find((row) => (
+        Number(row.participant_id) === Number(participant.id)
+    ));
+    const entries = new Map(
+        (Array.isArray(ownRow?.entries) ? ownRow.entries : [])
+            .map((entry) => [Number(entry.question_id), entry]),
+    );
+    const rows = document.createDocumentFragment();
+
+    questions.forEach((question) => {
+        const roundNumber = Number.parseInt(question.number, 10);
+        const maxPoints = Number.parseInt(question.max_points, 10);
+        if (!Number.isFinite(roundNumber) || !Number.isFinite(maxPoints)) return;
+        const entry = entries.get(Number(question.id));
+        const hasPoints = entry?.points !== null && entry?.points !== undefined;
+        const row = document.createElement('div');
+        row.className = `score-box__row is-${hasPoints ? 'played' : (entry?.status || 'upcoming')}`;
+        row.dataset.maxPoints = String(maxPoints);
+        row.dataset.pointsEarned = hasPoints ? String(entry.points) : '';
+
+        const badge = document.createElement('span');
+        badge.className = 'score-box__badge';
+        badge.dataset.vhsRoundNumber = String(roundNumber);
+        badge.textContent = String(roundNumber);
+
+        const value = document.createElement('span');
+        value.className = 'score-box__value';
+        if (hasPoints) {
+            value.textContent = `${entry.points}/${maxPoints}`;
+        } else {
+            const empty = document.createElement('span');
+            empty.className = 'score-box__empty';
+            empty.textContent = '_';
+            value.append(empty, document.createTextNode(`/${maxPoints}`));
+        }
+        row.append(badge, value);
+        rows.appendChild(row);
+    });
+    list.replaceChildren(rows);
+}
+
+function setToleranceCells(ticks, tolerance) {
+    ticks.querySelectorAll('[data-tolerance-value]').forEach((tick) => {
+        const value = Math.abs(Number(tick.dataset.toleranceValue));
+        tick.classList.toggle('is-active', value <= tolerance + Number.EPSILON);
+        tick.classList.toggle('is-center', value === 0);
+    });
+}
+
+function setToleranceFront(scale, progress) {
+    const normalizedProgress = Math.min(1, Math.max(0, progress));
+    const inset = (1 - normalizedProgress) * 50;
+    scale.style.setProperty('--tolerance-progress', String(normalizedProgress));
+    scale.style.setProperty('--tolerance-inset', `${inset}%`);
+}
+
+function renderToleranceScale(question, timer) {
+    const scale = document.getElementById('toleranceScale');
+    const ticks = document.getElementById('toleranceTicks');
+    if (!scale || !ticks || !question) return;
+
+    const increment = Math.max(Number(question.tolerance_increment) || 1, Number.EPSILON);
+    const maxTolerance = Math.max(0, Number(question.max_tolerance) || 0);
+    const currentTolerance = Math.min(
+        maxTolerance,
+        Math.max(0, Number(timer?.current_tolerance ?? question.start_tolerance) || 0),
+    );
+    const scaleKey = `${increment}:${maxTolerance}`;
+    if (ticks.dataset.scaleKey !== scaleKey) {
+        const magnitudes = [0];
+        for (let value = increment; value < maxTolerance - Number.EPSILON; value += increment) {
+            magnitudes.push(value);
+        }
+        if (maxTolerance > 0 && Math.abs(magnitudes.at(-1) - maxTolerance) > Number.EPSILON) {
+            magnitudes.push(maxTolerance);
+        }
+        const values = [
+            ...magnitudes.slice(1).reverse().map((value) => -value),
+            0,
+            ...magnitudes.slice(1),
+        ];
+        scale.style.setProperty('--tolerance-tick-count', String(values.length));
+        const fragment = document.createDocumentFragment();
+        values.forEach((value) => {
+            const tick = document.createElement('span');
+            tick.className = 'wann-war-das-tolerance__tick';
+            tick.dataset.toleranceValue = String(value);
+            tick.textContent = value > 0 ? `+${fmt(value)}` : fmt(value);
+            fragment.appendChild(tick);
+        });
+        ticks.replaceChildren(fragment);
+        ticks.dataset.scaleKey = scaleKey;
+    }
+
+    setToleranceCells(ticks, currentTolerance);
+    window.clearTimeout(toleranceBoundaryTimer);
+    toleranceBoundaryTimer = null;
+    const secondsPerStep = Math.max(1, Number(question.seconds_per_step) || 1);
+    const sideCellCount = Math.max(0, (ticks.children.length - 1) / 2);
+    const elapsedSeconds = Number(timer?.elapsed_seconds);
+    const rawStepIndex = Number.parseInt(timer?.step_index, 10);
+    if (!Number.isFinite(elapsedSeconds) || !Number.isFinite(rawStepIndex) || sideCellCount === 0) {
+        scale.classList.add('is-syncing');
+        setToleranceFront(scale, maxTolerance === 0 ? 1 : 0);
+        void scale.offsetWidth;
+        scale.classList.remove('is-syncing');
+        scale.setAttribute('aria-label', `Aktuelle Toleranz plus/minus ${fmt(currentTolerance)}`);
+        return;
+    }
+
+    const stepIndex = Math.min(sideCellCount, Math.max(0, rawStepIndex));
+    const elapsedInStep = Math.min(
+        secondsPerStep,
+        Math.max(0, elapsedSeconds - (stepIndex * secondsPerStep)),
+    );
+    const stepProgress = elapsedInStep / secondsPerStep;
+    const segmentStart = stepIndex === 0 ? 0 : stepIndex - 0.5;
+    const segmentEnd = stepIndex + 0.5;
+    const halfScaleWidth = sideCellCount + 0.5;
+    const currentDistance = segmentStart + ((segmentEnd - segmentStart) * stepProgress);
+    const currentProgress = currentDistance / halfScaleWidth;
+    const targetProgress = segmentEnd / halfScaleWidth;
+    const remainingStageSeconds = Math.max(0, secondsPerStep - elapsedInStep);
+
+    scale.classList.add('is-syncing');
+    setToleranceFront(scale, currentProgress);
+    void scale.offsetWidth;
+    scale.classList.remove('is-syncing');
+    scale.style.setProperty('--tolerance-transition-duration', `${remainingStageSeconds}s`);
+    setToleranceFront(scale, targetProgress);
+    scale.setAttribute('aria-label', `Aktuelle Toleranz plus/minus ${fmt(currentTolerance)}`);
+
+    if (stepIndex < sideCellCount && remainingStageSeconds > 0) {
+        const nextTolerance = Math.min(maxTolerance, currentTolerance + increment);
+        toleranceBoundaryTimer = window.setTimeout(() => {
+            setToleranceCells(ticks, nextTolerance);
+            scale.setAttribute('aria-label', `Aktuelle Toleranz plus/minus ${fmt(nextTolerance)}`);
+        }, remainingStageSeconds * 1000);
+    }
+}
+
 function renderStartWaitingText() {
     const waitingText = document.getElementById('waitingText');
     waitingText.innerHTML = '';
@@ -126,7 +325,9 @@ function renderStartWaitingText() {
 function renderState(state) {
     window.sessionGameStartIntro?.handleState(state);
     currentState = state;
-    if (state.event_type === 'game_ended' || state.game?.status === 'completed') {
+    const gameEnded = state.event_type === 'game_ended' || state.game?.status === 'completed';
+    setReturnToLobbyAvailable(gameEnded);
+    if (gameEnded) {
         window.location.href = `/wann-war-das/result/${ROOM_CODE}/${encodeURIComponent(PARTICIPANT_NAME)}/?hub_session=${encodeURIComponent(HUB_SESSION)}`;
         return;
     }
@@ -141,6 +342,7 @@ function renderState(state) {
     const isActive = question && state.question_state === 'active';
     const isReveal = question && state.question_state === 'revealed';
     document.getElementById('ownScore').textContent = own.score ?? 0;
+    renderRoundScores(state);
     document.getElementById('questionNumber').textContent = state.question_number || 0;
     document.getElementById('questionArea').classList.toggle('d-none', !question);
     document.getElementById('waitingArea').classList.toggle('d-none', !!question);
@@ -151,16 +353,18 @@ function renderState(state) {
         return;
     }
     document.getElementById('questionText').textContent = question.question_text || '';
-    document.getElementById('toleranceText').textContent = `±${fmt(timer.current_tolerance)}`;
+    renderToleranceScale(question, timer);
     document.getElementById('pointsText').textContent = fmt(timer.current_points);
-    document.getElementById('remainingText').textContent = timer.remaining_seconds === null || timer.remaining_seconds === undefined ? '-' : `${timer.remaining_seconds}s`;
     document.getElementById('answerInput').disabled = !state.can_answer;
-    document.getElementById('submitBtn').disabled = !state.can_answer;
+    const submitButton = document.getElementById('submitBtn');
+    submitButton.disabled = !state.can_answer;
+    submitButton.classList.toggle('is-selected', Boolean(ownAnswer));
+    submitButton.setAttribute('aria-pressed', ownAnswer ? 'true' : 'false');
     document.getElementById('submittedAlert').classList.toggle('d-none', !ownAnswer || isReveal);
     if (ownAnswer) document.getElementById('answerInput').value = ownAnswer.raw_answer || '';
     document.getElementById('revealArea').classList.toggle('d-none', !isReveal);
     if (isReveal) {
-        document.getElementById('correctAnswerText').textContent = question.formatted_correct_answer || fmt(question.correct_answer);
+        document.getElementById('correctAnswerText').textContent = fmt(question.correct_answer);
         document.getElementById('ownAnswerText').textContent = ownAnswer ? ownAnswer.formatted_answer : 'keine Antwort';
         document.getElementById('deviationText').textContent = ownAnswer && ownAnswer.absolute_deviation !== null ? fmt(ownAnswer.absolute_deviation) : '-';
         document.getElementById('answerToleranceText').textContent = ownAnswer ? `±${fmt(ownAnswer.tolerance_at_submit)}` : '-';
@@ -185,6 +389,7 @@ function connect() {
 document.getElementById('submitBtn').addEventListener('click', () => {
     send({ type: 'participant_submit_answer', answer: document.getElementById('answerInput').value });
 });
+setReturnToLobbyAvailable(false);
 setInterval(() => send({ type: 'get_state' }), 1000);
 connect();
 </script>

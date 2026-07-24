@@ -253,7 +253,7 @@ def start_game(request, room_code):
         play_tutorial,
         validate=False,
     )
-    quiz.start_quiz()
+    quiz.start_quiz(hub_session_code=hub_session)
     tutorial_payload = activate_tutorial_runtime(
         'wer_weiss_mehr',
         quiz.room_code,

@@ -2928,7 +2928,7 @@ html[data-participant-theme="arcade"] .qa-arcade-wait-loader-10::before {
     card.classList.add('vhs-end-screen');
 
     var heading = card.querySelector(':scope > h1, :scope > h2');
-    setReversibleVhsText(heading, 'SPIEL BEENDET');
+    setReversibleVhsText(heading, card.dataset.vhsEndLabel || 'SPIEL BEENDET');
 
     Array.from(card.children).forEach(function (child) {
       if (child.tagName === 'P') detachVhsEndscreenNode(child);
@@ -3400,7 +3400,11 @@ html[data-participant-theme="arcade"] .qa-arcade-wait-loader-10::before {
           value.dataset.vhsOriginalHtml = value.innerHTML;
         }
         var rawMaxPoints = row.dataset.maxPoints;
-        var rawEarnedPoints = row.dataset.pointsEarned;
+        var rawEarnedPoints = row.dataset.pointsEarned ?? row.dataset.earnedPoints;
+        var blackjackScoreBox = row.closest('#blackjackScoreBox');
+        var blackjackScoreMode = blackjackScoreBox
+          ? blackjackScoreBox.dataset.blackjackScoreMode
+          : '';
         var maxPoints = rawMaxPoints === undefined || rawMaxPoints === '' ? null : Number(rawMaxPoints);
         var earnedPoints = rawEarnedPoints === undefined || rawEarnedPoints === '' ? null : Number(rawEarnedPoints);
         var existingText = value.textContent.trim();
@@ -3408,6 +3412,17 @@ html[data-participant-theme="arcade"] .qa-arcade-wait-loader-10::before {
           || row.classList.contains('is-upcoming')
           || row.classList.contains('is-pending')
           || Boolean(value.querySelector('.score-box__empty'));
+        if (
+          blackjackScoreMode === 'simple'
+          && row.classList.contains('is-current')
+          && blackjackScoreBox
+        ) {
+          var currentStars = Number(blackjackScoreBox.dataset.currentStars);
+          if (Number.isFinite(currentStars)) {
+            earnedPoints = currentStars;
+            isPending = false;
+          }
+        }
         if (!Number.isFinite(maxPoints) || maxPoints <= 0) {
           var existingScore = existingText.match(/^(-?\d+(?:\.\d+)?)\s*\/\s*(\d+(?:\.\d+)?)$/);
           if (existingScore) {
@@ -3422,18 +3437,26 @@ html[data-participant-theme="arcade"] .qa-arcade-wait-loader-10::before {
         }
         var hasKnownMaxPoints = Number.isFinite(maxPoints) && maxPoints > 0;
         if (hasKnownMaxPoints || Number.isFinite(earnedPoints) || isPending) {
-          var fractionText = (Number.isFinite(earnedPoints) ? earnedPoints : '_')
-            + '/'
-            + (hasKnownMaxPoints ? maxPoints : '_');
+          var fractionText = blackjackScoreMode === 'rank'
+            ? (Number.isFinite(earnedPoints) ? String(earnedPoints) : '_')
+            : ((Number.isFinite(earnedPoints) ? earnedPoints : '_')
+              + '/'
+              + (hasKnownMaxPoints ? maxPoints : '_'));
+          var unitText = blackjackScoreMode === 'simple' ? '' : 'P';
           var existingFraction = value.querySelector(':scope > .vhs-points-fraction');
           var existingUnit = value.querySelector(':scope > .vhs-points-unit');
-          if (!existingFraction || !existingUnit || existingFraction.textContent !== fractionText) {
+          if (
+            !existingFraction
+            || !existingUnit
+            || existingFraction.textContent !== fractionText
+            || existingUnit.textContent !== unitText
+          ) {
             var fraction = document.createElement('span');
             fraction.className = 'vhs-points-fraction';
             fraction.textContent = fractionText;
             var unit = document.createElement('span');
             unit.className = 'vhs-points-unit';
-            unit.textContent = 'P';
+            unit.textContent = unitText;
             value.replaceChildren(fraction, unit);
           }
         }
@@ -3484,9 +3507,25 @@ html[data-participant-theme="arcade"] .qa-arcade-wait-loader-10::before {
     var recText = shell.querySelector('.vhs-theme-rec-text');
     if (recText) {
       var currentNumber = parseInt(currentQuestionText, 10);
-      setVhsText(recText, Number.isFinite(currentNumber) && scoreRows > 0
-        ? 'REC · FRAGE ' + String(currentNumber).padStart(2, '0') + ' / ' + String(scoreRows).padStart(2, '0')
-        : 'REC · LIVE');
+      var blackjackSetState = shell.querySelector(
+        '[data-blackjack-current-set][data-blackjack-total-sets]'
+      );
+      var blackjackSetNumber = parseInt(
+        blackjackSetState && blackjackSetState.dataset.blackjackCurrentSet,
+        10
+      );
+      var blackjackSetCount = parseInt(
+        blackjackSetState && blackjackSetState.dataset.blackjackTotalSets,
+        10
+      );
+      var hasBlackjackSetProgress = document.body.classList.contains('blackjack-play-page')
+        && Number.isFinite(blackjackSetNumber)
+        && Number.isFinite(blackjackSetCount);
+      setVhsText(recText, hasBlackjackSetProgress
+        ? 'REC · SET ' + String(blackjackSetNumber).padStart(2, '0') + '/' + String(blackjackSetCount).padStart(2, '0')
+        : (Number.isFinite(currentNumber) && scoreRows > 0
+          ? 'REC · FRAGE ' + String(currentNumber).padStart(2, '0') + ' / ' + String(scoreRows).padStart(2, '0')
+          : 'REC · LIVE'));
     }
 
     var participantName = shell.querySelector('.participant-name, [data-participant-name]');
@@ -3509,9 +3548,18 @@ html[data-participant-theme="arcade"] .qa-arcade-wait-loader-10::before {
     var whoQuestionState = document.body.classList.contains('who-play-page')
       ? document.querySelector('#questionState')
       : null;
+    var clueRushTimerState = document.body.classList.contains('clue-rush-play-page')
+      ? getVisibleVhsElement('#questionState, #answerSubmittedState')
+      : null;
+    var clueRushTimerSource = clueRushTimerState
+      ? document.getElementById('playerSetTimeLeft')
+      : null;
+    var sortingTimerSource = document.body.classList.contains('sorting-ladder-play-page')
+      ? getVisibleVhsElement('#topicState #playerTimeLeft')
+      : null;
     var timerSource = whoQuestionState && isVhsElementVisible(whoQuestionState)
       ? document.getElementById('playerSetTimeLeft')
-      : getVisibleVhsElement([
+      : clueRushTimerSource || sortingTimerSource || getVisibleVhsElement([
         '#questionState #playerTimeLeft',
         '#answerSubmittedState #playerTimeLeftSubmitted',
         '.game-state:not(.d-none) [data-time-left]',
@@ -3576,7 +3624,7 @@ html[data-participant-theme="arcade"] .qa-arcade-wait-loader-10::before {
       vhsThemeObserver = new MutationObserver(scheduleVhsSync);
       vhsThemeObserver.observe(vhsThemeShell, {
         attributes: true,
-        attributeFilter: ['class', 'aria-expanded', 'data-participant-name', 'data-vhs-next-game-number', 'data-vhs-next-game-state', 'data-vhs-reveal-question-type', 'data-vhs-reveal-game-type'],
+        attributeFilter: ['class', 'aria-expanded', 'data-participant-name', 'data-earned-points', 'data-current-stars', 'data-blackjack-current-set', 'data-blackjack-total-sets', 'data-vhs-next-game-number', 'data-vhs-next-game-state', 'data-vhs-reveal-question-type', 'data-vhs-reveal-game-type'],
         characterData: true,
         childList: true,
         subtree: true

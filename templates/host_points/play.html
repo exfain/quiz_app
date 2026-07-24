@@ -1,10 +1,10 @@
-{% load static %}
+{% load static session_game_tags %}
 <!DOCTYPE html>
 <html lang="de">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Host-Punktevergabe: {{ game.title }}</title>
+    <title>Host-Punktevergabe: {{ game.title }} - QuizMaster</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
     <style>
         @font-face { font-family: "Walkway Condensed"; src: url("/static/fonts/Walkway%20Condensed%20SemiBold.ttf") format("truetype"); font-style: normal; font-weight: 400 700; font-display: swap; }
@@ -22,9 +22,9 @@
     </style>
 </head>
 <body class="host-points-play-page">
-<main class="points-shell">
+<main class="points-shell" data-participant-name="{{ participant.name }}">
     <div class="points-card text-center">
-        <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-4">
+        <div class="host-points-summary d-flex flex-wrap justify-content-between align-items-center gap-2 mb-4">
             <div class="text-start">
                 <div class="text-uppercase text-info fw-bold small">Host-Punktevergabe</div>
                 <h1 class="h3 mb-0 qa-game-title-font">{{ game.title }}</h1>
@@ -35,6 +35,10 @@
                 <div class="h3 mb-0" id="ownScore">{{ participant.total_score }}</div>
             </div>
         </div>
+        <aside class="host-points-score-box score-box d-none" id="hostPointsScoreBox" aria-label="Punkte pro Runde">
+            <h2 class="score-box__title">Punkte</h2>
+            <div class="score-box__list" id="hostPointsScoreRows" aria-live="polite"></div>
+        </aside>
 
         <div id="waitingArea" class="py-5">
             <p class="lead mb-0">
@@ -44,9 +48,18 @@
         </div>
 
         <div id="gameArea" class="d-none">
-            <div class="metric mb-3">
-                <div class="small text-secondary">Aktuelle Runde</div>
-                <div class="h2 mb-0" id="roundNumber">{{ game.current_round_number|default:0 }}</div>
+            <div class="host-points-stage">
+                {% session_game_number hub_session 'host_points' game.room_code as host_points_session_game_number %}
+                {% if host_points_session_game_number %}
+                    <span
+                        class="host-points-vhs-game-meta d-none"
+                        title="{{ game.title }} · Spiel {{ host_points_session_game_number }}"
+                    >{{ game.title|upper }} · SPIEL {{ host_points_session_game_number }}</span>
+                {% endif %}
+                <div class="host-points-round-box metric mb-3">
+                    <div class="small text-secondary">Aktuelle Runde</div>
+                    <div class="h2 mb-0" id="roundNumber">{{ game.current_round_number|default:0 }}</div>
+                </div>
             </div>
             <p class="lead mb-0" id="statusText">Der Host vergibt die Punkte manuell.</p>
         </div>
@@ -89,6 +102,41 @@ function send(payload) {
     }));
 }
 
+function renderRoundScores(state) {
+    const list = document.getElementById('hostPointsScoreRows');
+    if (!list) return;
+
+    const scores = Array.isArray(state.round_scores) ? state.round_scores : [];
+    const rows = document.createDocumentFragment();
+    scores.forEach((score) => {
+        const roundNumber = Number.parseInt(score.number, 10);
+        if (!Number.isFinite(roundNumber) || roundNumber < 1) return;
+        const hasPoints = score.points !== null && score.points !== undefined;
+
+        const row = document.createElement('div');
+        row.className = `score-box__row host-points-score-row host-points-score-row--${hasPoints ? 'scored' : 'pending'}`;
+
+        const badge = document.createElement('span');
+        badge.className = 'score-box__badge';
+        badge.dataset.vhsRoundNumber = String(roundNumber);
+        badge.textContent = String(roundNumber);
+
+        const value = document.createElement('span');
+        value.className = 'score-box__value';
+        const amount = document.createElement('span');
+        amount.className = 'host-points-score-amount';
+        amount.textContent = hasPoints ? String(score.points) : '_';
+        const unit = document.createElement('span');
+        unit.className = 'host-points-score-unit';
+        unit.textContent = 'P';
+        value.append(amount, unit);
+
+        row.append(badge, value);
+        rows.appendChild(row);
+    });
+    list.replaceChildren(rows);
+}
+
 function renderState(state) {
     window.sessionGameStartIntro?.handleState(state);
     if (state.event_type === 'game_ended' || state.game?.status === 'completed') {
@@ -105,6 +153,7 @@ function renderState(state) {
     document.getElementById('gameArea').classList.toggle('d-none', !gameStarted);
     document.getElementById('roundNumber').textContent = state.round?.number || 0;
     document.getElementById('ownScore').textContent = participant.score ?? 0;
+    renderRoundScores(state);
     document.getElementById('statusText').textContent = 'Der Host vergibt die Punkte manuell.';
     const returnToLobbyContainer = document.getElementById('returnToLobbyContainer');
     if (returnToLobbyContainer) returnToLobbyContainer.classList.toggle('d-none', gameStarted);

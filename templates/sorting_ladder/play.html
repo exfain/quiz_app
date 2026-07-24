@@ -114,7 +114,7 @@
                                         </div>
 
                                     </div>
-                                    <div class="row" id="topicButtons">
+                                    <div class="row sorting-ladder-actions" id="topicButtons">
                                     </div>
                                     <div id="roundLockBanner" class="alert alert-secondary mt-3 d-none" role="status">
                                         Waiting for other players...
@@ -157,20 +157,30 @@
 
                         <!-- Final Correct Order State -->
                         <div id="finalOrderState" class="game-state d-none">
-                            <div class="submitted-card">
+                            <div class="submitted-card sorting-ladder-reveal">
                                 <!-- <div class="submitted-timer">
                                     <div class="timer-circle" id="finalPlayerTimerCircle">
                                         <span id="finalPlayerTimeLeft">0</span>
                                     </div>
                                 </div> -->
-                                <div class="submitted-animation">
+                                <div class="submitted-animation sorting-ladder-reveal-symbol">
                                     <div class="check-animation">
                                         <i data-lucide="list-ordered" class="check-icon"></i>
                                     </div>
                                 </div>
-                                <h2>Correct Order</h2>
-                                <p class="mb-3" id="finalOrderQuestionText"></p>
-                                <div class="final-order-list" id="finalOrderItems"></div>
+                                <h2 class="sorting-ladder-reveal-title">Correct Order</h2>
+                                <p class="mb-3 sorting-ladder-reveal-helper" id="finalOrderQuestionText"></p>
+                                <div class="sorting-ladder-reveal-ladder">
+                                    <div
+                                        id="finalOrderUpperLabel"
+                                        class="ladder-label sorting-ladder-reveal-label sorting-ladder-reveal-label--upper d-none"
+                                    ></div>
+                                    <div class="final-order-list" id="finalOrderItems"></div>
+                                    <div
+                                        id="finalOrderLowerLabel"
+                                        class="ladder-label sorting-ladder-reveal-label sorting-ladder-reveal-label--lower d-none"
+                                    ></div>
+                                </div>
                             </div>
                         </div>
 
@@ -1145,6 +1155,8 @@
                     this.lastSubmitWasTimeout = false;
                     this.roundTimerEnded = false;
                     this.isInputLocked = false;
+                    this.setPhase = 'idle';
+                    this.eliminatedTransitionTimer = null;
                     this.pointerDrag = null;
                     this.progressHistory = [];
                     
@@ -1237,6 +1249,12 @@
                         case 'round_result':
                             this.onRoundResult(data);
                             break;
+                        case 'question_rounds_complete':
+                            this.onQuestionRoundsComplete(data);
+                            break;
+                        case 'show_solution':
+                            this.onShowSolution(data);
+                            break;
                         case 'question_ended':
                             window.unitTutorialNotice?.hide();
                             this.onQuestionEnded(data);
@@ -1327,6 +1345,7 @@
                 }
 
                 onQuestionStarted(data) {
+                    this.cancelActiveSortingDrag();
                     // Reset per-question state
                     this.currentQuestion = data.question;
                     this.shuffledItems = data.items || [];
@@ -1341,6 +1360,12 @@
                     this.latestResolvedRound = 0;
                     this.lastSubmitWasTimeout = false;
                     this.roundTimerEnded = false;
+                    this.setPhase = 'active';
+                    if (this.eliminatedTransitionTimer) {
+                        clearTimeout(this.eliminatedTransitionTimer);
+                        this.eliminatedTransitionTimer = null;
+                    }
+                    document.getElementById('topicState')?.classList.remove('set-awaiting-reveal');
 
                     // Total rounds = number_of_items_in_topic - 1
                     this.totalRoundsForQuestion = Math.max((this.shuffledItems.length || 0) - 1, 1);
@@ -1574,13 +1599,91 @@
                     if (!submitBtn) {
                         submitBtn = document.createElement('button');
                         submitBtn.type = 'button';
-                        submitBtn.className = 'col btn btn-primary w-100 m-3 submit-answer';
+                        submitBtn.className = 'col btn btn-primary w-100 m-3 submit-answer vhs-action-button sorting-ladder-submit';
                         submitBtn.id = 'submitRoundBtn';
                         submitBtn.textContent = 'Einloggen';
                         submitBtn.addEventListener('click', () => this.submitCurrentRound());
                         topicButtons.appendChild(submitBtn);
                     }
-                    submitBtn.disabled = this.isInputLocked || this.isEliminated;
+                    this.updateSubmitAvailability();
+                }
+
+                hasPlacedCurrentRoundItem() {
+                    return !!this.currentRoundItemId
+                        && this.ladderItems.some(
+                            (item) => Number(item.id) === Number(this.currentRoundItemId)
+                        );
+                }
+
+                updateSubmitAvailability() {
+                    const submitBtn = document.getElementById('submitRoundBtn');
+                    if (!submitBtn) return;
+                    submitBtn.disabled = this.isInputLocked
+                        || this.isEliminated
+                        || !this.hasPlacedCurrentRoundItem();
+                }
+
+                claimCurrentRoundDragItem(itemId) {
+                    if (
+                        this.hasPlacedCurrentRoundItem()
+                        && Number(this.currentRoundItemId) !== Number(itemId)
+                    ) {
+                        return false;
+                    }
+                    this.currentRoundItemId = itemId;
+                    return true;
+                }
+
+                cleanupSortingDragState(itemId, element = null, pointerDrag = null) {
+                    if (pointerDrag && this.pointerDrag !== pointerDrag) {
+                        return;
+                    }
+
+                    if (pointerDrag) {
+                        if (pointerDrag.rafId !== null) {
+                            cancelAnimationFrame(pointerDrag.rafId);
+                        }
+                        window.removeEventListener('pointermove', pointerDrag.moveHandler);
+                        window.removeEventListener('pointerup', pointerDrag.endHandler);
+                        window.removeEventListener('pointercancel', pointerDrag.cancelHandler);
+                        window.removeEventListener('keydown', pointerDrag.escapeHandler);
+                        if (pointerDrag.currentTarget) {
+                            pointerDrag.currentTarget.classList.remove('over');
+                        }
+                        try {
+                            pointerDrag.element.releasePointerCapture(pointerDrag.pointerId);
+                        } catch (_) {}
+                        this.pointerDrag = null;
+                    }
+
+                    const ownsSelection = Number(this.currentRoundItemId) === Number(itemId);
+                    if (element) {
+                        element.classList.remove('dragging');
+                        element.style.transform = '';
+                    }
+                    if (ownsSelection) {
+                        document.querySelectorAll('#topicState .triangle-container.over')
+                            .forEach(target => target.classList.remove('over'));
+                        if (!this.hasPlacedCurrentRoundItem()) {
+                            this.currentRoundItemId = null;
+                        }
+                    }
+                    this.updateSubmitAvailability();
+                }
+
+                cancelActiveSortingDrag() {
+                    if (this.pointerDrag) {
+                        const drag = this.pointerDrag;
+                        this.cleanupSortingDragState(drag.itemId, drag.element, drag);
+                        return;
+                    }
+
+                    const card = document.querySelector('#itemPool .answer-card.dragging');
+                    if (!card) return;
+                    const itemId = parseInt(card.dataset.itemId || '0', 10);
+                    if (!Number.isNaN(itemId)) {
+                        this.cleanupSortingDragState(itemId, card);
+                    }
                 }
 
                 syncCurrentSelection() {
@@ -1599,11 +1702,10 @@
                     if (this.isEliminated || this.isInputLocked) return;
                     const id = parseInt(card.dataset.itemId || '0', 10);
                     if (isNaN(id)) return;
-                    // Only one current-round item at a time
-                    if (this.currentRoundItemId && this.currentRoundItemId !== id) {
+                    if (!this.claimCurrentRoundDragItem(id)) {
+                        event.preventDefault();
                         return;
                     }
-                    this.currentRoundItemId = id;
                     if (event.dataTransfer) {
                         event.dataTransfer.effectAllowed = 'move';
                         event.dataTransfer.setData('text/plain', String(id));
@@ -1612,7 +1714,12 @@
                 }
 
                 onCardDragEnd(card) {
-                    card.classList.remove('dragging');
+                    const id = parseInt(card.dataset.itemId || '0', 10);
+                    if (Number.isNaN(id)) {
+                        card.classList.remove('dragging');
+                        return;
+                    }
+                    this.cleanupSortingDragState(id, card);
                 }
 
                 bindSortingPointerDrag(card) {
@@ -1625,11 +1732,10 @@
                     if (this.isEliminated || this.isInputLocked || card.classList.contains('disabled')) return;
                     const id = parseInt(card.dataset.itemId || '0', 10);
                     if (Number.isNaN(id)) return;
-                    if (this.currentRoundItemId && this.currentRoundItemId !== id) return;
+                    if (!this.claimCurrentRoundDragItem(id)) return;
 
                     event.preventDefault();
-                    this.currentRoundItemId = id;
-                    this.pointerDrag = {
+                    const drag = {
                         element: card,
                         itemId: id,
                         pointerId: event.pointerId,
@@ -1639,25 +1745,40 @@
                         currentY: event.clientY,
                         rafId: null,
                         currentTarget: null,
-                        moveHandler: (moveEvent) => this.moveSortingPointerDrag(moveEvent),
-                        endHandler: (endEvent) => this.finishSortingPointerDrag(endEvent, true),
-                        cancelHandler: (cancelEvent) => this.finishSortingPointerDrag(cancelEvent, false),
+                        moveHandler: null,
+                        endHandler: null,
+                        cancelHandler: null,
+                        escapeHandler: null,
                     };
+                    drag.moveHandler = (moveEvent) => this.moveSortingPointerDrag(moveEvent, drag);
+                    drag.endHandler = (endEvent) => this.finishSortingPointerDrag(endEvent, true, drag);
+                    drag.cancelHandler = (cancelEvent) => this.finishSortingPointerDrag(cancelEvent, false, drag);
+                    drag.escapeHandler = (keyEvent) => {
+                        if (keyEvent.key !== 'Escape' || this.pointerDrag !== drag) return;
+                        keyEvent.preventDefault();
+                        this.cleanupSortingDragState(drag.itemId, drag.element, drag);
+                    };
+                    this.pointerDrag = drag;
 
                     card.classList.add('dragging');
                     try { card.setPointerCapture(event.pointerId); } catch (_) {}
                     window.addEventListener('pointermove', this.pointerDrag.moveHandler, { passive: false });
                     window.addEventListener('pointerup', this.pointerDrag.endHandler, { passive: false });
                     window.addEventListener('pointercancel', this.pointerDrag.cancelHandler, { passive: false });
+                    window.addEventListener('keydown', this.pointerDrag.escapeHandler);
                 }
 
-                moveSortingPointerDrag(event) {
-                    if (!this.pointerDrag) return;
+                moveSortingPointerDrag(event, drag = this.pointerDrag) {
+                    if (
+                        !drag
+                        || this.pointerDrag !== drag
+                        || event.pointerId !== drag.pointerId
+                    ) return;
                     event.preventDefault();
-                    this.pointerDrag.currentX = event.clientX;
-                    this.pointerDrag.currentY = event.clientY;
-                    if (this.pointerDrag.rafId !== null) return;
-                    this.pointerDrag.rafId = requestAnimationFrame(() => this.renderSortingPointerDrag());
+                    drag.currentX = event.clientX;
+                    drag.currentY = event.clientY;
+                    if (drag.rafId !== null) return;
+                    drag.rafId = requestAnimationFrame(() => this.renderSortingPointerDrag());
                 }
 
                 renderSortingPointerDrag() {
@@ -1685,34 +1806,20 @@
                     return hit?.closest?.('.triangle-container') || null;
                 }
 
-                finishSortingPointerDrag(event, shouldDrop) {
-                    if (!this.pointerDrag) return;
+                finishSortingPointerDrag(event, shouldDrop, drag = this.pointerDrag) {
+                    if (
+                        !drag
+                        || this.pointerDrag !== drag
+                        || event.pointerId !== drag.pointerId
+                    ) return;
                     event.preventDefault();
-                    const drag = this.pointerDrag;
                     const target = shouldDrop ? this.getSortingPointerTarget(event.clientX, event.clientY) : null;
+                    const position = parseInt(target?.dataset.position || '', 10);
 
-                    if (drag.rafId !== null) {
-                        cancelAnimationFrame(drag.rafId);
+                    this.cleanupSortingDragState(drag.itemId, drag.element, drag);
+                    if (!Number.isNaN(position)) {
+                        this.placeSortingItemAtPosition(drag.itemId, position);
                     }
-                    window.removeEventListener('pointermove', drag.moveHandler);
-                    window.removeEventListener('pointerup', drag.endHandler);
-                    window.removeEventListener('pointercancel', drag.cancelHandler);
-                    if (drag.currentTarget) drag.currentTarget.classList.remove('over');
-
-                    drag.element.classList.remove('dragging');
-                    drag.element.style.transform = '';
-                    try { drag.element.releasePointerCapture(drag.pointerId); } catch (_) {}
-                    this.pointerDrag = null;
-
-                    if (!target) {
-                        if (!this.ladderItems.some((item) => Number(item.id) === Number(drag.itemId))) {
-                            this.currentRoundItemId = null;
-                        }
-                        return;
-                    }
-                    const position = parseInt(target.dataset.position || '', 10);
-                    if (Number.isNaN(position)) return;
-                    this.placeSortingItemAtPosition(drag.itemId, position);
                 }
 
                 clearLadderPreviews() {
@@ -1793,8 +1900,7 @@
                 submitCurrentRound(roundTimeOut = false) {
                     if (!this.websocket || this.websocket.readyState !== WebSocket.OPEN) return;
                     if (this.isEliminated || this.isInputLocked) return;
-                    const hasPlacedRoundItem = !!this.currentRoundItemId &&
-                        this.ladderItems.some(it => Number(it.id) === Number(this.currentRoundItemId));
+                    const hasPlacedRoundItem = this.hasPlacedCurrentRoundItem();
 
                     // For normal submissions, require that exactly one item has been placed this round.
                     // For timeouts, allow submission even if no item is placed so the round is recorded as failed.
@@ -1824,11 +1930,14 @@
 
                     // After submitting, keep board visible but locked.
                     this.showState('topicState');
-                    this.setInteractionLock(true, 'Waiting for other players...');
+                    this.setInteractionLock(true, 'Warte auf die nächste Runde.');
                 }
 
                 onRoundResult(data) {
                     if (data.participant_name !== this.participantName) {
+                        return;
+                    }
+                    if (this.setPhase && this.setPhase !== 'active') {
                         return;
                     }
                     if (data.question_id && this.currentQuestion?.id && Number(data.question_id) !== Number(this.currentQuestion.id)) {
@@ -1855,14 +1964,15 @@
 
                     this.pendingRoundResult = data;
                     this.showState('topicState');
-                    this.setInteractionLock(true, 'Waiting for next round...');
+                    this.setInteractionLock(true, 'Warte auf die nächste Runde.');
                 }
 
                 onRoundStarted(roundData) {
-                    if (!this.moreRoundsInQuestion) return;
+                    if (!this.moreRoundsInQuestion || this.setPhase !== 'active') return;
                     if (roundData?.question_id && this.currentQuestion?.id && Number(roundData.question_id) !== Number(this.currentQuestion.id)) {
                         return;
                     }
+                    this.cancelActiveSortingDrag();
 
                     const nextRoundNumber = (roundData && typeof roundData.round_number === 'number')
                         ? roundData.round_number
@@ -1889,7 +1999,7 @@
                     this.currentRound = nextRoundNumber;
 
                     if (this.isEliminated) {
-                        this.setInteractionLock(true, 'Eliminated for this set. Waiting for next question...');
+                        this.setInteractionLock(true, 'Du bist für dieses Set ausgeschieden und verfolgst die weiteren Runden.');
                         this.renderCurrentRound();
                         return;
                     }
@@ -1924,9 +2034,16 @@
                     if (resultText) resultText.textContent = 'Du bist für dieses Set ausgeschieden.';
                     this.showState('roundResultState');
 
-                    setTimeout(() => {
+                    if (this.eliminatedTransitionTimer) {
+                        clearTimeout(this.eliminatedTransitionTimer);
+                    }
+                    this.eliminatedTransitionTimer = setTimeout(() => {
+                        this.eliminatedTransitionTimer = null;
+                        if (this.setPhase !== 'active' || !this.moreRoundsInQuestion) {
+                            return;
+                        }
                         this.showState('topicState');
-                        this.setInteractionLock(true, 'Eliminated for this set. Waiting for next question...');
+                        this.setInteractionLock(true, 'Du bist für dieses Set ausgeschieden und verfolgst die weiteren Runden.');
                     }, 900);
                 }
 
@@ -1978,18 +2095,24 @@
 
                     if (data.has_more_rounds && !this.isEliminated) {
                         this.showState('topicState');
-                        this.setInteractionLock(true, 'Waiting for host to start next round...');
+                        this.setInteractionLock(true, 'Warte auf die nächste Runde.');
                     } else {
-                        if (data.has_more_rounds && this.isEliminated && fromRoundStart) {
+                        if (data.set_has_more_rounds && this.isEliminated && fromRoundStart) {
                             this.showEliminatedTransition();
                         } else {
                             this.showState('topicState');
-                            this.setInteractionLock(true, 'Waiting for host to end and reveal this question...');
+                            const waitMessage = data.set_has_more_rounds
+                                ? 'Du bist für dieses Set ausgeschieden und verfolgst die weiteren Runden.'
+                                : 'Warte darauf, dass der Host das Set abschließt.';
+                            this.setInteractionLock(true, waitMessage);
                         }
                     }
                 }
 
                 setInteractionLock(locked, message = 'Waiting for other players...') {
+                    if (locked) {
+                        this.cancelActiveSortingDrag();
+                    }
                     this.isInputLocked = !!locked;
                     const layout = document.getElementById('topicLayout');
                     if (layout) layout.classList.toggle('round-locked', this.isInputLocked);
@@ -2000,19 +2123,26 @@
                         banner.classList.toggle('d-none', !this.isInputLocked);
                     }
 
-                    const submitBtn = document.getElementById('submitRoundBtn');
-                    if (submitBtn) submitBtn.disabled = this.isInputLocked || this.isEliminated;
+                    this.updateSubmitAvailability();
                 }
 
                 renderFinalOrder() {
                     const container = document.getElementById('finalOrderItems');
                     const questionEl = document.getElementById('finalOrderQuestionText');
+                    const upperLabelEl = document.getElementById('finalOrderUpperLabel');
+                    const lowerLabelEl = document.getElementById('finalOrderLowerLabel');
                     if (!container) return;
 
                     container.innerHTML = '';
                     if (questionEl && this.currentQuestion) {
                         const base = this.currentQuestion.text || '';
                         questionEl.textContent = this.isEliminated ? `${base} — You were eliminated in this question.` : base;
+                    }
+                    if (upperLabelEl) {
+                        upperLabelEl.textContent = this.currentQuestion?.upper_label || '';
+                    }
+                    if (lowerLabelEl) {
+                        lowerLabelEl.textContent = this.currentQuestion?.lower_label || '';
                     }
 
                     // Use the final ladderItems (already reordered from
@@ -2032,13 +2162,47 @@
                     });
                 }
 
-                onQuestionEnded(data) {
+                onQuestionRoundsComplete(data) {
+                    if (this.setPhase === 'revealed') {
+                        return;
+                    }
                     if (this.pendingRoundResult) {
                         const pendingRoundResult = this.pendingRoundResult;
                         this.applyRoundResult(pendingRoundResult, true);
                         this.setProgressHistory(pendingRoundResult.progress_history);
                         this.pendingRoundResult = null;
                     }
+                    this.setPhase = 'awaiting_reveal';
+                    this.moreRoundsInQuestion = false;
+                    if (this.roundTimer) {
+                        clearInterval(this.roundTimer);
+                    }
+                    if (this.eliminatedTransitionTimer) {
+                        clearTimeout(this.eliminatedTransitionTimer);
+                        this.eliminatedTransitionTimer = null;
+                    }
+                    this.showState('topicState');
+                    document.getElementById('topicState')?.classList.add('set-awaiting-reveal');
+                    this.setInteractionLock(
+                        true,
+                        'Warte darauf, dass der Host die Reihenfolge zeigt.',
+                    );
+                }
+
+                onShowSolution(data) {
+                    if (this.setPhase === 'revealed') {
+                        return;
+                    }
+                    this.setPhase = 'revealed';
+                    this.moreRoundsInQuestion = false;
+                    if (this.roundTimer) {
+                        clearInterval(this.roundTimer);
+                    }
+                    if (this.eliminatedTransitionTimer) {
+                        clearTimeout(this.eliminatedTransitionTimer);
+                        this.eliminatedTransitionTimer = null;
+                    }
+                    document.getElementById('topicState')?.classList.remove('set-awaiting-reveal');
                     if (Array.isArray(data?.correct_order_ids) && data.correct_order_ids.length) {
                         const byId = new Map(this.shuffledItems.map(it => [it.id, it]));
                         const ordered = [];
@@ -2052,9 +2216,14 @@
                     }
                     this.renderFinalOrder();
                     this.showState('finalOrderState');
-                    if (this.roundTimer) clearInterval(this.roundTimer);
-                    this.moreRoundsInQuestion = false;
                     this.setInteractionLock(false);
+                }
+
+                onQuestionEnded(_data) {
+                    this.moreRoundsInQuestion = false;
+                    if (this.roundTimer) {
+                        clearInterval(this.roundTimer);
+                    }
                 }
 
                 showCorrectAnswer(correctAnswerData) {

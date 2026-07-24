@@ -1,7 +1,9 @@
 import json
+from pathlib import Path
 
 from asgiref.sync import async_to_sync
 from django.contrib.auth.models import User
+from django.contrib.staticfiles import finders
 from django.test import Client, TestCase, TransactionTestCase
 from django.urls import reverse
 from django.utils import timezone
@@ -10,7 +12,7 @@ from games_hub.models import HubGameParticipantSnapshot, HubGameStep, HubPartici
 from games_hub.views import get_leaderboard_data
 
 from .consumers import HostPointsConsumer
-from .models import HostPointsGame, HostPointsParticipant
+from .models import HostPointsAdjustment, HostPointsGame, HostPointsParticipant
 
 
 class FakeChannelLayer:
@@ -124,8 +126,36 @@ class HostPointsFlowTests(TransactionTestCase):
         bob.refresh_from_db()
         self.assertEqual(state['round']['number'], 2)
         self.assertEqual(state['participant']['score'], 5)
+        self.assertEqual(state['round_scores'], [
+            {'number': 1, 'points': 5},
+            {'number': 2, 'points': None},
+        ])
         self.assertEqual(alice.total_score, 5)
         self.assertEqual(bob.total_score, -1)
+
+        self.assertTrue(self.game.adjust_score(alice.id, 2)[0])
+        self.assertTrue(self.game.adjust_score(alice.id, -2)[0])
+        rejoin_state = self.game.serialize_state(self.session.code, 'Alice')
+        self.assertEqual(rejoin_state['round_scores'], [
+            {'number': 1, 'points': 5},
+            {'number': 2, 'points': 0},
+        ])
+
+    def test_round_scores_exclude_adjustments_from_another_hub_session(self):
+        self.game.start_quiz(self.session.code)
+        alice = self.game.participants.get(name='Alice', hub_session_code=self.session.code)
+        self.assertTrue(self.game.adjust_score(alice.id, 5)[0])
+        HostPointsAdjustment.objects.create(
+            quiz=self.game,
+            participant=alice,
+            hub_session_code='OLD001',
+            round_number=1,
+            points_delta=99,
+        )
+
+        state = self.game.serialize_state(self.session.code, 'Alice')
+
+        self.assertEqual(state['round_scores'], [{'number': 1, 'points': 5}])
 
     def test_late_pending_and_spectator_participants_are_not_score_targets(self):
         self.game.start_quiz(self.session.code)
@@ -184,12 +214,40 @@ class HostPointsFlowTests(TransactionTestCase):
         )
 
         self.assertContains(play_response, 'Der Host vergibt die Punkte manuell.')
-        self.assertNotContains(play_response, '<input')
         play_content = play_response.content.decode('utf-8')
+        play_main = play_content.split('</main>', 1)[0]
+        self.assertNotIn('<input', play_main)
+        self.assertIn('<title>Host-Punktevergabe: Manuelle Punkte - QuizMaster</title>', play_content)
+        self.assertIn('data-participant-name="Alice"', play_content)
+        self.assertIn('MANUELLE PUNKTE · SPIEL 1', play_content)
+        self.assertIn('id="hostPointsScoreRows"', play_content)
+        self.assertIn('score.points !== null && score.points !== undefined', play_content)
         self.assertIn('class="mt-3 d-none" id="returnToLobbyContainer"', play_content)
         self.assertIn("returnToLobbyContainer.classList.toggle('d-none', gameStarted)", play_content)
         self.assertContains(result_response, 'Zur Lobby zurückkehren')
         self.assertContains(result_response, 'participant-return-to-lobby')
+
+    def test_vhs_host_points_overrides_are_scoped_to_the_participant_screen(self):
+        css_path = finders.find('themes/vhs/vhs.css')
+        self.assertIsNotNone(css_path)
+        css = Path(css_path).read_text(encoding='utf-8')
+
+        self.assertIn(
+            'body.host-points-play-page .qa-score-widget .host-points-score-box',
+            css,
+        )
+        self.assertIn(
+            'body.host-points-play-page .host-points-vhs-game-meta',
+            css,
+        )
+        self.assertIn(
+            'body.host-points-play-page :is(\n'
+            '  .host-points-summary,\n'
+            '  #connectionStatus,\n'
+            '  #statusText\n'
+            ')',
+            css,
+        )
 
     def test_end_game_idempotent_and_actions_after_end_are_rejected(self):
         self.game.start_quiz(self.session.code)

@@ -21,9 +21,9 @@
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 </head>
 <body class="blackjack-result-page participant-result-page">
-    <div class="result-container" data-participant-name="{{ participant.name }}">
+    <div class="result-container blackjack-vhs-result" data-participant-name="{{ participant.name }}">
         <!-- Header -->
-        <header class="result-header">
+        <header class="result-header blackjack-vhs-result-header">
             <div class="container">
                 <div class="header-content">
                     <div class="quiz-info">
@@ -58,16 +58,25 @@
             <div class="container">
                 <div class="row g-4">
                     <!-- Performance Overview -->
-                    <div class="col-12">
-                        <div class="performance-card {% if participant.is_busted %}busted{% elif participant.total_points == 21 %}blackjack{% endif %}">
+                    <div class="col-12 blackjack-vhs-result-hero-wrap">
+                        <div class="performance-card blackjack-vhs-result-hero {% if participant.is_busted %}busted{% elif participant.total_points == 21 %}blackjack{% endif %}">
                             <div class="row align-items-center">
                                 <div class="col-lg-4 text-center">
-                                    <div class="score-circle-large">
+                                    <div class="score-circle-large blackjack-vhs-result-total">
                                         <div class="score-inner">
-                                            <span class="score-value">{{ participant.total_points }}</span>
-                                            <span class="score-label">points</span>
+                                            <span class="score-value">
+                                                <span class="blackjack-standard-copy">{{ participant.total_points }}</span>
+                                                <span class="blackjack-vhs-copy d-none">{{ participant.overall_points }}</span>
+                                            </span>
+                                            <span class="score-label">
+                                                <span class="blackjack-standard-copy">points</span>
+                                                <span class="blackjack-vhs-copy d-none">FINALE GESAMTPUNKTE</span>
+                                            </span>
                                             {% if participant.is_busted %}
-                                                <span class="score-status bust">BUSTED!</span>
+                                                <span class="score-status bust">
+                                                    <span class="blackjack-standard-copy">BUSTED!</span>
+                                                    <span class="blackjack-vhs-copy d-none">BUST / ÜBER 21</span>
+                                                </span>
                                             {% elif participant.total_points == 21 %}
                                                 <span class="score-status blackjack">BLACKJACK!</span>
                                             {% endif %}
@@ -78,28 +87,34 @@
                                     </div>
                                 </div>
                                 <div class="col-lg-8">
-                                    <div class="performance-stats">
+                                    <div class="performance-stats blackjack-vhs-personal-summary">
                                         <h2>
-                                            {{ participant.name }}, 
-                                            {% if participant.is_busted %}
-                                                you went bust with {{ participant.total_points }} points!
-                                            {% elif participant.total_points == 21 %}
-                                                you hit BlackJack! Perfect 21 points!
-                                            {% else %}
-                                                you finished with {{ participant.total_points }} points!
-                                            {% endif %}
+                                            <span class="blackjack-standard-copy">
+                                                {{ participant.name }},
+                                                {% if participant.is_busted %}
+                                                    you went bust with {{ participant.total_points }} points!
+                                                {% elif participant.total_points == 21 %}
+                                                    you hit BlackJack! Perfect 21 points!
+                                                {% else %}
+                                                    you finished with {{ participant.total_points }} points!
+                                                {% endif %}
+                                            </span>
+                                            <span class="blackjack-vhs-copy d-none">{{ participant.name }} · PERSÖNLICHE AUSWERTUNG</span>
                                         </h2>
-                                        <div class="stats-grid">
-                                            <div class="stat-item">
+                                        <div class="stats-grid blackjack-vhs-result-metrics">
+                                            <div class="stat-item blackjack-vhs-result-metric">
                                                 <div class="stat-icon bg-primary">
                                                     <i data-lucide="target"></i>
                                                 </div>
                                                 <div class="stat-content">
                                                     <div class="stat-value">{{ participant.get_distance_from_21 }}</div>
-                                                    <div class="stat-label">{% if participant.is_busted %}Points Over 21{% else %}Points From 21{% endif %}</div>
+                                                    <div class="stat-label">
+                                                        <span class="blackjack-standard-copy">{% if participant.is_busted %}Points Over 21{% else %}Points From 21{% endif %}</span>
+                                                        <span class="blackjack-vhs-copy d-none">{% if participant.is_busted %}ÜBER 21{% else %}ABSTAND ZU 21{% endif %}</span>
+                                                    </div>
                                                 </div>
                                             </div>
-                                            <div class="stat-item">
+                                            <div class="stat-item blackjack-vhs-result-metric">
                                                 <div class="stat-icon bg-success">
                                                     {% if best_question == 0 %}
                                                         <i data-lucide="bullseye"></i>
@@ -109,25 +124,34 @@
                                                 </div>
                                                 <div class="stat-content">
                                                     <div class="stat-value">{{ best_question }}</div>
-                                                    <div class="stat-label">Best Question (lowest points)</div>
+                                                    <div class="stat-label">
+                                                        <span class="blackjack-standard-copy">Best Question (lowest points)</span>
+                                                        <span class="blackjack-vhs-copy d-none">BESTE FRAGE</span>
+                                                    </div>
                                                 </div>
                                             </div>
-                                            <div class="stat-item">
+                                            <div class="stat-item blackjack-vhs-result-metric">
                                                 <div class="stat-icon bg-warning">
                                                     <i data-lucide="help-circle"></i>
                                                 </div>
                                                 <div class="stat-content">
                                                     <div class="stat-value">{{ total_answers }}/{{ quiz.total_questions }}</div>
-                                                    <div class="stat-label">Questions Answered</div>
+                                                    <div class="stat-label">
+                                                        <span class="blackjack-standard-copy">Questions Answered</span>
+                                                        <span class="blackjack-vhs-copy d-none">BEANTWORTET</span>
+                                                    </div>
                                                 </div>
                                             </div>
-                                            <div class="stat-item">
+                                            <div class="stat-item blackjack-vhs-result-metric">
                                                 <div class="stat-icon bg-secondary">
                                                     <i data-lucide="trophy"></i>
                                                 </div>
                                                 <div class="stat-content">
                                                     <div class="stat-value">#{{ participant_rank }}</div>
-                                                    <div class="stat-label">Final Rank</div>
+                                                    <div class="stat-label">
+                                                        <span class="blackjack-standard-copy">Final Rank</span>
+                                                        <span class="blackjack-vhs-copy d-none">FINALER RANG</span>
+                                                    </div>
                                                 </div>
                                             </div>
                                         </div>
@@ -137,9 +161,34 @@
                         </div>
                     </div>
 
+                    <div class="col-12 blackjack-vhs-set-log-wrap d-none">
+                        <section class="blackjack-vhs-set-log" aria-labelledby="blackjackVhsSetLogTitle">
+                            <div class="blackjack-vhs-set-log-heading">
+                                <p>AUFZEICHNUNG · CHRONOLOGISCH</p>
+                                <h2 id="blackjackVhsSetLogTitle">SET-VERLAUF</h2>
+                            </div>
+                            <div class="blackjack-vhs-set-log-rows" role="list">
+                                {% for set_entry in result_set_log %}
+                                    <div class="blackjack-vhs-set-log-row {% if set_entry.is_busted %}is-busted{% endif %}"
+                                         role="listitem"
+                                         data-set-number="{{ set_entry.set_number }}"
+                                         data-set-busted="{{ set_entry.is_busted|yesno:'true,false' }}">
+                                        <span class="blackjack-vhs-set-log-index">SET {{ set_entry.set_number|stringformat:"02d" }}</span>
+                                        <span class="blackjack-vhs-set-log-status">
+                                            {% if set_entry.is_busted %}BUST / ÜBER 21{% else %}SET ABGESCHLOSSEN{% endif %}
+                                        </span>
+                                        <strong class="blackjack-vhs-set-log-points">{{ set_entry.earned_points }}/{{ set_entry.max_points }}</strong>
+                                    </div>
+                                {% empty %}
+                                    <p class="blackjack-vhs-set-log-empty">KEINE SETDATEN AUFGEZEICHNET</p>
+                                {% endfor %}
+                            </div>
+                        </section>
+                    </div>
+
                     <!-- Detailed Results -->
-                    <div class="col-lg-8">
-                        <div class="card">
+                    <div class="col-lg-8 blackjack-vhs-result-details">
+                        <div class="card blackjack-vhs-question-log">
                             <div class="card-header">
                                 <h5 class="card-title mb-0">
                                     <i data-lucide="list"></i>
@@ -245,7 +294,7 @@
                     <!-- Leaderboard & Actions -->
                     <div class="col-lg-4">
                         <!-- Leaderboard -->
-                        <div class="card mb-4">
+                        <div class="card mb-4 blackjack-vhs-leaderboard">
                             <div class="card-header">
                                 <h6 class="card-title mb-0">
                                     <i data-lucide="trophy"></i>
@@ -293,7 +342,7 @@
                         </div>
 
                         <!-- Game Rules Reminder -->
-                        <div class="card mb-4">
+                        <div class="card mb-4 blackjack-vhs-rules">
                             <div class="card-header">
                                 <h6 class="card-title mb-0">
                                     <i data-lucide="info"></i>
@@ -331,7 +380,7 @@
                         </div>
 
                         <!-- Performance Insights -->
-                        <div class="card mb-4">
+                        <div class="card mb-4 blackjack-vhs-insights">
                             <div class="card-header">
                                 <h6 class="card-title mb-0">
                                     <i data-lucide="trending-up"></i>
@@ -390,18 +439,21 @@
                         </div>
 
                         <!-- Actions -->
-                        <div class="result-actions">
+                        <div class="result-actions blackjack-vhs-result-actions">
                             <a href="/blackjack/join/" class="btn btn-primary w-100 mb-3">
                                 <i data-lucide="spade"></i>
-                                Play Another BlackJack
+                                <span class="blackjack-standard-copy">Play Another BlackJack</span>
+                                <span class="blackjack-vhs-copy d-none">NOCH EIN SPIEL</span>
                             </a>
                             <button class="btn btn-outline w-100 mb-3" id="shareResultsBtn">
                                 <i data-lucide="share-2"></i>
-                                Share Results
+                                <span class="blackjack-standard-copy">Share Results</span>
+                                <span class="blackjack-vhs-copy d-none">ERGEBNIS TEILEN</span>
                             </button>
                             <a href="/" class="btn btn-outline w-100">
                                 <i data-lucide="home"></i>
-                                Back to Home
+                                <span class="blackjack-standard-copy">Back to Home</span>
+                                <span class="blackjack-vhs-copy d-none">ZUR STARTSEITE</span>
                             </a>
                         </div>
                     </div>

@@ -1,8 +1,10 @@
 import json
+from pathlib import Path
 from unittest.mock import AsyncMock
 
 from asgiref.sync import async_to_sync
 from django.contrib.auth.models import User
+from django.contrib.staticfiles import finders
 from django.test import TestCase, TransactionTestCase
 from django.urls import reverse
 
@@ -88,6 +90,116 @@ class WerWeissMehrRuntimeTests(TestCase):
         self.p1 = WerWeissMehrParticipant.objects.create(quiz=self.game, name='Lisa', hub_session_code='ABC')
         self.p2 = WerWeissMehrParticipant.objects.create(quiz=self.game, name='Max', hub_session_code='ABC')
 
+    def test_vhs_player_chrome_uses_app_name_and_single_participant_location(self):
+        response = self.client.get(
+            reverse('wer_weiss_mehr:play', args=[self.game.room_code, self.p1.name]),
+            {'hub_session': 'ABC'},
+        )
+        content = response.content.decode('utf-8')
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('<title>Test - QuizMaster</title>', content)
+        self.assertIn('data-participant-name="Lisa"', content)
+        self.assertIn('class="wwm-game-type-label text-muted small"', content)
+        self.assertNotIn('<div class="text-muted small">Wer weiß mehr?</div>', content)
+
+        css_path = finders.find('themes/vhs/vhs.css')
+        self.assertIsNotNone(css_path)
+        css = Path(css_path).read_text(encoding='utf-8')
+        self.assertIn(
+            ':is(.wwm-game-type-label, .player-pill) {\n'
+            '  display: none !important;',
+            css,
+        )
+        self.assertIn(
+            'body.wer-weiss-mehr-play-page .vhs-theme-shell\n'
+            '  .wwm-header > div:first-child',
+            css,
+        )
+
+    def test_host_correction_drafts_survive_live_response_renders(self):
+        template_path = (
+            Path(__file__).resolve().parents[1]
+            / 'templates'
+            / 'admin_dashboard'
+            / 'wer_weiss_mehr_monitor.html'
+        )
+        source = template_path.read_text(encoding='utf-8')
+
+        self.assertIn('const correctionDrafts = new Map();', source)
+        self.assertIn(
+            'correctionDrafts.set(Number(select.dataset.responseId), Number(select.value));',
+            source,
+        )
+        self.assertIn('correctionDrafts.has(responseId)', source)
+        self.assertIn('correctionDrafts.delete(responseId);', source)
+        self.assertIn(
+            "const nextDraftContext = `${s.question?.id || ''}:${s.current_round || 0}`;",
+            source,
+        )
+        render_responses = source.split('function renderResponses(s) {', 1)[1].split(
+            'function renderParticipants(participants) {',
+            1,
+        )[0]
+        self.assertNotIn('responsesBox.innerHTML', render_responses)
+        self.assertIn("tbody.querySelectorAll('tr[data-response-id]')", render_responses)
+        self.assertIn('!correctionDrafts.has(responseId)', render_responses)
+        self.assertIn('tbody.insertBefore(row, currentRow || null);', render_responses)
+        self.assertIn("responsesBox.dataset.correctionEventsBound = 'true';", source)
+
+    def test_vhs_answer_grid_uses_column_flow_and_shared_action_button(self):
+        response = self.client.get(
+            reverse('wer_weiss_mehr:play', args=[self.game.room_code, self.p1.name]),
+            {'hub_session': 'ABC'},
+        )
+        content = response.content.decode('utf-8')
+        template_path = Path(__file__).resolve().parents[1] / 'templates' / 'wer_weiss_mehr' / 'play.html'
+        template_source = template_path.read_text(encoding='utf-8')
+        css_path = finders.find('themes/vhs/vhs.css')
+        css = Path(css_path).read_text(encoding='utf-8')
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('class="tiles wwm-target-grid" role="list"', content)
+        self.assertIn('class="btn btn-primary btn-lg vhs-action-button wwm-submit-button"', content)
+        self.assertIn('class="wwm-answer-controls"', content)
+        self.assertIn('function updateVhsTileLayout()', template_source)
+        self.assertIn('Math.floor((availableHeight + rowGap) / (tileHeight + rowGap))', template_source)
+        self.assertIn('Math.ceil(tileCount / maxColumns)', template_source)
+        self.assertIn('const needsScroll = contentHeight > availableHeight + 2;', template_source)
+        self.assertIn("tiles.dataset.singleColumn = columns === 1 ? 'true' : 'false';", template_source)
+        self.assertIn("tiles.dataset.scrollable = needsScroll ? 'true' : 'false';", template_source)
+        self.assertIn("tiles.style.removeProperty('--wwm-tile-viewport-height');", template_source)
+        self.assertIn('grid-auto-flow: column;', css)
+        self.assertIn('--wwm-tile-height: 48px;', css)
+        self.assertIn('--wwm-tile-row-gap: 7px;', css)
+        self.assertIn('row-gap: var(--wwm-tile-row-gap);', css)
+        self.assertIn('column-gap: var(--wwm-tile-column-gap);', css)
+        self.assertIn('.wwm-target-grid[data-single-column="true"]', css)
+        self.assertIn('width: min(100%, 420px);', css)
+        self.assertIn('.wwm-target-grid[data-scrollable="true"]', css)
+        self.assertIn('overflow: visible;', css)
+        self.assertIn('overflow-y: auto;', css)
+        self.assertIn(
+            'body.wer-weiss-mehr-play-page .vhs-theme-shell .wwm-answer-area .vhs-action-button',
+            css,
+        )
+
+    def test_participant_tiles_keep_alphabetical_dom_order(self):
+        self.game.start_quiz(hub_session_code='ABC')
+        start_set(self.game, self.question.id, hub_session_code='ABC')
+        self.game.refresh_from_db()
+
+        state = build_game_state(
+            self.game,
+            hub_session_code='ABC',
+            participant_name=self.p1.name,
+        )
+
+        self.assertEqual(
+            [tile['id'] for tile in state['question']['tiles']],
+            [self.bayern.id, self.saarland.id, self.thueringen.id],
+        )
+
     def test_normalization_accepts_umlauts_and_aliases(self):
         self.assertEqual(normalize_answer_text(' Thüringen '), 'thueringen')
         self.assertEqual(normalize_answer_text('Thueringen'), 'thueringen')
@@ -113,6 +225,86 @@ class WerWeissMehrRuntimeTests(TestCase):
         self.assertIsNone(self.game.current_question)
         self.assertEqual(session.phase, WerWeissMehrSession.PHASE_IDLE)
         self.assertEqual(session.current_round, 0)
+
+    def test_restart_clears_completed_runtime_for_current_hub(self):
+        other_participant = WerWeissMehrParticipant.objects.create(
+            quiz=self.game,
+            name='Other Hub',
+            hub_session_code='OTHER',
+            total_score=7,
+        )
+        self.game.start_quiz(hub_session_code='ABC')
+        start_set(self.game, self.question.id, hub_session_code='ABC')
+        submit_answer(self.game, self.p1, 'Bayern')
+        store_pending_input(self.game, self.p2, 'Saarland')
+        other_state = WerWeissMehrParticipantState.objects.create(
+            quiz=self.game,
+            participant=other_participant,
+            question=self.question,
+            survived_rounds=2,
+        )
+        other_response = WerWeissMehrRoundResponse.objects.create(
+            quiz=self.game,
+            participant=other_participant,
+            question=self.question,
+            round_number=1,
+            answer_text='Bayern',
+            matched_answer=self.bayern,
+            auto_status=WerWeissMehrRoundResponse.STATUS_CORRECT,
+            final_status=WerWeissMehrRoundResponse.STATUS_CORRECT,
+            is_correct=True,
+        )
+        session = self.game.session
+        session.completed_question_ids = [self.question.id]
+        session.revealed_answers.add(self.bayern)
+        session.phase = WerWeissMehrSession.PHASE_SET_COMPLETED
+        session.save(update_fields=['completed_question_ids', 'phase'])
+        self.p1.total_score = 4
+        self.p1.save(update_fields=['total_score'])
+        self.game.end_quiz()
+        self.game.status = 'waiting'
+        self.game.save(update_fields=['status'])
+
+        self.game.start_quiz(hub_session_code='ABC')
+
+        self.game.refresh_from_db()
+        session.refresh_from_db()
+        self.p1.refresh_from_db()
+        other_participant.refresh_from_db()
+        self.assertEqual(self.game.status, 'active')
+        self.assertIsNone(self.game.current_question)
+        self.assertEqual(session.phase, WerWeissMehrSession.PHASE_IDLE)
+        self.assertEqual(session.current_round, 0)
+        self.assertEqual(session.completed_question_ids, [])
+        self.assertFalse(session.revealed_answers.exists())
+        self.assertFalse(WerWeissMehrRound.objects.filter(quiz=self.game).exists())
+        self.assertFalse(WerWeissMehrParticipantState.objects.filter(quiz=self.game, participant=self.p1).exists())
+        self.assertFalse(WerWeissMehrRoundResponse.objects.filter(quiz=self.game, participant=self.p1).exists())
+        self.assertFalse(WerWeissMehrPendingInput.objects.filter(quiz=self.game, participant=self.p2).exists())
+        self.assertEqual(self.p1.total_score, 0)
+        self.assertTrue(WerWeissMehrParticipantState.objects.filter(pk=other_state.pk).exists())
+        self.assertTrue(WerWeissMehrRoundResponse.objects.filter(pk=other_response.pk).exists())
+        self.assertEqual(other_participant.total_score, 7)
+
+    def test_duplicate_start_does_not_reset_running_instance(self):
+        self.game.start_quiz(hub_session_code='ABC')
+        start_set(self.game, self.question.id, hub_session_code='ABC')
+        session = self.game.session
+        started_at = self.game.started_at
+
+        self.game.start_quiz(hub_session_code='ABC')
+
+        self.game.refresh_from_db()
+        session.refresh_from_db()
+        self.assertEqual(self.game.started_at, started_at)
+        self.assertEqual(self.game.current_question_id, self.question.id)
+        self.assertEqual(session.phase, WerWeissMehrSession.PHASE_ROUND_ACTIVE)
+        self.assertEqual(session.current_round, 1)
+        self.assertTrue(WerWeissMehrRound.objects.filter(
+            quiz=self.game,
+            question=self.question,
+            round_number=1,
+        ).exists())
 
     def test_half_started_state_is_not_reported_as_running(self):
         self.game.status = 'active'
@@ -241,6 +433,34 @@ class WerWeissMehrRuntimeTests(TestCase):
         self.assertEqual(response.matched_answer_id, self.thueringen.id)
         self.assertEqual(response.final_status, WerWeissMehrRoundResponse.STATUS_MANUAL_CORRECTED)
         self.assertEqual(self.p1.total_score, 1)
+
+    def test_manual_correction_rejects_response_from_another_hub_session(self):
+        other_participant = WerWeissMehrParticipant.objects.create(
+            quiz=self.game,
+            name='Other Hub',
+            hub_session_code='OTHER',
+        )
+        self.game.start_quiz(hub_session_code='ABC')
+        start_set(self.game, self.question.id, hub_session_code='ABC')
+        response = WerWeissMehrRoundResponse.objects.create(
+            quiz=self.game,
+            participant=other_participant,
+            question=self.question,
+            round_number=1,
+            answer_text='Bayernn',
+        )
+
+        with self.assertRaisesMessage(ValueError, 'aktuellen Hub-Session'):
+            apply_manual_correction(
+                self.game,
+                response.id,
+                self.bayern.id,
+                hub_session_code='ABC',
+            )
+
+        response.refresh_from_db()
+        self.assertFalse(response.is_correct)
+        self.assertFalse(response.is_manual_override)
 
     def test_manual_correction_rejects_answer_revealed_before_current_round(self):
         start_set(self.game, self.question.id, hub_session_code='ABC')

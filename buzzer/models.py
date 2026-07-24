@@ -464,6 +464,26 @@ class BuzzerGame(SyncBase):
 
         current_name = current_buzz_participant.name if current_buzz_participant else None
         own = next((p for p in participants if p['name'] == participant_name), None)
+        round_results = []
+        if own and not session_mismatch:
+            completed_statuses = {'answered', 'ended'}
+            round_results = [
+                {
+                    'number': buzzer_round.round_number,
+                    'status': buzzer_round.status,
+                    'points_earned': (
+                        1 if buzzer_round.correct_participant_id == own['id'] else 0
+                    ) if buzzer_round.status in completed_statuses else None,
+                    'max_points': 1,
+                }
+                for buzzer_round in self.rounds.filter(
+                    hub_session_code=session_code,
+                ).only(
+                    'round_number',
+                    'status',
+                    'correct_participant_id',
+                ).order_by('round_number')
+            ]
         round_open_for_participant = bool(
             own
             and own['official']
@@ -495,6 +515,7 @@ class BuzzerGame(SyncBase):
             },
             'participants': participants,
             'participant': own,
+            'round_results': round_results,
             'can_buzz': round_open_for_participant,
         }
 
