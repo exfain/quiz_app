@@ -1,12 +1,22 @@
 import json
 from channels.generic.websocket import AsyncWebsocketConsumer
 from channels.db import database_sync_to_async
+from django.db import transaction
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 from .models import EstimationQuiz, EstimationParticipant, EstimationQuestion, EstimationAnswer, EstimationSession
 from games_hub.active_game_guard import resolve_session_game_activation_for_room
+from games_hub.authoritative_consumer import AuthoritativeGameConsumerMixin
+from games_hub.authoritative_state import (
+    current_snapshot,
+    finish_question_flow,
+    open_answering,
+    observe_snapshot,
+    present_question,
+    reset_question_flow,
+)
 from games_hub.lobby_return_flow import ensure_session_players_ready_for_game_start_for_room
-from games_hub.models import HubGameStep
+from games_hub.models import GameRuntimeState, HubGameStep
 from games_hub.tutorial_runtime import (
     activate_tutorial_runtime,
     deactivate_tutorial_runtime,
@@ -24,10 +34,17 @@ from games_hub.unit_tutorial_runtime import (
 )
 
 
-class EstimationConsumer(AsyncWebsocketConsumer):
+class EstimationConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
+    authoritative_game_key = 'estimation'
+    authoritative_required_actions = frozenset({
+        'participant_submit_answer',
+        'participant_update_pending_answer',
+    })
+
     async def connect(self):
         self.room_code = self.scope['url_route']['kwargs']['room_code']
         self.room_group_name = f'estimation_{self.room_code}'
+        self.participant_name = None
 
         # Join room group
         await self.channel_layer.group_add(
@@ -61,6 +78,8 @@ class EstimationConsumer(AsyncWebsocketConsumer):
                 await self.handle_admin_start_quiz(text_data_json)
             elif message_type == 'admin_send_question':
                 await self.handle_admin_send_question(text_data_json)
+            elif message_type == 'admin_open_answering':
+                await self.handle_admin_open_answering(text_data_json)
             elif message_type == 'admin_end_question':
                 await self.handle_admin_end_question(text_data_json)
             elif message_type == 'admin_end_quiz':
@@ -141,15 +160,34 @@ class EstimationConsumer(AsyncWebsocketConsumer):
                 validate=False,
             )
             await self.start_quiz_db(quiz.id)
+            await database_sync_to_async(reset_question_flow)(
+                game_key='estimation',
+                room_code=self.room_code,
+                session_code=hub_session_code,
+                mode=GameRuntimeState.QUESTION_FLOW_MANUAL_THREE_PHASE,
+            )
             tutorial_payload = await self.activate_tutorial_runtime(quiz.id, hub_session_code, show_tutorial)
             
+            start_payload = {
+                'type': 'quiz_started',
+                'message': 'Estimation Quiz has started!',
+                'phase': 'active',
+                'revealed': False,
+                'current_question_id': None,
+                'starts_at': None,
+                'ends_at': None,
+            }
+            await database_sync_to_async(observe_snapshot)(
+                'estimation',
+                self.room_code,
+                start_payload,
+                hub_session_code,
+            )
+
             # Broadcast to all participants
             await self.channel_layer.group_send(
                 self.room_group_name,
-                {
-                    'type': 'quiz_started',
-                    'message': 'Estimation Quiz has started!'
-                }
+                start_payload,
             )
             await self.hub_mirror_event('quiz_started', {
                 'room_code': self.room_code,
@@ -214,45 +252,131 @@ class EstimationConsumer(AsyncWebsocketConsumer):
             if not question:
                 return
 
+        # Determine the effective time limit for this send (do NOT persist on the question)
+        effective_time_limit = custom_time_limit if custom_time_limit is not None else 90
+
         await self.set_tutorial_active_db(quiz.id, False)
-        # Update quiz with new question
-        await self.update_quiz_question(quiz, question, custom_time_limit)
-        
-        # Get question data
+        phase_action = dict(data)
+        phase_action['question_id'] = question.id
+        decision = await self.present_estimation_question(
+            quiz.id,
+            question.id,
+            hub_session,
+            phase_action,
+            effective_time_limit,
+        )
+        if not decision.accepted:
+            await self.send_question_phase_rejection(decision, question.id)
+            return
+
         question_data = await self.get_question_data(question)
         max_points = await self.get_question_max_points_for_quiz(quiz.id, question.id)
         question_number = await self.get_question_number_for_quiz(quiz.id, question.id)
+        question_payload = {
+            'type': 'question_started',
+            'question': {
+                'id': question.id,
+                'question_text': question.question_text,
+                'unit': question_data['unit'],
+                'unit_display': question_data['unit_display'],
+                'question_number': question_number,
+                'max_points': 0 if is_tutorial_round else max_points,
+                'is_tutorial_round': is_tutorial_round,
+                'hint_text': question.hint_text,
+                'time_limit': effective_time_limit,
+            },
+            **self.question_lifecycle_fields(decision.snapshot),
+        }
+        await self.channel_layer.group_send(self.room_group_name, question_payload)
 
-        # Determine the effective time limit for this send (do NOT persist on the question)
-        effective_time_limit = custom_time_limit if custom_time_limit is not None else 90
-        
-        # Broadcast new question to all participants
+    async def handle_admin_open_answering(self, data):
+        quiz = await self.get_quiz()
+        if not quiz or not quiz.current_question_id:
+            await self.send(text_data=json.dumps({
+                'type': 'error',
+                'message': 'Es ist keine aktuelle Frage vorhanden.',
+            }))
+            return
+        hub_session = (
+            data.get('hub_session')
+            or data.get('hub_session_code')
+            or await self._get_hub_session_code_for_room()
+        )
+        decision = await self.open_estimation_answering(
+            quiz.id,
+            quiz.current_question_id,
+            hub_session,
+            data,
+        )
+        if not decision.accepted:
+            await self.send_question_phase_rejection(decision, quiz.current_question_id)
+            return
+        question_payload = await self.get_current_question_data()
         await self.channel_layer.group_send(
             self.room_group_name,
             {
-                'type': 'question_started',
-                'question': {
-                    'id': question.id,
-                    'question_text': question.question_text,
-                    'unit': question_data['unit'],
-                    'unit_display': question_data['unit_display'],
-                    'question_number': question_number,
-                    'max_points': 0 if is_tutorial_round else max_points,
-                    'is_tutorial_round': is_tutorial_round,
-                    'hint_text': question.hint_text,
-                    'time_limit': effective_time_limit
-                }
-            }
+                'type': 'question_answering_opened',
+                'question': question_payload,
+                **self.question_lifecycle_fields(decision.snapshot),
+            },
         )
+
+    async def send_question_phase_rejection(self, decision, question_id=None):
+        await self.send(text_data=json.dumps({
+            'type': 'action_rejected',
+            'code': decision.code,
+            'message': decision.message,
+            'question_id': question_id,
+            'snapshot': decision.snapshot,
+        }))
+
+    @staticmethod
+    def question_lifecycle_fields(snapshot):
+        snapshot = snapshot or {}
+        return {
+            key: snapshot.get(key)
+            for key in (
+                'state_revision',
+                'server_now',
+                'game_id',
+                'question_flow_mode',
+                'question_phase',
+                'question_presented_at',
+                'question_visible_at',
+                'content_revealed_at',
+                'answering_started_at',
+                'answering_deadline_at',
+                'answering_allowed',
+                'timer_running',
+                'remaining_answer_time',
+                'starts_at',
+                'ends_at',
+            )
+        }
 
     async def handle_admin_end_question(self, data):
         """Handle admin ending current question"""
         quiz = await self.get_quiz()
         if quiz:
+            hub_session = data.get('hub_session') or data.get('hub_session_code') or await self._get_hub_session_code_for_room()
+            phase_snapshot = await database_sync_to_async(current_snapshot)(
+                'estimation', self.room_code, hub_session,
+            )
+            if (
+                phase_snapshot.get('question_flow_mode')
+                == GameRuntimeState.QUESTION_FLOW_MANUAL_THREE_PHASE
+                and phase_snapshot.get('question_phase')
+                != GameRuntimeState.QUESTION_PHASE_ANSWERING_OPEN
+            ):
+                await self.send(text_data=json.dumps({
+                    'type': 'error',
+                    'message': 'Die Frage kann vor der Freigabe nicht beendet werden.',
+                }))
+                return
+            revealed_question_id = quiz.current_question_id
             # Get the correct answer and, if rank mode, compute rankings before clearing
             correct_answer_data = await self.get_current_question_answer(quiz)
             max_points = await self.get_current_question_max_points(quiz)
-            hub_session = data.get('hub_session') or data.get('hub_session_code') or await self._get_hub_session_code_for_room()
             evaluated_pending_answers = await self.finalize_pending_answers(quiz.id, hub_session)
             unit_tutorial = await self.finish_current_unit_tutorial(hub_session)
             is_tutorial_round = bool(unit_tutorial.get('is_tutorial_round'))
@@ -271,10 +395,21 @@ class EstimationConsumer(AsyncWebsocketConsumer):
 
             # Now clear the current question
             await self.clear_current_question(quiz.id)
+            if revealed_question_id:
+                await database_sync_to_async(finish_question_flow)(
+                    game_key='estimation',
+                    room_code=self.room_code,
+                    session_code=hub_session,
+                    question_id=revealed_question_id,
+                )
 
             # Broadcast end of question (include rank results when applicable)
             payload = {
                 'type': 'question_ended',
+                'phase': 'question_result',
+                'revealed': True,
+                'current_question_id': revealed_question_id,
+                'question': {'id': revealed_question_id},
                 'message': 'Time\'s up!',
                 'correct_answer': correct_answer_data,
                 'max_points': 0 if is_tutorial_round else max_points,
@@ -290,6 +425,12 @@ class EstimationConsumer(AsyncWebsocketConsumer):
                     }
                     for result in rank_results
                 ]
+            await database_sync_to_async(observe_snapshot)(
+                'estimation',
+                self.room_code,
+                payload,
+                hub_session,
+            )
             await self.channel_layer.group_send(self.room_group_name, payload)
 
     async def handle_admin_set_scoring_mode(self, data):
@@ -316,7 +457,18 @@ class EstimationConsumer(AsyncWebsocketConsumer):
         """Handle admin ending the quiz"""
         quiz = await self.get_quiz()
         if quiz:
+            hub_session = (
+                data.get('hub_session')
+                or data.get('hub_session_code')
+                or await self._get_hub_session_code_for_room()
+            )
             await self.end_quiz_db(quiz.id)
+            await database_sync_to_async(reset_question_flow)(
+                game_key='estimation',
+                room_code=self.room_code,
+                session_code=hub_session,
+                mode=GameRuntimeState.QUESTION_FLOW_MANUAL_THREE_PHASE,
+            )
             # Collect final scores
             final_scores = await self.get_final_scores()
             
@@ -394,7 +546,7 @@ class EstimationConsumer(AsyncWebsocketConsumer):
                         'accuracy_percentage': answer['accuracy_percentage'],
                         'percentage_difference': answer['percentage_difference'],
                         'difference_indicator': answer['difference_indicator'],
-                        'time_taken': time_taken
+                        'time_taken': answer['time_taken']
                     }
                     }
                 )
@@ -412,6 +564,7 @@ class EstimationConsumer(AsyncWebsocketConsumer):
         """Handle new participant joining"""
         participant_name = data.get('participant_name')
         hub_session = data.get('hub_session')
+        self.participant_name = participant_name
         participant = await self.get_participant_by_name(participant_name, hub_session)
         
         if participant:
@@ -492,7 +645,12 @@ class EstimationConsumer(AsyncWebsocketConsumer):
         """Send quiz started message"""
         await self.send(text_data=json.dumps({
             'type': 'quiz_started',
-            'message': event['message']
+            'message': event['message'],
+            'phase': event.get('phase'),
+            'revealed': event.get('revealed', False),
+            'current_question_id': event.get('current_question_id'),
+            'starts_at': event.get('starts_at'),
+            'ends_at': event.get('ends_at'),
         }))
 
     async def tutorial_start(self, event):
@@ -545,13 +703,24 @@ class EstimationConsumer(AsyncWebsocketConsumer):
         """Send new question to client"""
         await self.send(text_data=json.dumps({
             'type': 'question_started',
-            'question': event['question']
+            'question': event['question'],
+            **self.question_lifecycle_fields(event),
+        }))
+
+    async def question_answering_opened(self, event):
+        await self.send(text_data=json.dumps({
+            'type': 'question_answering_opened',
+            'question': event['question'],
+            **self.question_lifecycle_fields(event),
         }))
 
     async def question_ended(self, event):
         """Send question ended message"""
         await self.send(text_data=json.dumps({
             'type': 'question_ended',
+            'phase': event.get('phase'),
+            'revealed': event.get('revealed', True),
+            'current_question_id': event.get('current_question_id'),
             'message': event['message'],
             'correct_answer': event.get('correct_answer'),
             'rank_results': event.get('rank_results'),
@@ -596,7 +765,7 @@ class EstimationConsumer(AsyncWebsocketConsumer):
     # Database operations
     @database_sync_to_async
     def get_current_question_data(self, participant_name=None, hub_session=None):
-        """Return serialised question data for the currently active question, or None."""
+        """Return the current question with authoritative phase metadata."""
         try:
             quiz = EstimationQuiz.objects.select_related('current_question').get(room_code=self.room_code)
             question = quiz.current_question
@@ -608,9 +777,30 @@ class EstimationConsumer(AsyncWebsocketConsumer):
             except EstimationSession.DoesNotExist:
                 session = None
 
-            remaining_seconds = 90
-            if session and session.question_end_time:
-                remaining_seconds = max(0, int((session.question_end_time - timezone.now()).total_seconds() + 0.999))
+            runtime = current_snapshot('estimation', self.room_code, hub_session)
+            question_phase = runtime.get('question_phase')
+            manual_flow = (
+                runtime.get('question_flow_mode')
+                == GameRuntimeState.QUESTION_FLOW_MANUAL_THREE_PHASE
+            )
+            prompt_details_visible = (
+                not manual_flow
+                or question_phase in {
+                    GameRuntimeState.QUESTION_PHASE_PROMPT_VISIBLE,
+                    GameRuntimeState.QUESTION_PHASE_CONTENT_VISIBLE,
+                    GameRuntimeState.QUESTION_PHASE_ANSWERING_OPEN,
+                }
+            )
+            remaining_seconds = runtime.get('remaining_answer_time')
+            if not manual_flow and session and session.question_end_time:
+                remaining_seconds = max(
+                    0,
+                    int((session.question_end_time - timezone.now()).total_seconds() + 0.999),
+                )
+            if remaining_seconds is None or (not manual_flow and not session):
+                remaining_seconds = 90 if not manual_flow else 0
+            if remaining_seconds is None:
+                remaining_seconds = 0
 
             elapsed_seconds = 0
             if quiz.question_start_time:
@@ -619,17 +809,32 @@ class EstimationConsumer(AsyncWebsocketConsumer):
             payload = {
                 'id': question.id,
                 'question_text': question.question_text,
-                'unit': question.unit,
-                'unit_display': question.get_unit_display_text(),
+                'unit': question.unit if prompt_details_visible else '',
+                'unit_display': question.get_unit_display_text() if prompt_details_visible else '',
                 'question_number': self.get_question_number_for_quiz_value(quiz, question.id),
                 'max_points': question.get_max_points_for_mode(
                     quiz.get_effective_scoring_mode(),
                     self.get_participant_count_for_quiz(quiz),
                 ),
-                'hint_text': question.hint_text,
+                'hint_text': question.hint_text if prompt_details_visible else None,
                 'time_limit': remaining_seconds,
                 'elapsed_seconds': elapsed_seconds,
+                'starts_at': (
+                    runtime.get('answering_started_at')
+                    or (quiz.question_start_time.isoformat() if quiz.question_start_time else None)
+                ),
+                'ends_at': (
+                    runtime.get('answering_deadline_at')
+                    or (
+                        session.question_end_time.isoformat()
+                        if not manual_flow and session and session.question_end_time
+                        else None
+                    )
+                ),
+                'server_now': runtime.get('server_now'),
+                'remaining_seconds': remaining_seconds,
                 'has_answered': False,
+                **self.question_lifecycle_fields(runtime),
             }
 
             if participant_name is not None:
@@ -651,6 +856,13 @@ class EstimationConsumer(AsyncWebsocketConsumer):
                             'points_earned': int(answer.points_earned or 0),
                             'accuracy_percentage': round(answer.get_accuracy_percentage(), 2),
                         }
+                    elif session and (
+                        not manual_flow
+                        or question_phase == GameRuntimeState.QUESTION_PHASE_ANSWERING_OPEN
+                    ):
+                        pending = (session.pending_answers or {}).get(str(participant.id)) or {}
+                        if str(pending.get('question_id') or '') == str(question.id):
+                            payload['pending_answer'] = pending.get('user_answer', '')
 
             return payload
         except EstimationQuiz.DoesNotExist:
@@ -794,12 +1006,73 @@ class EstimationConsumer(AsyncWebsocketConsumer):
             pass
 
     @database_sync_to_async
-    def update_quiz_question(self, quiz, question, custom_time_limit=None):
-        session, _ = EstimationSession.objects.get_or_create(quiz=quiz)
-        session.send_question(question)
-        if custom_time_limit is not None:
-            session.question_end_time = timezone.now() + timezone.timedelta(seconds=custom_time_limit)
-            session.save(update_fields=['question_end_time', 'updated_at'])
+    @transaction.atomic
+    def present_estimation_question(
+        self,
+        quiz_id,
+        question_id,
+        hub_session_code,
+        action,
+        answer_duration_seconds,
+        at=None,
+    ):
+        quiz = EstimationQuiz.objects.select_for_update().get(id=quiz_id)
+        question = EstimationQuestion.objects.get(id=question_id)
+        session, _ = EstimationSession.objects.select_for_update().get_or_create(quiz=quiz)
+        decision = present_question(
+            game_key='estimation',
+            room_code=self.room_code,
+            session_code=hub_session_code,
+            action=action,
+            answer_duration_seconds=answer_duration_seconds,
+            at=at,
+        )
+        if decision.accepted and not decision.duplicate:
+            session.prepare_question(question)
+        return decision
+
+    @database_sync_to_async
+    @transaction.atomic
+    def open_estimation_answering(
+        self,
+        quiz_id,
+        question_id,
+        hub_session_code,
+        action,
+        at=None,
+    ):
+        quiz = (
+            EstimationQuiz.objects.select_for_update()
+            .select_related('current_question')
+            .get(id=quiz_id)
+        )
+        session = EstimationSession.objects.select_for_update().get(quiz=quiz)
+        if quiz.current_question_id != question_id:
+            return open_answering(
+                game_key='estimation',
+                room_code=self.room_code,
+                session_code=hub_session_code,
+                action=action,
+            )
+        opened_at = at or timezone.now()
+        decision = open_answering(
+            game_key='estimation',
+            room_code=self.room_code,
+            session_code=hub_session_code,
+            action=action,
+            at=opened_at,
+        )
+        if decision.accepted and not decision.duplicate:
+            started_at = parse_datetime(decision.snapshot.get('answering_started_at') or '')
+            deadline = parse_datetime(decision.snapshot.get('answering_deadline_at') or '')
+            if not started_at or not deadline:
+                raise ValueError('Authoritative answering timestamps are missing.')
+            session.open_answering(
+                quiz.current_question,
+                started_at=started_at,
+                answer_duration_seconds=(deadline - started_at).total_seconds(),
+            )
+        return decision
 
     @database_sync_to_async
     def clear_current_question(self, quiz_id):
@@ -1002,16 +1275,32 @@ class EstimationConsumer(AsyncWebsocketConsumer):
         return participants.count()
 
     @database_sync_to_async
+    @transaction.atomic
     def save_participant_answer(self, participant_name, hub_session_code, user_answer, time_taken, question_id=None):
         try:            # Collect final scores
-            quiz = EstimationQuiz.objects.get(room_code=self.room_code)
+            quiz = (
+                EstimationQuiz.objects.select_for_update()
+                .select_related('current_question')
+                .get(room_code=self.room_code)
+            )
             participant = quiz.participants.get(name=participant_name, hub_session_code=hub_session_code)
             
             if quiz.status != 'active':
                 return None
             if not quiz.current_question:
                 return None
-            if question_id and str(quiz.current_question_id) != str(question_id):
+            if question_id is None or str(quiz.current_question_id) != str(question_id):
+                return None
+            session = EstimationSession.objects.select_for_update().filter(quiz=quiz).first()
+            received_at = timezone.now()
+            if (
+                not session
+                or not session.is_question_active
+                or (
+                    session.question_end_time
+                    and received_at >= session.question_end_time
+                )
+            ):
                 return None
             
             # Check if answer already exists
@@ -1030,14 +1319,24 @@ class EstimationConsumer(AsyncWebsocketConsumer):
             except (ValueError, TypeError):
                 return None
             
+            server_time_taken = (
+                max(0.0, (received_at - quiz.question_start_time).total_seconds())
+                if quiz.question_start_time
+                else 0.0
+            )
+
             # Create new answer
-            answer = EstimationAnswer.objects.create(
+            answer, created = EstimationAnswer.objects.get_or_create(
                 quiz=quiz,
                 participant=participant,
                 question=quiz.current_question,
-                user_answer=user_answer_float,
-                time_taken=time_taken
+                defaults={
+                    'user_answer': user_answer_float,
+                    'time_taken': server_time_taken,
+                },
             )
+            if not created:
+                return None
             is_tutorial_answer = is_unit_tutorial_question(
                 'estimation',
                 self.room_code,
@@ -1048,11 +1347,11 @@ class EstimationConsumer(AsyncWebsocketConsumer):
                 answer.points_earned = 0
                 answer.save(update_fields=['points_earned', 'updated_at'])
 
-            if hasattr(quiz, 'session'):
-                pending_answers = dict(quiz.session.pending_answers or {})
+            if session:
+                pending_answers = dict(session.pending_answers or {})
                 if pending_answers.pop(str(participant.id), None) is not None:
-                    quiz.session.pending_answers = pending_answers
-                    quiz.session.save(update_fields=['pending_answers', 'updated_at'])
+                    session.pending_answers = pending_answers
+                    session.save(update_fields=['pending_answers', 'updated_at'])
             
             return {
                 'points_earned': answer.points_earned,
@@ -1061,25 +1360,34 @@ class EstimationConsumer(AsyncWebsocketConsumer):
                 'user_answer': answer.user_answer,
                 'formatted_answer': answer.get_formatted_user_answer(),
                 'percentage_difference': answer.get_percentage_difference(),
-                'difference_indicator': answer.get_difference_indicator()
+                'difference_indicator': answer.get_difference_indicator(),
+                'time_taken': answer.time_taken,
             }
             
         except (EstimationQuiz.DoesNotExist, EstimationParticipant.DoesNotExist):
             return None
 
     @database_sync_to_async
+    @transaction.atomic
     def save_pending_answer(self, participant_name, hub_session_code, user_answer, question_id=None):
         try:
-            quiz = EstimationQuiz.objects.get(room_code=self.room_code)
+            quiz = EstimationQuiz.objects.select_for_update().get(room_code=self.room_code)
             if quiz.status != 'active':
                 return False
             if not quiz.current_question:
                 return False
-            if question_id and str(quiz.current_question_id) != str(question_id):
+            if question_id is None or str(quiz.current_question_id) != str(question_id):
                 return False
 
             participant = quiz.participants.get(name=participant_name, hub_session_code=hub_session_code)
-            session, _ = EstimationSession.objects.get_or_create(quiz=quiz)
+            session, _ = EstimationSession.objects.select_for_update().get_or_create(quiz=quiz)
+            received_at = timezone.now()
+            if (
+                not session.is_question_active
+                or not session.question_end_time
+                or received_at >= session.question_end_time
+            ):
+                return False
             pending_answers = dict(session.pending_answers or {})
             entry_key = str(participant.id)
             cleaned_answer = '' if user_answer is None else str(user_answer).strip()
@@ -1099,7 +1407,7 @@ class EstimationConsumer(AsyncWebsocketConsumer):
                 pending_answers[entry_key] = {
                     'question_id': quiz.current_question_id,
                     'user_answer': cleaned_answer,
-                    'updated_at': timezone.now().isoformat(),
+                    'updated_at': received_at.isoformat(),
                     'participant_name': participant.name,
                     'hub_session_code': participant.hub_session_code,
                 }

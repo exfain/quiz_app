@@ -1,9 +1,11 @@
 import json
 from channels.generic.websocket import AsyncWebsocketConsumer
 from channels.db import database_sync_to_async
+from django.db import transaction
 from django.utils import timezone
 from .models import WhereQuiz, WhereParticipant, WhereQuestion, WhereAnswer, WhereSession
 from games_hub.active_game_guard import resolve_session_game_activation_for_room
+from games_hub.authoritative_consumer import AuthoritativeGameConsumerMixin
 from games_hub.lobby_return_flow import ensure_session_players_ready_for_game_start_for_room
 from games_hub.models import HubGameStep
 from games_hub.tutorial_runtime import (
@@ -23,7 +25,10 @@ from games_hub.unit_tutorial_runtime import (
 )
 
 
-class WhereConsumer(AsyncWebsocketConsumer):
+class WhereConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
+    authoritative_game_key = 'where'
+    authoritative_required_actions = frozenset({'participant_submit_answer'})
+
     async def connect(self):
         self.room_code = self.scope['url_route']['kwargs']['room_code']
         self.room_group_name = f'where_{self.room_code}'
@@ -399,7 +404,14 @@ class WhereConsumer(AsyncWebsocketConsumer):
 
         # Save the answer
         answer = await self.save_participant_answer(
-            participant_name, session_code, x_norm, y_norm, latitude, longitude, time_taken
+            participant_name,
+            session_code,
+            x_norm,
+            y_norm,
+            latitude,
+            longitude,
+            time_taken,
+            question_id=data.get('question_id'),
         )
         
         if answer:
@@ -422,7 +434,7 @@ class WhereConsumer(AsyncWebsocketConsumer):
                         'is_tutorial_round': answer['is_tutorial_round'],
                         'x_norm': answer['x_norm'],
                         'y_norm': answer['y_norm'],
-                        'time_taken': time_taken
+                        'time_taken': answer['time_taken']
                     }
                 }
             )
@@ -471,6 +483,16 @@ class WhereConsumer(AsyncWebsocketConsumer):
                         'type': 'question_started',
                         'question': current_question_data
                     }))
+                    existing_answer = await self.get_current_participant_answer(
+                        participant['id'],
+                        current_question_data['id'],
+                    )
+                    if existing_answer:
+                        await self.send(text_data=json.dumps({
+                            'type': 'answer_submitted',
+                            'message': 'Answer already submitted',
+                            **existing_answer,
+                        }))
 
     async def handle_tutorial_completed(self, data):
         participant_name = data.get('participant_name') or data.get('name')
@@ -625,8 +647,14 @@ class WhereConsumer(AsyncWebsocketConsumer):
         """Return serialised question data for the currently active question, or None."""
         try:
             quiz = WhereQuiz.objects.select_related('current_question').get(room_code=self.room_code)
+            session = getattr(quiz, 'session', None)
             question = quiz.current_question
-            if not question:
+            if (
+                not question
+                or quiz.status != 'active'
+                or not session
+                or not session.is_question_active
+            ):
                 return None
             return {
                 'id': question.id,
@@ -637,9 +665,42 @@ class WhereConsumer(AsyncWebsocketConsumer):
                 'map_type': question.map_type,
                 'hint_text': question.hint_text,
                 'image_url': question.image.url if question.image else None,
+                'starts_at': (
+                    quiz.question_start_time.isoformat()
+                    if quiz.question_start_time
+                    else None
+                ),
+                'ends_at': (
+                    session.question_end_time.isoformat()
+                    if session.question_end_time
+                    else None
+                ),
+                'server_now': timezone.now().isoformat(),
+                'remaining_seconds': (
+                    max(0, (session.question_end_time - timezone.now()).total_seconds())
+                    if session.question_end_time
+                    else None
+                ),
             }
         except WhereQuiz.DoesNotExist:
             return None
+
+    @database_sync_to_async
+    def get_current_participant_answer(self, participant_id, question_id):
+        answer = WhereAnswer.objects.filter(
+            quiz__room_code=self.room_code,
+            participant_id=participant_id,
+            question_id=question_id,
+        ).first()
+        if not answer:
+            return None
+        return {
+            'question_id': answer.question_id,
+            'x_norm': answer.x_norm,
+            'y_norm': answer.y_norm,
+            'time_taken': answer.time_taken,
+            'answer_locked': True,
+        }
 
     @database_sync_to_async
     def get_quiz(self):
@@ -921,14 +982,35 @@ class WhereConsumer(AsyncWebsocketConsumer):
         }
 
     @database_sync_to_async
-    def save_participant_answer(self, participant_name, hub_session_code, x_norm, y_norm, latitude, longitude, time_taken):
+    @transaction.atomic
+    def save_participant_answer(
+        self,
+        participant_name,
+        hub_session_code,
+        x_norm,
+        y_norm,
+        latitude,
+        longitude,
+        time_taken,
+        question_id=None,
+    ):
         try:
-            quiz = WhereQuiz.objects.get(room_code=self.room_code)
+            quiz = (
+                WhereQuiz.objects.select_for_update()
+                .select_related('current_question')
+                .get(room_code=self.room_code)
+            )
             participant = quiz.participants.get(name=participant_name, hub_session_code=hub_session_code)
             
-            if quiz.status != 'active':
+            session = WhereSession.objects.select_for_update().filter(quiz=quiz).first()
+            if quiz.status != 'active' or not session or not session.is_question_active:
                 return None
             if not quiz.current_question:
+                return None
+            if question_id is None or str(question_id) != str(quiz.current_question_id):
+                return None
+            received_at = timezone.now()
+            if session.question_end_time and received_at >= session.question_end_time:
                 return None
             
             # Check if answer already exists
@@ -941,11 +1023,16 @@ class WhereConsumer(AsyncWebsocketConsumer):
             if existing_answer:
                 return None  # Already answered
 
+            server_time_taken = (
+                max(0.0, (received_at - quiz.question_start_time).total_seconds())
+                if quiz.question_start_time
+                else 0.0
+            )
             answer_kwargs = {
                 'quiz': quiz,
                 'participant': participant,
                 'question': quiz.current_question,
-                'time_taken': time_taken,
+                'time_taken': server_time_taken,
             }
             if x_norm is not None and y_norm is not None:
                 answer_kwargs['x_norm'] = float(x_norm)
@@ -958,7 +1045,18 @@ class WhereConsumer(AsyncWebsocketConsumer):
                 answer_kwargs['user_longitude'] = float(longitude)
 
             # Create new answer
-            answer = WhereAnswer.objects.create(**answer_kwargs)
+            answer, created = WhereAnswer.objects.get_or_create(
+                quiz=quiz,
+                participant=participant,
+                question=quiz.current_question,
+                defaults={
+                    key: value
+                    for key, value in answer_kwargs.items()
+                    if key not in {'quiz', 'participant', 'question'}
+                },
+            )
+            if not created:
+                return None
             is_tutorial_answer = is_unit_tutorial_question(
                 'where',
                 self.room_code,
@@ -973,6 +1071,7 @@ class WhereConsumer(AsyncWebsocketConsumer):
                 'is_tutorial_round': is_tutorial_answer,
                 'x_norm': answer.x_norm,
                 'y_norm': answer.y_norm,
+                'time_taken': answer.time_taken,
             }
             
         except (WhereQuiz.DoesNotExist, WhereParticipant.DoesNotExist, ValueError, TypeError):

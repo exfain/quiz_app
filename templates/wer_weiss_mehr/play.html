@@ -1,13 +1,18 @@
 <!DOCTYPE html>
 <html lang="de">
+{% load static %}
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{{ quiz.title }} - QuizMaster</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+<script src="{% static 'js/authoritative-game-state.js' %}"></script>
 </head>
-<body class="wer-weiss-mehr-play-page">
+<body class="wer-weiss-mehr-play-page"
+      data-vhs-progress-kind="set"
+      data-vhs-progress-source="#vhsProgressNumber">
 <main class="wwm-page" data-participant-name="{{ participant.name }}">
+    <span id="vhsProgressNumber" hidden aria-hidden="true">0</span>
     <header class="wwm-header">
         <div>
             <div class="wwm-game-type-label text-muted small">Wer weiß mehr?</div>
@@ -72,10 +77,20 @@ body > * { position: relative; z-index: 1; }
 .wwm-start-subtitle { display: block; margin-top: .7rem; font-family: "Walkway Condensed", system-ui, sans-serif; font-size: clamp(1rem, 2.2vw, 1.25rem); font-weight: 600; color: #566174; }
 .timer-box { position: absolute; top: 24px; right: 24px; width: 74px; height: 74px; border-radius: 50%; background: #ffcf5a; display: grid; place-items: center; font-weight: 900; box-shadow: inset 0 0 0 5px rgba(255,255,255,.55); }
 .question-text { font-size: clamp(1.8rem, 4vw, 3rem); line-height: 1.1; margin-bottom: 28px; }
+.question-text.wwm-question-presentation-pending { visibility: hidden; opacity: 0; }
+.question-text.wwm-question-presentation-reveal { animation: wwm-question-presentation-reveal 180ms ease-out both; }
 .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 12px; margin-bottom: 28px; }
 .tile { min-height: 72px; display: grid; place-items: center; text-align: center; border-radius: 18px; border: 2px solid #d7dbe5; background: #f4f6fa; font-weight: 800; padding: 10px; }
 .tile.hidden { color: #9aa3b5; font-size: 1.8rem; }
 .tile.revealed { background: #173f35; color: #fff; border-color: #173f35; font-size: 1rem; }
+.tile.wwm-tile-presentation-pending { visibility: hidden; opacity: 0; transform: translateY(8px); }
+.tile.wwm-tile-presentation-reveal { animation: wwm-tile-presentation-reveal 180ms ease-out both; }
+@keyframes wwm-tile-presentation-reveal { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes wwm-question-presentation-reveal { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+@media (prefers-reduced-motion: reduce) {
+    .question-text.wwm-question-presentation-reveal,
+    .tile.wwm-tile-presentation-reveal { animation: none; }
+}
 .answer-area { border-top: 1px solid #e2e6ee; padding-top: 24px; }
 .end-screen { margin-top: 24px; border-top: 1px solid #e2e6ee; padding-top: 24px; }
 .ended-card { background: #f4f6fa; border: 1px solid #d7dbe5; border-radius: 20px; padding: 20px; }
@@ -106,6 +121,14 @@ let pollTimer = null;
 let hubWs = null;
 let lobbyReturnController = null;
 let tileLayoutFrame = null;
+let stateRequestSequence = 0;
+let stateAbortController = null;
+let presentationServerNowMs = null;
+let presentationReceivedAtMs = null;
+let questionPresentationTimer = null;
+let tileRevealTimers = [];
+let tileRevealContext = '';
+let answerInputContext = '';
 
 function socketUrl() {
     const scheme = window.location.protocol === 'https:' ? 'wss' : 'ws';
@@ -201,12 +224,19 @@ function startPollingFallback() {
 }
 
 function fetchState() {
+    const requestSequence = ++stateRequestSequence;
+    if (stateAbortController) stateAbortController.abort();
+    stateAbortController = new AbortController();
     const params = new URLSearchParams({participant_name: PARTICIPANT_NAME});
     if (HUB_SESSION) params.set('hub_session', HUB_SESSION);
-    fetch(`/wer-weiss-mehr/state/${ROOM_CODE}/?${params}`)
+    fetch(`/wer-weiss-mehr/state/${ROOM_CODE}/?${params}`, {signal: stateAbortController.signal})
         .then(response => parseJsonResponse(response, 'State konnte nicht geladen werden.'))
-        .then(({payload}) => renderState(payload))
-        .catch(() => {
+        .then(({payload}) => {
+            if (requestSequence !== stateRequestSequence) return;
+            renderState(payload);
+        })
+        .catch(error => {
+            if (error?.name === 'AbortError') return;
             if (!latestState) setStatus('Verbindung unterbrochen. Bitte Seite neu laden.');
         });
 }
@@ -259,16 +289,146 @@ function savePendingInput(answerText) {
 }
 
 function submitAnswer(answerText) {
+    const context = latestState || {};
     return postParticipantJson(
         `/wer-weiss-mehr/submit/${ROOM_CODE}/`,
-        {answer_text: answerText},
+        {
+            answer_text: answerText,
+            game_id: context.game_id ?? null,
+            question_id: context.current_question_id ?? null,
+            round_id: context.current_round_id ?? null,
+            set_id: context.current_set_id ?? null,
+            state_revision: context.state_revision,
+            client_action_id: window.AuthoritativeGameState.createActionId(),
+        },
         'Antwort konnte nicht eingeloggt werden.'
     );
 }
 
-function renderState(state) {
+function syncPresentationClock(serverNow) {
+    const parsed = Date.parse(serverNow || '');
+    if (!Number.isFinite(parsed)) return;
+    presentationServerNowMs = parsed;
+    presentationReceivedAtMs = Date.now();
+}
+
+function estimatedPresentationServerNow() {
+    if (!Number.isFinite(presentationServerNowMs) || !Number.isFinite(presentationReceivedAtMs)) {
+        return Date.now();
+    }
+    return presentationServerNowMs + (Date.now() - presentationReceivedAtMs);
+}
+
+function clearQuestionPresentationTimer() {
+    if (questionPresentationTimer) clearTimeout(questionPresentationTimer);
+    questionPresentationTimer = null;
+}
+
+function clearTileRevealTimers() {
+    tileRevealTimers.forEach(timer => clearTimeout(timer));
+    tileRevealTimers = [];
+}
+
+function scheduleQuestionPresentation(state) {
+    clearQuestionPresentationTimer();
+    if (state.question_phase !== 'prompt_visible') return;
+    const visibleAt = Date.parse(state.question_visible_at || '');
+    if (!Number.isFinite(visibleAt)) return;
+    const remaining = Math.max(0, visibleAt - estimatedPresentationServerNow());
+    if (remaining <= 0) return;
+    const context = `${state.current_set_id || ''}:${state.current_round || 0}:${state.state_revision || 0}`;
+    questionPresentationTimer = setTimeout(() => {
+        const currentContext = `${latestState?.current_set_id || ''}:${latestState?.current_round || 0}:${latestState?.state_revision || 0}`;
+        if (context === currentContext) renderState(latestState, true);
+    }, remaining);
+}
+
+function renderQuestionPresentation(state, question) {
+    const questionElement = document.getElementById('questionText');
+    const visibleAt = Date.parse(state.question_visible_at || '');
+    const now = estimatedPresentationServerNow();
+    const isPromptPresentation = state.question_phase === 'prompt_visible';
+    const questionVisible = !isPromptPresentation || !Number.isFinite(visibleAt) || now >= visibleAt;
+
+    questionElement.textContent = question.question_text;
+    questionElement.classList.toggle('wwm-question-presentation-pending', !questionVisible);
+    questionElement.classList.toggle(
+        'wwm-question-presentation-reveal',
+        questionVisible && isPromptPresentation && Number.isFinite(visibleAt) && now - visibleAt < 180
+    );
+    scheduleQuestionPresentation(state);
+    renderTilePresentation(state, question, questionVisible);
+}
+
+function renderTilePresentation(state, question, questionVisible) {
+    clearTileRevealTimers();
+    const tilesElement = document.getElementById('tiles');
+    const visibleAt = Date.parse(state.question_visible_at || '');
+    const now = estimatedPresentationServerNow();
+    const stagger = Math.max(0, Number(state.field_reveal_stagger_ms) || 0);
+    const isPromptPresentation = state.question_phase === 'prompt_visible';
+    const forceVisible = state.question_phase === 'answering_open' || !isPromptPresentation;
+    tileRevealContext = `${state.current_set_id || ''}:${state.current_round || 0}:${state.state_revision || 0}`;
+
+    tilesElement.innerHTML = question.tiles.map(tile => {
+        const hasPresentationIndex = tile.presentation_index !== null && tile.presentation_index !== undefined;
+        const revealAt = Number.isFinite(visibleAt) && hasPresentationIndex
+            ? visibleAt + (Number(tile.presentation_index) * stagger)
+            : null;
+        const presentationPending = !forceVisible && hasPresentationIndex && (
+            !questionVisible || (Number.isFinite(revealAt) && now < revealAt)
+        );
+        const presentationReveal = !presentationPending
+            && !forceVisible
+            && Number.isFinite(revealAt)
+            && now - revealAt >= 0
+            && now - revealAt < 180;
+        return `
+            <div class="tile ${tile.revealed ? 'revealed' : 'hidden'}${presentationPending ? ' wwm-tile-presentation-pending' : ''}${presentationReveal ? ' wwm-tile-presentation-reveal' : ''}"
+                 role="listitem"
+                 data-tile-position="${tile.position}"
+                 data-presentation-index="${hasPresentationIndex ? tile.presentation_index : ''}">${tile.revealed ? escapeHtml(tile.text) : '?'}</div>
+        `;
+    }).join('');
+
+    if (!forceVisible && questionVisible && Number.isFinite(visibleAt)) {
+        tilesElement.querySelectorAll('[data-presentation-index]:not([data-presentation-index=""])').forEach(tileElement => {
+            const revealAt = visibleAt + (Number(tileElement.dataset.presentationIndex) * stagger);
+            const remaining = revealAt - now;
+            if (remaining <= 0) return;
+            const expectedContext = tileRevealContext;
+            tileRevealTimers.push(setTimeout(() => {
+                if (tileRevealContext !== expectedContext || latestState?.question_phase === 'answering_open') return;
+                tileElement.classList.remove('wwm-tile-presentation-pending');
+                tileElement.classList.add('wwm-tile-presentation-reveal');
+                scheduleTileLayout();
+            }, remaining));
+        });
+    }
+    scheduleTileLayout();
+}
+
+function resetPresentationState() {
+    clearQuestionPresentationTimer();
+    clearTileRevealTimers();
+    tileRevealContext = '';
+    document.getElementById('questionText').classList.remove(
+        'wwm-question-presentation-pending',
+        'wwm-question-presentation-reveal'
+    );
+}
+
+function renderState(state, skipSnapshotCheck = false) {
+    if (!skipSnapshotCheck && !window.AuthoritativeGameState.acceptSnapshot(state)) return;
+    const answerInput = document.getElementById('answerInput');
+    const answerInputWasFocused = document.activeElement === answerInput;
+    const answerSelectionStart = answerInputWasFocused ? answerInput.selectionStart : null;
+    const answerSelectionEnd = answerInputWasFocused ? answerInput.selectionEnd : null;
     window.sessionGameStartIntro?.handleState(state);
     latestState = state;
+    if (!skipSnapshotCheck) syncPresentationClock(state.server_now);
+    document.getElementById('vhsProgressNumber').textContent =
+        Number(state.current_set_number) > 0 ? String(state.current_set_number) : '0';
     const question = state.question;
     window.unitTutorialNotice?.setFromPayload(state);
     const own = state.participant_state || {};
@@ -283,6 +443,7 @@ function renderState(state) {
     renderScorebox(state.scorebox || []);
 
     if (!question) {
+        resetPresentationState();
         if (gameEnded) setStatus('Spiel beendet');
         else if (state.game_status === 'active') setStatus('Warte auf das naechste Set');
         else setStartStatus();
@@ -296,11 +457,14 @@ function renderState(state) {
         return;
     }
 
-    document.getElementById('questionText').textContent = question.question_text;
-    document.getElementById('tiles').innerHTML = question.tiles.map(tile => `
-        <div class="tile ${tile.revealed ? 'revealed' : 'hidden'}" role="listitem" data-tile-position="${tile.position}">${tile.revealed ? escapeHtml(tile.text) : '?'}</div>
-    `).join('');
-    scheduleTileLayout();
+    const currentInputContext = `${state.current_set_id || question.id}:${state.current_round || 0}`;
+    if (currentInputContext !== answerInputContext) {
+        answerInputContext = currentInputContext;
+        clearTimeout(pendingInputTimer);
+        pendingInputTimer = null;
+        document.getElementById('answerInput').value = own.pending_answer || '';
+    }
+    renderQuestionPresentation(state, question);
 
     if (gameEnded) {
         setStatus('Spiel beendet');
@@ -323,18 +487,28 @@ function renderState(state) {
     }
 
     if (state.phase === 'round_active') {
+        clearQuestionPresentationTimer();
+        clearTileRevealTimers();
         setStatus(`Runde ${state.current_round}`);
-        startTimer(state.timer);
+        startTimer(state);
         if (own.can_answer) {
             answerArea.classList.remove('d-none');
-            document.getElementById('answerInput').disabled = false;
+            answerInput.disabled = false;
             document.getElementById('submitBtn').disabled = false;
+            if (answerInputWasFocused) {
+                answerInput.focus({preventScroll: true});
+                if (answerSelectionStart !== null && answerSelectionEnd !== null) {
+                    answerInput.setSelectionRange(answerSelectionStart, answerSelectionEnd);
+                }
+            }
         } else {
             answerArea.classList.add('d-none');
             if (own.has_submitted) showMessage(`Antwort eingeloggt${own.submitted_answer ? `: ${own.submitted_answer}` : ''}. Warte auf die Auswertung.`, 'secondary');
             else if (own.is_eliminated) showMessage('Du bist für dieses Set ausgeschieden. Du siehst die weiteren Runden weiter mit.', 'warning');
         }
     } else if (state.phase === 'review') {
+        clearQuestionPresentationTimer();
+        clearTileRevealTimers();
         setStatus('Runde beendet');
         stopTimer();
         answerArea.classList.add('d-none');
@@ -343,6 +517,7 @@ function renderState(state) {
         else if (own.is_eliminated || (response && !response.is_correct)) showMessage('Du bist ausgeschieden.', 'warning');
         else showMessage('Warte auf die Auswertung.', 'secondary');
     } else if (state.phase === 'set_completed') {
+        resetPresentationState();
         setStatus('Set beendet');
         stopTimer();
         answerArea.classList.add('d-none');
@@ -351,17 +526,19 @@ function renderState(state) {
         setStatus('Warte auf die naechste Runde');
         stopTimer();
         answerArea.classList.add('d-none');
+        disableAnswerControls();
     }
 }
 
-function startTimer(timer) {
+function startTimer(state) {
     stopTimer();
     const box = document.getElementById('timerBox');
     const value = document.getElementById('timerValue');
     box.classList.remove('d-none');
     function tick() {
-        const endsAt = timer?.ends_at ? new Date(timer.ends_at).getTime() : 0;
-        const remaining = endsAt ? Math.max(0, Math.ceil((endsAt - Date.now()) / 1000)) : 0;
+        const remaining = Math.ceil(
+            window.AuthoritativeGameState.remainingMilliseconds(state) / 1000
+        );
         value.textContent = remaining;
         if (remaining <= 0) {
             document.getElementById('answerInput').disabled = true;

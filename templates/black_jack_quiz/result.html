@@ -20,8 +20,11 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 </head>
-<body class="blackjack-result-page participant-result-page">
+<body class="blackjack-result-page participant-result-page"
+      data-vhs-progress-kind="set"
+      data-vhs-progress-source="#vhsProgressNumber">
     <div class="result-container blackjack-vhs-result" data-participant-name="{{ participant.name }}">
+        <span id="vhsProgressNumber" hidden aria-hidden="true">{{ quiz.get_current_set_number|default:0 }}</span>
         <!-- Header -->
         <header class="result-header blackjack-vhs-result-header">
             <div class="container">

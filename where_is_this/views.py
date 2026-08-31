@@ -3,9 +3,11 @@ from django.http import JsonResponse
 from django.views.decorators.http import require_http_methods, require_POST
 from django.views.decorators.csrf import csrf_exempt
 from django.utils import timezone
+from django.db import transaction
 from django.db.models import Avg, Count, Q
 import json
 from .models import WhereQuiz, WhereQuestion, WhereParticipant, WhereAnswer, WhereSession
+from games_hub.authoritative_state import validate_and_reserve_action
 from games_hub.unit_tutorial_runtime import get_scorebox_excluded_tutorial_question_ids, is_current_unit_tutorial_question
 
 
@@ -440,20 +442,13 @@ def submit_answer(request, room_code, participant_name):
         y_norm = data.get('y_norm')
         user_latitude = data.get('latitude')
         user_longitude = data.get('longitude')
-        time_taken = data.get('time_taken', 0)
-        
         if (x_norm is None or y_norm is None) and (user_latitude is None or user_longitude is None):
             return JsonResponse({
                 'success': False,
                 'error': 'Please select a location on the map before submitting.'
             })
 
-        answer_kwargs = {
-            'quiz': quiz,
-            'participant': participant,
-            'question': quiz.current_question,
-            'time_taken': time_taken,
-        }
+        answer_kwargs = {}
         if x_norm is not None and y_norm is not None:
             answer_kwargs.update({
                 'x_norm': float(x_norm),
@@ -467,8 +462,57 @@ def submit_answer(request, room_code, participant_name):
                 'user_longitude': float(user_longitude),
             })
 
-        # Create answer
-        answer = WhereAnswer.objects.create(**answer_kwargs)
+        question = quiz.current_question
+        decision = validate_and_reserve_action(
+            game_key='where',
+            room_code=room_code,
+            session_code=session_code,
+            participant_name=participant_name,
+            action_type='participant_submit_answer',
+            action=data,
+        )
+        if not decision.accepted:
+            return JsonResponse({
+                'success': False,
+                'type': 'action_rejected',
+                'code': decision.code,
+                'error': decision.message,
+            }, status=409)
+        with transaction.atomic():
+            locked_quiz = WhereQuiz.objects.select_for_update().get(pk=quiz.pk)
+            locked_session = WhereSession.objects.select_for_update().filter(quiz=locked_quiz).first()
+            received_at = timezone.now()
+            if (
+                locked_quiz.status != 'active'
+                or locked_quiz.current_question_id != question.id
+                or not locked_session
+                or not locked_session.is_question_active
+                or not locked_session.question_end_time
+                or received_at >= locked_session.question_end_time
+            ):
+                return JsonResponse({
+                    'success': False,
+                    'error': 'The answer deadline has expired.'
+                })
+            server_time_taken = (
+                max(0.0, (received_at - locked_quiz.question_start_time).total_seconds())
+                if locked_quiz.question_start_time
+                else 0.0
+            )
+            answer, created = WhereAnswer.objects.get_or_create(
+                quiz=locked_quiz,
+                participant=participant,
+                question=question,
+                defaults={
+                    **answer_kwargs,
+                    'time_taken': server_time_taken,
+                },
+            )
+            if not created:
+                return JsonResponse({
+                    'success': False,
+                    'error': 'You have already answered this question.'
+                })
         
         # Update participant's last activity
         participant.last_activity = timezone.now()

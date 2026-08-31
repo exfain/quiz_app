@@ -4,8 +4,11 @@ from asgiref.sync import async_to_sync
 from channels.db import database_sync_to_async
 from channels.generic.websocket import AsyncWebsocketConsumer
 from channels.layers import get_channel_layer
+from django.utils import timezone
 
 from games_hub.active_game_guard import resolve_session_game_activation_for_room
+from games_hub.authoritative_consumer import AuthoritativeGameConsumerMixin
+from games_hub.authoritative_state import validate_and_reserve_action
 from games_hub.lobby_return_flow import ensure_session_players_ready_for_game_start_for_room
 from games_hub.models import HubGameStep
 from games_hub.tutorial_runtime import (
@@ -20,7 +23,20 @@ from games_hub.tutorial_runtime import (
 from .models import BuzzerGame, BuzzerParticipant
 
 
-class BuzzerConsumer(AsyncWebsocketConsumer):
+class BuzzerConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
+    authoritative_game_key = 'buzzer'
+    authoritative_required_actions = frozenset({'participant_buzz'})
+    authoritative_admin_actions = frozenset({
+        'admin_start_game',
+        'admin_start_round',
+        'admin_open_buzzer',
+        'admin_mark_correct',
+        'admin_mark_wrong',
+        'admin_end_round',
+        'admin_end_game',
+        'admin_set_inactive',
+    })
+
     async def connect(self):
         self.room_code = self.scope['url_route']['kwargs']['room_code']
         self.room_group_name = f'buzzer_{self.room_code}'
@@ -39,6 +55,11 @@ class BuzzerConsumer(AsyncWebsocketConsumer):
             return
 
         message_type = data.get('type')
+        if (
+            message_type in self.authoritative_admin_actions
+            and not await self.reserve_admin_action(data)
+        ):
+            return
         if message_type == 'admin_start_game':
             await self.handle_admin_start_game(data)
         elif message_type == 'tutorial_completed':
@@ -57,6 +78,8 @@ class BuzzerConsumer(AsyncWebsocketConsumer):
             await self.handle_admin_end_round(data)
         elif message_type == 'admin_end_game':
             await self.handle_admin_end_game(data)
+        elif message_type == 'admin_set_inactive':
+            await self.handle_admin_set_inactive(data)
         elif message_type == 'participant_join':
             await self.handle_participant_join(data)
         elif message_type == 'get_state':
@@ -98,7 +121,10 @@ class BuzzerConsumer(AsyncWebsocketConsumer):
         game = await self.get_game()
         if not game:
             return
-        await database_sync_to_async(game.start_quiz)(hub_session)
+        started = await database_sync_to_async(game.start_quiz)(hub_session)
+        if not started:
+            await self.send_state(data)
+            return
         tutorial_payload = await database_sync_to_async(activate_tutorial_runtime)(
             'buzzer',
             self.room_code,
@@ -242,6 +268,14 @@ class BuzzerConsumer(AsyncWebsocketConsumer):
             'title': game.title,
         }, hub_session)
 
+    async def handle_admin_set_inactive(self, data):
+        changed = await self.set_game_inactive()
+        if not changed:
+            await self.send_state(data)
+            return
+        hub_session = data.get('hub_session') or data.get('hub_session_code') or await self.get_hub_session_code()
+        await self.broadcast_state({'type': 'game_inactive'}, hub_session)
+
     async def handle_participant_join(self, data):
         game = await self.get_game()
         if not game:
@@ -259,6 +293,30 @@ class BuzzerConsumer(AsyncWebsocketConsumer):
             if tutorial_payload:
                 await self.send(text_data=json.dumps({'type': 'tutorial_start', **tutorial_payload}))
         await self.send_state(data)
+
+    async def reserve_admin_action(self, data):
+        hub_session = (
+            data.get('hub_session')
+            or data.get('hub_session_code')
+            or await self.get_hub_session_code()
+        )
+        decision = await database_sync_to_async(validate_and_reserve_action)(
+            game_key=self.authoritative_game_key,
+            room_code=self.room_code,
+            session_code=hub_session,
+            participant_name='__host__',
+            action_type=data.get('type') or '',
+            action=data,
+        )
+        if decision.accepted:
+            return True
+        await self.send(text_data=json.dumps({
+            'type': 'action_rejected',
+            'code': decision.code,
+            'message': decision.message,
+        }))
+        await self.send_state({'hub_session': hub_session})
+        return False
 
     async def send_state(self, data):
         game = await self.get_game()
@@ -294,6 +352,13 @@ class BuzzerConsumer(AsyncWebsocketConsumer):
     @database_sync_to_async
     def get_game(self):
         return BuzzerGame.objects.filter(room_code=self.room_code).first()
+
+    @database_sync_to_async
+    def set_game_inactive(self):
+        return BuzzerGame.objects.filter(
+            room_code=self.room_code,
+            status='active',
+        ).update(status='inactive', updated_at=timezone.now()) == 1
 
     @database_sync_to_async
     def get_participant(self, name, hub_session):

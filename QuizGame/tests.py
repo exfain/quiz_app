@@ -1,20 +1,34 @@
+import asyncio
 import json
 import os
 import time
+import uuid
 from datetime import timedelta
+from pathlib import Path
 from unittest.mock import patch
 
 os.environ.setdefault("DJANGO_ALLOW_ASYNC_UNSAFE", "1")
 
-from asgiref.sync import async_to_sync
+from asgiref.sync import async_to_sync, sync_to_async
 from channels.testing import WebsocketCommunicator
 from django.contrib.auth import get_user_model
 from django.test import LiveServerTestCase, TestCase, TransactionTestCase
 from django.urls import reverse
 from django.utils import timezone
+from django.utils.dateparse import parse_datetime
 
 from games_hub.check_in import complete_session_check_in, participant_check_in, start_session_check_in
-from games_hub.models import HubGameStep, HubGameTutorialRuntime, HubParticipant, HubSession
+from games_hub.authoritative_state import (
+    QUESTION_PRESENTATION_DELAY_MS,
+    current_snapshot,
+    finish_question_flow,
+    observe_snapshot,
+    open_answering,
+    present_question,
+    reset_question_flow,
+    reveal_question_content,
+)
+from games_hub.models import GameRuntimeState, HubGameStep, HubGameTutorialRuntime, HubParticipant, HubSession
 from games_hub.playwright_e2e import install_browser_test_stubs, start_chromium_browser
 from games_hub.tutorial_runtime import (
     activate_tutorial_runtime as activate_game_tutorial_runtime,
@@ -287,6 +301,58 @@ class QuizTutorialRuntimeTests(TransactionTestCase):
 
         self.consumer.send = _capture_send
 
+    def _phase_action(self, question_id, session_code=None):
+        snapshot = current_snapshot('quiz', self.quiz.room_code, session_code)
+        return {
+            'question_id': question_id,
+            'hub_session_code': session_code,
+            'game_id': snapshot.get('game_id'),
+            'state_revision': snapshot['state_revision'],
+            'client_action_id': str(uuid.uuid4()),
+        }
+
+    def _send_question(self, payload):
+        payload = dict(payload)
+        session_code = payload.get('hub_session_code') or payload.get('hub_session')
+        snapshot = current_snapshot('quiz', self.quiz.room_code, session_code)
+        if snapshot.get('question_flow_mode') != GameRuntimeState.QUESTION_FLOW_MANUAL_THREE_PHASE:
+            reset_question_flow(
+                game_key='quiz',
+                room_code=self.quiz.room_code,
+                session_code=session_code,
+                mode=GameRuntimeState.QUESTION_FLOW_MANUAL_THREE_PHASE,
+            )
+        payload.update(self._phase_action(payload['question_id'], session_code))
+        async_to_sync(self.consumer.handle_admin_send_question)(payload)
+
+    def _open_answering(self, question_id, session_code=None):
+        GameRuntimeState.objects.filter(
+            game_key='quiz',
+            room_code=self.quiz.room_code,
+        ).update(
+            question_presented_at=(
+                timezone.now()
+                - timedelta(milliseconds=QUESTION_PRESENTATION_DELAY_MS)
+            )
+        )
+        async_to_sync(self.consumer.handle_admin_reveal_question_content)(
+            self._phase_action(question_id, session_code)
+        )
+        question = QuizQuestion.objects.get(id=question_id)
+        if question.question_type in {'multiple_choice', 'true_false'}:
+            deadline = time.time() + 2
+            while time.time() < deadline:
+                snapshot = current_snapshot(
+                    'quiz', self.quiz.room_code, session_code,
+                )
+                if snapshot.get('answering_allowed'):
+                    return
+                time.sleep(0.02)
+            self.fail('Answering did not open after its answer-reveal timeline.')
+        async_to_sync(self.consumer.handle_admin_open_answering)(
+            self._phase_action(question_id, session_code)
+        )
+
     def _create_hub_step_with_officials(self, names):
         session = HubSession.objects.create(
             code='HUB1',
@@ -306,6 +372,18 @@ class QuizTutorialRuntimeTests(TransactionTestCase):
             game_key='quiz',
             room_code=self.quiz.room_code,
             title=self.quiz.title,
+        )
+        reset_question_flow(
+            game_key='quiz',
+            room_code=self.quiz.room_code,
+            session_code=session.code,
+            mode=GameRuntimeState.QUESTION_FLOW_MANUAL_THREE_PHASE,
+        )
+        observe_snapshot(
+            'quiz',
+            self.quiz.room_code,
+            {'type': 'quiz_started', 'phase': 'active'},
+            session.code,
         )
         return session
 
@@ -333,6 +411,30 @@ class QuizTutorialRuntimeTests(TransactionTestCase):
         message_types = [message['type'] for _, message in self.consumer.channel_layer.group_messages]
         self.assertIn('quiz_started', message_types)
         self.assertNotIn('tutorial_start', message_types)
+
+    @patch('QuizGame.consumers.resolve_session_game_activation_for_room', return_value={'success': True})
+    @patch('QuizGame.consumers.ensure_session_players_ready_for_game_start_for_room', return_value={'allowed': True})
+    def test_quiz_started_includes_current_instance_question_total(self, _ready_mock, _activation_mock):
+        questions = [
+            QuizQuestion.objects.create(
+                question_text=f'Question {index}',
+                question_type='true_false',
+                correct_answer='True',
+                created_by=self.user,
+            )
+            for index in range(1, 5)
+        ]
+        self.quiz.selected_questions.set(questions)
+        self.quiz.question_order = [question.id for question in questions]
+        self.quiz.save(update_fields=['question_order'])
+
+        async_to_sync(self.consumer.handle_admin_start_quiz)({})
+
+        quiz_started = next(
+            message for _, message in self.consumer.channel_layer.group_messages
+            if message['type'] == 'quiz_started'
+        )
+        self.assertEqual(quiz_started['total_questions'], 4)
 
     @patch('QuizGame.consumers.resolve_session_game_activation_for_room', return_value={'success': True})
     @patch('QuizGame.consumers.ensure_session_players_ready_for_game_start_for_room', return_value={'allowed': True})
@@ -377,7 +479,7 @@ class QuizTutorialRuntimeTests(TransactionTestCase):
         )
         prepare_unit_tutorial_runtime('quiz', self.quiz.room_code, session.code, True)
 
-        async_to_sync(self.consumer.handle_admin_send_question)({
+        self._send_question({
             'question_id': normal_question.id,
             'hub_session_code': session.code,
         })
@@ -389,7 +491,25 @@ class QuizTutorialRuntimeTests(TransactionTestCase):
         self.assertEqual(question_started['question']['id'], tutorial_question.id)
         self.assertTrue(question_started['question']['is_tutorial_round'])
         self.assertEqual(question_started['question']['points'], 0)
+        self.assertEqual(question_started['question']['total_questions'], 1)
         self.assertTrue(get_unit_tutorial_state('quiz', self.quiz.room_code, session.code)['current_unit_is_tutorial'])
+
+        phase_snapshot = current_snapshot('quiz', self.quiz.room_code, session.code)
+        self.assertEqual(phase_snapshot['question_phase'], 'prompt_visible')
+        self.assertIsNone(phase_snapshot['answering_deadline_at'])
+        self.assertIsNone(async_to_sync(self.consumer.save_participant_answer)(
+            'Alice', session.code, 'A', 1,
+        ))
+        self._open_answering(tutorial_question.id, session.code)
+        opened_snapshot = current_snapshot('quiz', self.quiz.room_code, session.code)
+        self.assertEqual(
+            opened_snapshot['question_phase'],
+            'answering_open',
+            self.direct_messages,
+        )
+        quiz_session = QuizSession.objects.get(quiz=self.quiz)
+        self.assertTrue(quiz_session.is_question_active)
+        self.assertIsNotNone(quiz_session.question_end_time)
 
         tutorial_answer = async_to_sync(self.consumer.save_participant_answer)(
             'Alice',
@@ -418,7 +538,7 @@ class QuizTutorialRuntimeTests(TransactionTestCase):
             [normal_question.id],
         )
 
-        async_to_sync(self.consumer.handle_admin_send_question)({
+        self._send_question({
             'question_id': normal_question.id,
             'hub_session_code': session.code,
         })
@@ -429,6 +549,9 @@ class QuizTutorialRuntimeTests(TransactionTestCase):
         self.assertEqual(scored_question_started['question']['id'], normal_question.id)
         self.assertFalse(scored_question_started['question']['is_tutorial_round'])
         self.assertEqual(scored_question_started['question']['points'], 1)
+        self.assertEqual(scored_question_started['question']['total_questions'], 1)
+
+        self._open_answering(normal_question.id, session.code)
 
         scored_answer = async_to_sync(self.consumer.save_participant_answer)(
             'Alice',
@@ -502,7 +625,7 @@ class QuizTutorialRuntimeTests(TransactionTestCase):
         self.quiz.tutorial_active = True
         self.quiz.save(update_fields=['status', 'tutorial_active'])
 
-        async_to_sync(self.consumer.handle_admin_send_question)({'question_id': question.id})
+        self._send_question({'question_id': question.id})
 
         self.quiz.refresh_from_db()
         self.assertFalse(self.quiz.tutorial_active)
@@ -519,7 +642,7 @@ class QuizTutorialRuntimeTests(TransactionTestCase):
         self.quiz.status = 'active'
         self.quiz.save(update_fields=['status'])
 
-        async_to_sync(self.consumer.handle_admin_send_question)({'question_id': question.id})
+        self._send_question({'question_id': question.id})
 
         self.quiz.refresh_from_db()
         self.assertEqual(self.direct_messages, [])
@@ -530,6 +653,47 @@ class QuizTutorialRuntimeTests(TransactionTestCase):
         )
         self.assertEqual(question_started['question']['id'], question.id)
         self.assertEqual(question_started['question']['question_text'], 'Question one')
+
+    def test_question_start_and_rejoin_include_instance_question_total(self):
+        questions = [
+            QuizQuestion.objects.create(
+                question_text=f'Question {index}',
+                question_type='multiple_choice',
+                correct_answer='A',
+                option_a='A',
+                option_b='B',
+                created_by=self.user,
+            )
+            for index in range(1, 5)
+        ]
+        self.quiz.selected_questions.set(questions)
+        self.quiz.question_order = [question.id for question in questions]
+        self.quiz.status = 'active'
+        self.quiz.save(update_fields=['question_order', 'status'])
+
+        self._send_question({
+            'question_id': questions[1].id,
+        })
+
+        question_started = next(
+            message for _, message in self.consumer.channel_layer.group_messages
+            if message['type'] == 'question_started'
+        )
+        rejoin_question = async_to_sync(self.consumer.get_current_question_data)()
+
+        self.assertEqual(question_started['question']['total_questions'], 4)
+        self.assertEqual(rejoin_question['id'], questions[1].id)
+        self.assertEqual(rejoin_question['total_questions'], 4)
+        self.assertIsNone(question_started['question']['starts_at'])
+        self.assertIsNone(question_started['question']['ends_at'])
+        self.assertEqual(
+            question_started['question']['starts_at'],
+            rejoin_question['starts_at'],
+        )
+        self.assertEqual(
+            question_started['question']['ends_at'],
+            rejoin_question['ends_at'],
+        )
 
     def test_admin_send_question_without_question_id_returns_visible_error(self):
         self.quiz.status = 'active'
@@ -656,7 +820,7 @@ class QuizTutorialRuntimeTests(TransactionTestCase):
             created_by=self.user,
         )
 
-        async_to_sync(self.consumer.handle_admin_send_question)({
+        self._send_question({
             'question_id': question.id,
             'force_tutorial_continue': True,
         })
@@ -709,6 +873,26 @@ class QuickQuizWebSocketLiveFlowTests(TransactionTestCase):
             hub_session_code='HUBLIVE',
             is_active=True,
         )
+        self.hub_session = HubSession.objects.create(
+            code=self.participant.hub_session_code,
+            name='Quick Live Session',
+            creator=self.user,
+            is_active=True,
+            started_at=timezone.now(),
+        )
+        HubGameStep.objects.create(
+            session=self.hub_session,
+            order=0,
+            game_key='quiz',
+            room_code=self.quiz.room_code,
+            title=self.quiz.title,
+        )
+        self.runtime_snapshot = reset_question_flow(
+            game_key='quiz',
+            room_code=self.quiz.room_code,
+            session_code=self.participant.hub_session_code,
+            mode=GameRuntimeState.QUESTION_FLOW_MANUAL_THREE_PHASE,
+        )
 
     async def _receive_until(self, communicator, message_type, attempts=6):
         for _ in range(attempts):
@@ -718,9 +902,14 @@ class QuickQuizWebSocketLiveFlowTests(TransactionTestCase):
         self.fail(f'Did not receive {message_type}')
 
     def test_host_send_question_reaches_host_and_participant_websockets(self):
+        submitted_answer = (
+            'True' if self.question.question_type == 'true_false' else 'A'
+        )
+
         async def scenario():
             host = WebsocketCommunicator(application, f'/ws/quiz/{self.quiz.room_code}/')
             player = WebsocketCommunicator(application, f'/ws/quiz/{self.quiz.room_code}/')
+            host.scope['user'] = self.user
             host_connected, _ = await host.connect()
             player_connected, _ = await player.connect()
             self.assertTrue(host_connected)
@@ -734,31 +923,171 @@ class QuickQuizWebSocketLiveFlowTests(TransactionTestCase):
                 'hub_session': self.participant.hub_session_code,
             })
             await self._receive_until(player, 'participant_joined')
+            quiz_state = await sync_to_async(current_snapshot)(
+                'quiz', self.quiz.room_code, self.participant.hub_session_code,
+            )
 
             await host.send_json_to({
                 'type': 'admin_send_question',
                 'question_id': self.question.id,
                 'hub_session': self.participant.hub_session_code,
+                'game_id': quiz_state.get('game_id'),
+                'state_revision': quiz_state['state_revision'],
+                'client_action_id': str(uuid.uuid4()),
             })
 
             host_message = await self._receive_until(host, 'question_started')
             player_message = await self._receive_until(player, 'question_started')
+            await player.send_json_to({
+                'type': 'participant_submit_answer',
+                'answer': submitted_answer,
+                'question_id': self.question.id,
+                'game_id': player_message.get('game_id'),
+                'state_revision': player_message['state_revision'],
+                'round_id': player_message.get('current_round_id'),
+                'set_id': player_message.get('current_set_id'),
+                'client_action_id': str(uuid.uuid4()),
+            })
+            prompt_rejection = await self._receive_until(player, 'action_rejected')
+
+            await host.send_json_to({
+                'type': 'admin_reveal_question_content',
+                'question_id': self.question.id,
+                'hub_session': self.participant.hub_session_code,
+                'game_id': host_message.get('game_id'),
+                'state_revision': host_message['state_revision'],
+                'client_action_id': str(uuid.uuid4()),
+            })
+            early_reveal_rejection = await self._receive_until(host, 'action_rejected')
+            await sync_to_async(
+                GameRuntimeState.objects.filter(
+                    game_key='quiz',
+                    room_code=self.quiz.room_code,
+                ).update
+            )(
+                question_presented_at=(
+                    timezone.now()
+                    - timedelta(milliseconds=QUESTION_PRESENTATION_DELAY_MS)
+                )
+            )
+
+            reveal_payload = {
+                'type': 'admin_reveal_question_content',
+                'question_id': self.question.id,
+                'hub_session': self.participant.hub_session_code,
+                'game_id': host_message.get('game_id'),
+                'state_revision': host_message['state_revision'],
+                'client_action_id': str(uuid.uuid4()),
+            }
+            await host.send_json_to(reveal_payload)
+            host_content = await self._receive_until(host, 'question_content_revealed')
+            player_content = await self._receive_until(player, 'question_content_revealed')
+            await player.send_json_to({
+                'type': 'participant_submit_answer',
+                'answer': submitted_answer,
+                'question_id': self.question.id,
+                'game_id': player_content.get('game_id'),
+                'state_revision': player_content['state_revision'],
+                'round_id': player_content.get('current_round_id'),
+                'set_id': player_content.get('current_set_id'),
+                'client_action_id': str(uuid.uuid4()),
+            })
+            content_rejection = await self._receive_until(player, 'action_rejected')
+
+            await host.send_json_to(reveal_payload)
+            duplicate_content = await self._receive_until(host, 'question_content_revealed')
+            await self._receive_until(player, 'question_content_revealed')
+            await host.send_json_to({
+                'type': 'admin_open_answering',
+                'question_id': self.question.id,
+                'hub_session': self.participant.hub_session_code,
+                'game_id': duplicate_content.get('game_id'),
+                'state_revision': duplicate_content['state_revision'],
+                'client_action_id': str(uuid.uuid4()),
+            })
+            manual_open_rejection = await self._receive_until(host, 'action_rejected')
+            await asyncio.sleep(0.8)
+
+            await player.send_json_to({
+                'type': 'participant_submit_answer',
+                'answer': submitted_answer,
+                'question_id': self.question.id,
+                'game_id': player_content.get('game_id'),
+                'state_revision': player_content['state_revision'],
+                'round_id': player_content.get('current_round_id'),
+                'set_id': player_content.get('current_set_id'),
+                'client_action_id': str(uuid.uuid4()),
+            })
+            accepted_answer = await player.receive_json_from(timeout=2)
 
             await host.disconnect()
             await player.disconnect()
 
-            return host_message, player_message
+            self.assertEqual(early_reveal_rejection['code'], 'question_not_visible')
 
-        host_message, player_message = async_to_sync(scenario)()
+            return (
+                host_message, player_message, prompt_rejection, host_content,
+                player_content, content_rejection, duplicate_content,
+                manual_open_rejection, accepted_answer,
+            )
+
+        (
+            host_message, player_message, prompt_rejection, host_content,
+            player_content, content_rejection, duplicate_content,
+            manual_open_rejection, accepted_answer,
+        ) = async_to_sync(scenario)()
         self.quiz.refresh_from_db()
 
         self.assertEqual(self.quiz.current_question_id, self.question.id)
         self.assertEqual(host_message['question']['id'], self.question.id)
         self.assertEqual(player_message['question']['id'], self.question.id)
+        self.assertEqual(host_message['question_phase'], 'prompt_visible')
+        self.assertEqual(player_message['question']['options'], [])
+        self.assertIn(prompt_rejection['code'], {'invalid_phase', 'stale_action'})
+        self.assertEqual(player_content['question_phase'], 'answering_open')
+        self.assertEqual(len(player_content['question']['options']), 2)
+        self.assertEqual(content_rejection['code'], 'invalid_phase')
+        self.assertFalse(player_content['answering_allowed'])
+        reveal_started_at = parse_datetime(player_content['content_revealed_at'])
+        answering_started_at = parse_datetime(player_content['answering_started_at'])
+        self.assertEqual(
+            answering_started_at,
+            reveal_started_at + timedelta(milliseconds=700),
+        )
+        self.assertIsNotNone(player_content['answering_deadline_at'])
+        self.assertEqual(
+            duplicate_content['answering_deadline_at'],
+            host_content['answering_deadline_at'],
+        )
+        self.assertEqual(manual_open_rejection['code'], 'invalid_phase')
+        self.assertEqual(accepted_answer.get('type'), 'answer_submitted', accepted_answer)
+        self.assertEqual(accepted_answer['question_id'], self.question.id)
+
+    def test_automatic_answer_reveal_types_have_no_manual_open_answering_control(self):
+        template_source = (
+            Path(__file__).resolve().parent.parent
+            / 'templates'
+            / 'admin_dashboard'
+            / 'quiz_monitor.html'
+        ).read_text(encoding='utf-8')
+
+        self.assertIn(
+            "question_runtime.question_phase == 'content_visible' and quiz.current_question.question_type != 'multiple_choice' and quiz.current_question.question_type != 'true_false'",
+            template_source,
+        )
+        self.assertIn(
+            "this.questionPhase === 'content_visible'\n                && question.question_type !== 'multiple_choice'",
+            template_source,
+        )
+        self.assertIn(
+            "&& question.question_type !== 'true_false'",
+            template_source,
+        )
 
     def test_end_quiz_reaches_host_websocket_without_reload(self):
         async def scenario():
             host = WebsocketCommunicator(application, f'/ws/quiz/{self.quiz.room_code}/')
+            host.scope['user'] = self.user
             host_connected, _ = await host.connect()
             self.assertTrue(host_connected)
 
@@ -782,32 +1111,21 @@ class QuickQuizWebSocketLiveFlowTests(TransactionTestCase):
         self.assertIn('final_scores', host_message)
 
     def test_quick_quiz_start_routes_lobby_participant_to_play_screen(self):
-        session = HubSession.objects.create(
-            code='HUBLIVE',
-            name='Quick Live Session',
-            is_active=True,
-            started_at=timezone.now(),
-        )
+        session = self.hub_session
+        self.quiz.status = 'waiting'
+        self.quiz.started_at = None
+        self.quiz.save(update_fields=['status', 'started_at'])
         HubParticipant.objects.create(session=session, nickname=self.participant.name)
         self.assertTrue(start_session_check_in(session)['success'])
         self.assertTrue(participant_check_in(session, self.participant.name)['success'])
         self.assertTrue(complete_session_check_in(session)['success'])
-        HubGameStep.objects.create(
-            session=session,
-            order=0,
-            game_key='quiz',
-            room_code=self.quiz.room_code,
-            title=self.quiz.title,
-        )
         self.participant.is_active = False
         self.participant.save(update_fields=['is_active'])
-        self.quiz.status = 'waiting'
-        self.quiz.started_at = None
-        self.quiz.save(update_fields=['status', 'started_at'])
 
         async def scenario():
             hub = WebsocketCommunicator(application, f'/ws/hub/{session.code}/')
             host = WebsocketCommunicator(application, f'/ws/quiz/{self.quiz.room_code}/')
+            host.scope['user'] = self.user
             hub_connected, _ = await hub.connect()
             host_connected, _ = await host.connect()
             self.assertTrue(hub_connected)
@@ -832,6 +1150,22 @@ class QuickQuizWebSocketLiveFlowTests(TransactionTestCase):
         self.assertEqual(self.quiz.status, 'active')
         self.assertEqual(navigate['step']['game_key'], 'quiz')
         self.assertEqual(navigate['step']['room_code'], self.quiz.room_code)
+
+
+class QuickQuizTrueFalseWebSocketLiveFlowTests(QuickQuizWebSocketLiveFlowTests):
+    def setUp(self):
+        super().setUp()
+        self.question.question_type = 'true_false'
+        self.question.correct_answer = 'True'
+        self.question.option_a = ''
+        self.question.option_b = ''
+        self.question.save(update_fields=[
+            'question_type',
+            'correct_answer',
+            'option_a',
+            'option_b',
+            'updated_at',
+        ])
 
 
 class QuickQuizBrowserLiveFlowTests(_BrowserLiveServerTestCase):
@@ -879,6 +1213,8 @@ class QuickQuizBrowserLiveFlowTests(_BrowserLiveServerTestCase):
             correct_answer='A',
             option_a='Answer A',
             option_b='Answer B',
+            option_c='Answer C',
+            option_d='Answer D',
             points=1,
             time_limit=30,
             created_by=self.user,
@@ -899,6 +1235,18 @@ class QuickQuizBrowserLiveFlowTests(_BrowserLiveServerTestCase):
             game_key='quiz',
             room_code=self.quiz.room_code,
             title=self.quiz.title,
+        )
+        reset_question_flow(
+            game_key='quiz',
+            room_code=self.quiz.room_code,
+            session_code=self.session.code,
+            mode=GameRuntimeState.QUESTION_FLOW_MANUAL_THREE_PHASE,
+        )
+        observe_snapshot(
+            'quiz',
+            self.quiz.room_code,
+            {'type': 'quiz_started', 'phase': 'active'},
+            self.session.code,
         )
         HubParticipant.objects.create(session=self.session, nickname='Alice')
         self.participant = QuizParticipant.objects.create(
@@ -975,6 +1323,68 @@ class QuickQuizBrowserLiveFlowTests(_BrowserLiveServerTestCase):
             f'Frames: {self.websocket_frames[label][direction]}'
         )
 
+    def _open_answering_from_host(self):
+        self.host_page.wait_for_selector('#revealQuestionContentBtn:not([disabled])', timeout=self.TIMEOUT)
+        self.host_page.click('#revealQuestionContentBtn')
+        self._wait_for_frame('host', 'received', 'question_content_revealed')
+        self._wait_for_frame('player', 'received', 'question_content_revealed')
+        self.host_page.wait_for_selector('#openAnsweringBtn:not([disabled])', timeout=self.TIMEOUT)
+        self.host_page.click('#openAnsweringBtn')
+        self._wait_for_frame('host', 'received', 'question_answering_opened')
+        self._wait_for_frame('player', 'received', 'question_answering_opened')
+
+    def _activate_question_for_browser(self, question):
+        snapshot = current_snapshot('quiz', self.quiz.room_code, self.session.code)
+        action = {
+            'question_id': question.id,
+            'game_id': snapshot.get('game_id'),
+            'state_revision': snapshot['state_revision'],
+            'client_action_id': str(uuid.uuid4()),
+        }
+        presented = present_question(
+            game_key='quiz', room_code=self.quiz.room_code,
+            session_code=self.session.code, action=action,
+            at=(
+                timezone.now()
+                - timedelta(milliseconds=QUESTION_PRESENTATION_DELAY_MS)
+            ),
+        )
+        self.assertTrue(presented.accepted)
+        quiz_session = QuizSession.objects.get(quiz=self.quiz)
+        quiz_session.present_question(question)
+        snapshot = current_snapshot('quiz', self.quiz.room_code, self.session.code)
+        revealed = reveal_question_content(
+            game_key='quiz', room_code=self.quiz.room_code,
+            session_code=self.session.code,
+            action={
+                'question_id': question.id,
+                'game_id': snapshot.get('game_id'),
+                'state_revision': snapshot['state_revision'],
+                'client_action_id': str(uuid.uuid4()),
+            },
+        )
+        self.assertTrue(revealed.accepted)
+        snapshot = current_snapshot('quiz', self.quiz.room_code, self.session.code)
+        opened_at = timezone.now()
+        opened = open_answering(
+            game_key='quiz', room_code=self.quiz.room_code,
+            session_code=self.session.code,
+            action={
+                'question_id': question.id,
+                'game_id': snapshot.get('game_id'),
+                'state_revision': snapshot['state_revision'],
+                'client_action_id': str(uuid.uuid4()),
+            },
+            answer_duration_seconds=question.time_limit,
+            at=opened_at,
+        )
+        self.assertTrue(opened.accepted)
+        quiz_session.open_answering(
+            question,
+            started_at=opened_at,
+            answer_duration_seconds=question.time_limit,
+        )
+
     def _assert_no_browser_errors(self):
         js_errors = [
             error for error in self.browser_errors
@@ -986,7 +1396,614 @@ class QuickQuizBrowserLiveFlowTests(_BrowserLiveServerTestCase):
         ]
         self.assertEqual(js_errors, [])
 
+    def _dispatch_player_question_started(self, question):
+        self.quiz.refresh_from_db()
+        quiz_session = QuizSession.objects.get(quiz=self.quiz)
+        snapshot = current_snapshot('quiz', self.quiz.room_code, self.session.code)
+        payload = {
+            'type': 'question_started',
+            **{
+                key: snapshot.get(key)
+                for key in (
+                    'state_revision', 'server_now', 'game_id', 'question_phase',
+                    'question_presented_at', 'content_revealed_at',
+                    'answering_started_at', 'answering_deadline_at',
+                    'answering_allowed', 'starts_at', 'ends_at',
+                )
+            },
+            'question': {
+                'id': question.id,
+                'question_text': question.question_text,
+                'question_type': question.get_effective_question_type(),
+                'options': [
+                    {'key': 'True', 'text': 'True'},
+                    {'key': 'False', 'text': 'False'},
+                ],
+                'short_answer_fields': [],
+                'time_limit': question.time_limit,
+                'points': question.get_effective_max_points(),
+                'is_tutorial_round': False,
+                'starts_at': (
+                    self.quiz.question_start_time.isoformat()
+                    if self.quiz.question_start_time
+                    else None
+                ),
+                'ends_at': (
+                    quiz_session.question_end_time.isoformat()
+                    if quiz_session.question_end_time
+                    else None
+                ),
+                'server_now': timezone.now().isoformat(),
+                'question_phase': snapshot.get('question_phase'),
+                'question_presented_at': snapshot.get('question_presented_at'),
+                'content_revealed_at': snapshot.get('content_revealed_at'),
+            },
+        }
+        self.player_page.evaluate(
+            """payload => {
+                const socket = (window.__quickQuizTestSockets || []).find(candidate => (
+                    candidate.url.includes('/ws/quiz/')
+                    && candidate.readyState === WebSocket.OPEN
+                ));
+                if (!socket || typeof socket.onmessage !== 'function') {
+                    throw new Error('Active Quick Quiz socket not captured');
+                }
+                socket.onmessage(new MessageEvent('message', {
+                    data: JSON.stringify(payload),
+                }));
+            }""",
+            payload,
+        )
+
+    def test_true_false_first_click_survives_duplicate_rejoin_state_across_questions(self):
+        self.question.question_type = 'true_false'
+        self.question.correct_answer = 'True'
+        self.question.option_a = ''
+        self.question.option_b = ''
+        self.question.time_limit = 90
+        self.question.save(update_fields=[
+            'question_type',
+            'correct_answer',
+            'option_a',
+            'option_b',
+            'time_limit',
+            'updated_at',
+        ])
+        second_question = QuizQuestion.objects.create(
+            question_text='Second true or false question?',
+            question_type='true_false',
+            correct_answer='False',
+            points=1,
+            time_limit=90,
+            created_by=self.user,
+        )
+        self.quiz.selected_questions.add(second_question)
+        self.quiz.question_order = [self.question.id, second_question.id]
+        self.quiz.save(update_fields=['question_order', 'updated_at'])
+        quiz_session = QuizSession.objects.get(quiz=self.quiz)
+        self._activate_question_for_browser(self.question)
+        self.player_page.add_init_script(
+            """(() => {
+                const NativeWebSocket = window.WebSocket;
+                window.__quickQuizTestSockets = [];
+                window.__quickQuizStateTransitions = [];
+                document.addEventListener('DOMContentLoaded', () => {
+                    const questionState = document.getElementById('questionState');
+                    const waitingState = document.getElementById('waitingQuizState');
+                    const recordState = () => {
+                        if (questionState && !questionState.classList.contains('d-none')) {
+                            window.__quickQuizStateTransitions.push('question');
+                        } else if (waitingState && !waitingState.classList.contains('d-none')) {
+                            window.__quickQuizStateTransitions.push('waiting');
+                        }
+                    };
+                    recordState();
+                    new MutationObserver(recordState).observe(document.body, {
+                        attributes: true,
+                        attributeFilter: ['class'],
+                        subtree: true,
+                    });
+                }, { once: true });
+                window.WebSocket = new Proxy(NativeWebSocket, {
+                    construct(Target, args) {
+                        const socket = new Target(...args);
+                        window.__quickQuizTestSockets.push(socket);
+                        return socket;
+                    },
+                });
+            })();"""
+        )
+        self.player_page.add_init_script(
+            "localStorage.setItem('participant_interface_theme', 'vhs');"
+        )
+        play_url = (
+            f'{self.live_server_url}'
+            f'{reverse("quiz:play", args=[self.quiz.room_code, self.participant.name])}'
+            f'?hub_session={self.session.code}'
+        )
+        self.player_page.goto(play_url)
+        self._wait_for_ws_url('player', f'/ws/quiz/{self.quiz.room_code}/')
+        self.player_page.wait_for_selector(
+            '#questionState:not(.d-none) .answer-option[data-value="True"]',
+            timeout=self.TIMEOUT,
+        )
+        self.player_page.wait_for_function(
+            "() => document.documentElement.dataset.participantTheme === 'vhs'",
+            timeout=self.TIMEOUT,
+        )
+        self.player_page.wait_for_selector(
+            '.qa-theme-button-shell > .answer-option[data-value="True"]',
+            timeout=self.TIMEOUT,
+        )
+
+        first_option = self.player_page.locator('.answer-option[data-value="True"]')
+        self.assertEqual(first_option.evaluate("element => element.tagName"), 'BUTTON')
+        self.assertEqual(first_option.get_attribute('type'), 'button')
+        self.assertFalse(first_option.is_disabled())
+        self.assertFalse(first_option.evaluate("element => element.classList.contains('disabled')"))
+        self.assertEqual(first_option.get_attribute('aria-disabled'), 'false')
+        self.assertNotIn(
+            'waiting',
+            self.player_page.evaluate("window.__quickQuizStateTransitions.slice(1)"),
+        )
+        first_option.evaluate("element => { element.dataset.regressionNode = 'first'; }")
+        first_option.click()
+        self.assertTrue(first_option.evaluate("element => element.classList.contains('selected')"))
+        self.assertFalse(self.player_page.locator('#submitAnswerBtn').is_disabled())
+
+        self._dispatch_player_question_started(self.question)
+        self.player_page.wait_for_timeout(300)
+        first_option = self.player_page.locator('.answer-option[data-value="True"]')
+        self.assertEqual(first_option.get_attribute('data-regression-node'), 'first')
+        self.assertTrue(first_option.evaluate("element => element.classList.contains('selected')"))
+        self.assertFalse(self.player_page.locator('#submitAnswerBtn').is_disabled())
+
+        self.player_page.locator('#submitAnswerBtn').dblclick()
+        self._wait_for_frame('player', 'received', 'answer_submitted')
+        self.assertTrue(first_option.is_disabled())
+        self.assertTrue(first_option.evaluate("element => element.classList.contains('disabled')"))
+        self.assertEqual(first_option.get_attribute('aria-disabled'), 'true')
+        self.assertEqual(
+            QuizAnswer.objects.filter(
+                quiz=self.quiz,
+                participant=self.participant,
+                question=self.question,
+            ).count(),
+            1,
+        )
+
+        self.player_page.reload()
+        self.player_page.wait_for_selector(
+            '#answerSubmittedState:not(.d-none)',
+            timeout=self.TIMEOUT,
+        )
+        rejoined_locked_option = self.player_page.locator('.answer-option[data-value="True"]')
+        self.assertTrue(rejoined_locked_option.is_disabled())
+        self.assertTrue(
+            rejoined_locked_option.evaluate("element => element.classList.contains('disabled')")
+        )
+        self.assertEqual(rejoined_locked_option.get_attribute('aria-disabled'), 'true')
+
+        self._dispatch_player_question_started(self.question)
+        self.player_page.wait_for_timeout(300)
+        self.assertTrue(
+            self.player_page.locator('#answerSubmittedState').evaluate(
+                "element => !element.classList.contains('d-none')"
+            )
+        )
+
+        quiz_session.refresh_from_db()
+        finish_question_flow(
+            game_key='quiz',
+            room_code=self.quiz.room_code,
+            session_code=self.session.code,
+            question_id=self.question.id,
+        )
+        quiz_session.end_current_question()
+        self._activate_question_for_browser(second_question)
+        self._dispatch_player_question_started(second_question)
+        self.player_page.wait_for_function(
+            """() => (
+                document.querySelector('#questionState:not(.d-none) #questionText')
+                    ?.textContent.includes('true or false question?')
+            )""",
+            timeout=self.TIMEOUT,
+        )
+        second_option = self.player_page.locator('.answer-option[data-value="False"]')
+        self.player_page.wait_for_selector(
+            '.qa-theme-button-shell > .answer-option[data-value="False"]',
+            timeout=self.TIMEOUT,
+        )
+        self.assertFalse(second_option.is_disabled())
+        self.assertFalse(second_option.evaluate("element => element.classList.contains('disabled')"))
+        self.assertEqual(second_option.get_attribute('aria-disabled'), 'false')
+        second_option.hover()
+        self.assertNotEqual(
+            second_option.evaluate("element => getComputedStyle(element).transform"),
+            'none',
+        )
+        second_option.focus()
+        self.player_page.keyboard.press('Space')
+        self.assertTrue(second_option.evaluate("element => element.classList.contains('selected')"))
+        self.assertNotEqual(
+            second_option.evaluate("element => getComputedStyle(element).outlineStyle"),
+            'none',
+        )
+        self.player_page.locator('#questionText').hover()
+        second_option.evaluate("element => element.blur()")
+        self.assertIn(
+            'gradient',
+            second_option.evaluate("element => getComputedStyle(element).backgroundImage"),
+        )
+        second_option.evaluate("element => { element.dataset.regressionNode = 'second'; }")
+
+        stale_question_end = {
+            'type': 'question_ended',
+            'correct_answer': {
+                'question_id': self.question.id,
+                'correct_answer': 'True',
+                'question_text': self.question.question_text,
+            },
+            'answer_results': [],
+            'auto_finalized_answers': [],
+            'is_tutorial_round': False,
+        }
+        self.player_page.evaluate(
+            """payload => {
+                const socket = (window.__quickQuizTestSockets || []).find(candidate => (
+                    candidate.url.includes('/ws/quiz/')
+                    && candidate.readyState === WebSocket.OPEN
+                ));
+                socket.onmessage(new MessageEvent('message', {
+                    data: JSON.stringify(payload),
+                }));
+            }""",
+            stale_question_end,
+        )
+        self.assertFalse(second_option.is_disabled())
+        self.assertFalse(second_option.evaluate("element => element.classList.contains('disabled')"))
+        self.assertTrue(
+            self.player_page.locator('#questionState').evaluate(
+                "element => !element.classList.contains('d-none')"
+            )
+        )
+
+        self._dispatch_player_question_started(second_question)
+        self.player_page.wait_for_timeout(300)
+        second_option = self.player_page.locator('.answer-option[data-value="False"]')
+        self.assertEqual(second_option.get_attribute('data-regression-node'), 'second')
+        self.assertTrue(second_option.evaluate("element => element.classList.contains('selected')"))
+        self.assertIn(
+            'gradient',
+            second_option.evaluate("element => getComputedStyle(element).backgroundImage"),
+        )
+
+        self.player_page.reload()
+        self.player_page.wait_for_selector(
+            '#questionState:not(.d-none) .answer-option[data-value="True"]',
+            timeout=self.TIMEOUT,
+        )
+        self.assertEqual(self.player_page.locator('#answerOptions .answer-option').count(), 2)
+        reloaded_option = self.player_page.locator('.answer-option[data-value="True"]')
+        reloaded_option.click()
+        self.assertTrue(reloaded_option.evaluate("element => element.classList.contains('selected')"))
+        self.assertFalse(self.player_page.locator('#submitAnswerBtn').is_disabled())
+
+        mobile_context = self._browser.new_context(
+            viewport={'width': 390, 'height': 844},
+            has_touch=True,
+            is_mobile=True,
+        )
+        install_browser_test_stubs(mobile_context)
+        mobile_page = mobile_context.new_page()
+        try:
+            mobile_page.add_init_script(
+                "localStorage.setItem('participant_interface_theme', 'vhs');"
+            )
+            mobile_page.goto(play_url)
+            mobile_page.wait_for_selector(
+                '#questionState:not(.d-none) .answer-option[data-value="False"]',
+                timeout=self.TIMEOUT,
+            )
+            mobile_option = mobile_page.locator('.answer-option[data-value="False"]')
+            mobile_option.tap()
+            self.assertTrue(
+                mobile_option.evaluate("element => element.classList.contains('selected')")
+            )
+        finally:
+            mobile_page.close()
+            mobile_context.close()
+        self._assert_no_browser_errors()
+
+    def test_true_false_reveal_opens_answering_automatically_for_two_questions(self):
+        self.question.question_type = 'true_false'
+        self.question.correct_answer = 'True'
+        self.question.option_a = ''
+        self.question.option_b = ''
+        self.question.save(update_fields=[
+            'question_type', 'correct_answer', 'option_a', 'option_b', 'updated_at',
+        ])
+        second_question = QuizQuestion.objects.create(
+            question_text='Second automatic true or false question?',
+            question_type='true_false',
+            correct_answer='False',
+            points=1,
+            time_limit=30,
+            created_by=self.user,
+        )
+        self.quiz.selected_questions.add(second_question)
+        self.quiz.question_order = [self.question.id, second_question.id]
+        self.quiz.save(update_fields=['question_order', 'updated_at'])
+        HubParticipant.objects.create(session=self.session, nickname='Bob')
+        second_participant = QuizParticipant.objects.create(
+            quiz=self.quiz,
+            name='Bob',
+            hub_session_code=self.session.code,
+            is_active=True,
+        )
+        second_context = self._browser.new_context()
+        install_browser_test_stubs(second_context)
+        self.addCleanup(second_context.close)
+        second_page = second_context.new_page()
+        self.websocket_urls['player2'] = []
+        self.websocket_frames['player2'] = {'sent': [], 'received': []}
+        self._instrument_page('player2', second_page)
+
+        monitor_url = (
+            f'{self.live_server_url}'
+            f'{reverse("admin_dashboard:quiz_monitor", args=[self.quiz.room_code])}'
+            f'?hub_session={self.session.code}'
+        )
+        play_url = (
+            f'{self.live_server_url}'
+            f'{reverse("quiz:play", args=[self.quiz.room_code, self.participant.name])}'
+            f'?hub_session={self.session.code}'
+        )
+        second_play_url = (
+            f'{self.live_server_url}'
+            f'{reverse("quiz:play", args=[self.quiz.room_code, second_participant.name])}'
+            f'?hub_session={self.session.code}'
+        )
+        self.host_page.goto(monitor_url)
+        self.player_page.goto(play_url)
+        second_page.goto(second_play_url)
+        self._wait_for_ws_url('host', f'/ws/quiz/{self.quiz.room_code}/')
+        self._wait_for_ws_url('player', f'/ws/quiz/{self.quiz.room_code}/')
+        self._wait_for_ws_url('player2', f'/ws/quiz/{self.quiz.room_code}/')
+
+        for index, question in enumerate((
+            self.question,
+            second_question,
+        )):
+            self.websocket_frames['host']['received'].clear()
+            self.websocket_frames['player']['received'].clear()
+            self.websocket_frames['player2']['received'].clear()
+            send_selector = (
+                f'.send-question-btn[data-question-id="{question.id}"]:not([disabled])'
+            )
+            self.host_page.wait_for_selector(send_selector, timeout=self.TIMEOUT)
+            self.host_page.click(send_selector)
+            self._wait_for_frame('host', 'received', 'question_started')
+            self._wait_for_frame('player', 'received', 'question_started')
+            self._wait_for_frame('player2', 'received', 'question_started')
+            self.assertTrue(self.player_page.locator('#playerQuestionTimerWrapper').is_hidden())
+
+            self.host_page.wait_for_selector(
+                '#revealQuestionContentBtn:not([disabled])',
+                timeout=self.TIMEOUT,
+            )
+            self.host_page.click('#revealQuestionContentBtn')
+            self._wait_for_frame('host', 'received', 'question_content_revealed')
+            self._wait_for_frame('player', 'received', 'question_content_revealed')
+            self._wait_for_frame('player2', 'received', 'question_content_revealed')
+            self.player_page.wait_for_selector(
+                '#answerOptions .answer-option.is-content-visible',
+                timeout=self.TIMEOUT,
+            )
+            self.assertEqual(
+                self.player_page.locator('#answerOptions .answer-option').evaluate_all(
+                    'buttons => buttons.map(button => Number(button.dataset.revealDelayMs))'
+                ),
+                [0, 300],
+            )
+            self.assertTrue(
+                self.player_page.locator('#answerOptions .answer-option').last.is_disabled()
+            )
+            self.assertTrue(self.player_page.locator('#playerQuestionTimerWrapper').is_hidden())
+
+            if index == 0:
+                self.host_page.reload()
+                self.host_page.wait_for_function(
+                    '() => !!window.adminGameMonitor', timeout=self.TIMEOUT,
+                )
+            else:
+                second_page.reload()
+                second_page.wait_for_selector(
+                    '#questionState:not(.d-none) #answerOptions .answer-option',
+                    timeout=self.TIMEOUT,
+                )
+            self.assertEqual(self.host_page.locator('#openAnsweringBtn').count(), 0)
+            for page in (self.player_page, second_page):
+                page.wait_for_function(
+                    """() => {
+                        const buttons = Array.from(document.querySelectorAll('#answerOptions .answer-option'));
+                        return buttons.length === 2 && buttons.every(button => (
+                            button.classList.contains('is-content-visible') && !button.disabled
+                        ));
+                    }""",
+                    timeout=self.TIMEOUT,
+                )
+            self.assertFalse(self.player_page.locator('#playerQuestionTimerWrapper').is_hidden())
+            self.assertFalse(second_page.locator('#playerQuestionTimerWrapper').is_hidden())
+            self.host_page.click('#endQuestionBtn')
+            self._wait_for_frame('host', 'received', 'question_ended')
+            self._wait_for_frame('player', 'received', 'question_ended')
+            if index == 0:
+                self.host_page.wait_for_selector(
+                    '#returnToQuestionOverviewBtn:not(.d-none)', timeout=self.TIMEOUT,
+                )
+                self.host_page.click('#returnToQuestionOverviewBtn')
+        self._assert_no_browser_errors()
+
+    def test_host_layout_stays_compact_without_horizontal_overflow(self):
+        self._activate_question_for_browser(self.question)
+        monitor_url = (
+            f'{self.live_server_url}'
+            f'{reverse("admin_dashboard:quiz_monitor", args=[self.quiz.room_code])}'
+            f'?hub_session={self.session.code}'
+        )
+        self.host_page.goto(monitor_url)
+        self.host_page.wait_for_selector('#endQuestionBtn', timeout=self.TIMEOUT)
+
+        for width, height in ((1920, 1080), (1366, 768), (1280, 720), (1024, 768)):
+            with self.subTest(viewport=f'{width}x{height}'):
+                self.host_page.set_viewport_size({'width': width, 'height': height})
+                self.host_page.wait_for_timeout(100)
+                metrics = self.host_page.evaluate("""
+                    () => ({
+                        scrollWidth: document.documentElement.scrollWidth,
+                        clientWidth: document.documentElement.clientWidth,
+                    })
+                """)
+                self.assertLessEqual(metrics['scrollWidth'], metrics['clientWidth'] + 1)
+
+                main_box = self.host_page.locator('.quiz-primary-column').bounding_box()
+                participant_box = self.host_page.locator('.quiz-participant-column').bounding_box()
+                action_box = self.host_page.locator('.question-actions-panel').bounding_box()
+                grid_box = self.host_page.locator('.quiz-monitor-grid').bounding_box()
+                question_list_box = self.host_page.locator('.quiz-question-list-card').bounding_box()
+                self.assertIsNotNone(main_box)
+                self.assertIsNotNone(participant_box)
+                self.assertIsNotNone(action_box)
+                self.assertIsNotNone(grid_box)
+                self.assertIsNotNone(question_list_box)
+                self.assertGreater(participant_box['x'], main_box['x'])
+                self.assertLessEqual(action_box['y'] + action_box['height'], height + 1)
+                self.assertGreaterEqual(
+                    question_list_box['y'],
+                    grid_box['y'] + grid_box['height'] - 1,
+                )
+                self.assertLessEqual(abs(question_list_box['width'] - grid_box['width']), 2)
+
+        participant_panel = self.host_page.locator('.quiz-participant-column').inner_text()
+        self.assertNotIn('Answer A', participant_panel)
+        self.assertEqual(self.host_page.locator('[data-quick-quiz-title]').count(), 1)
+        self.assertEqual(self.host_page.locator('.quiz-type-label').inner_text(), 'Spieltyp: Quiz')
+        self._assert_no_browser_errors()
+
+    def test_host_layout_keeps_same_information_architecture_across_states(self):
+        monitor_url = (
+            f'{self.live_server_url}'
+            f'{reverse("admin_dashboard:quiz_monitor", args=[self.quiz.room_code])}'
+            f'?hub_session={self.session.code}'
+        )
+        self.host_page.set_viewport_size({'width': 1366, 'height': 768})
+
+        def assert_layout_artifact(state_name):
+            geometry = self.host_page.evaluate("""
+                () => {
+                    const rect = selector => {
+                        const bounds = document.querySelector(selector).getBoundingClientRect();
+                        return {
+                            x: bounds.x,
+                            y: bounds.y,
+                            width: bounds.width,
+                            height: bounds.height,
+                            bottom: bounds.bottom,
+                        };
+                    };
+                    const grid = document.querySelector('.quiz-monitor-grid');
+                    const questionList = document.querySelector('.quiz-question-list-card');
+                    return {
+                        grid: rect('.quiz-monitor-grid'),
+                        current: rect('.host-monitor-current'),
+                        actions: rect('.host-monitor-actions'),
+                        participants: rect('.host-monitor-participants'),
+                        questionList: rect('.quiz-question-list-card'),
+                        listInsideGrid: grid.contains(questionList),
+                        scrollWidth: document.documentElement.scrollWidth,
+                        clientWidth: document.documentElement.clientWidth,
+                    };
+                }
+            """)
+            self.assertGreater(geometry['participants']['x'], geometry['current']['x'], state_name)
+            self.assertGreaterEqual(geometry['actions']['y'], geometry['current']['bottom'] - 1, state_name)
+            self.assertGreaterEqual(geometry['questionList']['y'], geometry['grid']['bottom'] - 1, state_name)
+            self.assertFalse(geometry['listInsideGrid'], state_name)
+            self.assertLessEqual(geometry['scrollWidth'], geometry['clientWidth'] + 1, state_name)
+            self.assertGreater(len(self.host_page.screenshot(full_page=True)), 10_000, state_name)
+
+        self.quiz.status = 'waiting'
+        self.quiz.started_at = None
+        self.quiz.save(update_fields=['status', 'started_at', 'updated_at'])
+        self.host_page.goto(monitor_url)
+        self.host_page.wait_for_selector('#questionEmptyState', timeout=self.TIMEOUT)
+        assert_layout_artifact('waiting')
+
+        self.quiz.status = 'active'
+        self.quiz.started_at = timezone.now()
+        self.quiz.save(update_fields=['status', 'started_at', 'updated_at'])
+        reset_question_flow(
+            game_key='quiz',
+            room_code=self.quiz.room_code,
+            session_code=self.session.code,
+            mode=GameRuntimeState.QUESTION_FLOW_MANUAL_THREE_PHASE,
+        )
+        observe_snapshot(
+            'quiz',
+            self.quiz.room_code,
+            {'type': 'quiz_started', 'phase': 'active'},
+            self.session.code,
+        )
+        snapshot = current_snapshot('quiz', self.quiz.room_code, self.session.code)
+        presented = present_question(
+            game_key='quiz',
+            room_code=self.quiz.room_code,
+            session_code=self.session.code,
+            action={
+                'question_id': self.question.id,
+                'game_id': snapshot.get('game_id'),
+                'state_revision': snapshot['state_revision'],
+                'client_action_id': str(uuid.uuid4()),
+            },
+            at=timezone.now() - timedelta(milliseconds=QUESTION_PRESENTATION_DELAY_MS),
+        )
+        self.assertTrue(presented.accepted)
+        QuizSession.objects.get(quiz=self.quiz).present_question(self.question)
+
+        self.host_page.reload()
+        self.host_page.wait_for_selector(
+            '#revealQuestionContentBtn:not([disabled])',
+            timeout=self.TIMEOUT,
+        )
+        assert_layout_artifact('prepared')
+
+        self.host_page.click('#revealQuestionContentBtn')
+        self._wait_for_frame('host', 'received', 'question_content_revealed')
+        self.host_page.reload()
+        self.host_page.wait_for_function('() => !!window.adminGameMonitor', timeout=self.TIMEOUT)
+        self.assertEqual(self.host_page.locator('#openAnsweringBtn').count(), 0)
+        self.host_page.wait_for_selector('#endQuestionBtn', timeout=self.TIMEOUT)
+        self.host_page.wait_for_selector('#questionTimerWrapper:not(.d-none)', timeout=self.TIMEOUT)
+        assert_layout_artifact('answering')
+        self._assert_no_browser_errors()
+
     def test_send_question_and_end_quiz_update_host_and_player_without_reload(self):
+        second_question = QuizQuestion.objects.create(
+            question_text='Second browser live question?',
+            question_type='multiple_choice',
+            correct_answer='B',
+            option_a='Second A',
+            option_b='Second B',
+            option_c='Second C',
+            option_d='Second D',
+            points=1,
+            time_limit=30,
+            created_by=self.user,
+        )
+        self.quiz.selected_questions.add(second_question)
+        self.quiz.question_order = [self.question.id, second_question.id]
+        self.quiz.save(update_fields=['question_order', 'updated_at'])
         monitor_url = (
             f'{self.live_server_url}'
             f'{reverse("admin_dashboard:quiz_monitor", args=[self.quiz.room_code])}'
@@ -1008,7 +2025,9 @@ class QuickQuizBrowserLiveFlowTests(_BrowserLiveServerTestCase):
         self._wait_for_frame('host', 'received', 'connection_established')
         self._wait_for_frame('player', 'received', 'connection_established')
 
-        self.host_page.click('.send-question-btn')
+        self.host_page.click(
+            f'.send-question-btn[data-question-id="{self.question.id}"]'
+        )
         self._wait_for_frame('host', 'sent', 'admin_send_question')
         self._wait_for_frame('host', 'received', 'question_started')
         self._wait_for_frame('player', 'received', 'question_started')
@@ -1020,11 +2039,94 @@ class QuickQuizBrowserLiveFlowTests(_BrowserLiveServerTestCase):
             timeout=self.TIMEOUT,
         )
         self.player_page.wait_for_selector('#questionState:not(.d-none)', timeout=self.TIMEOUT)
+        self.assertTrue(
+            self.player_page.locator('#questionText').evaluate(
+                "element => element.classList.contains('is-presentation-pending')"
+            )
+        )
+        self.assertTrue(self.host_page.locator('#revealQuestionContentBtn').is_disabled())
+        self.assertTrue(self.player_page.locator('#quickQuizResponseArea').is_hidden())
+        self.assertTrue(self.player_page.locator('#playerQuestionTimerWrapper').is_hidden())
         self.player_page.wait_for_function(
-            """() => document.querySelector('#questionText')?.textContent.includes('Browser live question?')""",
+            """() => (
+                document.querySelector('#questionText')?.textContent.includes('Browser live question?')
+                && !document.querySelector('#questionText')?.classList.contains('is-presentation-pending')
+            )""",
             timeout=self.TIMEOUT,
         )
-        self.player_page.wait_for_selector('#submitAnswerBtn', timeout=self.TIMEOUT)
+        self.assertEqual(self.player_page.locator('#answerOptions .answer-option').count(), 0)
+        self.assertTrue(self.player_page.locator('#quickQuizResponseArea').is_hidden())
+        self.assertTrue(self.player_page.locator('#playerQuestionTimerWrapper').is_hidden())
+
+        self.host_page.wait_for_selector('#revealQuestionContentBtn:not([disabled])', timeout=self.TIMEOUT)
+        self.host_page.click('#revealQuestionContentBtn')
+        self._wait_for_frame('player', 'received', 'question_content_revealed')
+        self.player_page.wait_for_selector('#answerOptions .answer-option.is-content-visible', timeout=self.TIMEOUT)
+        self.assertEqual(
+            self.player_page.locator('#answerOptions .answer-option').evaluate_all(
+                "buttons => buttons.map(button => Number(button.dataset.revealDelayMs))"
+            ),
+            [0, 300, 600, 900],
+        )
+        self.assertTrue(self.player_page.locator('#answerOptions .answer-option').first.is_disabled())
+        self.assertTrue(self.player_page.locator('#playerQuestionTimerWrapper').is_hidden())
+
+        self.player_page.reload()
+        self.player_page.wait_for_selector(
+            '#questionState:not(.d-none) #answerOptions .answer-option',
+            timeout=self.TIMEOUT,
+        )
+        self.assertEqual(self.host_page.locator('#openAnsweringBtn').count(), 0)
+        self.player_page.wait_for_function(
+            """() => {
+                const buttons = Array.from(document.querySelectorAll('#answerOptions .answer-option'));
+                return buttons.length === 4 && buttons.every(button => (
+                    button.classList.contains('is-content-visible') && !button.disabled
+                ));
+            }""",
+            timeout=self.TIMEOUT,
+        )
+        self.assertFalse(self.player_page.locator('#playerQuestionTimerWrapper').is_hidden())
+
+        self.player_page.click('.answer-option[data-value="A"]')
+        self.player_page.click('#submitAnswerBtn')
+        self._wait_for_frame('player', 'received', 'answer_submitted')
+        self.host_page.click('#endQuestionBtn')
+        self._wait_for_frame('host', 'received', 'question_ended')
+        self._wait_for_frame('player', 'received', 'question_ended')
+        self.host_page.wait_for_selector('#returnToQuestionOverviewBtn:not(.d-none)', timeout=self.TIMEOUT)
+        self.host_page.click('#returnToQuestionOverviewBtn')
+        second_selector = f'.send-question-btn[data-question-id="{second_question.id}"]:not([disabled])'
+        self.host_page.wait_for_selector(second_selector, timeout=self.TIMEOUT)
+
+        self.websocket_frames['host']['received'].clear()
+        self.websocket_frames['player']['received'].clear()
+        self.host_page.click(second_selector)
+        self._wait_for_frame('host', 'received', 'question_started')
+        self._wait_for_frame('player', 'received', 'question_started')
+        self.player_page.wait_for_function(
+            "() => document.querySelector('#questionText')?.textContent.includes('Second browser live question?')",
+            timeout=self.TIMEOUT,
+        )
+        self.host_page.wait_for_selector('#revealQuestionContentBtn:not([disabled])', timeout=self.TIMEOUT)
+        self.host_page.click('#revealQuestionContentBtn')
+        self._wait_for_frame('player', 'received', 'question_content_revealed')
+        self.assertEqual(self.host_page.locator('#openAnsweringBtn').count(), 0)
+        self.player_page.wait_for_function(
+            """() => {
+                const buttons = Array.from(document.querySelectorAll('#answerOptions .answer-option'));
+                return buttons.length === 4 && buttons.every(button => (
+                    button.classList.contains('is-content-visible') && !button.disabled
+                ));
+            }""",
+            timeout=self.TIMEOUT,
+        )
+        self.player_page.click('.answer-option[data-value="B"]')
+        self.player_page.click('#submitAnswerBtn')
+        self._wait_for_frame('player', 'received', 'answer_submitted')
+        self.host_page.click('#endQuestionBtn')
+        self._wait_for_frame('host', 'received', 'question_ended')
+        self._wait_for_frame('player', 'received', 'question_ended')
 
         self.host_page.once('dialog', lambda dialog: dialog.accept())
         self.host_page.click('#endQuizBtn')
@@ -1042,6 +2144,133 @@ class QuickQuizBrowserLiveFlowTests(_BrowserLiveServerTestCase):
         self.quiz.refresh_from_db()
         self.assertEqual(self.quiz.status, 'completed')
         self._assert_no_browser_errors()
+
+    def test_four_answers_remain_selectable_with_stale_timer_context_and_fast_release(self):
+        HubParticipant.objects.create(session=self.session, nickname='Bob')
+        second_participant = QuizParticipant.objects.create(
+            quiz=self.quiz,
+            name='Bob',
+            hub_session_code=self.session.code,
+            is_active=True,
+        )
+        second_context = self._browser.new_context()
+        install_browser_test_stubs(second_context)
+        second_page = second_context.new_page()
+        self.websocket_urls['player2'] = []
+        self.websocket_frames['player2'] = {'sent': [], 'received': []}
+        self._instrument_page('player2', second_page)
+
+        monitor_url = (
+            f'{self.live_server_url}'
+            f'{reverse("admin_dashboard:quiz_monitor", args=[self.quiz.room_code])}'
+            f'?hub_session={self.session.code}'
+        )
+        player_url = (
+            f'{self.live_server_url}'
+            f'{reverse("quiz:play", args=[self.quiz.room_code, self.participant.name])}'
+            f'?hub_session={self.session.code}'
+        )
+        second_player_url = (
+            f'{self.live_server_url}'
+            f'{reverse("quiz:play", args=[self.quiz.room_code, second_participant.name])}'
+            f'?hub_session={self.session.code}'
+        )
+
+        try:
+            self.host_page.goto(monitor_url)
+            self.host_page.wait_for_selector('.send-question-btn:not([disabled])', timeout=self.TIMEOUT)
+            self.player_page.goto(player_url)
+            second_page.goto(second_player_url)
+            for label in ('host', 'player', 'player2'):
+                self._wait_for_ws_url(label, f'/ws/quiz/{self.quiz.room_code}/')
+
+            # Reproduce the participant-local collision that previously reused the
+            # anonymous timer bucket from an already expired question.
+            self.player_page.evaluate(
+                """() => {
+                    const now = new Date();
+                    const expired = new Date(now.getTime() - 1000);
+                    return window.AuthoritativeGameState.remainingMilliseconds({
+                        ends_at: expired.toISOString(),
+                        server_now: now.toISOString(),
+                    });
+                }"""
+            )
+
+            self.host_page.click('.send-question-btn')
+            for label in ('player', 'player2'):
+                self._wait_for_frame(label, 'received', 'question_started')
+            self.host_page.wait_for_selector('#revealQuestionContentBtn:not([disabled])', timeout=self.TIMEOUT)
+            self.host_page.click('#revealQuestionContentBtn')
+            for label in ('player', 'player2'):
+                self._wait_for_frame(label, 'received', 'question_content_revealed')
+
+            self.assertEqual(self.host_page.locator('#openAnsweringBtn').count(), 0)
+
+            for page in (self.player_page, second_page):
+                page.wait_for_function(
+                    """() => {
+                        const buttons = Array.from(document.querySelectorAll('#answerOptions .answer-option'));
+                        return buttons.length === 4 && buttons.every(button => (
+                            button.classList.contains('is-content-visible') && !button.disabled
+                        ));
+                    }""",
+                    timeout=self.TIMEOUT,
+                )
+                diagnostics = page.locator('#answerOptions .answer-option').evaluate_all(
+                    """buttons => buttons.map(button => {
+                        const rect = button.getBoundingClientRect();
+                        const topElement = document.elementFromPoint(
+                            rect.left + (rect.width / 2),
+                            rect.top + (rect.height / 2)
+                        );
+                        return {
+                            disabled: button.disabled,
+                            matchesDisabled: button.matches(':disabled'),
+                            ariaDisabled: button.getAttribute('aria-disabled'),
+                            inertAncestor: Boolean(button.closest('[inert]')),
+                            pointerEvents: getComputedStyle(button).pointerEvents,
+                            topElementIsButton: topElement === button || button.contains(topElement),
+                        };
+                    })"""
+                )
+                self.assertEqual(len(diagnostics), 4)
+                for state in diagnostics:
+                    self.assertFalse(state['disabled'])
+                    self.assertFalse(state['matchesDisabled'])
+                    self.assertEqual(state['ariaDisabled'], 'false')
+                    self.assertFalse(state['inertAncestor'])
+                    self.assertNotEqual(state['pointerEvents'], 'none')
+                    self.assertTrue(state['topElementIsButton'])
+
+            first_player_answers = self.player_page.locator('#answerOptions .answer-option')
+            for index in range(4):
+                first_player_answers.nth(index).click()
+                self.assertEqual(
+                    first_player_answers.nth(index).get_attribute('aria-pressed'),
+                    'true',
+                )
+            self.player_page.click('#submitAnswerBtn')
+            second_page.locator('#answerOptions .answer-option').first.click()
+            second_page.click('#submitAnswerBtn')
+            for label in ('player', 'player2'):
+                self._wait_for_frame(label, 'received', 'answer_submitted')
+
+            self.assertEqual(
+                QuizAnswer.objects.filter(quiz=self.quiz, question=self.question).count(),
+                2,
+            )
+            self.assertEqual(
+                set(QuizAnswer.objects.filter(
+                    quiz=self.quiz,
+                    question=self.question,
+                ).values_list('answer_text', flat=True)),
+                {'A', 'D'},
+            )
+            self._assert_no_browser_errors()
+        finally:
+            second_page.close()
+            second_context.close()
 
     def test_manual_correction_during_active_question_is_revealed_only_after_question_end(self):
         self.question.question_type = 'short_answer'
@@ -1073,6 +2302,7 @@ class QuickQuizBrowserLiveFlowTests(_BrowserLiveServerTestCase):
         self.host_page.click('.send-question-btn')
         self._wait_for_frame('host', 'received', 'question_started')
         self._wait_for_frame('player', 'received', 'question_started')
+        self._open_answering_from_host()
         self.player_page.wait_for_selector('#shortAnswerInput1', timeout=self.TIMEOUT)
         self.player_page.fill('#shortAnswerInput1', 'Baerlin')
         self.player_page.click('#submitAnswerBtn')
@@ -1174,9 +2404,30 @@ class QuizPlayScoreBoxTests(TransactionTestCase):
         )
         self.assertEqual(response.context['score_total_correct'], 1)
         self.assertEqual(response.context['score_total_questions'], 3)
+        self.assertEqual(response.context['current_question_number'], 2)
+        self.assertEqual(response.context['total_question_count'], 3)
         self.assertContains(response, 'class="quiz-score-box score-box"')
         self.assertContains(response, 'id="quizScoreTotal"')
         self.assertContains(response, 'id="quizScoreTotal">1/3</div>')
+        self.assertContains(
+            response,
+            '<span id="vhsQuizProgress" hidden aria-hidden="true">2/3</span>',
+            html=True,
+        )
+
+    def test_quiz_play_hides_invalid_progress_when_no_questions_are_configured(self):
+        response = self.client.get(
+            reverse('quiz:play', args=[self.quiz.room_code, self.participant.name]),
+            {'hub_session': self.participant.hub_session_code},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context['total_question_count'], 0)
+        self.assertContains(
+            response,
+            '<span id="vhsQuizProgress" hidden aria-hidden="true"></span>',
+            html=True,
+        )
 
     def test_quiz_play_hides_active_question_answer_until_question_end(self):
         question_one = self._create_question('Question one', 'True')
@@ -1700,6 +2951,7 @@ class QuizHostManualCorrectTests(TransactionTestCase):
                 'question_id': question.id,
                 'is_correct': True,
                 'points_earned': 1,
+                'display_answer': answer.answer_text,
             }],
         )
 

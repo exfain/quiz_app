@@ -19,8 +19,11 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<script src="{% static 'js/authoritative-game-state.js' %}"></script>
 </head>
-<body class="where-play-page">
+<body class="where-play-page"
+      data-vhs-progress-kind="question"
+      data-vhs-progress-source="#currentQuestionNumber">
     <div class="play-container">
         <!-- Header -->
         <header class="quiz-header">
@@ -1049,12 +1052,12 @@
                     this.hubSession = '{{ hub_session }}';
                     this.websocket = null;
                     this.questionTimer = null;
-                    this.questionStartTime = null;
                     this.gameMap = null;
                     this.resultMap = null;
                     this.selectedXNorm = null;
                     this.selectedYNorm = null;
                     this.hasAnswered = false;
+                    this.submittedStateTimeout = null;
                     this.scoreboardQuestions = this.readJsonScript('whereQuestionScoreboardData', []);
                     this.progressHistory = this.readJsonScript('whereInitialProgressData', []);
                     this.currentQuestionId = this.readJsonScript('whereCurrentQuestionId', null);
@@ -1070,7 +1073,6 @@
                     
                     // Start timer if there's an active question
                     {% if quiz.current_question %}
-                        this.startQuestionTimer({{ quiz.current_question.time_limit }});
                         this.loadCurrentQuestion();
                     {% endif %}
                 }
@@ -1279,7 +1281,6 @@
                     this.hasAnswered = false;
                     this.clearSelection();
                     this.currentQuestionIsTutorial = !!question?.is_tutorial_round;
-                    this.questionStartTime = Date.now();
                     if (this.currentQuestionIsTutorial) {
                         this.currentQuestionId = null;
                     } else {
@@ -1293,7 +1294,11 @@
                     });
 
                     this.loadQuestion(question);
-                    this.startQuestionTimer(question.time_limit);
+                    this.startQuestionTimer(
+                        question.time_limit,
+                        question.ends_at,
+                        question.server_now
+                    );
                     this.showState('questionState');
                 }
 
@@ -1306,6 +1311,8 @@
 
                 onQuizEnded(data) {
                     clearInterval(this.questionTimer);
+                    clearTimeout(this.submittedStateTimeout);
+                    this.submittedStateTimeout = null;
                     this.markCurrentQuestionUnansweredIfNeeded();
                     this.currentQuestionId = null;
                     this.renderScoreHistory();
@@ -1349,6 +1356,10 @@
                 setCurrentQuestion(questionId, maxPoints = null) {
                     this.currentQuestionId = questionId ?? null;
                     this.moveQuestionToNextFreeScoreSlot(questionId, maxPoints);
+                    const questionNumber = this.getCurrentQuestionNumber();
+                    if (Number.isInteger(questionNumber) && questionNumber > 0) {
+                        document.getElementById('currentQuestionNumber').textContent = String(questionNumber);
+                    }
                     this.renderScoreHistory();
                 }
 
@@ -1476,8 +1487,15 @@
                     }
                 }
 
-                startQuestionTimer(timeLimit) {
-                    let timeLeft = timeLimit;
+                startQuestionTimer(timeLimit, endsAt = null, serverNow = null) {
+                    clearInterval(this.questionTimer);
+                    const timerContext = {
+                        ends_at: endsAt,
+                        server_now: serverNow,
+                    };
+                    let timeLeft = endsAt
+                        ? Math.ceil(AuthoritativeGameState.remainingMilliseconds(timerContext) / 1000)
+                        : timeLimit;
                     const timerElement = document.getElementById('playerTimeLeft');
                     const circleElement = document.getElementById('playerTimerCircle');
                     const submittedTimerElement = document.getElementById('playerTimeLeftSubmitted');
@@ -1492,7 +1510,9 @@
                     }
                     
                     this.questionTimer = setInterval(() => {
-                        timeLeft--;
+                        timeLeft = endsAt
+                            ? Math.ceil(AuthoritativeGameState.remainingMilliseconds(timerContext) / 1000)
+                            : timeLeft - 1;
                         timerElement.textContent = timeLeft;
                         if (submittedTimerElement) {
                             submittedTimerElement.textContent = timeLeft;
@@ -1520,8 +1540,6 @@
                 submitAnswer() {
                     if (this.selectedLatitude === null || this.selectedLongitude === null || this.hasAnswered) return;
                     
-                    const timeTaken = (Date.now() - this.questionStartTime) / 1000;
-                    
                     // Disable map interaction
                     this.gameMap.off('click');
                     document.getElementById('gameMap').style.cursor = 'default';
@@ -1533,7 +1551,7 @@
                         hub_session: this.hubSession,
                         latitude: this.selectedLatitude,
                         longitude: this.selectedLongitude,
-                        time_taken: timeTaken
+                        question_id: this.currentQuestionId
                     }));
                     
                     this.hasAnswered = true;
@@ -1689,22 +1707,29 @@
                 }
 
                 onQuestionStarted(question) {
+                    clearTimeout(this.submittedStateTimeout);
+                    this.submittedStateTimeout = null;
                     this.hasAnswered = false;
                     this.clearSelection();
                     this.currentQuestionIsTutorial = !!question?.is_tutorial_round;
-                    this.questionStartTime = Date.now();
                     if (this.currentQuestionIsTutorial) {
                         this.currentQuestionId = null;
                     } else {
                         this.setCurrentQuestion(question.id, question.points);
                     }
                     this.loadQuestion(question);
-                    this.startQuestionTimer(question.time_limit);
+                    this.startQuestionTimer(
+                        question.time_limit,
+                        question.ends_at,
+                        question.server_now
+                    );
                     this.showState('questionState');
                 }
 
                 onQuestionEnded(data) {
                     clearInterval(this.questionTimer);
+                    clearTimeout(this.submittedStateTimeout);
+                    this.submittedStateTimeout = null;
                     const answer = (data?.answers || []).find(entry => entry.participant_name === this.participantName);
                     if (!this.currentQuestionIsTutorial) {
                         if (answer) {
@@ -1727,7 +1752,6 @@
 
                 submitAnswer() {
                     if (this.selectedXNorm === null || this.selectedYNorm === null || this.hasAnswered) return;
-                    const timeTaken = (Date.now() - this.questionStartTime) / 1000;
                     document.getElementById('gameMap').style.cursor = 'default';
                     this.websocket.send(JSON.stringify({
                         type: 'participant_submit_answer',
@@ -1735,7 +1759,7 @@
                         hub_session: this.hubSession,
                         x_norm: this.selectedXNorm,
                         y_norm: this.selectedYNorm,
-                        time_taken: timeTaken
+                        question_id: this.currentQuestionId
                     }));
                     this.hasAnswered = true;
                     document.getElementById('submittedDistance').textContent = 'Auswertung folgt';
@@ -1743,7 +1767,9 @@
                     document.getElementById('submittedAccuracy').textContent = '-';
                     this.hideMarker('resultGuessMarker');
                     this.hideMarker('resultCorrectMarker');
-                    setTimeout(() => {
+                    clearTimeout(this.submittedStateTimeout);
+                    this.submittedStateTimeout = setTimeout(() => {
+                        this.submittedStateTimeout = null;
                         this.showState('answerSubmittedState');
                     }, 500);
                 }

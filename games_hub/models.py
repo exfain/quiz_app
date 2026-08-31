@@ -1,3 +1,6 @@
+import uuid
+
+from django.conf import settings
 from django.db import models, transaction
 from games_website.models import SyncBase
 from django.utils import timezone
@@ -39,6 +42,13 @@ class HubSession(SyncBase):
 
     code = models.CharField(max_length=16, unique=True)
     name = models.CharField(max_length=100, blank=True)
+    creator = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        related_name='created_hub_sessions',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+    )
     created_at = models.DateTimeField(default=timezone.now)
     started_at = models.DateTimeField(null=True, blank=True)
     ended_at = models.DateTimeField(null=True, blank=True)
@@ -75,6 +85,8 @@ class HubSession(SyncBase):
     current_voting_round = models.PositiveIntegerField(default=0)
     voting_started_at = models.DateTimeField(null=True, blank=True)
     voting_closed_at = models.DateTimeField(null=True, blank=True)
+    lobby_return_countdown_ends_at = models.DateTimeField(null=True, blank=True)
+    lobby_return_countdown_duration_seconds = models.PositiveIntegerField(null=True, blank=True)
 
     @staticmethod
     def _get_game_model_map():
@@ -369,6 +381,9 @@ class HubGameStep(SyncBase):
     game_key = models.CharField(max_length=20, choices=GAME_CHOICES)
     room_code = models.CharField(max_length=16, blank=True)
     title = models.CharField(max_length=100, blank=True)
+    intro_started_at = models.DateTimeField(null=True, blank=True)
+    intro_ends_at = models.DateTimeField(null=True, blank=True)
+    intro_state_revision = models.PositiveBigIntegerField(default=0)
 
     class Meta:
         ordering = ['order']
@@ -420,3 +435,157 @@ class GameVote(models.Model):
 
     def __str__(self):
         return f"{self.participant_nickname} → {self.step} ({self.session.code})"
+
+
+class GameRuntimeState(models.Model):
+    """Shared, durable revision and context for one concrete game run."""
+
+    QUESTION_FLOW_LEGACY_IMMEDIATE = 'legacy_immediate'
+    QUESTION_FLOW_MANUAL_THREE_PHASE = 'manual_three_phase'
+    QUESTION_FLOW_CHOICES = [
+        (QUESTION_FLOW_LEGACY_IMMEDIATE, 'Legacy immediate'),
+        (QUESTION_FLOW_MANUAL_THREE_PHASE, 'Manual three phase'),
+    ]
+    QUESTION_PHASE_PROMPT_VISIBLE = 'prompt_visible'
+    QUESTION_PHASE_CONTENT_VISIBLE = 'content_visible'
+    QUESTION_PHASE_ANSWERING_OPEN = 'answering_open'
+    QUESTION_PHASE_CHOICES = [
+        (QUESTION_PHASE_PROMPT_VISIBLE, 'Prompt visible'),
+        (QUESTION_PHASE_CONTENT_VISIBLE, 'Content visible'),
+        (QUESTION_PHASE_ANSWERING_OPEN, 'Answering open'),
+    ]
+
+    identity_key = models.CharField(max_length=160, unique=True)
+    session = models.ForeignKey(
+        HubSession,
+        related_name='runtime_states',
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+    )
+    game_step = models.ForeignKey(
+        HubGameStep,
+        related_name='runtime_states',
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+    )
+    game_key = models.CharField(max_length=32)
+    room_code = models.CharField(max_length=32)
+    game_instance_id = models.CharField(max_length=64, blank=True, default='')
+    state_revision = models.PositiveBigIntegerField(default=0)
+    context_revision = models.PositiveBigIntegerField(default=0)
+    phase = models.CharField(max_length=64, blank=True, default='')
+    current_question_id = models.CharField(max_length=64, blank=True, default='')
+    current_round_id = models.CharField(max_length=64, blank=True, default='')
+    current_set_id = models.CharField(max_length=64, blank=True, default='')
+    question_flow_mode = models.CharField(
+        max_length=32,
+        choices=QUESTION_FLOW_CHOICES,
+        default=QUESTION_FLOW_LEGACY_IMMEDIATE,
+    )
+    question_phase = models.CharField(
+        max_length=32,
+        choices=QUESTION_PHASE_CHOICES,
+        blank=True,
+        default='',
+    )
+    question_presented_at = models.DateTimeField(null=True, blank=True)
+    content_revealed_at = models.DateTimeField(null=True, blank=True)
+    starts_at = models.DateTimeField(null=True, blank=True)
+    ends_at = models.DateTimeField(null=True, blank=True)
+    public_snapshot = models.JSONField(default=dict, blank=True)
+    context_fingerprint = models.CharField(max_length=64, blank=True, default='')
+    display_fingerprint = models.CharField(max_length=64, blank=True, default='')
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=['game_key', 'room_code']),
+            models.Index(fields=['session', 'game_key']),
+        ]
+
+    def __str__(self):
+        return f"{self.identity_key}@{self.state_revision}"
+
+
+class ProcessedClientAction(models.Model):
+    STATUS_PENDING = 'pending'
+    STATUS_ACCEPTED = 'accepted'
+    STATUS_REJECTED = 'rejected'
+    STATUS_CHOICES = [
+        (STATUS_PENDING, 'Pending'),
+        (STATUS_ACCEPTED, 'Accepted'),
+        (STATUS_REJECTED, 'Rejected'),
+    ]
+
+    runtime_state = models.ForeignKey(
+        GameRuntimeState,
+        related_name='client_actions',
+        on_delete=models.CASCADE,
+    )
+    participant = models.ForeignKey(
+        HubParticipant,
+        related_name='client_actions',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+    )
+    participant_key = models.CharField(max_length=128)
+    client_action_id = models.UUIDField()
+    action_type = models.CharField(max_length=64)
+    state_revision = models.PositiveBigIntegerField()
+    game_instance_id = models.CharField(max_length=64, blank=True, default='')
+    question_id = models.CharField(max_length=64, blank=True, default='')
+    round_id = models.CharField(max_length=64, blank=True, default='')
+    set_id = models.CharField(max_length=64, blank=True, default='')
+    status = models.CharField(max_length=16, choices=STATUS_CHOICES, default=STATUS_PENDING)
+    response_payload = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(default=timezone.now)
+    completed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=['runtime_state', 'participant_key', 'client_action_id'],
+                name='unique_runtime_participant_action',
+            ),
+        ]
+        indexes = [
+            models.Index(fields=['runtime_state', 'participant_key', 'created_at']),
+        ]
+
+    def __str__(self):
+        return f"{self.participant_key}:{self.action_type}:{self.client_action_id}"
+
+
+class HubSocketConnection(models.Model):
+    """A single browser socket; participant activity remains a separate concern."""
+
+    connection_id = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
+    session = models.ForeignKey(
+        HubSession,
+        related_name='socket_connections',
+        on_delete=models.CASCADE,
+    )
+    participant = models.ForeignKey(
+        HubParticipant,
+        related_name='socket_connections',
+        on_delete=models.CASCADE,
+    )
+    channel_name = models.CharField(max_length=255, unique=True)
+    scope_kind = models.CharField(max_length=16, default='game')
+    game_key = models.CharField(max_length=32, blank=True, default='')
+    room_code = models.CharField(max_length=32, blank=True, default='')
+    connected_at = models.DateTimeField(default=timezone.now)
+    last_seen = models.DateTimeField(default=timezone.now)
+    disconnected_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=['participant', 'disconnected_at', 'last_seen']),
+            models.Index(fields=['session', 'game_key', 'room_code']),
+        ]
+
+    def __str__(self):
+        return f"{self.participant.nickname}:{self.connection_id}"

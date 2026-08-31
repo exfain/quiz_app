@@ -78,7 +78,9 @@ class BuzzerStartFlowTests(TransactionTestCase):
         self.assertEqual(player.status_code, 200)
         alice = self.game.participants.get(name='Alice', hub_session_code=self.session.code)
         self.assertFalse(alice.is_active)
-        self.assertContains(player, 'Warte darauf, dass der Host das Spiel startet.')
+        self.assertContains(player, self.game.title)
+        self.assertContains(player, 'beginnt gleich!')
+        self.assertNotContains(player, 'Warte darauf, dass der Host das Spiel startet.')
         self.assertContains(monitor, 'Spiel starten')
 
     def test_round_cannot_start_before_game_and_does_not_start_it_implicitly(self):
@@ -230,32 +232,38 @@ class BuzzerStartFlowTests(TransactionTestCase):
         started = self.game.serialize_state(self.session.code, 'Alice')
         self.assertEqual(started['game']['status'], 'active')
         self.assertEqual(started['round']['number'], 0)
+        self.assertGreater(started['state_revision'], waiting['state_revision'])
 
         self.assertIsNotNone(self.game.start_round(self.session.code))
         self.assertTrue(self.game.open_buzzer())
         opened = self.game.serialize_state(self.session.code, 'Alice')
         self.assertTrue(opened['can_buzz'])
+        self.assertGreater(opened['state_revision'], started['state_revision'])
 
         self.assertTrue(self.game.accept_buzz(alice)[0])
         locked = self.game.serialize_state(self.session.code, 'Alice')
         self.assertTrue(locked['participant']['has_answer_right'])
         self.assertFalse(locked['can_buzz'])
+        self.assertGreater(locked['state_revision'], opened['state_revision'])
 
         self.assertTrue(self.game.mark_current_wrong())
         blocked = self.game.serialize_state(self.session.code, 'Alice')
         self.assertTrue(blocked['participant']['blocked'])
         self.assertFalse(blocked['can_buzz'])
+        self.assertGreater(blocked['state_revision'], locked['state_revision'])
 
         self.assertTrue(self.game.end_current_round())
         self.assertIsNotNone(self.game.start_round(self.session.code))
         next_round = self.game.serialize_state(self.session.code, 'Alice')
         self.assertEqual(next_round['round']['number'], 2)
         self.assertFalse(next_round['participant']['blocked'])
+        self.assertGreater(next_round['state_revision'], blocked['state_revision'])
 
         self.game.end_quiz()
         completed = self.game.serialize_state(self.session.code, 'Alice')
         self.assertEqual(completed['game']['status'], 'completed')
         self.assertFalse(completed['can_buzz'])
+        self.assertGreater(completed['state_revision'], next_round['state_revision'])
 
 
 class BuzzerEndFlowTests(TransactionTestCase):
@@ -315,8 +323,9 @@ class BuzzerEndFlowTests(TransactionTestCase):
             {'hub_session': self.session.code},
         )
 
-        self.assertContains(host_response, 'Zur Lobby')
         self.assertContains(host_response, 'Zur Session-Übersicht')
+        self.assertContains(host_response, 'data-host-game-leave')
+        self.assertNotContains(host_response, f'href="/hub/lobby/{self.session.code}/"')
         self.assertContains(player_response, 'Zur Lobby zurückkehren')
         self.assertContains(player_response, 'participant-return-to-lobby')
         self.assertContains(player_response, 'id="returnToLobbyActions" hidden')
@@ -395,8 +404,9 @@ class BuzzerEndFlowTests(TransactionTestCase):
         )
 
         self.assertContains(response, 'Spiel beendet. Der finale Spielstand ist sichtbar.')
-        self.assertContains(response, 'Zur Lobby')
         self.assertContains(response, 'Zur Session-Übersicht')
+        self.assertContains(response, 'data-host-game-leave')
+        self.assertNotContains(response, f'href="/hub/lobby/{self.session.code}/"')
 
 
 class BuzzerGameTests(TestCase):

@@ -20,8 +20,11 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 </head>
-<body class="estimation-result-page participant-result-page">
+<body class="estimation-result-page participant-result-page"
+      data-vhs-progress-kind="question"
+      data-vhs-progress-source="#vhsProgressNumber">
     <div class="result-container" data-participant-name="{{ participant.name }}">
+        <span id="vhsProgressNumber" hidden aria-hidden="true">{{ quiz.session.current_question_number|default:0 }}</span>
         <!-- Header -->
         <header class="result-header">
             <div class="container">

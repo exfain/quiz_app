@@ -21,8 +21,11 @@
         .metric { background: rgba(15, 23, 42, .76); border: 1px solid rgba(148, 163, 184, .18); border-radius: 16px; padding: 12px 14px; }
         .answer-input { font-size: 2rem; text-align: center; font-weight: 800; }
     </style>
+<script src="{% static 'js/authoritative-game-state.js' %}"></script>
 </head>
-<body class="wann-war-das-play-page">
+<body class="wann-war-das-play-page"
+      data-vhs-progress-kind="question"
+      data-vhs-progress-source="#questionNumber">
 <main class="game-shell" data-participant-name="{{ participant.name }}">
     {% include 'includes/_unit_tutorial_notice.html' with tutorial_notice_label='Tutorialfrage' %}
     <div class="game-card">
@@ -133,6 +136,8 @@ const GAME_TITLE = '{{ game.title|escapejs }}';
 let socket = null;
 let currentState = null;
 let toleranceBoundaryTimer = null;
+let presentationDelayTimer = null;
+let currentQuestionId = null;
 const lobbyReturnController = createHubLobbyReturnController({
     sessionCode: '{{ hub_session|default_if_none:""|escapejs }}',
     gameKey: 'wann_war_das',
@@ -141,6 +146,7 @@ const lobbyReturnController = createHubLobbyReturnController({
     csrfToken: '{{ csrf_token }}',
     buttonId: 'returnToLobbyBtn',
 });
+lobbyReturnController.connectHubRecallSocket();
 
 function fmt(value) {
     if (value === null || value === undefined || value === '') return '-';
@@ -322,7 +328,18 @@ function renderStartWaitingText() {
     waitingText.append(title, subtitle);
 }
 
+function remainingQuestionPresentationDelay(state) {
+    const visibleAt = Date.parse(state?.question_visible_at || '');
+    const serverNow = Date.parse(state?.server_now || '');
+    if (!Number.isFinite(visibleAt) || !Number.isFinite(serverNow)) return 0;
+    const estimatedServerNow = serverNow + (performance.now() - (state.receivedAt || performance.now()));
+    return Math.max(0, visibleAt - estimatedServerNow);
+}
+
 function renderState(state) {
+    if (!state.receivedAt) state.receivedAt = performance.now();
+    window.clearTimeout(presentationDelayTimer);
+    presentationDelayTimer = null;
     window.sessionGameStartIntro?.handleState(state);
     currentState = state;
     const gameEnded = state.event_type === 'game_ended' || state.game?.status === 'completed';
@@ -335,18 +352,39 @@ function renderState(state) {
         send({ type: 'get_state' });
         return;
     }
-    const question = state.question;
+    const preparedQuestion = state.question;
+    const remainingPresentationDelay = state.question_phase === 'prompt_visible'
+        ? remainingQuestionPresentationDelay(state)
+        : 0;
+    const question = remainingPresentationDelay > 0 ? null : preparedQuestion;
     const timer = state.timer || {};
     const own = state.participant || {};
     const ownAnswer = state.own_answer;
     const isActive = question && state.question_state === 'active';
     const isReveal = question && state.question_state === 'revealed';
+    const nextQuestionId = String(state.current_question_id || preparedQuestion?.id || '');
+    if (nextQuestionId !== currentQuestionId) {
+        currentQuestionId = nextQuestionId;
+        document.getElementById('answerInput').value = '';
+        document.getElementById('submittedAlert').classList.add('d-none');
+        document.getElementById('revealArea').classList.add('d-none');
+    }
     document.getElementById('ownScore').textContent = own.score ?? 0;
     renderRoundScores(state);
     document.getElementById('questionNumber').textContent = state.question_number || 0;
     document.getElementById('questionArea').classList.toggle('d-none', !question);
     document.getElementById('waitingArea').classList.toggle('d-none', !!question);
     if (!question) {
+        window.clearTimeout(toleranceBoundaryTimer);
+        toleranceBoundaryTimer = null;
+        document.getElementById('answerInput').disabled = true;
+        document.getElementById('submitBtn').disabled = true;
+        if (preparedQuestion && remainingPresentationDelay > 0) {
+            presentationDelayTimer = window.setTimeout(
+                () => renderState(state),
+                remainingPresentationDelay + 10,
+            );
+        }
         const started = state.game?.status === 'active';
         if (started) document.getElementById('waitingText').textContent = 'Spiel gestartet. Warte auf die naechste Frage.';
         else renderStartWaitingText();
@@ -354,7 +392,7 @@ function renderState(state) {
     }
     document.getElementById('questionText').textContent = question.question_text || '';
     renderToleranceScale(question, timer);
-    document.getElementById('pointsText').textContent = fmt(timer.current_points);
+    document.getElementById('pointsText').textContent = fmt(timer.current_points ?? question.max_points);
     document.getElementById('answerInput').disabled = !state.can_answer;
     const submitButton = document.getElementById('submitBtn');
     submitButton.disabled = !state.can_answer;

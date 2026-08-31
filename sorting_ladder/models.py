@@ -1,4 +1,4 @@
-from django.db import models
+from django.db import models, transaction
 from games_website.models import SyncBase
 from django.contrib.auth.models import User
 from django.utils import timezone
@@ -52,7 +52,48 @@ class SortingLadderGame(SyncBase):
     def start_quiz(self):
         self.status = 'active'
         self.started_at = timezone.now()
-        self.save()
+        self.ended_at = None
+        self.save(update_fields=['status', 'started_at', 'ended_at'])
+
+    def reset_runtime_state(self):
+        """Clear ephemeral state before a new run without touching question setup or scores."""
+        with transaction.atomic():
+            quiz = SortingLadderGame.objects.select_for_update().get(pk=self.pk)
+            quiz.current_question = None
+            quiz.tutorial_active = False
+            quiz.started_at = None
+            quiz.ended_at = None
+            quiz.save(update_fields=[
+                'current_question',
+                'tutorial_active',
+                'started_at',
+                'ended_at',
+            ])
+
+            session, _ = SortingLadderSession.objects.get_or_create(quiz=quiz)
+            session.current_round = 0
+            session.is_round_active = False
+            session.reveal_state = SortingLadderSession.REVEAL_ACTIVE
+            session.round_start_time = None
+            session.round_end_time = None
+            session.active_element = None
+            session.shuffled_item_ids = ''
+            session.save(update_fields=[
+                'current_round',
+                'is_round_active',
+                'reveal_state',
+                'round_start_time',
+                'round_end_time',
+                'active_element',
+                'shuffled_item_ids',
+            ])
+            session.placed_elements.clear()
+            quiz.pending_round_selections.all().delete()
+
+        self.current_question_id = None
+        self.tutorial_active = False
+        self.started_at = None
+        self.ended_at = None
     
     def end_quiz(self):
         self.status = 'completed'
@@ -88,50 +129,23 @@ class SortingLadderParticipant(SyncBase):
     def calculate_total_score(self):
         """Recalculate this participant's total_score for this quiz.
 
-        Scoring rule per question:
-            total_for_question = correct_rounds_for_question * question.points
-
-        where correct_rounds_for_question is the number of RoundSubmission rows
-        for this (quiz, participant, question) with is_correct=True. The
-        per-question scores are then summed across all questions in this quiz.
+        Each correctly completed round is worth exactly one point.
         """
-        from collections import Counter
+        from .models import RoundSubmission  # type: ignore
+        from games_hub.unit_tutorial_runtime import (
+            get_scorebox_excluded_tutorial_question_ids,
+        )
 
-        # Import here to avoid circular imports at module load time if this
-        # method is called during migrations.
-        from .models import RoundSubmission, SortingQuestion  # type: ignore
-        from games_hub.unit_tutorial_runtime import get_unit_tutorial_state
-
-        # All correct submissions for this participant in this quiz
         qs = RoundSubmission.objects.filter(quiz=self.quiz, participant=self, is_correct=True)
-        tutorial_state = get_unit_tutorial_state(
+        tutorial_question_ids = get_scorebox_excluded_tutorial_question_ids(
             'sorting_ladder',
             self.quiz.room_code,
             self.hub_session_code,
         )
-        tutorial_question_id = tutorial_state.get('tutorial_question_id') if tutorial_state.get('requested') else None
-        if tutorial_question_id:
-            qs = qs.exclude(question_id=tutorial_question_id)
-        qs = qs.values_list('question_id', flat=True)
+        if tutorial_question_ids:
+            qs = qs.exclude(question_id__in=tutorial_question_ids)
 
-        counts = Counter(qs)
-        if not counts:
-            self.total_score = 0
-            self.save(update_fields=['total_score'])
-            return self.total_score
-
-        question_ids = list(counts.keys())
-        points_map = {
-            q.id: q.points
-            for q in SortingQuestion.objects.filter(id__in=question_ids)
-        }
-
-        total = 0
-        for qid, rounds_won in counts.items():
-            points = points_map.get(qid, 0)
-            total += rounds_won * points
-
-        self.total_score = total
+        self.total_score = qs.count()
         self.save(update_fields=['total_score'])
         return self.total_score
 
@@ -204,12 +218,19 @@ class RoundSubmission(SyncBase):
     quiz = models.ForeignKey(SortingLadderGame, on_delete=models.CASCADE, related_name='submissions')
     participant = models.ForeignKey(SortingLadderParticipant, on_delete=models.CASCADE, related_name='submissions')
     question = models.ForeignKey(SortingQuestion, on_delete=models.CASCADE, related_name='submissions')
+    round_number = models.PositiveIntegerField()
     all_elements = models.JSONField(help_text="List of all elements submitted in that round", default=list)
     is_correct = models.BooleanField(default=False)
     submitted_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         ordering = ['-submitted_at']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['quiz', 'participant', 'question', 'round_number'],
+                name='unique_sorting_round_submission',
+            ),
+        ]
 
     def save(self, *args, **kwargs):
         """On first save, compute is_correct from the submitted ordering.
@@ -243,7 +264,38 @@ class RoundSubmission(SyncBase):
 
 
 
-        
+
+class SortingPendingRoundSelection(SyncBase):
+    quiz = models.ForeignKey(
+        SortingLadderGame,
+        related_name='pending_round_selections',
+        on_delete=models.CASCADE,
+    )
+    participant = models.ForeignKey(
+        SortingLadderParticipant,
+        related_name='pending_round_selections',
+        on_delete=models.CASCADE,
+    )
+    question = models.ForeignKey(
+        SortingQuestion,
+        related_name='pending_round_selections',
+        on_delete=models.CASCADE,
+    )
+    round_number = models.PositiveIntegerField()
+    ordered_item_ids = models.JSONField(default=list, blank=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=['quiz', 'participant', 'question', 'round_number'],
+                name='unique_sorting_pending_round_selection',
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.participant.name}: Q{self.question_id}/R{self.round_number}"
+
+
 class SortingLadderSession(SyncBase):
     """
     Manages the live state of the quiz rounds.

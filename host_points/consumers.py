@@ -2,8 +2,11 @@ import json
 
 from channels.db import database_sync_to_async
 from channels.generic.websocket import AsyncWebsocketConsumer
+from django.utils import timezone
 
 from games_hub.active_game_guard import resolve_session_game_activation_for_room
+from games_hub.authoritative_consumer import AuthoritativeGameConsumerMixin
+from games_hub.authoritative_state import validate_and_reserve_action
 from games_hub.lobby_return_flow import ensure_session_players_ready_for_game_start_for_room
 from games_hub.models import HubGameStep
 from games_hub.tutorial_runtime import (
@@ -16,7 +19,16 @@ from games_hub.tutorial_runtime import (
 from .models import HostPointsGame
 
 
-class HostPointsConsumer(AsyncWebsocketConsumer):
+class HostPointsConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
+    authoritative_game_key = 'host_points'
+    authoritative_admin_actions = frozenset({
+        'admin_start_game',
+        'admin_adjust_score',
+        'admin_next_round',
+        'admin_end_game',
+        'admin_set_inactive',
+    })
+
     async def connect(self):
         self.room_code = self.scope['url_route']['kwargs']['room_code']
         self.room_group_name = f'host_points_{self.room_code}'
@@ -35,6 +47,11 @@ class HostPointsConsumer(AsyncWebsocketConsumer):
             return
 
         message_type = data.get('type')
+        if (
+            message_type in self.authoritative_admin_actions
+            and not await self.reserve_admin_action(data)
+        ):
+            return
         if message_type == 'admin_start_game':
             await self.handle_admin_start_game(data)
         elif message_type == 'tutorial_completed':
@@ -45,6 +62,8 @@ class HostPointsConsumer(AsyncWebsocketConsumer):
             await self.handle_admin_next_round(data)
         elif message_type == 'admin_end_game':
             await self.handle_admin_end_game(data)
+        elif message_type == 'admin_set_inactive':
+            await self.handle_admin_set_inactive(data)
         elif message_type == 'participant_join':
             await self.handle_participant_join(data)
         elif message_type == 'get_state':
@@ -52,6 +71,23 @@ class HostPointsConsumer(AsyncWebsocketConsumer):
 
     async def handle_admin_start_game(self, data):
         hub_session = data.get('hub_session') or data.get('hub_session_code') or await self.get_hub_session_code()
+        game = await self.get_game()
+        if not game:
+            return
+        if (
+            game.status == 'active'
+            and game.started_at is not None
+            and game.current_round_number >= 1
+            and (
+                not hub_session
+                or game.active_hub_session_code == hub_session
+            )
+        ):
+            await self.send_state(data)
+            return
+
+        previous_started_at = game.started_at
+        previous_round_number = game.current_round_number
         lobby_ready = await database_sync_to_async(ensure_session_players_ready_for_game_start_for_room)(
             'host_points',
             self.room_code,
@@ -79,10 +115,15 @@ class HostPointsConsumer(AsyncWebsocketConsumer):
             }))
             return
 
-        game = await self.get_game()
-        if not game:
+        started = await database_sync_to_async(game.start_quiz)(
+            hub_session,
+            allow_reactivation=True,
+            expected_previous_started_at=previous_started_at,
+            expected_previous_round=previous_round_number,
+        )
+        if not started:
+            await self.send_state(data)
             return
-        await database_sync_to_async(game.start_quiz)(hub_session)
         tutorial_payload = await database_sync_to_async(activate_tutorial_runtime)(
             'host_points',
             self.room_code,
@@ -131,7 +172,9 @@ class HostPointsConsumer(AsyncWebsocketConsumer):
         game = await self.get_game()
         if not game:
             return
-        moved = await database_sync_to_async(game.next_round)()
+        moved = await database_sync_to_async(game.next_round)(
+            data.get('round_id') or data.get('expected_round'),
+        )
         if not moved:
             await self.send(text_data=json.dumps({'type': 'error', 'message': 'Die Runde kann in diesem Zustand nicht erhöht werden.'}))
             return
@@ -156,6 +199,14 @@ class HostPointsConsumer(AsyncWebsocketConsumer):
             'title': game.title,
         }, hub_session)
 
+    async def handle_admin_set_inactive(self, data):
+        changed = await self.set_game_inactive()
+        if not changed:
+            await self.send_state(data)
+            return
+        hub_session = data.get('hub_session') or data.get('hub_session_code') or await self.get_hub_session_code()
+        await self.broadcast_state({'type': 'game_inactive'}, hub_session)
+
     async def handle_participant_join(self, data):
         game = await self.get_game()
         if not game:
@@ -173,6 +224,33 @@ class HostPointsConsumer(AsyncWebsocketConsumer):
             if tutorial_payload:
                 await self.send(text_data=json.dumps({'type': 'tutorial_start', **tutorial_payload}))
         await self.send_state(data)
+
+    async def reserve_admin_action(self, data):
+        hub_session = (
+            data.get('hub_session')
+            or data.get('hub_session_code')
+            or await self.get_hub_session_code()
+        )
+        decision = await database_sync_to_async(validate_and_reserve_action)(
+            game_key=self.authoritative_game_key,
+            room_code=self.room_code,
+            session_code=hub_session,
+            participant_name='__host__',
+            action_type=data.get('type') or '',
+            action=data,
+            allow_inactive=data.get('type') == 'admin_start_game',
+        )
+        if decision.accepted:
+            return True
+        await self.send(text_data=json.dumps({
+            'type': 'action_rejected',
+            'code': decision.code,
+            'message': decision.message,
+        }))
+        await self.send_state({
+            'hub_session': hub_session,
+        })
+        return False
 
     async def send_state(self, data):
         game = await self.get_game()
@@ -205,6 +283,13 @@ class HostPointsConsumer(AsyncWebsocketConsumer):
     @database_sync_to_async
     def get_game(self):
         return HostPointsGame.objects.filter(room_code=self.room_code).first()
+
+    @database_sync_to_async
+    def set_game_inactive(self):
+        return HostPointsGame.objects.filter(
+            room_code=self.room_code,
+            status='active',
+        ).update(status='inactive', updated_at=timezone.now()) == 1
 
     @database_sync_to_async
     def get_or_create_participant(self, name, hub_session):

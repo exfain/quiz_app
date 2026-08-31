@@ -1,4 +1,5 @@
 import json
+import re
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -14,11 +15,34 @@ from Estimation.consumers import EstimationConsumer
 from Estimation.models import EstimationParticipant, EstimationQuiz
 from QuizGame.models import Quiz, QuizParticipant, QuizQuestion
 from black_jack_quiz.models import BlackJackQuiz
+from buzzer.consumers import BuzzerConsumer
+from buzzer.models import BuzzerGame
+from games_hub.authoritative_state import disconnect_socket_connection, register_socket_connection
 from games_hub.consumers import HubConsumer
 from games_hub.models import HubGameStep, HubParticipant, HubSession
+from host_points.consumers import HostPointsConsumer
+from host_points.models import HostPointsGame
+from wann_war_das.consumers import WannWarDasConsumer
+from wann_war_das.models import WannWarDasGame
 
 
 class LobbyReturnFlowTests(TransactionTestCase):
+    MONITOR_START_BUTTONS = {
+        'quiz': ('templates/admin_dashboard/quiz_monitor.html', 'startQuizBtn'),
+        'assign': ('templates/admin_dashboard/assign_monitor.html', 'startQuizBtn'),
+        'estimation': ('templates/admin_dashboard/estimation_monitor.html', 'startQuizBtn'),
+        'where': ('templates/admin_dashboard/where_monitor.html', 'startQuizBtn'),
+        'who': ('templates/admin_dashboard/who_lying_monitor.html', 'startQuizBtn'),
+        'who_that': ('templates/admin_dashboard/who_that_monitor.html', 'startQuizBtn'),
+        'blackjack': ('templates/admin_dashboard/blackjack_monitor.html', 'startQuizBtn'),
+        'sorting_ladder': ('templates/admin_dashboard/sorting_ladder_monitor.html', 'startQuizBtn'),
+        'clue_rush': ('templates/admin_dashboard/clue_rush_monitor.html', 'startQuizBtn'),
+        'buzzer': ('templates/admin_dashboard/buzzer_monitor.html', 'startGameBtn'),
+        'host_points': ('templates/admin_dashboard/host_points_monitor.html', 'startQuizBtn'),
+        'wann_war_das': ('templates/admin_dashboard/wann_war_das_monitor.html', 'startGameBtn'),
+        'wer_weiss_mehr': ('templates/admin_dashboard/wer_weiss_mehr_monitor.html', 'startQuizBtn'),
+    }
+
     def setUp(self):
         self.user = User.objects.create_superuser(
             username='lobby_guard_admin',
@@ -89,6 +113,35 @@ class LobbyReturnFlowTests(TransactionTestCase):
         self.assertEqual(payload['in_lobby_count'], 1)
         self.assertEqual(payload['participants_not_in_lobby'][0]['name'], 'Alice')
         self.assertEqual(payload['participants_not_in_lobby'][0]['games'][0]['game_key'], 'quiz')
+
+    def test_live_reconnect_blocks_start_but_disconnected_participant_does_not(self):
+        QuizParticipant.objects.create(
+            quiz=self.quiz,
+            name='Alice',
+            hub_session_code=self.session.code,
+            is_active=True,
+        )
+        register_socket_connection(
+            channel_name='alice.reconnecting',
+            session_code=self.session.code,
+            participant_name='Alice',
+            scope_kind='game',
+            game_key='quiz',
+            room_code=self.quiz.room_code,
+        )
+
+        reconnecting = self.client.get(
+            reverse('games_hub:session_lobby_presence_api', args=[self.session.code])
+        ).json()
+        self.assertFalse(reconnecting['all_in_lobby'])
+        self.assertEqual(reconnecting['participants_not_in_lobby'][0]['name'], 'Alice')
+
+        self.assertTrue(disconnect_socket_connection('alice.reconnecting'))
+        disconnected = self.client.get(
+            reverse('games_hub:session_lobby_presence_api', args=[self.session.code])
+        ).json()
+        self.assertTrue(disconnected['all_in_lobby'])
+        self.assertEqual(disconnected['not_in_lobby_count'], 0)
 
     def test_participant_return_to_lobby_marks_only_current_player_inactive(self):
         alice = QuizParticipant.objects.create(
@@ -185,6 +238,88 @@ class LobbyReturnFlowTests(TransactionTestCase):
         self.assertContains(response, '/start-recall-countdown/')
         self.assertContains(response, '/recall-to-lobby/')
 
+    def test_all_registered_host_start_buttons_use_the_semantic_guard(self):
+        registered_game_keys = {key for key, _label in HubGameStep.GAME_CHOICES}
+        self.assertEqual(set(self.MONITOR_START_BUTTONS), registered_game_keys)
+
+        for game_key, (relative_path, button_id) in self.MONITOR_START_BUTTONS.items():
+            with self.subTest(game_key=game_key, button_id=button_id):
+                source = Path(settings.BASE_DIR / relative_path).read_text(encoding='utf-8')
+                button = re.search(
+                    rf'<button\b(?=[^>]*\bid="{re.escape(button_id)}")[^>]*>',
+                    source,
+                    re.DOTALL,
+                )
+                self.assertIsNotNone(button)
+                self.assertIn('data-host-game-start', button.group(0))
+                self.assertEqual(source.count('data-host-game-start'), 1)
+
+    def test_shared_start_and_leave_guards_are_not_bound_to_legacy_ids(self):
+        source = Path(settings.BASE_DIR / 'templates/admin_dashboard/base.html').read_text(encoding='utf-8')
+
+        self.assertIn("const startButtonSelector = '[data-host-game-start]';", source)
+        self.assertIn("const leaveButtonSelector = '[data-host-game-leave]';", source)
+        self.assertNotIn("const startButtonSelector = '#startQuizBtn';", source)
+        self.assertNotIn("event.target.closest('#backToHubBtn')", source)
+        self.assertIn('window.hostGameStartGuard = {', source)
+        self.assertIn('showLobbyReturn: showLobbyReturnGuard', source)
+        self.assertIn('showActiveGameConflict', source)
+        self.assertIn('installBrowserLeaveGuard();', source)
+
+    def test_start_guard_preflights_without_activating_target_game(self):
+        source = Path(settings.BASE_DIR / 'templates/admin_dashboard/base.html').read_text(encoding='utf-8')
+
+        self.assertIn('const previewResult = await requestActivation(context, null, true);', source)
+        self.assertIn('requestActivation(guardState.pendingContext, action, true)', source)
+        self.assertNotIn('const result = await requestActivation(context);', source)
+
+    def test_every_registered_monitor_uses_the_shared_leave_hook(self):
+        for game_key, (relative_path, _button_id) in self.MONITOR_START_BUTTONS.items():
+            with self.subTest(game_key=game_key):
+                source = Path(settings.BASE_DIR / relative_path).read_text(encoding='utf-8')
+                self.assertIn('data-host-game-leave', source)
+
+    def test_new_monitors_route_start_rejections_and_leave_through_shared_guards(self):
+        for relative_path in (
+            'templates/admin_dashboard/buzzer_monitor.html',
+            'templates/admin_dashboard/host_points_monitor.html',
+            'templates/admin_dashboard/wann_war_das_monitor.html',
+            'templates/admin_dashboard/wer_weiss_mehr_monitor.html',
+        ):
+            with self.subTest(template=relative_path):
+                source = Path(settings.BASE_DIR / relative_path).read_text(encoding='utf-8')
+                self.assertIn('window.hostGameStartGuard?.showLobbyReturn', source)
+                self.assertIn('window.hostGameStartGuard?.showActiveGameConflict', source)
+                self.assertIn('window.adminGameMonitor = {', source)
+                self.assertIn('get isUnfinished()', source)
+                self.assertIn('data-host-game-leave', source)
+
+    def test_new_monitor_inactive_actions_preserve_started_game_context(self):
+        started_at = timezone.now()
+        cases = (
+            (BuzzerGame, BuzzerConsumer, 'Buzzer Leave Guard'),
+            (HostPointsGame, HostPointsConsumer, 'Host Points Leave Guard'),
+            (WannWarDasGame, WannWarDasConsumer, 'Wann War Das Leave Guard'),
+        )
+
+        for model, consumer_class, title in cases:
+            with self.subTest(model=model.__name__):
+                game = model.objects.create(
+                    creator=self.user,
+                    title=title,
+                    status='active',
+                    started_at=started_at,
+                )
+                consumer = consumer_class()
+                consumer.room_code = game.room_code
+
+                self.assertTrue(async_to_sync(consumer.set_game_inactive)())
+                self.assertFalse(async_to_sync(consumer.set_game_inactive)())
+                game.refresh_from_db()
+                self.assertEqual(game.status, 'inactive')
+                self.assertEqual(game.started_at, started_at)
+                self.assertIsNone(game.ended_at)
+
     def test_session_monitor_uses_same_recall_button_flow(self):
         response = self.client.get(reverse('games_hub:monitor', args=[self.session.code]))
 
@@ -206,6 +341,9 @@ class LobbyReturnFlowTests(TransactionTestCase):
             'templates/black_jack_quiz/play.html',
             'templates/clue_rush/play.html',
             'templates/sorting_ladder/play.html',
+            'templates/wann_war_das/play.html',
+            'templates/buzzer/play.html',
+            'templates/host_points/play.html',
         ]
 
         for relative_path in template_paths:
@@ -213,10 +351,18 @@ class LobbyReturnFlowTests(TransactionTestCase):
                 content = Path(settings.BASE_DIR / relative_path).read_text(encoding='utf-8')
                 self.assertIn("_hub_return_to_lobby_player.html", content)
                 self.assertIn('createHubLobbyReturnController', content)
-                self.assertIn('lobby_return_countdown_started', content)
-                self.assertIn('startRecallCountdown(data);', content)
-                self.assertIn("players_recalled_to_lobby", content)
-                self.assertIn("returnToLobby({ markInactive: false });", content)
+                has_inline_hub_recall = all((
+                    '/ws/hub/' in content,
+                    'lobby_return_countdown_started' in content,
+                    'startRecallCountdown(data);' in content,
+                    'players_recalled_to_lobby' in content,
+                    'returnToLobby({ markInactive: false });' in content,
+                ))
+                uses_shared_hub_recall = 'connectHubRecallSocket();' in content
+                self.assertTrue(
+                    has_inline_hub_recall or uses_shared_hub_recall,
+                    f'{relative_path} does not subscribe to the shared lobby recall events',
+                )
                 self.assertNotIn("After 2 seconds, return to lobby with nickname preserved", content)
 
     def test_shared_player_lobby_return_include_contains_countdown_banner(self):
@@ -224,6 +370,9 @@ class LobbyReturnFlowTests(TransactionTestCase):
         self.assertIn('Automatisches Zurückkehren in die Lobby in', content)
         self.assertIn('syncRecallCountdownState', content)
         self.assertIn('startRecallCountdown', content)
+        self.assertIn('connectHubRecallSocket', content)
+        self.assertIn("payload.type === 'players_recalled_to_lobby'", content)
+        self.assertIn('returnToLobby({ markInactive: false });', content)
 
     def test_recall_countdown_state_is_inactive_by_default(self):
         response = self.client.get(
@@ -248,6 +397,9 @@ class LobbyReturnFlowTests(TransactionTestCase):
         self.assertEqual(payload['duration_seconds'], 10)
         self.assertGreaterEqual(payload['remaining_seconds'], 9)
         self.assertIsNotNone(payload['ends_at'])
+        self.session.refresh_from_db()
+        self.assertIsNotNone(self.session.lobby_return_countdown_ends_at)
+        self.assertEqual(self.session.lobby_return_countdown_duration_seconds, 10)
 
         state_response = self.client.get(
             reverse('games_hub:session_recall_countdown_state_api', args=[self.session.code])

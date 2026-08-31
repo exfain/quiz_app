@@ -1,238 +1,200 @@
 {% extends "admin_dashboard/base.html" %}
+{% load static %}
 
 {% block title %}Quick Quiz Monitor - QuizMaster Admin{% endblock %}
 
-{% block page_title %}Quick Quiz Monitor{% endblock %}
-{% block page_subtitle %}Real-time monitoring and control for your live quick quiz session{% endblock %}
+{% block page_title %}{% endblock %}
+{% block page_subtitle %}{% endblock %}
 
 {% block content %}
-<div class="where-monitor-content host-monitor-content">
+<div class="where-monitor-content host-monitor-content quiz-monitor-pilot">
+    <header class="quiz-status-header" aria-label="Quick Quiz Steuerung">
+        <div class="quiz-header-primary">
+            <div class="quiz-identity">
+                <div class="quiz-title-row">
+                    <h1 class="quiz-title" data-quick-quiz-title>{{ quiz.title }}</h1>
+                    <span class="status-badge status-{{ quiz.status }}">{{ quiz.get_status_display }}</span>
+                </div>
+                <p class="quiz-type-label">Spieltyp: Quiz</p>
+            </div>
+
+            <div class="quiz-header-context">
+                <div class="quiz-context-item{% if not quiz.current_question %} d-none{% endif %}" id="questionProgress">
+                    <span>Frage</span>
+                    <strong><span id="currentQuestionNumber">{{ quiz_session.current_question_number }}</span> / <span id="totalQuestionCount">{{ available_questions|length }}</span></strong>
+                </div>
+                <div class="quiz-context-item question-timer{% if not question_runtime.answering_allowed %} d-none{% endif %}" id="questionTimerWrapper">
+                    <span>Zeit verbleibend</span>
+                    <div class="timer-circle" id="questionTimerCircle">
+                        <span id="questionTimeLeft">{% firstof question_runtime.remaining_answer_time quiz.current_question.time_limit 0 %}</span>
+                    </div>
+                </div>
+                <span id="quizTimer" class="visually-hidden" aria-hidden="true">00:00</span>
+            </div>
+        </div>
+
+        <div class="quiz-header-actions">
+            {% if quiz.status == 'waiting' or quiz.status == 'inactive' %}
+                <div class="quiz-start-controls">
+                {% if quiz.status == 'waiting' and quiz.tutorial_enabled %}
+                    <div class="form-check form-switch mb-0">
+                        <input class="form-check-input" type="checkbox" id="showTutorialToggle">
+                        <label class="form-check-label" for="showTutorialToggle">Spielerläuterung anzeigen</label>
+                    </div>
+                {% endif %}
+                {% if quiz.status == 'waiting' %}
+                    <div class="form-check form-switch mb-0">
+                        <input class="form-check-input" type="checkbox" id="playTutorialToggle">
+                        <label class="form-check-label" for="playTutorialToggle">Tutorial spielen</label>
+                    </div>
+                {% endif %}
+                    <button class="btn btn-success" id="startQuizBtn" data-host-game-start>
+                        <i data-lucide="play"></i>
+                        {% if quiz.status == 'inactive' %}Spiel reaktivieren{% else %}Spiel starten{% endif %}
+                    </button>
+                </div>
+            {% elif quiz.status == 'active' %}
+                <div class="quiz-running-controls">
+                    <button class="btn btn-outline-warning" id="setInactiveBtn">
+                        <i data-lucide="pause-circle"></i>
+                        Set inactive
+                    </button>
+                    <button class="btn btn-warning" id="endQuizBtn">
+                        <i data-lucide="square"></i>
+                        End Quiz
+                    </button>
+                </div>
+            {% endif %}
+            <button class="btn btn-outline-primary" id="showLeaderboardBtn">
+                <i data-lucide="trophy"></i>
+                Leaderboard einblenden
+            </button>
+            <button class="btn btn-outline-secondary" id="backToHubBtn" data-host-game-leave>
+                <i data-lucide="arrow-left"></i>
+                Back to Overview
+            </button>
+            {% if lobby_url %}
+            <div class="lobby-link-compact">
+                <span class="lobby-link-label"><i data-lucide="link"></i> Lobby-Link</span>
+                <a href="{{ lobby_url }}" target="_blank" rel="noopener" aria-label="Lobby-Link öffnen">Öffnen</a>
+                <button class="btn btn-link btn-sm copy-lobby-btn-monitor" title="Lobby-Link kopieren" data-url="{{ lobby_url }}">
+                    <i data-lucide="copy"></i>
+                    Kopieren
+                </button>
+            </div>
+            {% endif %}
+        </div>
+    </header>
+
     {% include 'includes/_unit_tutorial_notice.html' %}
-    <!-- Quiz Status Header -->
-    <div class="quiz-status-header mb-4">
-        <div class="row align-items-center">
-            <div class="col-md-8">
-                <div class="quiz-info">
-                    <h2 class="quiz-title">{{ quiz.title }}</h2>
-                    <div class="quiz-meta">
-                        <span class="meta-item">
-                            <i data-lucide="users"></i>
-                            <span id="participantCount">{{ participant_count }}</span> Participants
-                        </span>
-                        <span class="meta-item">
-                            <i data-lucide="clock"></i>
-                            <span id="quizTimer">00:00</span>
-                        </span>
-                        {% if lobby_url %}
-                        <span class="meta-item">
-                            <i data-lucide="link"></i>
-                            <a href="{{ lobby_url }}" target="_blank" style="font-size:0.85rem;word-break:break-all;">{{ lobby_url }}</a>
-                            <button class="btn btn-link btn-sm p-0 ms-1 copy-lobby-btn-monitor" title="Copy" data-url="{{ lobby_url }}" style="vertical-align:middle;">
-                                <i data-lucide="copy" style="width:13px;height:13px;"></i>
+
+    <div class="quiz-monitor-grid host-monitor-main">
+        <main class="quiz-primary-column host-monitor-live-column">
+            <section class="card question-panel host-monitor-current" aria-labelledby="questionPanelTitle">
+                <div class="card-header">
+                    <h2 class="card-title mb-0" id="questionPanelTitle">
+                        <i data-lucide="circle-help"></i>
+                        <span data-question-panel-title>Aktuelle Frage</span>
+                    </h2>
+                </div>
+                <div class="card-body">
+                    <div id="currentQuestionBody" class="current-question-stage">
+                        {% if quiz.current_question %}
+                            <div id="activeQuestion">
+                                <div class="current-question-content">
+                                    <div class="current-question-number">Frage <span data-live-question-number>{{ quiz_session.current_question_number }}</span></div>
+                                    <div class="question-text">{{ quiz.current_question.question_text }}</div>
+                                    <div class="question-answers mt-2">
+                                        {% if quiz.current_question.question_type == 'multiple_choice' %}
+                                            {% for key, text in quiz.current_question.get_options %}
+                                                <span class="answer-option"><strong>{{ key }}</strong> {{ text }}</span>
+                                            {% endfor %}
+                                        {% elif quiz.current_question.question_type == 'true_false' %}
+                                            <span class="answer-option"><strong>True</strong></span>
+                                            <span class="answer-option"><strong>False</strong></span>
+                                        {% endif %}
+                                    </div>
+                                </div>
+                            </div>
+                        {% else %}
+                            <div class="question-empty-state" id="questionEmptyState">
+                                <i data-lucide="circle-help"></i>
+                                <div>
+                                    <h3>Noch keine Frage aktiv</h3>
+                                    <p>Waehle unten eine Frage und sende sie.</p>
+                                </div>
+                            </div>
+                        {% endif %}
+                    </div>
+
+                    <section class="live-responses-section" id="liveResponsesCard" aria-labelledby="liveResponsesTitle" style="{% if not quiz.current_question %}display:none;{% endif %}">
+                        <div class="live-responses-heading">
+                            <h3 id="liveResponsesTitle">
+                                <i data-lucide="activity"></i>
+                                Live Responses
+                            </h3>
+                            <span class="badge bg-secondary" id="responseCount">0</span>
+                        </div>
+                        <div id="liveResponses" class="live-responses">
+                            <div class="no-responses">
+                                <i data-lucide="map"></i>
+                                <p>No responses yet. Send a question to see participant geography guesses in real-time!</p>
+                            </div>
+                        </div>
+                    </section>
+                </div>
+            </section>
+
+            <section class="card question-actions-card host-monitor-actions" aria-labelledby="questionActionsTitle">
+                <div class="card-header">
+                    <h2 class="card-title mb-0" id="questionActionsTitle">
+                        <i data-lucide="mouse-pointer-click"></i>
+                        Aktionen
+                    </h2>
+                </div>
+                <div class="card-body question-actions-panel" id="questionActionsBody">
+                    <div class="question-actions">
+                        {% if quiz.current_question %}
+                            {% if question_runtime.question_phase == 'prompt_visible' %}
+                                <button type="button" class="btn btn-primary" id="revealQuestionContentBtn" data-question-id="{{ quiz.current_question.id }}" disabled aria-disabled="true">ANTWORTEN ANZEIGEN</button>
+                            {% elif question_runtime.question_phase == 'content_visible' and quiz.current_question.question_type != 'multiple_choice' and quiz.current_question.question_type != 'true_false' %}
+                                <button type="button" class="btn btn-primary" id="openAnsweringBtn" data-question-id="{{ quiz.current_question.id }}">FRAGE FREIGEBEN</button>
+                            {% else %}
+                                <button class="btn btn-warning" id="endQuestionBtn">
+                                    <i data-lucide="skip-forward"></i>
+                                    End Question Early
+                                </button>
+                            {% endif %}
+                            <button class="btn btn-outline-secondary d-none" id="returnToQuestionOverviewBtn">
+                                <i data-lucide="arrow-left"></i>
+                                Back to Question Overview
                             </button>
-                        </span>
+                        {% else %}
+                            <p class="question-actions-empty mb-0">Aktionen fuer eine gesendete Frage erscheinen hier.</p>
                         {% endif %}
                     </div>
                 </div>
-            </div>
-            <div class="col-md-4 text-md-end">
-                <div class="quiz-controls">
-                    <span class="status-badge status-{{ quiz.status }}">
-                        {{ quiz.get_status_display }}
-                    </span>
-                    {% if quiz.status == 'waiting' or quiz.status == 'inactive' %}
-                        <div class="d-flex align-items-center gap-3">
-                        {% if quiz.status == 'waiting' and quiz.tutorial_enabled %}
-                            <div class="form-check form-switch mb-0">
-                                <input class="form-check-input" type="checkbox" id="showTutorialToggle">
-                                <label class="form-check-label" for="showTutorialToggle">Spielerläuterung anzeigen</label>
-                            </div>
-                            {% endif %}
-                            {% if quiz.status == 'waiting' %}
-                            <div class="form-check form-switch mb-0">
-                                <input class="form-check-input" type="checkbox" id="playTutorialToggle">
-                                <label class="form-check-label" for="playTutorialToggle">Tutorial spielen</label>
-                            </div>
-                            {% endif %}
-                            <button class="btn btn-success" id="startQuizBtn">
-                                <i data-lucide="play"></i>
-                                {% if quiz.status == 'inactive' %}Spiel reaktivieren{% else %}Spiel starten{% endif %}
-                            </button>
-                        </div>
-                    {% elif quiz.status == 'active' %}
-                        <div class="d-flex align-items-center gap-2">
-                            <button class="btn btn-outline-warning" id="setInactiveBtn">
-                                <i data-lucide="pause-circle"></i>
-                                Set inactive
-                            </button>
-                            <button class="btn btn-warning" id="endQuizBtn">
-                                <i data-lucide="square"></i>
-                                End Quiz
-                            </button>
-                        </div>
-                    {% endif %}
-                    <button class="btn btn-outline-primary" id="showLeaderboardBtn">
-                        <i data-lucide="trophy"></i>
-                        Leaderboard einblenden
-                    </button>
-                    <button class="btn btn-outline-secondary" id="backToHubBtn">
-                        <i data-lucide="arrow-left"></i>
-                        Back to Overview
-                    </button>
-                </div>
-            </div>
-        </div>
-    </div>
+            </section>
+        </main>
 
-    <!-- Main Monitor Grid -->
-    <div class="row g-4">
-        <!-- Question Control Panel -->
-        <div class="col-lg-8">
-            <div class="card question-panel">
-                <div class="card-header d-flex justify-content-between align-items-center">
-                    <h5 class="card-title mb-0">
-                        <i data-lucide="map-pin"></i>
-                        Question Control
-                    </h5>
-                    <button type="button" class="btn btn-sm btn-outline-secondary" data-bs-toggle="modal" data-bs-target="#questionBankModal">
-                        <i data-lucide="database" style="width:14px;height:14px;"></i>
-                        Question Bank
-                    </button>
-                </div>
-                <div class="card-body">
-                    {% if not quiz.current_question %}
-                        <!-- Question Selection -->
-                        <div id="questionSelection">
-                            <h6 class="mb-3">Select Next Question</h6>
-                            <div class="question-list" id="availableQuestions">
-                                {% for question in available_questions %}
-                                <div class="question-item" data-question-id="{{ question.id }}">
-                                    <div class="question-content">
-                                        <div class="question-text">{{ question.question_text|truncatechars:120 }}</div>
-                                        {% if question.question_type == 'multiple_choice' %}
-                                        <div class="question-answers mt-1">
-                                            {% if question.option_a %}<span class="answer-option {% if question.correct_answer == 'A' %}answer-correct{% endif %}"><strong>A</strong> {{ question.option_a }}</span>{% endif %}
-                                            {% if question.option_b %}<span class="answer-option {% if question.correct_answer == 'B' %}answer-correct{% endif %}"><strong>B</strong> {{ question.option_b }}</span>{% endif %}
-                                            {% if question.option_c %}<span class="answer-option {% if question.correct_answer == 'C' %}answer-correct{% endif %}"><strong>C</strong> {{ question.option_c }}</span>{% endif %}
-                                            {% if question.option_d %}<span class="answer-option {% if question.correct_answer == 'D' %}answer-correct{% endif %}"><strong>D</strong> {{ question.option_d }}</span>{% endif %}
-                                        </div>
-                                        {% elif question.question_type == 'true_false' %}
-                                        <div class="question-answers mt-1">
-                                            <span class="answer-option {% if question.correct_answer == 'True' %}answer-correct{% endif %}"><strong>True</strong></span>
-                                            <span class="answer-option {% if question.correct_answer == 'False' %}answer-correct{% endif %}"><strong>False</strong></span>
-                                        </div>
-                                        {% else %}
-                                        <div class="question-answers mt-1">
-                                            <span class="answer-option answer-correct"><strong>Antwort:</strong> {{ question.get_formatted_correct_answer }}</span>
-                                        </div>
-                                        {% endif %}
-                                        <div class="question-meta">
-                                            {% if question.hint_text %}
-                                                <span class="hint-indicator">
-                                                    <i data-lucide="lightbulb"></i>
-                                                    Has Hint
-                                                </span>
-                                            {% endif %}
-                                            {% if question.explanation %}
-                                                <span class="explanation-indicator">
-                                                    <i data-lucide="info"></i>
-                                                    Has Explanation
-                                                </span>
-                                            {% endif %}
-                                        </div>
-                                    </div>
-                                    <div class="d-flex align-items-center gap-2">
-                                        <div>
-                                            <small class="text-muted d-block mb-1">Zeit in Sek.</small>
-                                            <input type="number" class="form-control form-control-sm question-time-input" placeholder="Time (s)" min="5" step="1" style="max-width: 120px;" value="{{ question.time_limit }}">
-                                        </div>
-                                        <button type="button" class="btn btn-secondary send-question-btn" data-question-id="{{ question.id }}" {% if quiz.status != 'active' %}disabled title="Start the quiz to send questions"{% endif %}>
-                                            <i data-lucide="send"></i>
-                                            Send Question
-                                        </button>
-                                    </div>
-                                </div>
-                                {% endfor %}
-                            </div>
-                            {% if not available_questions %}
-                                <div class="empty-state">
-                                    <i data-lucide="inbox"></i>
-                                    <h4>No Questions Available</h4>
-                                    <p>Add some geography questions to get started!</p>
-                                    <a href="{% url 'admin_dashboard:where_management' %}" class="btn btn-primary">
-                                        <i data-lucide="plus"></i>
-                                        Add Questions
-                                    </a>
-                                </div>
-                            {% endif %}
-                        </div>
-                    {% else %}
-                        <!-- Active Question Display -->
-                        <div id="activeQuestion">
-                            <div class="active-question-header">
-                                <h6>Current Question</h6>
-                                <div class="question-timer" id="questionTimerWrapper">
-                                    <div class="timer-circle" id="questionTimerCircle">
-                                        <span id="questionTimeLeft">{{ quiz.current_question.time_limit }}</span>
-                                    </div>
-                                </div>
-                            </div>
-                            
-                            <div class="current-question-content">
-                                <div class="question-text">{{ quiz.current_question.question_text }}</div>
-
-                                <div class="question-actions">
-                                    <button class="btn btn-warning" id="endQuestionBtn">
-                                        <i data-lucide="skip-forward"></i>
-                                        End Question Early
-                                    </button>
-                                    <button class="btn btn-outline-secondary d-none" id="returnToQuestionOverviewBtn">
-                                        <i data-lucide="arrow-left"></i>
-                                        Back to Question Overview
-                                    </button>
-                                </div>
-                            </div>
-                        </div>
-                    {% endif %}
-                </div>
-            </div>
-
-            <!-- Live Responses -->
-            <div class="card mt-4" id="liveResponsesCard" style="{% if not quiz.current_question %}display:none;{% endif %}">
-                <div class="card-header">
-                    <h5 class="card-title mb-0">
-                        <i data-lucide="activity"></i>
-                        Live Responses
-                        <span class="badge bg-secondary" id="responseCount">0</span>
-                    </h5>
-                </div>
-                <div class="card-body">
-                    <div id="liveResponses" class="live-responses">
-                        <div class="no-responses">
-                            <i data-lucide="map"></i>
-                            <p>No responses yet. Send a question to see participant geography guesses in real-time!</p>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        <!-- Participants & Stats Panel -->
-        <div class="col-lg-4">
-            <!-- Participants List -->
+        <aside class="quiz-participant-column host-monitor-participants" aria-label="Teilnehmerstatus">
             <div class="card participants-panel">
                 <div class="card-header">
-                    <h6 class="card-title mb-0">
+                    <h2 class="card-title mb-0">
                         <i data-lucide="users"></i>
-                        Participants <span class="badge bg-secondary" id="participantBadge">{{ participant_count }}</span>
-                    </h6>
+                        Teilnehmer (<span id="participantCount">{{ participant_count }}</span>)
+                        <span class="visually-hidden" id="participantBadge" aria-hidden="true">{{ participant_count }}</span>
+                    </h2>
                 </div>
                 <div class="card-body">
                     <div class="participants-list" id="participantsList">
                         {% for participant in participants %}
                         <div class="participant-item" data-participant-name="{{ participant.name }}" data-participant-id="{{ participant.id }}">
-                            <div class="participant-name">{{ participant.name }}</div>
-                            <div class="d-flex align-items-center gap-2 ms-auto">
+                            <div class="participant-identity">
+                                <div class="participant-name">{{ participant.name }}</div>
+                                <span class="participant-response-status" data-participant-response-status>Offen</span>
+                            </div>
+                            <div class="participant-points">
                                 <span class="participant-score" id="score-{{ participant.id }}">{{ participant.total_score }} pts</span>
                                 <button class="btn btn-link btn-sm p-0 edit-score-btn" title="Punkte bearbeiten"
                                     data-participant-id="{{ participant.id }}"
@@ -275,8 +237,85 @@
                     </div>
                 </div>
             </div>
-        </div>
+        </aside>
     </div>
+
+    <section class="card quiz-question-list-card host-monitor-question-list" id="questionSelection" aria-labelledby="questionListTitle">
+        <div class="card-header d-flex justify-content-between align-items-center">
+            <h2 class="card-title mb-0" id="questionListTitle">
+                <i data-lucide="list"></i>
+                Fragenliste
+            </h2>
+            <button type="button" class="btn btn-sm btn-outline-secondary" data-bs-toggle="modal" data-bs-target="#questionBankModal">
+                <i data-lucide="database" style="width:14px;height:14px;"></i>
+                Question Bank
+            </button>
+        </div>
+        <div class="card-body">
+            <div class="question-list" id="availableQuestions">
+                {% for question in available_questions %}
+                <article class="question-item" data-question-id="{{ question.id }}">
+                    <div class="question-content">
+                        <div class="question-index">Frage {{ forloop.counter }}</div>
+                        <div class="question-text">{{ question.question_text|truncatechars:120 }}</div>
+                        {% if question.question_type == 'multiple_choice' %}
+                        <div class="question-answers">
+                            {% if question.option_a %}<span class="answer-option {% if question.correct_answer == 'A' %}answer-correct{% endif %}"><strong>A</strong> {{ question.option_a }}</span>{% endif %}
+                            {% if question.option_b %}<span class="answer-option {% if question.correct_answer == 'B' %}answer-correct{% endif %}"><strong>B</strong> {{ question.option_b }}</span>{% endif %}
+                            {% if question.option_c %}<span class="answer-option {% if question.correct_answer == 'C' %}answer-correct{% endif %}"><strong>C</strong> {{ question.option_c }}</span>{% endif %}
+                            {% if question.option_d %}<span class="answer-option {% if question.correct_answer == 'D' %}answer-correct{% endif %}"><strong>D</strong> {{ question.option_d }}</span>{% endif %}
+                        </div>
+                        {% elif question.question_type == 'true_false' %}
+                        <div class="question-answers">
+                            <span class="answer-option {% if question.correct_answer == 'True' %}answer-correct{% endif %}"><strong>True</strong></span>
+                            <span class="answer-option {% if question.correct_answer == 'False' %}answer-correct{% endif %}"><strong>False</strong></span>
+                        </div>
+                        {% else %}
+                        <div class="question-answers">
+                            <span class="answer-option answer-correct"><strong>Antwort:</strong> {{ question.get_formatted_correct_answer }}</span>
+                        </div>
+                        {% endif %}
+                        <div class="question-meta">
+                            {% if question.hint_text %}
+                                <span class="hint-indicator">
+                                    <i data-lucide="lightbulb"></i>
+                                    Has Hint
+                                </span>
+                            {% endif %}
+                            {% if question.explanation %}
+                                <span class="explanation-indicator">
+                                    <i data-lucide="info"></i>
+                                    Has Explanation
+                                </span>
+                            {% endif %}
+                        </div>
+                    </div>
+                    <div class="question-item-controls">
+                        <div class="question-time-control">
+                            <label class="text-muted" for="questionTime{{ question.id }}">Zeit in Sek.</label>
+                            <input id="questionTime{{ question.id }}" type="number" class="form-control form-control-sm question-time-input" placeholder="Time (s)" min="5" step="1" value="{{ question.time_limit }}">
+                        </div>
+                        <button type="button" class="btn btn-secondary send-question-btn" data-question-id="{{ question.id }}" {% if quiz.status != 'active' %}disabled title="Start the quiz to send questions"{% endif %}>
+                            <i data-lucide="send"></i>
+                            FRAGE SENDEN
+                        </button>
+                    </div>
+                </article>
+                {% endfor %}
+            </div>
+            {% if not available_questions %}
+                <div class="empty-state">
+                    <i data-lucide="inbox"></i>
+                    <h4>No Questions Available</h4>
+                    <p>Add some geography questions to get started!</p>
+                    <a href="{% url 'admin_dashboard:where_management' %}" class="btn btn-primary">
+                        <i data-lucide="plus"></i>
+                        Add Questions
+                    </a>
+                </div>
+            {% endif %}
+        </div>
+    </section>
 </div>
 
 <style>
@@ -815,8 +854,552 @@
         font-size: 1.5rem;
     }
 }
+
+/* Quick Quiz host layout pilot. Game controls retain their existing hooks. */
+.quiz-monitor-pilot {
+    width: 100%;
+    max-width: 1600px;
+    margin: 0 auto;
+    min-width: 0;
+}
+
+.quiz-monitor-pilot .quiz-status-header {
+    display: grid;
+    gap: 0.65rem;
+    margin-bottom: 1rem;
+    padding: 0.8rem 1rem;
+    background: var(--bg-primary);
+    border: 1px solid var(--border-color);
+    border-radius: var(--border-radius-lg);
+}
+
+.quiz-header-primary,
+.quiz-title-row,
+.quiz-header-context,
+.quiz-header-actions,
+.quiz-start-controls,
+.quiz-running-controls,
+.lobby-link-compact {
+    display: flex;
+    align-items: center;
+}
+
+.quiz-header-primary {
+    justify-content: space-between;
+    gap: 1rem;
+    min-width: 0;
+}
+
+.quiz-title-row {
+    gap: 0.65rem;
+    flex-wrap: wrap;
+}
+
+.quiz-monitor-pilot .quiz-title {
+    margin: 0;
+    font-size: clamp(1.25rem, 1.8vw, 1.7rem);
+    line-height: 1.05;
+}
+
+.quiz-type-label {
+    margin: 0.2rem 0 0;
+    color: var(--text-muted);
+    font-size: 0.78rem;
+}
+
+.quiz-header-context {
+    justify-content: flex-end;
+    gap: 0.5rem;
+    flex: 0 0 auto;
+}
+
+.quiz-context-item {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    min-height: 2.4rem;
+    padding: 0.35rem 0.55rem;
+    color: var(--text-secondary);
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: var(--border-radius);
+    font-size: 0.78rem;
+}
+
+.quiz-context-item strong {
+    color: var(--text-primary);
+    font-size: 0.9rem;
+}
+
+.quiz-monitor-pilot .timer-circle {
+    width: 2.4rem;
+    height: 2.4rem;
+    border-width: 3px;
+    font-size: 0.85rem;
+    transform: none;
+}
+
+.quiz-header-actions {
+    flex-wrap: wrap;
+    gap: 0.45rem;
+    padding-top: 0.65rem;
+    border-top: 1px solid var(--border-color);
+}
+
+.quiz-header-actions .btn {
+    padding: 0.32rem 0.55rem;
+    font-size: 0.8rem;
+}
+
+.quiz-header-actions .form-check-label {
+    font-size: 0.8rem;
+}
+
+.quiz-start-controls,
+.quiz-running-controls {
+    flex-wrap: wrap;
+    gap: 0.45rem;
+}
+
+.lobby-link-compact {
+    gap: 0.4rem;
+    margin-left: auto;
+    padding: 0.2rem 0.45rem;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: var(--border-radius);
+    white-space: nowrap;
+    font-size: 0.78rem;
+}
+
+.lobby-link-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    color: var(--text-secondary);
+    font-weight: 600;
+}
+
+.lobby-link-label svg,
+.lobby-link-compact .btn svg {
+    width: 0.85rem;
+    height: 0.85rem;
+}
+
+.lobby-link-compact .btn {
+    padding: 0.1rem 0.2rem;
+    text-decoration: none;
+}
+
+.quiz-monitor-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1.72fr) minmax(20rem, 1fr);
+    gap: 1rem;
+    align-items: stretch;
+    margin-bottom: 1rem;
+    min-width: 0;
+}
+
+.quiz-primary-column {
+    display: grid;
+    grid-template-rows: minmax(13rem, 1fr) auto;
+    gap: 1rem;
+}
+
+.quiz-primary-column,
+.quiz-participant-column,
+.quiz-monitor-pilot .question-content,
+.quiz-monitor-pilot .card,
+.quiz-monitor-pilot .card-body {
+    min-width: 0;
+}
+
+.quiz-monitor-pilot .host-monitor-main .card-header,
+.quiz-monitor-pilot .host-monitor-question-list .card-header {
+    padding: 0.65rem 0.85rem;
+}
+
+.quiz-monitor-pilot .host-monitor-main .card-body,
+.quiz-monitor-pilot .host-monitor-question-list .card-body {
+    padding: 0.75rem 0.85rem;
+}
+
+.host-monitor-current {
+    height: 100%;
+}
+
+.quiz-monitor-pilot .host-monitor-current .card-body {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+}
+
+.current-question-stage {
+    display: flex;
+    flex: 1 1 auto;
+    min-height: 7rem;
+}
+
+.current-question-stage > * {
+    width: 100%;
+}
+
+.question-empty-state {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.85rem;
+    min-height: 7rem;
+    padding: 1rem;
+    color: var(--text-muted);
+    text-align: left;
+}
+
+.question-empty-state svg {
+    width: 2rem;
+    height: 2rem;
+    flex: 0 0 auto;
+    opacity: 0.5;
+}
+
+.question-empty-state h3 {
+    margin: 0 0 0.2rem;
+    color: var(--text-secondary);
+    font-size: 1rem;
+}
+
+.question-empty-state p {
+    margin: 0;
+    font-size: 0.85rem;
+}
+
+.current-question-number {
+    margin-bottom: 0.35rem;
+    color: var(--text-muted);
+    font-size: 0.72rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+}
+
+.quiz-monitor-pilot .card-header h2 {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-size: 0.95rem;
+}
+
+.quiz-monitor-pilot .card-header h2 svg {
+    width: 1rem;
+    height: 1rem;
+}
+
+.quiz-monitor-pilot .question-list {
+    display: grid;
+    gap: 0.4rem;
+    max-height: none;
+    overflow: visible;
+}
+
+.quiz-monitor-pilot .question-item {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 0.6rem;
+    padding: 0.5rem 0.65rem;
+}
+
+.quiz-monitor-pilot .question-item .question-content {
+    display: grid;
+    grid-template-columns: 4.75rem minmax(10rem, 1fr) minmax(16rem, 1.45fr);
+    align-items: center;
+    gap: 0.35rem 0.6rem;
+}
+
+.question-index {
+    margin: 0;
+    color: var(--text-muted);
+    font-size: 0.7rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+}
+
+.quiz-monitor-pilot .question-text {
+    margin: 0;
+    overflow-wrap: anywhere;
+    line-height: 1.25;
+}
+
+.quiz-monitor-pilot .question-answers {
+    gap: 0.3rem;
+    margin: 0;
+}
+
+.quiz-monitor-pilot .answer-option {
+    max-width: 100%;
+    overflow-wrap: anywhere;
+}
+
+.quiz-monitor-pilot .question-meta {
+    grid-column: 2 / -1;
+    gap: 0.5rem;
+    margin: 0;
+}
+
+.question-item-controls {
+    display: grid;
+    grid-template-columns: 5.5rem auto;
+    align-items: end;
+    gap: 0.45rem;
+}
+
+.question-time-control label {
+    display: block;
+    margin-bottom: 0.15rem;
+    font-size: 0.68rem;
+    white-space: nowrap;
+}
+
+.question-time-input {
+    width: 5.5rem;
+}
+
+.current-question-content .question-text {
+    margin-bottom: 0.75rem;
+    font-size: clamp(1.05rem, 1.5vw, 1.35rem);
+    line-height: 1.35;
+}
+
+.question-actions-panel {
+    margin: 0;
+    border-top: 0;
+}
+
+.question-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.45rem;
+}
+
+.question-actions-empty {
+    color: var(--text-muted);
+    font-size: 0.82rem;
+}
+
+.live-responses-section {
+    flex: 0 1 auto;
+    min-height: 0;
+    margin-top: 0.75rem;
+    padding-top: 0.65rem;
+    border-top: 1px solid var(--border-color);
+}
+
+.live-responses-heading {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    margin-bottom: 0.35rem;
+}
+
+.live-responses-heading h3 {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    margin: 0;
+    color: var(--text-secondary);
+    font-size: 0.78rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+}
+
+.live-responses-heading h3 svg {
+    width: 0.9rem;
+    height: 0.9rem;
+}
+
+.quiz-monitor-pilot .live-responses {
+    min-height: 2.5rem;
+    max-height: min(13vh, 7rem);
+}
+
+.quiz-monitor-pilot .response-item {
+    padding: 0.5rem 0.25rem;
+}
+
+.quiz-monitor-pilot .live-responses-section .no-responses {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    min-height: 2.5rem;
+    padding: 0.35rem 0;
+    text-align: left;
+}
+
+.quiz-monitor-pilot .live-responses-section .no-responses svg {
+    width: 1.25rem;
+    height: 1.25rem;
+    flex: 0 0 auto;
+    margin: 0;
+}
+
+.quiz-monitor-pilot .live-responses-section .no-responses p {
+    margin: 0;
+    font-size: 0.78rem;
+}
+
+.quiz-participant-column {
+    display: flex;
+    flex-direction: column;
+}
+
+.participants-panel {
+    flex: 1 1 auto;
+}
+
+.quiz-monitor-pilot .participants-panel .card-body {
+    flex: 1 1 auto;
+    height: 100%;
+}
+
+.quiz-monitor-pilot .participants-list {
+    max-height: min(66vh, 45rem);
+}
+
+.quiz-monitor-pilot .participant-item {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 0.75rem;
+    padding: 0.55rem 0.2rem;
+}
+
+.participant-identity {
+    min-width: 0;
+}
+
+.participant-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.participant-response-status {
+    display: block;
+    margin-top: 0.1rem;
+    color: var(--text-muted);
+    font-size: 0.72rem;
+}
+
+.participant-response-status.is-answered {
+    color: var(--success-700);
+    font-weight: 600;
+}
+
+.participant-points {
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+    white-space: nowrap;
+}
+
+.quiz-question-list-card {
+    width: 100%;
+}
+
+@media (max-width: 1199.98px) {
+    .quiz-monitor-grid {
+        grid-template-columns: minmax(0, 1.55fr) minmax(18rem, 1fr);
+    }
+
+    .quiz-header-actions {
+        align-items: flex-start;
+    }
+
+    .lobby-link-compact {
+        margin-left: 0;
+    }
+
+    .quiz-monitor-pilot .question-item .question-content {
+        grid-template-columns: 4.5rem minmax(0, 1fr);
+    }
+
+    .quiz-monitor-pilot .question-item .question-answers,
+    .quiz-monitor-pilot .question-item .question-meta {
+        grid-column: 2;
+    }
+}
+
+@media (max-width: 991.98px) {
+    .quiz-monitor-grid {
+        grid-template-columns: minmax(0, 1fr);
+    }
+
+    .quiz-header-primary {
+        align-items: flex-start;
+    }
+
+    .quiz-participant-column {
+        display: block;
+    }
+
+    .quiz-primary-column {
+        grid-template-rows: auto auto;
+    }
+
+    .quiz-monitor-pilot .participants-list {
+        max-height: 22rem;
+    }
+}
+
+@media (max-width: 767.98px) {
+    .quiz-monitor-pilot .quiz-status-header {
+        padding: 0.75rem;
+    }
+
+    .quiz-header-primary,
+    .quiz-header-actions {
+        align-items: stretch;
+    }
+
+    .quiz-header-primary {
+        flex-direction: column;
+    }
+
+    .quiz-header-context {
+        justify-content: flex-start;
+    }
+
+    .quiz-monitor-pilot .question-item {
+        grid-template-columns: minmax(0, 1fr);
+        text-align: left;
+    }
+
+    .quiz-monitor-pilot .question-item .question-content {
+        grid-template-columns: minmax(0, 1fr);
+    }
+
+    .quiz-monitor-pilot .question-item .question-answers,
+    .quiz-monitor-pilot .question-item .question-meta {
+        grid-column: 1;
+    }
+
+    .question-item-controls {
+        grid-template-columns: 5.5rem minmax(0, 1fr);
+    }
+
+    .question-item-controls .btn {
+        width: 100%;
+    }
+
+    .lobby-link-compact {
+        width: 100%;
+        flex-wrap: wrap;
+    }
+}
 </style>
 
+<script src="{% static 'js/authoritative-game-state.js' %}"></script>
 <script>
 document.addEventListener('DOMContentLoaded', function() {
     // Save hub_session immediately for Back to Overview button
@@ -840,6 +1423,20 @@ document.addEventListener('DOMContentLoaded', function() {
             this.isActive = '{{ quiz.status }}' === 'active';
             this.liveResponseState = new Map();
             this.pendingQuestionId = null;
+            this.pendingPhaseAction = null;
+            this.questionPresentationTimer = null;
+            this.answeringStartTimer = null;
+            this.readyQuestionVisibleAt = null;
+            this.stateRevision = Number('{{ question_runtime.state_revision|default:"-1" }}');
+            this.gameId = '{{ question_runtime.game_id|default:""|escapejs }}';
+            this.questionPhase = '{{ question_runtime.question_phase|default:""|escapejs }}';
+            this.questionVisibleAt = '{{ question_runtime.question_visible_at|default:""|escapejs }}';
+            this.answeringStartedAt = '{{ question_runtime.answering_started_at|default:""|escapejs }}';
+            this.answeringDeadlineAt = '{{ question_runtime.answering_deadline_at|default:""|escapejs }}';
+            this.presentationServerNow = '{{ question_runtime.server_now|default:""|escapejs }}';
+            this.presentationServerReceivedAt = performance.now();
+            this.currentQuestionNumber = Number('{{ quiz_session.current_question_number|default:"0" }}');
+            this.totalQuestions = Number('{{ available_questions|length }}');
             this.init();
         }
 
@@ -886,7 +1483,7 @@ document.addEventListener('DOMContentLoaded', function() {
         updateSendButtonAsSent(btn) {
             btn.disabled = false;
             btn.classList.remove('loading');
-            btn.innerHTML = '<i data-lucide="send"></i> Send Question';
+            btn.innerHTML = '<i data-lucide="send"></i> FRAGE SENDEN';
             btn.removeAttribute('title');
             // Add "already sent" hint next to button if not already there
             const wrapper = btn.closest('.d-flex');
@@ -907,7 +1504,7 @@ document.addEventListener('DOMContentLoaded', function() {
             document.querySelectorAll('.send-question-btn').forEach(btn => {
                 btn.disabled = false;
                 btn.classList.remove('loading');
-                btn.innerHTML = '<i data-lucide="send"></i> Send Question';
+                btn.innerHTML = '<i data-lucide="send"></i> FRAGE SENDEN';
                 btn.removeAttribute('title');
             });
             try { lucide.createIcons(); } catch(_) {}
@@ -924,6 +1521,7 @@ document.addEventListener('DOMContentLoaded', function() {
             this.applySentStates();
             this.initializeLiveResponseState();
             this.startResponsesPolling();
+            this.scheduleRevealQuestionAction();
         }
 
         startResponsesPolling() {
@@ -1007,6 +1605,7 @@ document.addEventListener('DOMContentLoaded', function() {
         }
 
         handleWebSocketMessage(data) {
+            this.applyAuthoritativeMetadata(data);
             switch(data.type) {
                 case 'connection_established':
                     console.log('Connected:', data.message);
@@ -1065,7 +1664,16 @@ document.addEventListener('DOMContentLoaded', function() {
                         if (btn) this.updateSendButtonAsSent(btn);
                         this.pendingQuestionId = null;
                     }
-                    this.renderActiveQuestion(data.question || {});
+                    this.pendingPhaseAction = null;
+                    this.updateQuestionProgress(data, data.question || {});
+                    this.renderActiveQuestion(data.question || {}, data.question_phase, data);
+                    break;
+
+                case 'question_content_revealed':
+                case 'question_answering_opened':
+                    this.clearHostError();
+                    this.pendingPhaseAction = null;
+                    this.renderActiveQuestion(data.question || {}, data.question_phase, data);
                     break;
                     
                 case 'question_ended':
@@ -1092,10 +1700,64 @@ document.addEventListener('DOMContentLoaded', function() {
                 case 'error':
                     this.showHostError(data.message || 'Frage konnte nicht gestartet werden.');
                     this.resetPendingSendButton(data.question_id || this.pendingQuestionId);
+                    this.pendingPhaseAction = null;
+                    break;
+
+                case 'action_rejected':
+                    this.applyAuthoritativeMetadata(data.snapshot || data);
+                    this.pendingPhaseAction = null;
+                    this.showHostError(data.message || 'Die Aktion wurde aufgrund eines neueren Spielzustands abgelehnt.');
+                    this.resetPendingSendButton(data.question_id || this.pendingQuestionId);
                     break;
                     
                 default:
                     console.warn('Unknown message type:', data.type);
+            }
+        }
+
+        applyAuthoritativeMetadata(data = {}) {
+            const source = data.snapshot && typeof data.snapshot === 'object' ? data.snapshot : data;
+            const revision = Number(source.state_revision);
+            if (Number.isFinite(revision) && revision >= this.stateRevision) {
+                this.stateRevision = revision;
+            }
+            if (source.game_id) this.gameId = String(source.game_id);
+            if (source.question_phase !== undefined && source.question_phase !== null) {
+                this.questionPhase = String(source.question_phase);
+            }
+            if (source.question_visible_at !== undefined && source.question_visible_at !== null) {
+                this.questionVisibleAt = String(source.question_visible_at);
+            }
+            if (source.answering_started_at !== undefined && source.answering_started_at !== null) {
+                this.answeringStartedAt = String(source.answering_started_at);
+            }
+            if (source.answering_deadline_at !== undefined && source.answering_deadline_at !== null) {
+                this.answeringDeadlineAt = String(source.answering_deadline_at);
+            }
+            if (source.server_now) {
+                this.presentationServerNow = String(source.server_now);
+                this.presentationServerReceivedAt = performance.now();
+            }
+        }
+
+        updateQuestionProgress(state = {}, question = {}) {
+            const source = state.snapshot && typeof state.snapshot === 'object' ? state.snapshot : state;
+            const incomingNumber = Number(source.current_round_id);
+            const incomingTotal = Number(question.total_questions ?? source.total_questions);
+            if (Number.isFinite(incomingNumber) && incomingNumber > 0) {
+                this.currentQuestionNumber = incomingNumber;
+            }
+            if (Number.isFinite(incomingTotal) && incomingTotal > 0) {
+                this.totalQuestions = incomingTotal;
+            }
+
+            const currentElement = document.getElementById('currentQuestionNumber');
+            const totalElement = document.getElementById('totalQuestionCount');
+            const progressElement = document.getElementById('questionProgress');
+            if (currentElement) currentElement.textContent = String(Math.max(0, this.currentQuestionNumber || 0));
+            if (totalElement) totalElement.textContent = String(Math.max(0, this.totalQuestions || 0));
+            if (progressElement && (question.id || this.currentQuestionNumber > 0)) {
+                progressElement.classList.remove('d-none');
             }
         }
         
@@ -1219,6 +1881,12 @@ document.addEventListener('DOMContentLoaded', function() {
             document.getElementById('endQuestionBtn')?.addEventListener('click', () => {
                 this.endCurrentQuestion();
             });
+            document.getElementById('revealQuestionContentBtn')?.addEventListener('click', (event) => {
+                this.revealQuestionContent(event.currentTarget.dataset.questionId, event.currentTarget);
+            });
+            document.getElementById('openAnsweringBtn')?.addEventListener('click', (event) => {
+                this.openAnswering(event.currentTarget.dataset.questionId, event.currentTarget);
+            });
 
             document.getElementById('returnToQuestionOverviewBtn')?.addEventListener('click', () => {
                 this.returnToQuestionOverview();
@@ -1244,7 +1912,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
         showHostError(message) {
             let alertBox = document.getElementById('quizHostError');
-            const container = document.getElementById('availableQuestions') || document.querySelector('.question-panel .card-body') || document.querySelector('.host-monitor-content');
+            const container = document.getElementById('currentQuestionBody') || document.querySelector('.question-panel .card-body') || document.querySelector('.host-monitor-content');
             if (!alertBox && container) {
                 alertBox = document.createElement('div');
                 alertBox.id = 'quizHostError';
@@ -1274,51 +1942,80 @@ document.addEventListener('DOMContentLoaded', function() {
             if (!btn) return;
             btn.disabled = false;
             btn.classList.remove('loading');
-            btn.innerHTML = '<i data-lucide="send"></i> Send Question';
+            btn.innerHTML = '<i data-lucide="send"></i> FRAGE SENDEN';
             btn.removeAttribute('aria-busy');
             this.pendingQuestionId = null;
             try { lucide.createIcons(); } catch(_) {}
         }
 
-        renderActiveQuestion(question) {
-            const body = document.querySelector('.question-panel .card-body');
-            if (!body || !question?.id) return;
+        renderActiveQuestion(question, phase = '', state = {}) {
+            const body = document.getElementById('currentQuestionBody');
+            const actionsBody = document.getElementById('questionActionsBody');
+            if (!body || !actionsBody || !question?.id) return;
+            this.questionPhase = phase || this.questionPhase;
             const questionText = this.escapeHtml(question.question_text || '');
             const questionType = this.escapeHtml(question.question_type || '');
             const points = Number(question.points || 0);
             const timeLimit = Number(question.time_limit || 0);
+            const timeLeft = Number(state.remaining_answer_time ?? question.remaining_seconds ?? timeLimit);
+            const timerWrapper = document.getElementById('questionTimerWrapper');
+            const timerElement = document.getElementById('questionTimeLeft');
+            const panelTitle = document.querySelector('[data-question-panel-title]');
+            if (timerWrapper) {
+                timerWrapper.style.display = '';
+                timerWrapper.classList.toggle(
+                    'd-none',
+                    this.questionPhase !== 'answering_open' || this.remainingAnswerStartDelay() > 0,
+                );
+            }
+            if (timerElement) timerElement.textContent = String(Math.max(0, timeLeft));
+            if (panelTitle) panelTitle.textContent = 'Aktuelle Frage';
+            const answerMarkup = (question.options || []).map(option => `
+                <span class="answer-option"><strong>${this.escapeHtml(option.key || '')}</strong> ${this.escapeHtml(option.text || '')}</span>
+            `).join('');
+            let phaseAction = '';
+            if (this.questionPhase === 'prompt_visible') {
+                phaseAction = `<button type="button" class="btn btn-primary" id="revealQuestionContentBtn" data-question-id="${question.id}" disabled aria-disabled="true">ANTWORTEN ANZEIGEN</button>`;
+            } else if (
+                this.questionPhase === 'content_visible'
+                && question.question_type !== 'multiple_choice'
+                && question.question_type !== 'true_false'
+            ) {
+                phaseAction = `<button type="button" class="btn btn-primary" id="openAnsweringBtn" data-question-id="${question.id}">FRAGE FREIGEBEN</button>`;
+            } else {
+                phaseAction = `<button type="button" class="btn btn-warning" id="endQuestionBtn"><i data-lucide="skip-forward"></i> End Question Early</button>`;
+            }
 
             body.innerHTML = `
                 <div id="activeQuestion">
-                    <div class="active-question-header">
-                        <h6>Current Question</h6>
-                        <div class="question-timer" id="questionTimerWrapper">
-                            <div class="timer-circle" id="questionTimerCircle">
-                                <span id="questionTimeLeft">${timeLimit}</span>
-                            </div>
-                        </div>
-                    </div>
                     <div class="current-question-content">
+                        <div class="current-question-number">Frage <span data-live-question-number>${this.currentQuestionNumber || ''}</span></div>
                         <div class="question-text">${questionText}</div>
                         <div class="question-meta mt-2">
                             <span class="badge bg-secondary">${questionType}</span>
                             <span class="badge bg-primary">${points} pts</span>
                         </div>
-                        <div class="question-actions mt-3">
-                            <button type="button" class="btn btn-warning" id="endQuestionBtn">
-                                <i data-lucide="skip-forward"></i>
-                                End Question Early
-                            </button>
-                            <button type="button" class="btn btn-outline-secondary d-none" id="returnToQuestionOverviewBtn">
-                                <i data-lucide="arrow-left"></i>
-                                Back to Question Overview
-                            </button>
-                        </div>
+                        <div class="question-answers mt-2">${answerMarkup}</div>
                     </div>
+                </div>
+            `;
+            actionsBody.innerHTML = `
+                <div class="question-actions">
+                    ${phaseAction}
+                    <button type="button" class="btn btn-outline-secondary d-none" id="returnToQuestionOverviewBtn">
+                        <i data-lucide="arrow-left"></i>
+                        Back to Question Overview
+                    </button>
                 </div>
             `;
             document.getElementById('endQuestionBtn')?.addEventListener('click', () => {
                 this.endCurrentQuestion();
+            });
+            document.getElementById('revealQuestionContentBtn')?.addEventListener('click', (event) => {
+                this.revealQuestionContent(event.currentTarget.dataset.questionId, event.currentTarget);
+            });
+            document.getElementById('openAnsweringBtn')?.addEventListener('click', (event) => {
+                this.openAnswering(event.currentTarget.dataset.questionId, event.currentTarget);
             });
             document.getElementById('returnToQuestionOverviewBtn')?.addEventListener('click', () => {
                 this.returnToQuestionOverview();
@@ -1326,8 +2023,107 @@ document.addEventListener('DOMContentLoaded', function() {
             const liveResponsesCard = document.getElementById('liveResponsesCard');
             if (liveResponsesCard) liveResponsesCard.style.display = '';
             clearInterval(this.questionTimer);
-            this.startQuestionTimer();
+            if (this.questionPhase === 'answering_open') this.scheduleHostAnsweringStart();
+            this.scheduleRevealQuestionAction();
             try { lucide.createIcons(); } catch(_) {}
+        }
+
+        estimatedServerNow() {
+            const serverNow = Date.parse(this.presentationServerNow || '');
+            if (!Number.isFinite(serverNow)) return Date.now();
+            return serverNow + Math.max(
+                0,
+                performance.now() - Number(this.presentationServerReceivedAt || performance.now()),
+            );
+        }
+
+        remainingQuestionPresentationDelay() {
+            const visibleAt = Date.parse(this.questionVisibleAt || '');
+            const serverNow = Date.parse(this.presentationServerNow || '');
+            if (!Number.isFinite(visibleAt) || !Number.isFinite(serverNow)) return 0;
+            const elapsedSinceReceipt = Math.max(
+                0,
+                performance.now() - Number(this.presentationServerReceivedAt || performance.now())
+            );
+            return Math.max(0, visibleAt - (serverNow + elapsedSinceReceipt));
+        }
+
+        remainingAnswerStartDelay() {
+            const startsAt = Date.parse(this.answeringStartedAt || '');
+            if (!Number.isFinite(startsAt)) return 0;
+            return Math.max(0, startsAt - this.estimatedServerNow());
+        }
+
+        scheduleHostAnsweringStart() {
+            if (this.answeringStartTimer !== null) {
+                clearTimeout(this.answeringStartTimer);
+                this.answeringStartTimer = null;
+            }
+            const timerWrapper = document.getElementById('questionTimerWrapper');
+            const activate = () => {
+                if (this.questionPhase !== 'answering_open') return;
+                timerWrapper?.classList.remove('d-none');
+                const startsAt = Date.parse(this.answeringStartedAt || '');
+                const endsAt = Date.parse(this.answeringDeadlineAt || '');
+                if (Number.isFinite(startsAt) && Number.isFinite(endsAt)) {
+                    const timerElement = document.getElementById('questionTimeLeft');
+                    if (timerElement) {
+                        timerElement.textContent = String(
+                            Math.max(0, Math.ceil((endsAt - startsAt) / 1000))
+                        );
+                    }
+                }
+                this.startQuestionTimer();
+            };
+            const remaining = this.remainingAnswerStartDelay();
+            if (remaining <= 0) {
+                activate();
+                return;
+            }
+            clearInterval(this.questionTimer);
+            timerWrapper?.classList.add('d-none');
+            this.answeringStartTimer = setTimeout(() => {
+                this.answeringStartTimer = null;
+                activate();
+            }, remaining);
+        }
+
+        scheduleRevealQuestionAction() {
+            if (this.questionPresentationTimer !== null) {
+                clearTimeout(this.questionPresentationTimer);
+                this.questionPresentationTimer = null;
+            }
+            const button = document.getElementById('revealQuestionContentBtn');
+            if (!button || this.questionPhase !== 'prompt_visible') return;
+            if (
+                this.questionVisibleAt
+                && this.readyQuestionVisibleAt === this.questionVisibleAt
+            ) {
+                button.disabled = false;
+                button.removeAttribute('aria-disabled');
+                return;
+            }
+            const remaining = this.remainingQuestionPresentationDelay();
+            if (remaining <= 0) {
+                this.readyQuestionVisibleAt = this.questionVisibleAt;
+                button.disabled = false;
+                button.removeAttribute('aria-disabled');
+                return;
+            }
+            button.disabled = true;
+            button.setAttribute('aria-disabled', 'true');
+            const expectedVisibleAt = this.questionVisibleAt;
+            this.questionPresentationTimer = setTimeout(() => {
+                this.questionPresentationTimer = null;
+                if (
+                    this.questionPhase === 'prompt_visible'
+                    && this.questionVisibleAt === expectedVisibleAt
+                ) {
+                    this.readyQuestionVisibleAt = expectedVisibleAt;
+                    button.disabled = false;
+                    button.removeAttribute('aria-disabled');
+                }
+            }, remaining);
         }
 
         sendJsonWhenReady(payload, onUnavailable) {
@@ -1480,7 +2276,8 @@ document.addEventListener('DOMContentLoaded', function() {
             const payload = {
                 type: 'admin_send_question',
                 question_id: questionId,
-                hub_session: this.getHubSession()
+                hub_session: this.getHubSession(),
+                ...this.hostActionContext(questionId)
             };
             if (customTime) {
                 payload.custom_time_limit = customTime;
@@ -1496,6 +2293,53 @@ document.addEventListener('DOMContentLoaded', function() {
                 this.showHostError('Frage konnte nicht gestartet werden: Verbindung zum Server ist nicht bereit.');
                 this.resetPendingSendButton(questionId);
             }
+        }
+
+        hostActionContext(questionId) {
+            return {
+                question_id: questionId,
+                game_id: this.gameId || null,
+                state_revision: this.stateRevision,
+                client_action_id: window.AuthoritativeGameState?.createActionId?.()
+            };
+        }
+
+        sendQuestionPhaseAction(type, questionId, button) {
+            if (this.pendingPhaseAction || !questionId) return;
+            if (
+                type === 'admin_reveal_question_content'
+                && this.remainingQuestionPresentationDelay() > 0
+            ) return;
+            if (!Number.isFinite(this.stateRevision) || this.stateRevision < 0) {
+                this.showHostError('Der autoritative Spielzustand ist noch nicht geladen.');
+                return;
+            }
+            this.pendingPhaseAction = type;
+            button.disabled = true;
+            button.setAttribute('aria-busy', 'true');
+            const sent = this.sendJsonWhenReady({
+                type,
+                hub_session: this.getHubSession(),
+                ...this.hostActionContext(questionId),
+            }, () => {
+                this.pendingPhaseAction = null;
+                button.disabled = false;
+                button.removeAttribute('aria-busy');
+                this.showHostError('Die Verbindung zum Server ist nicht bereit.');
+            });
+            if (!sent) {
+                this.pendingPhaseAction = null;
+                button.disabled = false;
+                button.removeAttribute('aria-busy');
+            }
+        }
+
+        revealQuestionContent(questionId, button) {
+            this.sendQuestionPhaseAction('admin_reveal_question_content', questionId, button);
+        }
+
+        openAnswering(questionId, button) {
+            this.sendQuestionPhaseAction('admin_open_answering', questionId, button);
         }
         
         endCurrentQuestion() {
@@ -1617,6 +2461,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 `;
                 const responseCount = document.getElementById('responseCount');
                 if (responseCount) responseCount.textContent = '0';
+                this.renderParticipantResponseStatuses([]);
                 try { lucide.createIcons(); } catch(_) {}
                 return;
             }
@@ -1679,6 +2524,20 @@ document.addEventListener('DOMContentLoaded', function() {
 
             const responseCount = document.getElementById('responseCount');
             if (responseCount) responseCount.textContent = String(responses.length);
+            this.renderParticipantResponseStatuses(responses);
+        }
+
+        renderParticipantResponseStatuses(responses = []) {
+            const answeredNames = new Set(
+                responses.map(response => String(response.participant_name || '')).filter(Boolean)
+            );
+            document.querySelectorAll('.participant-item').forEach((row) => {
+                const status = row.querySelector('[data-participant-response-status]');
+                if (!status) return;
+                const answered = answeredNames.has(String(row.dataset.participantName || ''));
+                status.textContent = answered ? 'Beantwortet' : 'Offen';
+                status.classList.toggle('is-answered', answered);
+            });
         }
 
         addParticipant(participant) {
@@ -1695,8 +2554,11 @@ document.addEventListener('DOMContentLoaded', function() {
             participantEl.className = 'participant-item';
             participantEl.dataset.participantName = participant.name;
             participantEl.innerHTML = `
-                <div class="participant-name">${participant.name}</div>
-                <div class="d-flex align-items-center gap-2 ms-auto">
+                <div class="participant-identity">
+                    <div class="participant-name">${participant.name}</div>
+                    <span class="participant-response-status" data-participant-response-status>Offen</span>
+                </div>
+                <div class="participant-points">
                     <span class="participant-score" id="score-${participant.id}">${participant.total_score || 0} pts</span>
                     <button class="btn btn-link btn-sm p-0 edit-score-btn" title="Punkte bearbeiten"
                         data-participant-id="${participant.id}"
@@ -1812,8 +2674,8 @@ document.addEventListener('DOMContentLoaded', function() {
     window.adminGameMonitor = monitor;
     
     // Start question timer if there's an active question
-    {% if quiz.current_question %}
-        monitor.startQuestionTimer();
+    {% if quiz.current_question and question_runtime.question_phase == 'answering_open' %}
+        monitor.scheduleHostAnsweringStart();
     {% endif %}
 });
 

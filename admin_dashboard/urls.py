@@ -106,6 +106,7 @@ urlpatterns = [
     path('wer-weiss-mehr/delete/', views.delete_wer_weiss_mehr_game, name='delete_wer_weiss_mehr_game'),
     path('wer-weiss-mehr/<str:room_code>/monitor/', views.wer_weiss_mehr_monitor, name='wer_weiss_mehr_monitor'),
     path('wer-weiss-mehr/<str:room_code>/end-round/', wer_weiss_mehr_views.end_round, name='end_wer_weiss_mehr_round'),
+    path('wer-weiss-mehr/<str:room_code>/open-round/', wer_weiss_mehr_views.open_round, name='open_wer_weiss_mehr_round'),
     path('wer-weiss-mehr/<str:room_code>/next-round/', wer_weiss_mehr_views.next_round, name='next_wer_weiss_mehr_round'),
     path('wer-weiss-mehr/<str:room_code>/finish-set/', wer_weiss_mehr_views.finish_current_set, name='finish_wer_weiss_mehr_set'),
     path('wer-weiss-mehr/<str:room_code>/clear-set/', wer_weiss_mehr_views.clear_set_selection, name='clear_wer_weiss_mehr_set'),

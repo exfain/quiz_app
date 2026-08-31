@@ -19,9 +19,13 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<script src="{% static 'js/authoritative-game-state.js' %}"></script>
 </head>
-<body class="assign-play-page">
+<body class="assign-play-page"
+      data-vhs-progress-kind="question"
+      data-vhs-progress-source="#vhsProgressNumber">
     <div class="play-container">
+        <span id="vhsProgressNumber" hidden aria-hidden="true">0</span>
         <!-- Header -->
         <header class="quiz-header">
             <div class="container">
@@ -86,7 +90,7 @@
                                             </div>
                                         </div>
                                     </div>
-                                    <div class="question-timer">
+                                    <div class="question-timer" id="participantQuestionTimerWrapper">
                                         <div class="timer-circle" id="playerTimerCircle">
                                             <span id="playerTimeLeft">60</span>
                                         </div>
@@ -772,6 +776,32 @@
             text-align: center;
         }
 
+        .assign-phase-reveal-item {
+            transition:
+                opacity 160ms ease-out,
+                transform 160ms ease-out,
+                visibility 0s linear 160ms;
+        }
+
+        .assign-phase-reveal-item--concealed {
+            opacity: 0;
+            visibility: hidden;
+            transform: translateY(10px);
+            pointer-events: none;
+        }
+
+        .assign-workspace--locked .draggable-item,
+        .assign-workspace--locked .drop-zone {
+            cursor: default;
+        }
+
+        @media (prefers-reduced-motion: reduce) {
+            .assign-phase-reveal-item {
+                transition: opacity 80ms linear;
+                transform: none;
+            }
+        }
+
         .draggable-item:hover {
             border-color: var(--participant-effective-text-color, var(--participant-theme-text, var(--color-secondary)));
             box-shadow: var(--shadow-md);
@@ -1201,6 +1231,18 @@
                     this.scoreboardQuestions = this.readJsonScript('assignScoreboardData', []);
                     this.progressHistory = this.readJsonScript('assignInitialProgressData', []);
                     this.currentQuestionId = this.readJsonScript('assignCurrentQuestionId', null);
+                    this.questionFlowMode = '';
+                    this.questionPhase = '';
+                    this.questionVisibleAt = '';
+                    this.contentRevealedAt = '';
+                    this.answeringStartedAt = '';
+                    this.answeringDeadlineAt = '';
+                    this.phaseServerNow = '';
+                    this.phaseServerReceivedAt = performance.now();
+                    this.assignRevealStaggerMs = 120;
+                    this.assignRevealAnimationMs = 160;
+                    this.assignPhaseTimers = [];
+                    this.assignInteractionEnabled = false;
 
                     this.init();
                 }
@@ -1267,11 +1309,39 @@
                         case 'question_started':
                             window.gameTutorial?.forceClose();
                             window.unitTutorialNotice?.setFromPayload(data);
-                            this.onQuestionStarted(data.question);
+                            this.onQuestionStarted({
+                                ...data.question,
+                                starts_at: data.question?.starts_at || data.starts_at,
+                                ends_at: data.question?.ends_at || data.ends_at,
+                                server_now: data.question?.server_now || data.server_now,
+                                question_flow_mode: data.question_flow_mode,
+                                question_phase: data.question_phase,
+                                question_presented_at: data.question_presented_at,
+                                question_visible_at: data.question_visible_at,
+                                content_revealed_at: data.content_revealed_at,
+                                answering_started_at: data.answering_started_at,
+                                answering_deadline_at: data.answering_deadline_at,
+                                assign_reveal_stagger_ms: data.assign_reveal_stagger_ms,
+                                assign_reveal_animation_ms: data.assign_reveal_animation_ms,
+                            });
+                            break;
+
+                        case 'assign_state':
+                            this.applyAuthoritativeState(data);
                             break;
 
                         case 'round_advanced':
                             this.onRoundAdvanced(data);
+                            break;
+
+                        case 'question_content_revealed':
+                            this.applyQuestionLifecycle(data);
+                            this.renderAssignQuestionPhase(data);
+                            break;
+
+                        case 'question_answering_opened':
+                            this.applyQuestionLifecycle(data);
+                            this.renderAssignQuestionPhase(data);
                             break;
 
                         case 'question_ended':
@@ -1407,6 +1477,11 @@
                         const normalizedQuestionId = Number(questionId);
                         this.currentQuestionId = Number.isNaN(normalizedQuestionId) ? null : normalizedQuestionId;
                     }
+                    const questionNumber = this.getCurrentQuestionNumber();
+                    const progressNumber = document.getElementById('vhsProgressNumber');
+                    if (progressNumber && Number.isInteger(questionNumber) && questionNumber > 0) {
+                        progressNumber.textContent = String(questionNumber);
+                    }
                     this.renderProgressHistory();
                 }
 
@@ -1527,11 +1602,12 @@
                     this._bufferedRoundsComplete = null;
                     this._bufferedRoundAdvanced = null;
                     this.userMatches = {};
-                    this.questionStartTime = Date.now();
+                    this.questionStartTime = Date.parse(question.starts_at || '') || Date.now();
                     this.currentQuestion = {
                         ...question,
                         all_right_items: question.all_right_items || question.right_items || [],
                     };
+                    this.applyQuestionLifecycle(question);
                     this.currentQuestionIsTutorial = !!question?.is_tutorial_round;
                     if (this.currentQuestionIsTutorial) {
                         this.setCurrentQuestion(null);
@@ -1551,13 +1627,82 @@
                     );
                     this.showRoundProgress(true);
 
-                    this.startQuestionTimer(question.time_limit);
-                    this.showState('questionState');
+                    this.renderAssignQuestionPhase(question);
+                }
+
+                applyAuthoritativeState(data) {
+                    this.applyQuestionLifecycle(data);
+                    this.setProgressHistory(data.progress_history, data.scoreboard_questions);
+                    if (data.game?.status === 'completed') {
+                        this.onQuizEnded(data);
+                        return;
+                    }
+                    if (!data.question) {
+                        this.onQuizStarted();
+                        return;
+                    }
+                    this.onQuestionStarted({
+                        ...data.question,
+                        starts_at: data.starts_at || data.question.starts_at,
+                        ends_at: data.ends_at || data.question.ends_at,
+                        server_now: data.server_now || data.question.server_now,
+                        question_flow_mode: data.question_flow_mode,
+                        question_phase: data.question_phase,
+                        question_presented_at: data.question_presented_at,
+                        question_visible_at: data.question_visible_at,
+                        content_revealed_at: data.content_revealed_at,
+                        answering_started_at: data.answering_started_at,
+                        answering_deadline_at: data.answering_deadline_at,
+                        assign_reveal_stagger_ms: data.assign_reveal_stagger_ms,
+                        assign_reveal_animation_ms: data.assign_reveal_animation_ms,
+                    });
+                    const participantState = data.participant_state || {};
+                    const selection = participantState.selection;
+                    const userMatch = selection?.user_match || {};
+                    const leftIndex = Number(
+                        selection?.left_item_index ?? Object.keys(userMatch)[0]
+                    );
+                    const rightIndex = Number(userMatch[String(leftIndex)]);
+                    if (Number.isInteger(leftIndex) && Number.isInteger(rightIndex)) {
+                        const source = document.querySelector(
+                            `.draggable-item[data-left-index="${leftIndex}"]`
+                        );
+                        const target = document.querySelector(
+                            `.drop-zone[data-right-index="${rightIndex}"]:not(.completed-round)`
+                        );
+                        if (source && target) {
+                            const socket = this.websocket;
+                            this.websocket = null;
+                            this.handleRoundDrop(
+                                leftIndex,
+                                rightIndex,
+                                target,
+                                source.textContent?.trim() || '',
+                            );
+                            this.websocket = socket;
+                        }
+                    }
+                    if (participantState.answer_locked) this.onRoundLogged();
+                    if (participantState.eliminated) {
+                        this.eliminated = true;
+                        this.lastEliminationReason = participantState.elimination_reason;
+                        this.showEliminatedState(this.lastEliminationReason);
+                        return;
+                    }
+                    if (data.phase === 'waiting_reveal') {
+                        this.onQuestionRoundsComplete({
+                            solved_pairs: data.solved_pairs || [],
+                            set_number: data.current_set_id,
+                        });
+                    } else if (data.phase === 'revealed' && data.solution) {
+                        this.onShowSolution(data.solution);
+                    }
                 }
 
                 onRoundAdvanced(data) {
                     if (!this.acceptSetEvent(data?.set_number)) return;
                     if (this.eliminated) return;
+                    this.applyQuestionLifecycle(data);
 
                     // Immer auf serverseitige Round-Auswertung warten, damit
                     // auch nicht explizit eingeloggte, aber vorhandene Zuordnungen
@@ -1604,14 +1749,16 @@
 
                     // Nächste Runde laden
                     const timeLimit = data.time_limit || (this.currentQuestion ? this.currentQuestion.time_limit : 60);
-                    this.startQuestionTimer(timeLimit);
                     this.loadRound(
                         data.round_index,
                         data.current_left_item,
                         data.right_items,
                         this.currentQuestion?.all_right_items || data.all_right_items || data.right_items
                     );
-                    this.showState('questionState');
+                    this.renderAssignQuestionPhase({
+                        ...data,
+                        time_limit: timeLimit,
+                    });
                 }
 
                 onRoundLogged() {
@@ -1672,25 +1819,8 @@
                     clearInterval(this.questionTimer);
 
                     // Letzten Runden-Match einsammeln (wenn noch nicht manuell bestätigt)
-                    if (!this.roundSubmitted && this.userMatches && Object.keys(this.userMatches).length > 0) {
-                        const leftIdx = parseInt(Object.keys(this.userMatches)[0]);
-                        const rightIdx = this.userMatches[leftIdx];
-                        this.accumulatedMatches[leftIdx] = rightIdx;
-                    }
-
-                    // Alle gesammelten Matches absenden
-                    if (!this.hasAnswered && this.currentQuestion) {
-                        const timeTaken = (Date.now() - this.questionStartTime) / 1000;
-                        this.websocket.send(JSON.stringify({
-                            type: 'participant_submit_answer',
-                            participant_name: this.participantName,
-                            hub_session: this.hubSession,
-                            user_matches: this.accumulatedMatches,
-                            time_taken: timeTaken,
-                            question_id: this.currentQuestion ? this.currentQuestion.id : null,
-                        }));
-                        this.hasAnswered = true;
-                    }
+                    // Evaluated round states are already persisted by the server.
+                    this.hasAnswered = true;
 
                     this.showRoundProgress(false);
                 }
@@ -1918,6 +2048,208 @@
                     }
                 }
 
+                applyQuestionLifecycle(source = {}) {
+                    if (source.question_flow_mode !== undefined && source.question_flow_mode !== null) {
+                        this.questionFlowMode = String(source.question_flow_mode);
+                    }
+                    if (source.question_phase !== undefined && source.question_phase !== null) {
+                        this.questionPhase = String(source.question_phase);
+                    }
+                    if (source.question_visible_at !== undefined && source.question_visible_at !== null) {
+                        this.questionVisibleAt = String(source.question_visible_at);
+                    }
+                    if (source.content_revealed_at !== undefined && source.content_revealed_at !== null) {
+                        this.contentRevealedAt = String(source.content_revealed_at);
+                    }
+                    if (source.answering_started_at !== undefined && source.answering_started_at !== null) {
+                        this.answeringStartedAt = String(source.answering_started_at);
+                    }
+                    if (source.answering_deadline_at !== undefined && source.answering_deadline_at !== null) {
+                        this.answeringDeadlineAt = String(source.answering_deadline_at);
+                    }
+                    const revealStagger = Number(source.assign_reveal_stagger_ms);
+                    if (Number.isFinite(revealStagger) && revealStagger >= 0) {
+                        this.assignRevealStaggerMs = revealStagger;
+                    }
+                    const revealAnimation = Number(source.assign_reveal_animation_ms);
+                    if (Number.isFinite(revealAnimation) && revealAnimation >= 0) {
+                        this.assignRevealAnimationMs = revealAnimation;
+                    }
+                    if (source.server_now) {
+                        this.phaseServerNow = String(source.server_now);
+                        this.phaseServerReceivedAt = performance.now();
+                    }
+                }
+
+                estimatedPhaseServerNow() {
+                    const serverNow = Date.parse(this.phaseServerNow || '');
+                    if (!Number.isFinite(serverNow)) return Date.now();
+                    return serverNow + (performance.now() - this.phaseServerReceivedAt);
+                }
+
+                clearAssignPhaseTimers() {
+                    this.assignPhaseTimers.forEach((timerId) => clearTimeout(timerId));
+                    this.assignPhaseTimers = [];
+                }
+
+                setAssignInteractionEnabled(enabled) {
+                    this.assignInteractionEnabled = Boolean(enabled);
+                    const workspace = document.getElementById('dragDropInterface');
+                    workspace?.classList.toggle('assign-workspace--locked', !enabled);
+                    document.querySelectorAll('.draggable-item').forEach((item) => {
+                        const blocked = (
+                            item.classList.contains('matched')
+                            || item.classList.contains('matched-done')
+                            || item.classList.contains('inactive-item')
+                        );
+                        item.draggable = Boolean(enabled && !blocked);
+                        item.style.cursor = enabled && !blocked ? '' : 'default';
+                        item.setAttribute('aria-disabled', enabled && !blocked ? 'false' : 'true');
+                    });
+                    document.querySelectorAll('.drop-zone:not(.completed-round)').forEach((target) => {
+                        target.style.pointerEvents = enabled ? '' : 'none';
+                        target.setAttribute('aria-disabled', enabled ? 'false' : 'true');
+                    });
+                    if (!enabled) {
+                        document.getElementById('resetRoundBtn')?.classList.add('d-none');
+                        document.getElementById('logRoundBtn')?.classList.add('d-none');
+                    }
+                }
+
+                getAssignRevealItems() {
+                    const targets = Array.from(
+                        document.querySelectorAll('.drop-zone:not(.completed-round)')
+                    );
+                    const elements = Array.from(
+                        document.querySelectorAll('.draggable-item')
+                    );
+                    return [...targets, ...elements];
+                }
+
+                concealAssignRevealItems() {
+                    this.getAssignRevealItems().forEach((item) => {
+                        item.classList.add(
+                            'assign-phase-reveal-item',
+                            'assign-phase-reveal-item--concealed',
+                        );
+                    });
+                }
+
+                showAllAssignRevealItems() {
+                    this.getAssignRevealItems().forEach((item) => {
+                        item.classList.add('assign-phase-reveal-item');
+                        item.classList.remove('assign-phase-reveal-item--concealed');
+                    });
+                }
+
+                revealAssignContentFromServerTime() {
+                    this.clearAssignPhaseTimers();
+                    const items = this.getAssignRevealItems();
+                    const revealedAt = Date.parse(this.contentRevealedAt || '');
+                    const elapsed = Number.isFinite(revealedAt)
+                        ? Math.max(0, this.estimatedPhaseServerNow() - revealedAt)
+                        : Number.POSITIVE_INFINITY;
+                    items.forEach((item, index) => {
+                        item.classList.add(
+                            'assign-phase-reveal-item',
+                            'assign-phase-reveal-item--concealed',
+                        );
+                        const remaining = (index * this.assignRevealStaggerMs) - elapsed;
+                        if (remaining <= 0) {
+                            item.classList.remove('assign-phase-reveal-item--concealed');
+                            return;
+                        }
+                        const timerId = setTimeout(() => {
+                            if (!['content_visible', 'answering_open'].includes(this.questionPhase)) return;
+                            item.classList.remove('assign-phase-reveal-item--concealed');
+                        }, remaining);
+                        this.assignPhaseTimers.push(timerId);
+                    });
+                }
+
+                renderAssignQuestionPhase(timing = {}) {
+                    const manual = this.questionFlowMode === 'manual_three_phase';
+                    const timerWrapper = document.getElementById('participantQuestionTimerWrapper');
+                    if (!manual) {
+                        this.clearAssignPhaseTimers();
+                        this.showAllAssignRevealItems();
+                        this.setAssignInteractionEnabled(true);
+                        timerWrapper?.classList.remove('d-none');
+                        this.startQuestionTimer(timing.time_limit || this.currentQuestion?.time_limit, timing);
+                        this.showState('questionState');
+                        return;
+                    }
+
+                    clearInterval(this.questionTimer);
+                    this.setAssignInteractionEnabled(false);
+                    timerWrapper?.classList.add('d-none');
+
+                    if (this.questionPhase === 'answering_open') {
+                        this.showState('questionState');
+                        const startsAt = Date.parse(this.answeringStartedAt || '');
+                        const remaining = Number.isFinite(startsAt)
+                            ? Math.max(0, startsAt - this.estimatedPhaseServerNow())
+                            : 0;
+                        if (remaining > 0) {
+                            this.revealAssignContentFromServerTime();
+                            const timerId = setTimeout(() => {
+                                if (this.questionPhase !== 'answering_open') return;
+                                this.showAllAssignRevealItems();
+                                this.setAssignInteractionEnabled(!this.roundSubmitted && !this.eliminated);
+                                timerWrapper?.classList.remove('d-none');
+                                this.startQuestionTimer(
+                                    timing.time_limit || this.currentQuestion?.time_limit,
+                                    {
+                                        ...timing,
+                                        starts_at: this.answeringStartedAt,
+                                        ends_at: this.answeringDeadlineAt,
+                                        server_now: this.phaseServerNow || timing.server_now,
+                                    },
+                                );
+                            }, remaining);
+                            this.assignPhaseTimers.push(timerId);
+                            return;
+                        }
+                        this.clearAssignPhaseTimers();
+                        this.showAllAssignRevealItems();
+                        this.setAssignInteractionEnabled(!this.roundSubmitted && !this.eliminated);
+                        timerWrapper?.classList.remove('d-none');
+                        this.startQuestionTimer(
+                            timing.time_limit || this.currentQuestion?.time_limit,
+                            {
+                                ...timing,
+                                starts_at: this.answeringStartedAt,
+                                ends_at: this.answeringDeadlineAt,
+                                server_now: this.phaseServerNow || timing.server_now,
+                            },
+                        );
+                        return;
+                    }
+
+                    if (this.questionPhase === 'content_visible') {
+                        this.showState('questionState');
+                        this.revealAssignContentFromServerTime();
+                        return;
+                    }
+
+                    this.concealAssignRevealItems();
+                    const visibleAt = Date.parse(this.questionVisibleAt || '');
+                    const remaining = Number.isFinite(visibleAt)
+                        ? Math.max(0, visibleAt - this.estimatedPhaseServerNow())
+                        : 0;
+                    if (remaining <= 0) {
+                        this.showState('questionState');
+                        return;
+                    }
+                    this.showState('waitingQuestionState');
+                    const timerId = setTimeout(() => {
+                        if (this.questionPhase === 'prompt_visible') {
+                            this.showState('questionState');
+                        }
+                    }, remaining);
+                    this.assignPhaseTimers.push(timerId);
+                }
+
                 applyAssignBoxTextSizing(element, text) {
                     if (!element) return;
                     element.classList.toggle(
@@ -1962,6 +2294,10 @@
                         this.applyAssignBoxTextSizing(div, leftText);
                         div.dataset.leftIndex = idx;
                         div.addEventListener('dragstart', (e) => {
+                            if (!this.assignInteractionEnabled) {
+                                e.preventDefault();
+                                return;
+                            }
                             e.dataTransfer.setData('text/plain', String(idx));
                             div.classList.add('dragging');
                         });
@@ -2008,7 +2344,7 @@
                         }
 
                         dropZone.addEventListener('dragover', (e) => {
-                            if (this.dropLocked) return;
+                            if (!this.assignInteractionEnabled || this.dropLocked) return;
                             e.preventDefault();
                             dropZone.classList.add('drag-over');
                         });
@@ -2016,7 +2352,7 @@
                             dropZone.classList.remove('drag-over');
                         });
                         dropZone.addEventListener('drop', (e) => {
-                            if (this.dropLocked) return;
+                            if (!this.assignInteractionEnabled || this.dropLocked) return;
                             e.preventDefault();
                             dropZone.classList.remove('drag-over');
                             const leftIndex = parseInt(e.dataTransfer.getData('text/plain'));
@@ -2036,6 +2372,7 @@
                 startAssignPointerDrag(event, item) {
                     if (event.pointerType === 'mouse') return;
                     if (this.pointerDrag) return;
+                    if (!this.assignInteractionEnabled) return;
                     if (this.dropLocked || !item.draggable) return;
                     if (
                         item.classList.contains('inactive-item') ||
@@ -2134,6 +2471,7 @@
                 }
 
                 handleRoundDrop(leftIndex, rightIndex, dropZone, itemText) {
+                    if (!this.assignInteractionEnabled) return;
                     // Vorherigen Match dieser Runde entfernen (nur aktive Zones, nicht abgeschlossene)
                     document.querySelectorAll('.drop-zone:not(.completed-round)').forEach(zone => {
                         const prev = zone.querySelector('.dropped-item');
@@ -2185,6 +2523,7 @@
                     if (this.websocket && this.websocket.readyState === WebSocket.OPEN) {
                         this.websocket.send(JSON.stringify({
                             type: 'participant_update_selection',
+                            question_id: this.currentQuestion?.id,
                             round_index: this.currentRoundIndex,
                             left_item_index: leftIndex,
                             user_match: { [leftIndex]: rightIndex },
@@ -2199,6 +2538,7 @@
                 }
 
                 resetRoundDrop() {
+                    if (!this.assignInteractionEnabled) return;
                     this.dropLocked = false;
                     // Nur aktive Drop-Zone der aktuellen Runde zurücksetzen (abgeschlossene bleiben)
                     document.querySelectorAll('.drop-zone:not(.completed-round)').forEach(zone => {
@@ -2232,6 +2572,7 @@
                     if (this.websocket && this.websocket.readyState === WebSocket.OPEN) {
                         this.websocket.send(JSON.stringify({
                             type: 'participant_update_selection',
+                            question_id: this.currentQuestion?.id,
                             round_index: this.currentRoundIndex,
                             left_item_index: this.currentRoundIndex,
                             user_match: {},
@@ -2239,9 +2580,17 @@
                     }
                 }
 
-                startQuestionTimer(timeLimit) {
+                startQuestionTimer(timeLimit, timing = {}) {
                     clearInterval(this.questionTimer);
-                    let timeLeft = this.normalizeRemainingSeconds(timeLimit, 0);
+                    const endMs = Date.parse(timing?.ends_at || '');
+                    const serverNowMs = Date.parse(timing?.server_now || '');
+                    const clockOffset = Number.isFinite(serverNowMs)
+                        ? serverNowMs - Date.now()
+                        : 0;
+                    const remaining = () => Number.isFinite(endMs)
+                        ? Math.max(0, Math.ceil((endMs - (Date.now() + clockOffset)) / 1000))
+                        : this.normalizeRemainingSeconds(timeLimit, 0);
+                    let timeLeft = remaining();
                     this.setTimerDisplay(timeLeft);
 
                     if (timeLeft <= 0) {
@@ -2250,7 +2599,9 @@
                     }
                     
                     this.questionTimer = setInterval(() => {
-                        timeLeft = Math.max(0, timeLeft - 1);
+                        timeLeft = Number.isFinite(endMs)
+                            ? remaining()
+                            : Math.max(0, timeLeft - 1);
                         this.setTimerDisplay(timeLeft);
                         
                         if (timeLeft <= 0) {
@@ -2262,7 +2613,11 @@
                 }
 
                 submitAnswer() {
-                    if (Object.keys(this.userMatches).length === 0 || this.roundSubmitted) return;
+                    if (
+                        !this.assignInteractionEnabled
+                        || Object.keys(this.userMatches).length === 0
+                        || this.roundSubmitted
+                    ) return;
 
                     const leftIdx = parseInt(Object.keys(this.userMatches)[0]);
                     const rightIdx = this.userMatches[leftIdx];
@@ -2299,6 +2654,7 @@
                 }
 
                 onTimeUp() {
+                    if (this.questionPhase && this.questionPhase !== 'answering_open') return;
                     if (this.hasAnswered || this.roundSubmitted) return;
                     console.log('[onTimeUp] userMatches:', JSON.stringify(this.userMatches), 'currentRoundIndex:', this.currentRoundIndex);
 

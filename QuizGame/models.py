@@ -575,6 +575,42 @@ class QuizSession(SyncBase):
             'correct_responses_current_question',
             'updated_at',
         ])
+
+    def present_question(self, question):
+        """Persist a question before its answer window is opened."""
+        self.quiz.current_question = question
+        self.quiz.question_start_time = None
+        self.current_question_number += 1
+        self.total_questions_sent += 1
+        self.is_question_active = False
+        self.question_end_time = None
+        self.pending_answers = {}
+        self.last_question_result = {}
+        self.total_responses_current_question = 0
+        self.correct_responses_current_question = 0
+        self.quiz.save(update_fields=['current_question', 'question_start_time', 'updated_at'])
+        self.save(update_fields=[
+            'current_question_number',
+            'total_questions_sent',
+            'is_question_active',
+            'question_end_time',
+            'pending_answers',
+            'last_question_result',
+            'total_responses_current_question',
+            'correct_responses_current_question',
+            'updated_at',
+        ])
+
+    def open_answering(self, question, *, started_at, answer_duration_seconds):
+        """Open the persisted question using the authoritative phase timestamp."""
+        if self.quiz.current_question_id != question.id:
+            raise ValueError('Cannot open answering for a different question.')
+        duration = int(answer_duration_seconds)
+        self.quiz.question_start_time = started_at
+        self.is_question_active = True
+        self.question_end_time = started_at + timezone.timedelta(seconds=duration)
+        self.quiz.save(update_fields=['question_start_time', 'updated_at'])
+        self.save(update_fields=['is_question_active', 'question_end_time', 'updated_at'])
     
     def end_current_question(self):
         """End the current active question"""

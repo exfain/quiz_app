@@ -1,4 +1,5 @@
 {% extends "admin_dashboard/base.html" %}
+{% load static %}
 
 {% block title %}Assign Quiz Monitor - QuizMaster Admin{% endblock %}
 
@@ -54,7 +55,7 @@
                                 <label class="form-check-label" for="playTutorialToggle">Tutorial spielen</label>
                             </div>
                             {% endif %}
-                            <button class="btn btn-success" id="startQuizBtn">
+                            <button class="btn btn-success" id="startQuizBtn" data-host-game-start>
                                 <i data-lucide="play"></i>
                                 {% if quiz.status == 'inactive' %}Spiel reaktivieren{% else %}Spiel starten{% endif %}
                             </button>
@@ -75,7 +76,7 @@
                         <i data-lucide="trophy"></i>
                         Leaderboard einblenden
                     </button>
-                    <button type="button" class="btn btn-outline-secondary" id="backToHubBtn">
+                    <button type="button" class="btn btn-outline-secondary" id="backToHubBtn" data-host-game-leave>
                         <i data-lucide="arrow-left"></i>
                         Back to Overview
                     </button>
@@ -172,9 +173,9 @@
                                         </span>
                                     </div>
                                 </div>
-                                <div class="question-timer">
+                                <div class="question-timer{% if question_runtime.question_phase != 'answering_open' %} d-none{% endif %}" id="questionTimerWrapper">
                                     <div class="timer-circle" id="questionTimerCircle">
-                                        <span id="questionTimeLeft">{{ quiz.current_question.time_limit }}</span>
+                                        <span id="questionTimeLeft">{{ current_round_time_left }}</span>
                                     </div>
                                 </div>
                             </div>
@@ -205,7 +206,11 @@
                                 </div>
                                 
                                 <div class="question-actions question-actions--split">
-                                    {% if current_round_index < total_rounds_current|add:"-1" %}
+                                    {% if question_runtime.question_phase == 'prompt_visible' %}
+                                    <button class="btn btn-primary primary-action" id="revealAssignContentBtn" data-question-id="{{ quiz.current_question.id }}" disabled aria-disabled="true">
+                                        ELEMENTE UND ZIELE ENTHÜLLEN
+                                    </button>
+                                    {% elif current_round_index < total_rounds_current|add:"-1" %}
                                     <button class="btn btn-primary primary-action" id="nextRoundBtn">
                                         <i data-lucide="arrow-right"></i>
                                         Nächste Runde (<span id="nextRoundLabel">{{ current_round_index|add:2 }}/{{ total_rounds_current }}</span>)
@@ -870,6 +875,7 @@
 }
 </style>
 
+<script src="{% static 'js/authoritative-game-state.js' %}"></script>
 <script>
 document.addEventListener('DOMContentLoaded', function() {
     // Save hub_session immediately for Back to Overview button
@@ -889,12 +895,24 @@ document.addEventListener('DOMContentLoaded', function() {
             this.websocket = null;
             this.isActive = '{{ quiz.status|escapejs }}' === 'active';
             this.questionTimer = null;
+            this.roundEndsAt = {% if current_round_ends_at %}'{{ current_round_ends_at|date:"c"|escapejs }}'{% else %}null{% endif %};
+            this.serverClockOffsetMs = Date.now() - new Date('{{ snapshot_server_now|date:"c"|escapejs }}').getTime();
+            this.timedOutRound = null;
             this.quizStartTime = {% if quiz.started_at %}new Date('{{ quiz.started_at|date:"c"|escapejs }}'){% else %}null{% endif %};
 
             this.currentRoundIndex = {{ current_round_index }};
             this.totalRoundsCurrentQ = {{ total_rounds_current }};
             this.isLastRound = this.totalRoundsCurrentQ > 0 && this.currentRoundIndex >= this.totalRoundsCurrentQ - 1;
             this.currentPhaseLabel = 'Warte auf Antworten';
+            this.pendingPhaseAction = null;
+            this.phaseAvailabilityTimer = null;
+            this.stateRevision = Number('{{ question_runtime.state_revision|default:"-1" }}');
+            this.gameId = '{{ question_runtime.game_id|default:""|escapejs }}';
+            this.questionPhase = '{{ question_runtime.question_phase|default:""|escapejs }}';
+            this.questionVisibleAt = '{{ question_runtime.question_visible_at|default:""|escapejs }}';
+            this.assignRevealReadyAt = '{% if assign_reveal_ready_at %}{{ assign_reveal_ready_at|date:"c"|escapejs }}{% endif %}';
+            this.presentationServerNow = '{{ question_runtime.server_now|default:""|escapejs }}';
+            this.presentationServerReceivedAt = performance.now();
 
             this.liveResponseState = new Map();
             this.init();
@@ -968,6 +986,7 @@ document.addEventListener('DOMContentLoaded', function() {
             this.applySentStates();
             this.initializeLiveResponseState();
             this.updateMonitorPhase();
+            this.scheduleAssignPhaseAvailability();
         }
         
         connectWebSocket() {
@@ -1000,6 +1019,7 @@ document.addEventListener('DOMContentLoaded', function() {
         }
 
         handleWebSocketMessage(data) {
+            this.applyAuthoritativeMetadata(data);
             switch(data.type) {
                 case 'connection_established':
                     console.log('Connected:', data.message);
@@ -1050,7 +1070,18 @@ document.addEventListener('DOMContentLoaded', function() {
                     break;
 
                 case 'round_advanced':
-                    this.onRoundAdvanced(data);
+                    location.reload();
+                    break;
+
+                case 'question_content_revealed':
+                case 'question_answering_opened':
+                    this.pendingPhaseAction = null;
+                    location.reload();
+                    break;
+
+                case 'action_rejected':
+                    this.pendingPhaseAction = null;
+                    location.reload();
                     break;
 
                 case 'question_rounds_complete':
@@ -1084,6 +1115,55 @@ document.addEventListener('DOMContentLoaded', function() {
                 default:
                     console.log('Unknown message type:', data.type);
             }
+        }
+
+        applyAuthoritativeMetadata(data = {}) {
+            const source = data.snapshot && typeof data.snapshot === 'object' ? data.snapshot : data;
+            const revision = Number(source.state_revision);
+            if (Number.isFinite(revision) && revision >= this.stateRevision) {
+                this.stateRevision = revision;
+            }
+            if (source.game_id) this.gameId = String(source.game_id);
+            if (source.question_phase !== undefined && source.question_phase !== null) {
+                this.questionPhase = String(source.question_phase);
+            }
+            if (source.question_visible_at !== undefined && source.question_visible_at !== null) {
+                this.questionVisibleAt = String(source.question_visible_at);
+            }
+            if (source.assign_reveal_ready_at) {
+                this.assignRevealReadyAt = String(source.assign_reveal_ready_at);
+            }
+            if (source.server_now) {
+                this.presentationServerNow = String(source.server_now);
+                this.presentationServerReceivedAt = performance.now();
+            }
+        }
+
+        estimatedServerNow() {
+            const serverNow = Date.parse(this.presentationServerNow || '');
+            if (!Number.isFinite(serverNow)) return Date.now();
+            return serverNow + (performance.now() - this.presentationServerReceivedAt);
+        }
+
+        scheduleAssignPhaseAvailability() {
+            clearTimeout(this.phaseAvailabilityTimer);
+            const button = document.getElementById('revealAssignContentBtn');
+            if (!button) return;
+            const readyAt = Date.parse(this.questionVisibleAt);
+            const remaining = Number.isFinite(readyAt)
+                ? Math.max(0, readyAt - this.estimatedServerNow())
+                : 0;
+            const enable = () => {
+                button.disabled = false;
+                button.setAttribute('aria-disabled', 'false');
+            };
+            if (remaining <= 0) {
+                enable();
+                return;
+            }
+            button.disabled = true;
+            button.setAttribute('aria-disabled', 'true');
+            this.phaseAvailabilityTimer = setTimeout(enable, remaining);
         }
         
         updateTutorialProgress(completed, total, allDone, participants = []) {
@@ -1205,6 +1285,13 @@ document.addEventListener('DOMContentLoaded', function() {
                 this.sendNextRound();
             });
 
+            document.getElementById('revealAssignContentBtn')?.addEventListener('click', (event) => {
+                this.sendAssignPhaseAction(
+                    'admin_reveal_question_content',
+                    event.currentTarget.dataset.questionId,
+                    event.currentTarget,
+                );
+            });
             // Share Code button
             document.getElementById('shareCodeBtn')?.addEventListener('click', () => {
                 this.shareRoomCode();
@@ -1308,16 +1395,49 @@ document.addEventListener('DOMContentLoaded', function() {
 
                 const payload = {
                     type: 'admin_send_question',
-                    question_id: questionId
+                    hub_session: this.getHubSession(),
+                    ...this.hostActionContext(questionId),
                 };
                 if (customTime) {
                     payload.custom_time_limit = customTime;
-                    // Persist for admin-side timer after backend switches state
-                    try { localStorage.setItem(`override_time_${this.roomCode}`, String(customTime)); } catch(_) {}
                 }
 
                 this.websocket.send(JSON.stringify(payload));
             }
+        }
+
+        getHubSession() {
+            try {
+                const params = new URLSearchParams(window.location.search);
+                return params.get('hub_session') || window.__hubCode || sessionStorage.getItem('_hub_admin') || '';
+            } catch (_) {
+                return '';
+            }
+        }
+
+        hostActionContext(questionId) {
+            return {
+                question_id: questionId,
+                game_id: this.gameId || null,
+                state_revision: this.stateRevision,
+                client_action_id: window.AuthoritativeGameState?.createActionId?.(),
+                expected_round: this.currentRoundIndex,
+                expected_set: Number('{{ quiz_session.current_question_number|default:"0" }}'),
+            };
+        }
+
+        sendAssignPhaseAction(type, questionId, button) {
+            if (this.pendingPhaseAction || button.disabled) return;
+            if (!Number.isFinite(this.stateRevision) || this.stateRevision < 0) return;
+            if (!this.websocket || this.websocket.readyState !== WebSocket.OPEN) return;
+            this.pendingPhaseAction = type;
+            button.disabled = true;
+            button.setAttribute('aria-busy', 'true');
+            this.websocket.send(JSON.stringify({
+                type,
+                hub_session: this.getHubSession(),
+                ...this.hostActionContext(questionId),
+            }));
         }
         
         endCurrentQuestion() {
@@ -1405,47 +1525,27 @@ document.addEventListener('DOMContentLoaded', function() {
 
             // Timer neu starten
             clearInterval(this.questionTimer);
-            // Zeit aus dem gespeicherten Override oder Standard
-            const timeEl = document.getElementById('questionTimeLeft');
-            const timeLimit = timeEl ? parseInt(timeEl.textContent) || 60 : 60;
-            // Setze Timer auf Question-Zeitlimit zurück
-            if (timeEl) timeEl.textContent = data.time_limit || 60;
+            this.roundEndsAt = data.ends_at || null;
+            if (data.server_now) {
+                this.serverClockOffsetMs = Date.now() - new Date(data.server_now).getTime();
+            }
+            this.timedOutRound = null;
             this.startQuestionTimer();
             this.updateMonitorPhase();
         }
         
         startQuestionTimer() {
-            // Prefer any override set at send-time (stored just before backend switched state)
-            let override = null;
-            try {
-                const raw = localStorage.getItem(`override_time_${this.roomCode}`);
-                if (raw) {
-                    const v = parseInt(raw, 10);
-                    if (!isNaN(v) && v > 0) override = v;
-                }
-            } catch(_) {}
-            let serverTimeLeft = 0;
-            try {
-                const serverEl = document.getElementById('questionTimeLeft');
-                if (serverEl && serverEl.textContent) {
-                    const sv = parseInt(serverEl.textContent, 10);
-                    if (!isNaN(sv) && sv > 0) serverTimeLeft = sv;
-                }
-            } catch(_) {}
-            const timeLeft = (override !== null) ? override : serverTimeLeft;
-            if (timeLeft <= 0) return;
-            
-            let currentTime = timeLeft;
             const timerElement = document.getElementById('questionTimeLeft');
             const circleElement = document.getElementById('questionTimerCircle');
+            const endsAtMs = this.roundEndsAt ? new Date(this.roundEndsAt).getTime() : NaN;
+            if (!Number.isFinite(endsAtMs)) return;
             this.currentPhaseLabel = 'Runde läuft';
-            this.updateMonitorPhase();
-            
-            this.questionTimer = setInterval(() => {
-                currentTime--;
+            const update = () => {
+                const serverNowMs = Date.now() - this.serverClockOffsetMs;
+                const currentTime = Math.max(0, Math.ceil((endsAtMs - serverNowMs) / 1000));
                 if (timerElement) timerElement.textContent = currentTime;
                 this.updateMonitorPhase();
-                
+
                 // Update timer circle color based on time left
                 if (circleElement) {
                     circleElement.className = 'timer-circle';
@@ -1455,14 +1555,19 @@ document.addEventListener('DOMContentLoaded', function() {
                         circleElement.classList.add('warning');
                     }
                 }
-                
+
                 if (currentTime <= 0) {
                     clearInterval(this.questionTimer);
-                    this.onQuestionTimeout();
+                    if (this.timedOutRound !== this.currentRoundIndex) {
+                        this.timedOutRound = this.currentRoundIndex;
+                        this.onQuestionTimeout();
+                    }
                 }
-            }, 1000);
-            // Clear one-time override so subsequent questions use their own values
-            try { localStorage.removeItem(`override_time_${this.roomCode}`); } catch(_) {}
+            };
+            update();
+            if (this.timedOutRound !== this.currentRoundIndex) {
+                this.questionTimer = setInterval(update, 250);
+            }
         }
         
         startQuizTimer() {
@@ -1760,7 +1865,7 @@ document.addEventListener('DOMContentLoaded', function() {
     window.adminGameMonitor = monitor;
     
     // Start question timer if there's an active question
-    {% if quiz.current_question %}
+    {% if quiz.current_question and question_runtime.question_phase == 'answering_open' %}
         monitor.startQuestionTimer();
     {% endif %}
 

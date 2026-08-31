@@ -19,8 +19,11 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<script src="{% static 'js/authoritative-game-state.js' %}"></script>
 </head>
-<body class="quiz-play-page clue-rush-play-page">
+<body class="quiz-play-page clue-rush-play-page"
+      data-vhs-progress-kind="question"
+      data-vhs-progress-source="#currentQuestionNumber">
     <div class="play-container">
         <!-- Header -->
         <header class="quiz-header">
@@ -51,8 +54,8 @@
         <main class="quiz-main">
             <div class="container">
                 {% include 'includes/_unit_tutorial_notice.html' %}
-                <div class="row justify-content-center">
-                    <div class="col-lg-8">
+                <div class="row justify-content-center qa-participant-stage">
+                    <div class="col-lg-8 qa-participant-stage__content">
                         <!-- Waiting State -->
                         <div id="waitingQuizState" class="game-state {% if quiz.status != 'waiting' %}d-none{% endif %}">
                             <div class="waiting-card">
@@ -71,7 +74,7 @@
                         </div>
 
                         <!-- Question State -->
-                        <div id="questionState" class="game-state {% if not quiz.current_question %}d-none{% endif %}">
+                        <div id="questionState" class="game-state d-none">
                             <div class="question-card">
                                 <!-- Question Header -->
                                 <div class="question-header">
@@ -938,13 +941,18 @@
                     this.hubSession = '{{ hub_session }}';
                     this.websocket = null;
                     this.questionTimer = null;
-                    this.questionStartTime = null;
                     this.selectedAnswer = null;
                     this.hasAnswered = false;
                     this.scoreHistory = [];
                     this.pendingInputTimer = null;
                     this.serverClockOffsetMs = 0;
                     this.currentQuestionId = null;
+                    this.questionPhase = '';
+                    this.questionVisibleAt = '';
+                    this.questionPresentationTimer = null;
+                    this.pendingQuestion = null;
+                    this.stateRevision = -1;
+                    this.gameId = '';
                     
                     this.init();
                 }
@@ -991,11 +999,6 @@
                 init() {
                     this.connectWebSocket();
                     this.bindEvents();
-                    
-                    // If there's an active question, load it; timers will run per clue on 'clue_started'
-                    {% if quiz.current_question %}
-                        this.loadCurrentQuestion();
-                    {% endif %}
                 }
 
                 connectWebSocket() {
@@ -1038,6 +1041,7 @@
 
                 handleWebSocketMessage(data) {
                     window.sessionGameStartIntro?.handleState(data);
+                    this.applyQuestionLifecycle(data);
                     console.log("Data: ", data);
                     switch(data.type) {
                         case 'quiz_started':
@@ -1055,7 +1059,21 @@
                         case 'question_started':
                             window.gameTutorial?.forceClose();
                             window.unitTutorialNotice?.setFromPayload(data);
-                            this.onQuestionStarted(data.question, data.question.time_limit);
+                            this.onQuestionStarted(
+                                this.mergeQuestionLifecycle(data.question, data),
+                                data.question.time_limit,
+                            );
+                            break;
+
+                        case 'question_answering_opened':
+                            this.onQuestionStarted(
+                                this.mergeQuestionLifecycle(data.question, data),
+                                data.question.time_limit,
+                            );
+                            break;
+
+                        case 'clue_rush_state':
+                            this.applyAuthoritativeState(data);
                             break;
                             
                         case 'question_ended':
@@ -1064,7 +1082,13 @@
                             break;
 
                         case 'clue_started':
+                            this.questionPhase = 'answering_open';
+                            this.setQuestionInteraction(true);
                             this.showClue(data.clue);
+                            break;
+
+                        case 'action_rejected':
+                            this.applyQuestionLifecycle(data.snapshot || data);
                             break;
                             
                         case 'quiz_ended':
@@ -1085,6 +1109,7 @@
                             break;
                         case 'answer_submitted':
                             this.setScoreHistory(data.progress_history);
+                            this.onParticipantRehydrated(data.answer);
                             break;
                         case 'answer_corrected':
                             this.onAnswerCorrected(data);
@@ -1109,15 +1134,28 @@
                 }
 
                 onQuizStarted() {
+                    clearTimeout(this.questionPresentationTimer);
+                    this.questionPhase = '';
                     this.showState('waitingQuizState');
                 }
 
                 onQuestionStarted(question, timeLimit) {
                     clearInterval(this.questionTimer);
-                    this.hasAnswered = false;
-                    this.selectedAnswer = null;
-                    this.questionStartTime = Date.now();
+                    clearTimeout(this.questionPresentationTimer);
+                    const nextQuestionId = question?.id || null;
+                    const isNewQuestion = String(nextQuestionId || '') !== String(this.currentQuestionId || '');
+                    if (isNewQuestion) {
+                        this.hasAnswered = false;
+                        this.selectedAnswer = null;
+                        this.resetClues();
+                    }
                     this.currentQuestionId = question?.id || null;
+                    this.pendingQuestion = question;
+                    this.applyQuestionLifecycle(question);
+                    const questionNumber = Number(question?.question_number);
+                    if (Number.isInteger(questionNumber) && questionNumber > 0) {
+                        document.getElementById('currentQuestionNumber').textContent = String(questionNumber);
+                    }
                     this.syncServerClock(question?.server_now);
                     if (this.pendingInputTimer) clearTimeout(this.pendingInputTimer);
                     const totalTimer = document.getElementById('playerSetTimeLeft');
@@ -1127,14 +1165,133 @@
                         totalTimer.dataset.vhsTimerMaximum = '';
                     }
                     
-                    this.resetClues();
+                    const remainingDelay = this.remainingQuestionPresentationDelay(question);
+                    if (this.questionPhase === 'prompt_visible' && remainingDelay > 0) {
+                        this.setClueTimerVisible(false);
+                        this.showState('waitingQuestionState');
+                        this.questionPresentationTimer = setTimeout(() => {
+                            if (
+                                this.questionPhase === 'prompt_visible'
+                                && String(this.currentQuestionId || '') === String(nextQuestionId || '')
+                            ) {
+                                this.renderQuestionPhase(question);
+                            }
+                        }, remainingDelay);
+                        return;
+                    }
+                    this.renderQuestionPhase(question);
+                }
+
+                mergeQuestionLifecycle(question = {}, lifecycle = {}) {
+                    const merged = {...question};
+                    [
+                        'state_revision',
+                        'server_now',
+                        'game_id',
+                        'question_phase',
+                        'question_presented_at',
+                        'question_visible_at',
+                        'answering_started_at',
+                        'answering_deadline_at',
+                        'answering_allowed',
+                        'timer_running',
+                        'remaining_answer_time',
+                    ].forEach((key) => {
+                        if (lifecycle[key] !== undefined) merged[key] = lifecycle[key];
+                    });
+                    return merged;
+                }
+
+                applyQuestionLifecycle(payload = {}) {
+                    const source = payload.snapshot && typeof payload.snapshot === 'object'
+                        ? payload.snapshot
+                        : payload;
+                    const revision = Number(source.state_revision);
+                    if (Number.isFinite(revision)) this.stateRevision = revision;
+                    if (source.game_id) this.gameId = String(source.game_id);
+                    if (source.question_phase !== undefined && source.question_phase !== null) {
+                        this.questionPhase = String(source.question_phase);
+                    }
+                    if (source.question_visible_at !== undefined && source.question_visible_at !== null) {
+                        this.questionVisibleAt = String(source.question_visible_at);
+                    }
+                    this.syncServerClock(source.server_now);
+                }
+
+                remainingQuestionPresentationDelay(question = {}) {
+                    const visibleAt = this.parseServerTimestamp(
+                        question.question_visible_at || this.questionVisibleAt,
+                    );
+                    if (visibleAt === null) return 0;
+                    return Math.max(0, visibleAt - this.getSynchronizedNowMs());
+                }
+
+                renderQuestionPhase(question) {
                     this.loadQuestion(question);
+                    const answeringOpen = this.questionPhase === 'answering_open';
+                    this.setQuestionInteraction(answeringOpen);
                     this.setClueTimerVisible(false);
                     this.showState('questionState');
                 }
 
+                setQuestionInteraction(enabled) {
+                    const interactive = enabled && !this.hasAnswered;
+                    const input = document.getElementById('shortAnswerInput');
+                    if (input) {
+                        input.disabled = !interactive;
+                        input.setAttribute('aria-disabled', String(!interactive));
+                    }
+                    const submit = document.getElementById('submitAnswerBtn');
+                    if (submit) {
+                        submit.disabled = !interactive || !this.selectedAnswer;
+                        submit.setAttribute('aria-disabled', String(submit.disabled));
+                    }
+                }
+
+                applyAuthoritativeState(data) {
+                    this.setScoreHistory(data.progress_history || []);
+                    if (data.game?.status === 'completed') {
+                        this.onQuizEnded(data);
+                        return;
+                    }
+                    if (data.question) {
+                        const question = this.mergeQuestionLifecycle({
+                            ...data.question,
+                            starts_at: data.starts_at || data.question.starts_at,
+                            ends_at: data.ends_at || data.question.ends_at,
+                            server_now: data.server_now || data.question.server_now,
+                        }, data);
+                        this.onQuestionStarted(question, data.question.time_limit);
+                        if (this.questionPhase === 'answering_open') {
+                            (data.revealed_clues || []).forEach((clue) => this.showClue(clue));
+                        }
+                        const participantState = data.participant_state || {};
+                        if (participantState.answer_locked && participantState.answer) {
+                            this.onParticipantRehydrated(participantState.answer);
+                        } else if (participantState.answer?.answer_text) {
+                            this.selectedAnswer = participantState.answer.answer_text;
+                            const input = document.getElementById('shortAnswerInput');
+                            if (input && this.questionPhase === 'answering_open') {
+                                input.value = this.selectedAnswer;
+                                document.getElementById('submitAnswerBtn').disabled = false;
+                            }
+                        }
+                        return;
+                    }
+                    if (data.revealed && data.revealed_answer) {
+                        this.onQuestionEnded({
+                            correct_answer: data.correct_answer,
+                            answers: [data.revealed_answer],
+                        });
+                    } else {
+                        this.onQuizStarted();
+                    }
+                }
+
                 onQuestionEnded(data) {
                     clearInterval(this.questionTimer);
+                    clearTimeout(this.questionPresentationTimer);
+                    this.questionPhase = '';
                     this.setClueTimerVisible(false);
                     const totalTimer = document.getElementById('playerSetTimeLeft');
                     if (totalTimer) totalTimer.textContent = '0';
@@ -1237,6 +1394,7 @@
                         const createClueItem = () => {
                             const item = document.createElement('li');
                             item.className = 'list-group-item d-flex justify-content-between align-items-center clue-rush-clue';
+                            item.dataset.clueId = String(clue.id ?? clue.order ?? '');
 
                             const index = document.createElement('span');
                             index.className = 'clue-rush-clue__index option-key d-none';
@@ -1262,10 +1420,16 @@
                             return item;
                         };
                         if (list) {
-                            list.appendChild(createClueItem());
+                            const exists = Array.from(list.children).some(
+                                (item) => item.dataset.clueId === String(clue.id ?? clue.order ?? '')
+                            );
+                            if (!exists) list.appendChild(createClueItem());
                         }
                         if (listSubmitted) {
-                            listSubmitted.appendChild(createClueItem());
+                            const exists = Array.from(listSubmitted.children).some(
+                                (item) => item.dataset.clueId === String(clue.id ?? clue.order ?? '')
+                            );
+                            if (!exists) listSubmitted.appendChild(createClueItem());
                         }
                     } catch (e) { console.error(e); }
                 }
@@ -1283,15 +1447,10 @@
                                 this.startClueTimer(clue);
                             }
                         } else {
-                            clearInterval(this.questionTimer);
-                            this.setClueTimerVisible(false);
-                            const totalTimer = document.getElementById('playerSetTimeLeft');
-                            if (totalTimer) {
-                                totalTimer.textContent = '0';
-                                if (Number.isFinite(Number(clue?.sequence_duration))) {
-                                    totalTimer.dataset.vhsTimerMaximum = String(Math.max(1, Number(clue.sequence_duration)));
-                                }
+                            if (clue.end_time) {
+                                this.startClueTimer(clue);
                             }
+                            this.setClueTimerVisible(false);
                         }
                     } catch (e) { console.error(e); }
                 }
@@ -1387,6 +1546,8 @@
 
                 onQuizEnded(data) {
                     clearInterval(this.questionTimer);
+                    clearTimeout(this.questionPresentationTimer);
+                    this.questionPhase = '';
                     this.setClueTimerVisible(false);
                     const totalTimer = document.getElementById('playerSetTimeLeft');
                     if (totalTimer) totalTimer.textContent = '0';
@@ -1442,20 +1603,27 @@
                     input.placeholder = 'Antwort eingeben...';
                     input.id = 'shortAnswerInput';
                     input.autocomplete = 'off';
+                    input.disabled = this.questionPhase !== 'answering_open';
+                    input.setAttribute('aria-disabled', String(input.disabled));
                     input.addEventListener('input', () => {
+                        if (this.questionPhase !== 'answering_open') return;
                         this.selectedAnswer = input.value.trim();
                         document.getElementById('submitAnswerBtn').disabled = !this.selectedAnswer;
                         if (this.pendingInputTimer) clearTimeout(this.pendingInputTimer);
                         const pendingAnswer = this.selectedAnswer;
                         this.pendingInputTimer = setTimeout(() => {
-                            if (this.hasAnswered || !this.websocket || this.websocket.readyState !== WebSocket.OPEN) return;
-                            const timeTaken = this.questionStartTime ? ((Date.now() - this.questionStartTime) / 1000) : 0;
+                            if (
+                                this.questionPhase !== 'answering_open'
+                                || this.hasAnswered
+                                || !this.websocket
+                                || this.websocket.readyState !== WebSocket.OPEN
+                            ) return;
                             this.websocket.send(JSON.stringify({
                                 type: 'participant_input_changed',
                                 participant_name: this.participantName,
                                 hub_session: this.hubSession,
-                                answer: pendingAnswer,
-                                time_taken: timeTaken
+                                question_id: this.currentQuestionId,
+                                answer: pendingAnswer
                             }));
                         }, 180);
                     });
@@ -1466,11 +1634,13 @@
                 }
 
                 submitAnswer() {
-                    if (!this.selectedAnswer || this.hasAnswered) return;
+                    if (
+                        this.questionPhase !== 'answering_open'
+                        || !this.selectedAnswer
+                        || this.hasAnswered
+                    ) return;
                     if (this.pendingInputTimer) clearTimeout(this.pendingInputTimer);
-                    
-                    const timeTaken = (Date.now() - this.questionStartTime) / 1000;
-                    
+
                     // Disable all options
                     document.querySelectorAll('.answer-option').forEach(option => {
                         option.classList.add('disabled');
@@ -1487,18 +1657,11 @@
                         type: 'participant_submit_answer',
                         participant_name: this.participantName,
                         hub_session: this.hubSession,
-                        answer: this.selectedAnswer,
-                        time_taken: timeTaken
+                        question_id: this.currentQuestionId,
+                        answer: this.selectedAnswer
                     }));
                     
                     this.hasAnswered = true;
-                    
-                    // Show submitted state
-                    setTimeout(() => {
-                        document.getElementById('submittedAnswerText').textContent = this.selectedAnswer;
-                        document.getElementById('submittedTime').textContent = timeTaken.toFixed(1);
-                        this.showState('answerSubmittedState');
-                    }, 500);
                 }
 
                 showWaitingForNextQuestion() {

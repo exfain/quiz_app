@@ -9,15 +9,18 @@ from django.views.decorators.http import require_POST
 from django.db import transaction
 from django.db.models import Count, Q, Avg
 from django.utils import timezone
+from django.utils.dateparse import parse_datetime
 from django.contrib import messages
 from django.urls import NoReverseMatch, reverse
 import json
 import math
 import re
+import uuid
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
 from QuizGame.models import Quiz, QuizQuestion, QuizParticipant, QuizAnswer, QuizSession, QuizBundle
 from sorting_ladder.models import SortingLadderGame, SortingLadderParticipant, SortingQuestion, SortingItem, SortingLadderSession, SortingBundle
+from sorting_ladder.runtime import sorting_ladder_reveal_ready_at
 from Assign.models import AssignQuiz, AssignQuestion, AssignParticipant, AssignBundle
 from Assign.scoreboard import build_question_scoreboard
 from Estimation.models import EstimationQuiz, EstimationQuestion, EstimationParticipant, EstimationBundle
@@ -44,7 +47,9 @@ from games_hub.active_game_guard import (
     get_game_model_map,
     resolve_session_game_activation_for_room,
 )
-from games_hub.models import HubSession, HubParticipant, HubGameStep
+from games_hub.models import GameRuntimeState, HubSession, HubParticipant, HubGameStep
+from games_hub.host_permissions import authorize_game_host, user_can_manage_hub_session
+from games_hub.authoritative_state import current_snapshot, present_question, reset_question_flow
 from games_hub.unit_tutorial_runtime import get_unit_tutorial_state, is_current_unit_tutorial_question
 from games_website.services import sync_all_models_to_supabase, restore_all_models_from_supabase
 
@@ -164,6 +169,8 @@ def end_session(request):
         if not session_code:
             return JsonResponse({'success': False, 'error': 'session_code required'}, status=400)
         session = HubSession.objects.get(code=session_code)
+        if not user_can_manage_hub_session(request.user, session):
+            return JsonResponse({'success': False, 'error': 'Unauthorized'}, status=403)
         session_room_codes = list(
             session.steps.exclude(room_code='').values_list('room_code', flat=True)
         )
@@ -193,7 +200,7 @@ def end_session(request):
 @require_POST
 def end_all_active_games(request):
     """End all currently active games across every supported game type."""
-    if not is_admin(request.user):
+    if not request.user.is_superuser:
         return JsonResponse({'success': False, 'error': 'Unauthorized'}, status=403)
 
     try:
@@ -221,7 +228,10 @@ def delete_session(request):
         session_code = data.get('session_code')
         if not session_code:
             return JsonResponse({'success': False, 'error': 'session_code required'}, status=400)
-        HubSession.objects.filter(code=session_code).delete()
+        session = get_object_or_404(HubSession, code=session_code)
+        if not user_can_manage_hub_session(request.user, session):
+            return JsonResponse({'success': False, 'error': 'Unauthorized'}, status=403)
+        session.delete()
         return JsonResponse({'success': True})
     except Exception as e:
         return JsonResponse({'success': False, 'error': str(e)}, status=500)
@@ -242,6 +252,8 @@ def duplicate_session(request):
             return JsonResponse({'success': False, 'error': 'session_code required'}, status=400)
 
         original = get_object_or_404(HubSession, code=session_code)
+        if not user_can_manage_hub_session(request.user, original):
+            return JsonResponse({'success': False, 'error': 'Unauthorized'}, status=403)
 
         # Generate a unique new code
         def _gen():
@@ -253,6 +265,7 @@ def duplicate_session(request):
         new_session = HubSession.objects.create(
             code=new_code,
             name=original.name,
+            creator=request.user,
             games_weight=original.games_weight,
             is_active=False,
             # started_at and ended_at default to None → planned
@@ -329,7 +342,7 @@ def duplicate_session(request):
 @login_required
 def clear_all_sessions(request):
     """Clear all quiz sessions"""
-    if not is_admin(request.user):
+    if not request.user.is_superuser:
         return JsonResponse({'success': False, 'error': 'Unauthorized'}, status=403)
     
     try:
@@ -543,6 +556,9 @@ def delete_clue_rush_game(request):
 @admin_required
 def clue_rush_monitor(request, room_code):
     hub_session = request.GET.get('hub_session')
+    from clue_rush.runtime import reconcile_clue_schedule
+
+    reconcile_clue_schedule(room_code)
     quiz = get_object_or_404(ClueRushGame, room_code=room_code)
 
     if not request.user.is_superuser and quiz.creator != request.user:
@@ -629,6 +645,11 @@ def clue_rush_monitor(request, room_code):
         'current_clue_time_left': current_clue_time_left,
         'current_clue_has_next': current_clue_has_next,
         'current_revealed_clue_count': current_revealed_clue_count,
+        'question_runtime': current_snapshot(
+            'clue_rush',
+            room_code,
+            response_session_code,
+        ),
         'initial_live_responses': initial_live_responses,
         'lobby_url': _get_lobby_url(request, room_code),
         'current_unit_is_tutorial': is_current_unit_tutorial_question('clue_rush', quiz.room_code, response_session_code, quiz.current_question_id),
@@ -821,6 +842,12 @@ def sorting_ladder_monitor(request, room_code):
     if not request.user.is_superuser and quiz.creator != request.user:
         return redirect('admin_dashboard:sorting_ladder_management')
 
+    if quiz.status == 'waiting':
+        # A waiting monitor always starts from question selection. Persisted
+        # state from a previous run is cleared by the authoritative start action.
+        quiz.current_question = None
+        quiz.tutorial_active = False
+
     participants_qs = quiz.participants.all()
     if hub_session:
         participants_qs = participants_qs.filter(hub_session_code=hub_session)
@@ -844,6 +871,14 @@ def sorting_ladder_monitor(request, room_code):
         quiz.current_question.total_time = quiz.current_question.round_time_limit * (quiz.current_question.elements.count() - 1) + 10
 
     session, _ = SortingLadderSession.objects.get_or_create(quiz=quiz)
+    question_runtime = current_snapshot('sorting_ladder', room_code, hub_session)
+    reveal_ready_at = sorting_ladder_reveal_ready_at(
+        content_revealed_at=parse_datetime(
+            question_runtime.get('content_revealed_at') or ''
+        ),
+        item_count=(quiz.current_question.elements.count() if quiz.current_question else 0),
+        round_number=max(int(session.current_round or 0), 1),
+    )
     current_round_time_left = 0
     if quiz.current_question and session.is_round_active and session.round_end_time:
         current_round_time_left = max(
@@ -857,6 +892,8 @@ def sorting_ladder_monitor(request, room_code):
         'participant_count': participants.count(),
         'available_questions': available_questions,
         'session': session,
+        'question_runtime': question_runtime,
+        'sorting_reveal_ready_at': reveal_ready_at,
         'current_round_time_left': current_round_time_left,
         'lobby_url': _get_lobby_url(request, room_code),
         'hub_session': hub_session or '',
@@ -1782,6 +1819,10 @@ def wer_weiss_mehr_monitor(request, room_code):
     quiz = get_object_or_404(WerWeissMehrGame, room_code=room_code)
     if not request.user.is_superuser and quiz.creator != request.user:
         return redirect('admin_dashboard:manage_games')
+    if hub_session and not authorize_game_host(
+        request.user, 'wer_weiss_mehr', room_code, hub_session
+    ).allowed:
+        return redirect('admin_dashboard:manage_games')
 
     participants = quiz.participants.all()
     if hub_session:
@@ -1826,6 +1867,15 @@ def end_wer_weiss_mehr_game_by_room_code(request, room_code):
             _extract_hub_session_code(request)
             or _get_active_hub_session_code_for_room('wer_weiss_mehr', room_code)
         )
+        authorization = authorize_game_host(
+            request.user, 'wer_weiss_mehr', room_code, hub_session
+        )
+        if not authorization.allowed:
+            return JsonResponse({
+                'success': False,
+                'error': authorization.message,
+                'code': authorization.code,
+            }, status=403)
         quiz.end_quiz('completed')
         quiz.refresh_from_db()
 
@@ -2332,7 +2382,11 @@ def update_buzzer_game(request):
 @admin_required
 def buzzer_monitor(request, room_code):
     game = get_object_or_404(BuzzerGame, room_code=room_code)
+    if not request.user.is_superuser and game.creator != request.user:
+        return redirect('admin_dashboard:manage_games')
     hub_session = _extract_hub_session_code(request) or _get_active_hub_session_code_for_room('buzzer', room_code)
+    if hub_session and not authorize_game_host(request.user, 'buzzer', room_code, hub_session).allowed:
+        return redirect('admin_dashboard:manage_games')
     if hub_session:
         game.ensure_snapshot_participants(hub_session)
     return render(request, 'admin_dashboard/buzzer_monitor.html', {
@@ -2346,6 +2400,12 @@ def buzzer_monitor(request, room_code):
 @admin_required
 def end_buzzer_game_by_room_code(request, room_code):
     game = get_object_or_404(BuzzerGame, room_code=room_code)
+    if not request.user.is_superuser and game.creator != request.user:
+        return JsonResponse({'success': False, 'error': 'Unauthorized'}, status=403)
+    hub_session = _extract_hub_session_code(request) or _get_active_hub_session_code_for_room('buzzer', room_code)
+    authorization = authorize_game_host(request.user, 'buzzer', room_code, hub_session)
+    if not authorization.allowed:
+        return JsonResponse({'success': False, 'error': authorization.message, 'code': authorization.code}, status=403)
     game.end_quiz()
     if request.headers.get('x-requested-with') == 'XMLHttpRequest' or request.content_type == 'application/json':
         return JsonResponse({'success': True})
@@ -2401,7 +2461,11 @@ def update_host_points_game(request):
 @admin_required
 def host_points_monitor(request, room_code):
     game = get_object_or_404(HostPointsGame, room_code=room_code)
+    if not request.user.is_superuser and game.creator != request.user:
+        return redirect('admin_dashboard:manage_games')
     hub_session = _extract_hub_session_code(request) or _get_active_hub_session_code_for_room('host_points', room_code)
+    if hub_session and not authorize_game_host(request.user, 'host_points', room_code, hub_session).allowed:
+        return redirect('admin_dashboard:manage_games')
     if hub_session:
         game.ensure_snapshot_participants(hub_session)
     return render(request, 'admin_dashboard/host_points_monitor.html', {
@@ -2415,6 +2479,12 @@ def host_points_monitor(request, room_code):
 @admin_required
 def end_host_points_game_by_room_code(request, room_code):
     game = get_object_or_404(HostPointsGame, room_code=room_code)
+    if not request.user.is_superuser and game.creator != request.user:
+        return JsonResponse({'success': False, 'error': 'Unauthorized'}, status=403)
+    hub_session = _extract_hub_session_code(request) or _get_active_hub_session_code_for_room('host_points', room_code)
+    authorization = authorize_game_host(request.user, 'host_points', room_code, hub_session)
+    if not authorization.allowed:
+        return JsonResponse({'success': False, 'error': authorization.message, 'code': authorization.code}, status=403)
     game.end_quiz()
     if request.headers.get('x-requested-with') == 'XMLHttpRequest' or request.content_type == 'application/json':
         return JsonResponse({'success': True})
@@ -2551,7 +2621,11 @@ def update_wann_war_das_game(request):
 @admin_required
 def wann_war_das_monitor(request, room_code):
     game = get_object_or_404(WannWarDasGame, room_code=room_code)
+    if not request.user.is_superuser and game.creator != request.user:
+        return redirect('admin_dashboard:manage_games')
     hub_session = _extract_hub_session_code(request) or _get_active_hub_session_code_for_room('wann_war_das', room_code)
+    if hub_session and not authorize_game_host(request.user, 'wann_war_das', room_code, hub_session).allowed:
+        return redirect('admin_dashboard:manage_games')
     if hub_session:
         game.ensure_snapshot_participants(hub_session)
     available_questions = game.get_ordered_questions(hub_session, include_tutorial=True)
@@ -2569,6 +2643,12 @@ def wann_war_das_monitor(request, room_code):
 @admin_required
 def end_wann_war_das_game_by_room_code(request, room_code):
     game = get_object_or_404(WannWarDasGame, room_code=room_code)
+    if not request.user.is_superuser and game.creator != request.user:
+        return JsonResponse({'success': False, 'error': 'Unauthorized'}, status=403)
+    hub_session = _extract_hub_session_code(request) or _get_active_hub_session_code_for_room('wann_war_das', room_code)
+    authorization = authorize_game_host(request.user, 'wann_war_das', room_code, hub_session)
+    if not authorization.allowed:
+        return JsonResponse({'success': False, 'error': authorization.message, 'code': authorization.code}, status=403)
     game.end_quiz()
     if request.headers.get('x-requested-with') == 'XMLHttpRequest' or request.content_type == 'application/json':
         return JsonResponse({'success': True})
@@ -3712,6 +3792,7 @@ def quiz_monitor(request, room_code):
         'quiz_session': quiz_session,
         'lobby_url': _get_lobby_url(request, room_code),
         'current_unit_is_tutorial': is_current_unit_tutorial_question('quiz', quiz.room_code, hub_session, quiz.current_question_id),
+        'question_runtime': current_snapshot('quiz', quiz.room_code, hub_session),
     }
     return render(request, 'admin_dashboard/quiz_monitor.html', context)
 
@@ -5632,6 +5713,13 @@ def api_where_questions(request):
 # ASSIGN GAMES VIEWS
 
 from Assign.models import AssignQuiz, AssignQuestion, AssignParticipant, AssignAnswer, AssignSession
+from Assign.runtime import (
+    ASSIGN_REVEAL_ANIMATION_MS,
+    ASSIGN_REVEAL_STAGGER_MS,
+    assign_reveal_counts,
+    assign_reveal_ready_at,
+    current_set_runtime,
+)
 
 @admin_required
 def assign_management(request):
@@ -5667,8 +5755,46 @@ def assign_monitor(request, room_code):
     # Get or create quiz session
     quiz_session, created = AssignSession.objects.get_or_create(quiz=quiz)
     
-    current_round_index = quiz_session.current_round_index
-    total_rounds_current = len(quiz.current_question.correct_matches or {}) if quiz.current_question else 0
+    runtime = current_set_runtime(room_code, hub_session)
+    question_runtime = current_snapshot('assign', room_code, hub_session)
+    runtime_is_current = bool(
+        runtime
+        and quiz.current_question_id
+        and runtime.question_id == quiz.current_question_id
+    )
+    current_round_index = (
+        runtime.current_round_index
+        if runtime_is_current
+        else quiz_session.current_round_index
+    )
+    current_question = runtime.question if runtime_is_current else quiz.current_question
+    total_rounds_current = len(current_question.correct_matches or {}) if current_question else 0
+    current_round_ends_at = (
+        runtime.round_ends_at
+        if (
+            runtime_is_current
+            and runtime.phase == runtime.PHASE_ACTIVE
+            and (
+                question_runtime.get('question_flow_mode') != 'manual_three_phase'
+                or question_runtime.get('question_phase') == 'answering_open'
+            )
+        )
+        else None
+    )
+    current_round_time_left = (
+        max(
+            0,
+            math.ceil((current_round_ends_at - timezone.now()).total_seconds()),
+        )
+        if current_round_ends_at
+        else 0
+    )
+    target_reveal_count, element_reveal_count = assign_reveal_counts(runtime)
+    content_revealed_at = question_runtime.get('content_revealed_at')
+    parsed_content_revealed_at = (
+        parse_datetime(content_revealed_at) if content_revealed_at else None
+    )
+    reveal_ready_at = assign_reveal_ready_at(runtime, parsed_content_revealed_at)
 
     context = {
         'quiz': quiz,
@@ -5680,6 +5806,15 @@ def assign_monitor(request, room_code):
         'hub_session': hub_session or '',
         'current_round_index': current_round_index,
         'total_rounds_current': total_rounds_current,
+        'current_round_ends_at': current_round_ends_at,
+        'current_round_time_left': current_round_time_left,
+        'snapshot_server_now': timezone.now(),
+        'question_runtime': question_runtime,
+        'assign_target_reveal_count': target_reveal_count,
+        'assign_element_reveal_count': element_reveal_count,
+        'assign_reveal_stagger_ms': ASSIGN_REVEAL_STAGGER_MS,
+        'assign_reveal_animation_ms': ASSIGN_REVEAL_ANIMATION_MS,
+        'assign_reveal_ready_at': reveal_ready_at,
         'current_unit_is_tutorial': is_current_unit_tutorial_question('assign', quiz.room_code, hub_session, quiz.current_question_id),
     }
     return render(request, 'admin_dashboard/assign_monitor.html', context)
@@ -6658,7 +6793,9 @@ def estimation_game_details(request, quiz_id):
 @admin_required
 def estimation_monitor(request, room_code):
     """Real-time estimation quiz monitoring page"""
-    hub_session = request.GET.get('hub_session')
+    hub_session = request.GET.get('hub_session') or _get_active_hub_session_code_for_room(
+        'estimation', room_code,
+    )
     quiz = get_object_or_404(EstimationQuiz, room_code=room_code)
     default_question_time_limit = 90
     
@@ -6674,6 +6811,7 @@ def estimation_monitor(request, room_code):
     
     # Get or create quiz session
     quiz_session, created = EstimationSession.objects.get_or_create(quiz=quiz)
+    question_runtime = current_snapshot('estimation', room_code, hub_session)
     
     context = {
         'quiz': quiz,
@@ -6681,6 +6819,7 @@ def estimation_monitor(request, room_code):
         'participant_count': participants.count(),
         'available_questions': available_questions,
         'quiz_session': quiz_session,
+        'question_runtime': question_runtime,
         # Estimation currently uses a shared 90-second runtime default,
         # not a per-question persisted time_limit field.
         'default_question_time_limit': default_question_time_limit,
@@ -6709,6 +6848,15 @@ def start_estimation_quiz(request, room_code):
             return guard_response
         
         quiz.start_quiz()
+        session_code = _extract_hub_session_code(request) or _get_active_hub_session_code_for_room(
+            'estimation', room_code,
+        )
+        reset_question_flow(
+            game_key='estimation',
+            room_code=room_code,
+            session_code=session_code,
+            mode=GameRuntimeState.QUESTION_FLOW_MANUAL_THREE_PHASE,
+        )
         
         return JsonResponse({'success': True})
     except Exception as e:
@@ -6802,16 +6950,48 @@ def send_estimation_question(request, room_code):
                 'error': 'This question is not part of the selected set for this quiz.'
             }, status=400)
         
-        # Get or create quiz session
-        quiz_session, created = EstimationSession.objects.get_or_create(quiz=quiz)
-        
-        # Send the question
-        quiz_session.send_question(question)
+        session_code = _extract_hub_session_code(request) or _get_active_hub_session_code_for_room(
+            'estimation', room_code,
+        )
+        runtime = current_snapshot('estimation', room_code, session_code)
+        action = {
+            'client_action_id': data.get('client_action_id') or str(uuid.uuid4()),
+            'state_revision': runtime.get('state_revision'),
+            'game_id': runtime.get('game_id'),
+            'question_id': question.id,
+        }
+        try:
+            answer_duration = int(data.get('custom_time_limit') or 90)
+        except (TypeError, ValueError):
+            answer_duration = 90
+        if answer_duration <= 0:
+            answer_duration = 90
+
+        with transaction.atomic():
+            locked_quiz = EstimationQuiz.objects.select_for_update().get(pk=quiz.pk)
+            quiz_session, _ = EstimationSession.objects.select_for_update().get_or_create(
+                quiz=locked_quiz,
+            )
+            decision = present_question(
+                game_key='estimation',
+                room_code=room_code,
+                session_code=session_code,
+                action=action,
+                answer_duration_seconds=answer_duration,
+            )
+            if decision.accepted and not decision.duplicate:
+                quiz_session.prepare_question(question)
+        if not decision.accepted:
+            return JsonResponse({
+                'success': False,
+                'error': decision.message,
+                'code': decision.code,
+            }, status=409)
         
         # Here you would typically send a WebSocket message to all participants
         # We'll implement this in the WebSocket consumer
         
-        return JsonResponse({'success': True})
+        return JsonResponse({'success': True, 'question_phase': decision.snapshot.get('question_phase')})
     except Exception as e:
         return JsonResponse({
             'success': False,
@@ -7022,6 +7202,16 @@ def who_monitor(request, room_code):
     
     # Get or create quiz session
     quiz_session, created = WhoSession.objects.get_or_create(quiz=quiz)
+    question_runtime = current_snapshot('who', room_code, hub_session)
+    manual_question_flow = (
+        question_runtime.get('question_flow_mode')
+        == GameRuntimeState.QUESTION_FLOW_MANUAL_THREE_PHASE
+    )
+    question_answering_open = (
+        not manual_question_flow
+        or question_runtime.get('question_phase')
+        == GameRuntimeState.QUESTION_PHASE_ANSWERING_OPEN
+    )
     current_question_time_left = None
     current_question_people = []
     current_person_index = 0
@@ -7055,7 +7245,7 @@ def who_monitor(request, room_code):
         current_person_index = timer_state['current_person_index']
         current_question_time_left = timer_state['current_person_time_left']
         current_question_started_at = quiz.question_start_time
-        if people_count:
+        if people_count and question_answering_open:
             current_person_name = current_question_people[current_person_index].get('name') or None
     
     context = {
@@ -7064,6 +7254,7 @@ def who_monitor(request, room_code):
         'participant_count': participants.count(),
         'available_questions': available_questions,
         'quiz_session': quiz_session,
+        'total_sets': available_questions.count(),
         'lobby_url': _get_lobby_url(request, room_code),
         'current_question_time_left': current_question_time_left,
         'current_question_people': current_question_people,
@@ -7072,6 +7263,8 @@ def who_monitor(request, room_code):
         'current_question_time_per_person': current_question_time_per_person,
         'current_question_started_at': current_question_started_at,
         'who_timer_server_now': who_timer_server_now,
+        'question_runtime': question_runtime,
+        'question_answering_open': question_answering_open,
         'current_unit_is_tutorial': is_current_unit_tutorial_question('who', quiz.room_code, hub_session, quiz.current_question_id),
     }
     return render(request, 'admin_dashboard/who_lying_monitor.html', context)
@@ -7729,9 +7922,29 @@ def who_that_monitor(request, room_code):
     
     # Get or create quiz session
     quiz_session, created = WhoThatSession.objects.get_or_create(quiz=quiz)
+    question_runtime = current_snapshot(
+        'who_that',
+        room_code,
+        active_hub_session_code,
+    )
+    question_phase = question_runtime.get('question_phase')
+    manual_question_flow = question_runtime.get('question_flow_mode') == 'manual_three_phase'
+    question_answering_open = bool(
+        question_runtime.get('answering_allowed')
+        if manual_question_flow
+        else quiz_session.is_question_active
+    )
+    current_question_presented = bool(
+        quiz.current_question_id
+        and (
+            question_phase in {'content_visible', 'answering_open'}
+            if manual_question_flow
+            else quiz_session.is_question_active
+        )
+    )
     review_question = None
     raw_review_question_id = request.GET.get('review_question')
-    if raw_review_question_id and not (quiz.current_question_id and quiz_session.is_question_active):
+    if raw_review_question_id and not current_question_presented:
         try:
             review_question_id = int(raw_review_question_id)
         except (TypeError, ValueError):
@@ -7746,9 +7959,9 @@ def who_that_monitor(request, room_code):
                 ).first()
 
     display_question = quiz.current_question if quiz.current_question_id else review_question
-    is_display_question_active = bool(quiz.current_question_id and quiz_session.is_question_active)
+    is_display_question_active = current_question_presented
     current_question_time_left = None
-    if display_question and is_display_question_active:
+    if display_question and question_answering_open:
         current_question_time_left = display_question.time_limit
         if quiz_session.question_end_time:
             current_question_time_left = max(
@@ -7765,6 +7978,9 @@ def who_that_monitor(request, room_code):
         'active_hub_session_code': active_hub_session_code,
         'display_question': display_question,
         'is_display_question_active': is_display_question_active,
+        'question_runtime': question_runtime,
+        'question_phase': question_phase,
+        'question_answering_open': question_answering_open,
         'review_question_id': review_question.id if review_question else None,
         'current_question_time_left': current_question_time_left,
         'lobby_url': _get_lobby_url(request, room_code),
@@ -7900,6 +8116,16 @@ def start_who_that_quiz(request, room_code):
             return guard_response
         
         quiz.start_quiz()
+        session_code = _extract_hub_session_code(request) or _get_active_hub_session_code_for_room(
+            'who_that',
+            room_code,
+        )
+        reset_question_flow(
+            game_key='who_that',
+            room_code=room_code,
+            session_code=session_code,
+            mode=GameRuntimeState.QUESTION_FLOW_MANUAL_THREE_PHASE,
+        )
         
         return JsonResponse({'success': True})
     except Exception as e:
@@ -7993,13 +8219,68 @@ def send_who_that_question(request, room_code):
                 'error': 'This question is not part of the selected set for this quiz.'
             }, status=400)
         
-        # Get or create quiz session
-        quiz_session, created = WhoThatSession.objects.get_or_create(quiz=quiz)
-        
-        # Send the question
-        quiz_session.send_question(question)
-        
-        return JsonResponse({'success': True})
+        session_code = _extract_hub_session_code(request) or _get_active_hub_session_code_for_room(
+            'who_that',
+            room_code,
+        )
+        snapshot = current_snapshot('who_that', room_code, session_code)
+        effective_time_limit = data.get('custom_time_limit') or question.time_limit
+        with transaction.atomic():
+            quiz_session, created = WhoThatSession.objects.select_for_update().get_or_create(quiz=quiz)
+            decision = present_question(
+                game_key='who_that',
+                room_code=room_code,
+                session_code=session_code,
+                action={
+                    'question_id': question.id,
+                    'game_id': str(quiz.id),
+                    'state_revision': data.get('state_revision', snapshot['state_revision']),
+                    'client_action_id': data.get('client_action_id') or str(uuid.uuid4()),
+                },
+                answer_duration_seconds=effective_time_limit,
+            )
+            if decision.accepted and not decision.duplicate:
+                quiz_session.prepare_question(question)
+
+        if not decision.accepted:
+            return JsonResponse({
+                'success': False,
+                'code': decision.code,
+                'error': decision.message,
+                'snapshot': decision.snapshot,
+            }, status=409)
+
+        lifecycle_fields = {
+            key: decision.snapshot.get(key)
+            for key in (
+                'state_revision',
+                'server_now',
+                'game_id',
+                'question_phase',
+                'question_presented_at',
+                'question_visible_at',
+                'content_revealed_at',
+                'answering_started_at',
+                'answering_deadline_at',
+                'answering_allowed',
+                'timer_running',
+                'remaining_answer_time',
+            )
+        }
+        async_to_sync(get_channel_layer().group_send)(
+            f'who_that_{room_code}',
+            {
+                'type': 'question_prepared',
+                'question': {
+                    'id': question.id,
+                    'points': 1,
+                    'question_number': quiz_session.current_question_number,
+                    'time_limit': effective_time_limit,
+                },
+                **lifecycle_fields,
+            },
+        )
+        return JsonResponse({'success': True, **lifecycle_fields})
     except Exception as e:
         return JsonResponse({
             'success': False,
@@ -8717,6 +8998,7 @@ def blackjack_monitor(request, room_code):
             ),
         })
     tutorial_state = get_unit_tutorial_state('blackjack', quiz.room_code, hub_session)
+    question_runtime = current_snapshot('blackjack', quiz.room_code, hub_session)
     
     context = {
         'quiz': quiz,
@@ -8724,6 +9006,7 @@ def blackjack_monitor(request, room_code):
         'participant_count': len(participants),
         'available_questions': available_questions,
         'quiz_session': quiz_session,
+        'question_runtime': question_runtime,
         'lobby_url': _get_lobby_url(request, room_code),
         'can_change_scoring_mode': quiz.can_change_scoring_mode(),
         'total_game_questions': total_game_questions,

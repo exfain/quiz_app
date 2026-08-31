@@ -1,4 +1,5 @@
 import json
+import uuid
 from pathlib import Path
 
 from asgiref.sync import async_to_sync
@@ -8,8 +9,16 @@ from django.core.exceptions import ValidationError
 from django.test import Client, TestCase, TransactionTestCase
 from django.urls import reverse
 from django.utils import timezone
+from django.utils.dateparse import parse_datetime
 
-from games_hub.models import HubGameParticipantSnapshot, HubGameStep, HubParticipant, HubSession
+from games_hub.authoritative_state import current_snapshot, reset_question_flow
+from games_hub.models import (
+    GameRuntimeState,
+    HubGameParticipantSnapshot,
+    HubGameStep,
+    HubParticipant,
+    HubSession,
+)
 from games_hub.views import get_leaderboard_data
 
 from .consumers import WannWarDasConsumer
@@ -70,6 +79,25 @@ class WannWarDasStartFlowTests(TransactionTestCase):
         consumer.send = fake_send
         return consumer, sent_messages
 
+    def enable_manual_question_flow(self):
+        return reset_question_flow(
+            game_key='wann_war_das',
+            room_code=self.game.room_code,
+            session_code=self.session.code,
+            mode=GameRuntimeState.QUESTION_FLOW_MANUAL_THREE_PHASE,
+        )
+
+    def phase_action(self, question_id, **extra):
+        snapshot = current_snapshot('wann_war_das', self.game.room_code, self.session.code)
+        return {
+            'hub_session': self.session.code,
+            'question_id': question_id,
+            'game_id': snapshot.get('game_id'),
+            'state_revision': snapshot['state_revision'],
+            'client_action_id': str(uuid.uuid4()),
+            **extra,
+        }
+
     def test_monitor_hydration_does_not_mark_players_as_already_in_game(self):
         client = Client()
         client.force_login(self.user)
@@ -83,7 +111,9 @@ class WannWarDasStartFlowTests(TransactionTestCase):
         participant = self.game.participants.get(name='Alice', hub_session_code=self.session.code)
         self.assertFalse(participant.is_active)
         self.assertContains(response, 'Spiel starten')
-        self.assertContains(response, 'Frage starten')
+        self.assertContains(response, 'FRAGE SENDEN')
+        self.assertContains(response, 'FRAGE FREIGEBEN')
+        self.assertNotContains(response, 'ANTWORTBEREICH ANZEIGEN')
 
     def test_player_route_before_start_stays_in_waiting_state_without_blocking_start(self):
         response = Client().get(
@@ -143,6 +173,8 @@ class WannWarDasStartFlowTests(TransactionTestCase):
         )
         self.assertIn('timer?.elapsed_seconds', content)
         self.assertIn('timer?.step_index', content)
+        self.assertIn('remainingQuestionPresentationDelay(state)', content)
+        self.assertIn('timer.current_points ?? question.max_points', content)
         self.assertIn('const segmentStart = stepIndex === 0 ? 0 : stepIndex - 0.5;', content)
         self.assertIn('const segmentEnd = stepIndex + 0.5;', content)
         self.assertIn('const halfScaleWidth = sideCellCount + 0.5;', content)
@@ -250,24 +282,212 @@ class WannWarDasStartFlowTests(TransactionTestCase):
 
     def test_question_start_after_game_broadcasts_live_state_with_server_timestamp(self):
         self.game.start_quiz(self.session.code)
+        self.enable_manual_question_flow()
         consumer, _ = self.make_consumer()
 
-        async_to_sync(consumer.handle_admin_start_question)({
-            'hub_session': self.session.code,
-            'question_id': self.question.id,
-        })
+        async_to_sync(consumer.handle_admin_start_question)(self.phase_action(self.question.id))
 
         self.game.refresh_from_db()
-        self.assertEqual(self.game.question_state, 'active')
+        self.assertEqual(self.game.question_state, 'ready')
         self.assertEqual(self.game.current_question, self.question)
-        self.assertIsNotNone(self.game.question_started_at)
+        self.assertIsNone(self.game.question_started_at)
         question_event = next(
             message for group, message in consumer.channel_layer.group_messages
             if group == consumer.room_group_name
         )
         self.assertEqual(question_event['event_type'], 'question_started')
-        self.assertIsNotNone(question_event['started_at'])
-        self.assertIsNotNone(question_event['timer'])
+        self.assertEqual(question_event['question_phase'], 'prompt_visible')
+        self.assertIsNotNone(question_event['question_presented_at'])
+        self.assertIsNotNone(question_event['question_visible_at'])
+        self.assertIsNone(question_event['answering_started_at'])
+        self.assertIsNone(question_event['answering_deadline_at'])
+        self.assertIsNone(question_event['timer'])
+
+    def test_open_answering_is_rejected_before_question_is_visible(self):
+        self.game.start_quiz(self.session.code)
+        self.enable_manual_question_flow()
+        consumer, sent_messages = self.make_consumer()
+        async_to_sync(consumer.handle_admin_start_question)(self.phase_action(self.question.id))
+
+        async_to_sync(consumer.handle_admin_open_answering)(self.phase_action(self.question.id))
+
+        self.game.refresh_from_db()
+        self.assertEqual(self.game.question_state, 'ready')
+        self.assertIsNone(self.game.question_started_at)
+        self.assertEqual(sent_messages[-1]['type'], 'action_rejected')
+        self.assertEqual(sent_messages[-1]['code'], 'question_not_visible')
+
+    def test_ten_seconds_of_host_reading_do_not_advance_tolerance(self):
+        self.game.start_quiz(self.session.code)
+        self.enable_manual_question_flow()
+        consumer, _ = self.make_consumer()
+        presented_at = timezone.now()
+        present_action = self.phase_action(self.question.id)
+        decision = async_to_sync(consumer.present_wann_war_das_question)(
+            self.game.id,
+            self.question.id,
+            self.session.code,
+            False,
+            present_action,
+            self.question.get_effective_time_limit(),
+            presented_at,
+        )
+        self.assertTrue(decision.accepted)
+        participant = self.game.participants.get(
+            name='Alice',
+            hub_session_code=self.session.code,
+        )
+        early_answer, early_error = self.game.submit_answer(
+            participant,
+            str(self.question.correct_answer),
+            submitted_at=presented_at + timezone.timedelta(seconds=10),
+        )
+        self.assertIsNone(early_answer)
+        self.assertIn('nicht aktiv', early_error)
+
+        release_at = presented_at + timezone.timedelta(seconds=11)
+        open_action = self.phase_action(self.question.id)
+        opened = async_to_sync(consumer.open_wann_war_das_answering)(
+            self.game.id,
+            self.question.id,
+            self.session.code,
+            open_action,
+            release_at,
+        )
+
+        self.assertTrue(opened.accepted)
+        self.game.refresh_from_db()
+        self.assertEqual(self.game.question_started_at, release_at)
+        self.assertEqual(opened.snapshot['question_phase'], 'answering_open')
+        self.assertIsNone(opened.snapshot['content_revealed_at'])
+        at_release = self.question.get_timer_state(self.game.question_started_at, release_at)
+        five_seconds_later = self.question.get_timer_state(
+            self.game.question_started_at,
+            release_at + timezone.timedelta(seconds=5),
+        )
+        self.assertEqual(at_release['elapsed_seconds'], 0)
+        self.assertEqual(at_release['current_tolerance'], self.question.start_tolerance)
+        self.assertEqual(five_seconds_later['elapsed_seconds'], 5)
+        self.assertEqual(
+            five_seconds_later['current_tolerance'],
+            self.question.tolerance_for_step(self.question.step_index_for_elapsed(5)),
+        )
+        deadline = parse_datetime(opened.snapshot['answering_deadline_at'])
+        self.assertEqual(
+            deadline,
+            release_at + timezone.timedelta(seconds=self.question.get_effective_time_limit()),
+        )
+        answer, answer_error = self.game.submit_answer(
+            participant,
+            str(self.question.correct_answer),
+            submitted_at=release_at + timezone.timedelta(seconds=1),
+        )
+        self.assertIsNone(answer_error)
+        self.assertEqual(answer.tolerance_at_submit, self.question.start_tolerance)
+
+        duplicate = async_to_sync(consumer.open_wann_war_das_answering)(
+            self.game.id,
+            self.question.id,
+            self.session.code,
+            open_action,
+            release_at + timezone.timedelta(seconds=5),
+        )
+        self.game.refresh_from_db()
+        self.assertTrue(duplicate.accepted)
+        self.assertTrue(duplicate.duplicate)
+        self.assertEqual(self.game.question_started_at, release_at)
+
+    def test_reload_reconstructs_running_tolerance_from_authoritative_start(self):
+        self.game.start_quiz(self.session.code)
+        self.enable_manual_question_flow()
+        consumer, _ = self.make_consumer()
+        now = timezone.now()
+        presented_at = now - timezone.timedelta(seconds=7)
+        decision = async_to_sync(consumer.present_wann_war_das_question)(
+            self.game.id,
+            self.question.id,
+            self.session.code,
+            False,
+            self.phase_action(self.question.id),
+            self.question.get_effective_time_limit(),
+            presented_at,
+        )
+        self.assertTrue(decision.accepted)
+        opened_at = now - timezone.timedelta(seconds=5)
+        opened = async_to_sync(consumer.open_wann_war_das_answering)(
+            self.game.id,
+            self.question.id,
+            self.session.code,
+            self.phase_action(self.question.id),
+            opened_at,
+        )
+        self.assertTrue(opened.accepted)
+
+        state = self.game.serialize_state(self.session.code, 'Alice')
+
+        self.assertEqual(state['question_phase'], 'answering_open')
+        self.assertTrue(state['can_answer'])
+        self.assertTrue(state['timer_running'])
+        self.assertAlmostEqual(state['timer']['elapsed_seconds'], 5, delta=0.5)
+        self.assertEqual(
+            state['timer']['current_tolerance'],
+            self.question.tolerance_for_step(self.question.step_index_for_elapsed(5)),
+        )
+
+    def test_second_question_resets_the_previous_answer_clock(self):
+        second_question = WannWarDasQuestion.objects.create(
+            created_by=self.user,
+            question_text='Wann begann die zweite Runde?',
+            correct_answer=2027,
+        )
+        self.game.selected_questions.add(second_question)
+        self.game.start_quiz(self.session.code)
+        self.enable_manual_question_flow()
+        consumer, _ = self.make_consumer()
+        first_presented_at = timezone.now() - timezone.timedelta(seconds=3)
+        first = async_to_sync(consumer.present_wann_war_das_question)(
+            self.game.id,
+            self.question.id,
+            self.session.code,
+            False,
+            self.phase_action(self.question.id),
+            self.question.get_effective_time_limit(),
+            first_presented_at,
+        )
+        self.assertTrue(first.accepted)
+        opened = async_to_sync(consumer.open_wann_war_das_answering)(
+            self.game.id,
+            self.question.id,
+            self.session.code,
+            self.phase_action(self.question.id),
+            first_presented_at + timezone.timedelta(seconds=2),
+        )
+        self.assertTrue(opened.accepted)
+        self.game.refresh_from_db()
+        self.assertTrue(self.game.reveal_current_question(self.session.code))
+
+        second_presented_at = timezone.now()
+        second = async_to_sync(consumer.present_wann_war_das_question)(
+            self.game.id,
+            second_question.id,
+            self.session.code,
+            False,
+            self.phase_action(second_question.id),
+            second_question.get_effective_time_limit(),
+            second_presented_at,
+        )
+
+        self.assertTrue(second.accepted)
+        self.game.refresh_from_db()
+        state = self.game.serialize_state(self.session.code, 'Alice')
+        self.assertEqual(self.game.current_question_id, second_question.id)
+        self.assertEqual(self.game.question_state, 'ready')
+        self.assertIsNone(self.game.question_started_at)
+        self.assertEqual(state['question_phase'], 'prompt_visible')
+        self.assertIsNone(state['answering_started_at'])
+        self.assertIsNone(state['answering_deadline_at'])
+        self.assertIsNone(state['timer'])
+        self.assertFalse(state['can_answer'])
 
     def test_rejoin_state_distinguishes_waiting_started_active_and_revealed(self):
         waiting = self.game.serialize_state(self.session.code, 'Alice')
@@ -280,17 +500,20 @@ class WannWarDasStartFlowTests(TransactionTestCase):
         self.assertEqual(started['game']['status'], 'active')
         self.assertEqual(started['question_state'], 'ready')
         self.assertIsNone(started['question'])
+        self.assertGreater(started['state_revision'], waiting['state_revision'])
 
         self.assertTrue(self.game.start_question(self.question, self.session.code))
         active = self.game.serialize_state(self.session.code, 'Alice')
         self.assertEqual(active['question_state'], 'active')
         self.assertTrue(active['can_answer'])
         self.assertIsNotNone(active['timer'])
+        self.assertGreater(active['state_revision'], started['state_revision'])
 
         self.game.reveal_current_question()
         revealed = self.game.serialize_state(self.session.code, 'Alice')
         self.assertEqual(revealed['question_state'], 'revealed')
         self.assertFalse(revealed['can_answer'])
+        self.assertGreater(revealed['state_revision'], active['state_revision'])
 
 
 class WannWarDasEndFlowTests(TransactionTestCase):
@@ -352,8 +575,9 @@ class WannWarDasEndFlowTests(TransactionTestCase):
             {'hub_session': self.session.code},
         )
 
-        self.assertContains(host_response, 'Zur Lobby')
         self.assertContains(host_response, 'Zur Session-Übersicht')
+        self.assertContains(host_response, 'data-host-game-leave')
+        self.assertNotContains(host_response, f'href="/hub/lobby/{self.session.code}/"')
         self.assertContains(player_response, 'Zur Lobby zurückkehren')
         self.assertContains(player_response, 'participant-return-to-lobby')
         player_content = player_response.content.decode('utf-8')

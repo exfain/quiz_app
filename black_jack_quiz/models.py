@@ -1102,30 +1102,61 @@ class BlackJackSession(SyncBase):
         asked_ids = set(self.get_asked_question_ids())
         return all(question_id in asked_ids for question_id in configured_question_ids)
 
-    def send_question(self, question, time_limit=None):
-        """Send a question to all participants"""
+    @staticmethod
+    def _effective_time_limit(question, time_limit=None):
         try:
             effective_time_limit = int(time_limit) if time_limit is not None else question.time_limit
             if effective_time_limit <= 0:
                 effective_time_limit = question.time_limit
         except (TypeError, ValueError):
             effective_time_limit = question.time_limit
-        now = timezone.now()
-        set_number = self.quiz.get_set_number_for_question_id(question.id, active_only=False)
-        self.set_selected_set_number(set_number)
-        self.mark_question_sent(question.id)
+        return effective_time_limit
+
+    def prepare_question(self, question, *, track_progress=True):
+        """Prepare a question without opening the participant answer window."""
+        if track_progress:
+            set_number = self.quiz.get_set_number_for_question_id(question.id, active_only=False)
+            self.set_selected_set_number(set_number)
+            self.mark_question_sent(question.id)
         self.quiz.current_question = question
-        self.quiz.question_start_time = now
-        self.current_question_number += 1
-        self.quiz.current_question_number = self.current_question_number
-        self.total_questions_sent += 1
-        self.is_question_active = True
-        self.question_end_time = now + timezone.timedelta(seconds=effective_time_limit)
+        self.quiz.question_start_time = None
+        if track_progress:
+            self.current_question_number += 1
+            self.quiz.current_question_number = self.current_question_number
+            self.total_questions_sent += 1
+        self.is_question_active = False
+        self.question_end_time = None
         self.total_responses_current_question = 0
         self.average_points_current_question = 0
-        
+
         self.quiz.save()
         self.save()
+
+    def open_answering(self, question, *, started_at, answer_duration_seconds):
+        """Open the prepared question using authoritative phase timestamps."""
+        if self.quiz.current_question_id != question.id:
+            raise ValueError('The prepared Black Jack question is no longer current.')
+        self.quiz.question_start_time = started_at
+        self.is_question_active = True
+        self.question_end_time = started_at + timezone.timedelta(
+            seconds=answer_duration_seconds,
+        )
+        self.quiz.save(update_fields=['question_start_time', 'updated_at'])
+        self.save(update_fields=[
+            'is_question_active',
+            'question_end_time',
+            'updated_at',
+        ])
+
+    def send_question(self, question, time_limit=None):
+        """Compatibility path for legacy callers that still start immediately."""
+        effective_time_limit = self._effective_time_limit(question, time_limit)
+        self.prepare_question(question)
+        self.open_answering(
+            question,
+            started_at=timezone.now(),
+            answer_duration_seconds=effective_time_limit,
+        )
     
     def finalize_completed_set(self):
         current_set_number = self.quiz.get_current_set_number()

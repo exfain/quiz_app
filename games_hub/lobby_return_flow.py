@@ -6,9 +6,9 @@ from datetime import timedelta
 
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
-from django.core.cache import cache
 from django.utils import timezone
 
+from .authoritative_state import connected_participant_ids
 from .models import HubGameStep, HubSession
 
 
@@ -16,33 +16,35 @@ LOBBY_RETURN_COUNTDOWN_SECONDS = 10
 logger = logging.getLogger(__name__)
 
 
-def _get_lobby_return_countdown_cache_key(session_code: str) -> str:
-    return f'hub:lobby_return_countdown:{session_code}'
-
-
 def start_lobby_return_countdown(session_code: str, duration_seconds: int = LOBBY_RETURN_COUNTDOWN_SECONDS) -> dict:
     safe_duration = max(1, int(duration_seconds or LOBBY_RETURN_COUNTDOWN_SECONDS))
     ends_at = timezone.now() + timedelta(seconds=safe_duration)
-    payload = {
+    HubSession.objects.filter(code=session_code).update(
+        lobby_return_countdown_ends_at=ends_at,
+        lobby_return_countdown_duration_seconds=safe_duration,
+    )
+    return {
         'session_code': session_code,
         'duration_seconds': safe_duration,
         'ends_at': ends_at.isoformat(),
     }
-    cache.set(
-        _get_lobby_return_countdown_cache_key(session_code),
-        payload,
-        timeout=safe_duration + 30,
-    )
-    return payload
 
 
 def clear_lobby_return_countdown(session_code: str):
-    cache.delete(_get_lobby_return_countdown_cache_key(session_code))
+    HubSession.objects.filter(code=session_code).update(
+        lobby_return_countdown_ends_at=None,
+        lobby_return_countdown_duration_seconds=None,
+    )
 
 
 def get_lobby_return_countdown_state(session_code: str) -> dict:
-    payload = cache.get(_get_lobby_return_countdown_cache_key(session_code))
-    if not payload:
+    session = (
+        HubSession.objects
+        .only('lobby_return_countdown_ends_at', 'lobby_return_countdown_duration_seconds')
+        .filter(code=session_code)
+        .first()
+    )
+    if not session or not session.lobby_return_countdown_ends_at:
         return {
             'active': False,
             'session_code': session_code,
@@ -52,22 +54,11 @@ def get_lobby_return_countdown_state(session_code: str) -> dict:
             'server_now': timezone.now().isoformat(),
         }
 
-    try:
-        ends_at = timezone.datetime.fromisoformat(payload['ends_at'])
-    except Exception:
-        clear_lobby_return_countdown(session_code)
-        return {
-            'active': False,
-            'session_code': session_code,
-            'duration_seconds': LOBBY_RETURN_COUNTDOWN_SECONDS,
-            'remaining_seconds': 0,
-            'ends_at': None,
-            'server_now': timezone.now().isoformat(),
-        }
-
-    if timezone.is_naive(ends_at):
-        ends_at = timezone.make_aware(ends_at, timezone.get_current_timezone())
-
+    ends_at = session.lobby_return_countdown_ends_at
+    duration_seconds = (
+        session.lobby_return_countdown_duration_seconds
+        or LOBBY_RETURN_COUNTDOWN_SECONDS
+    )
     now = timezone.now()
     remaining_seconds = max(0, math.ceil((ends_at - now).total_seconds()))
     if remaining_seconds <= 0:
@@ -75,7 +66,7 @@ def get_lobby_return_countdown_state(session_code: str) -> dict:
         return {
             'active': False,
             'session_code': session_code,
-            'duration_seconds': int(payload.get('duration_seconds') or LOBBY_RETURN_COUNTDOWN_SECONDS),
+            'duration_seconds': duration_seconds,
             'remaining_seconds': 0,
             'ends_at': ends_at.isoformat(),
             'server_now': now.isoformat(),
@@ -84,7 +75,7 @@ def get_lobby_return_countdown_state(session_code: str) -> dict:
     return {
         'active': True,
         'session_code': session_code,
-        'duration_seconds': int(payload.get('duration_seconds') or LOBBY_RETURN_COUNTDOWN_SECONDS),
+        'duration_seconds': duration_seconds,
         'remaining_seconds': remaining_seconds,
         'ends_at': ends_at.isoformat(),
         'server_now': now.isoformat(),
@@ -134,9 +125,13 @@ def get_relevant_step_for_room(game_key: str, room_code: str) -> HubGameStep | N
 
 def get_session_lobby_presence(session_code: str) -> dict:
     session = HubSession.objects.prefetch_related('steps', 'participants').get(code=session_code)
-    participant_names = list(
-        session.participants.order_by('joined_at').values_list('nickname', flat=True)
-    )
+    participant_qs = session.participants.order_by('joined_at')
+    # Keep compatibility for sessions created before socket presence existed.
+    # Once a session has connection rows, only currently live browser
+    # participants take part in this real-time lobby readiness decision.
+    if session.socket_connections.exists():
+        participant_qs = participant_qs.filter(pk__in=connected_participant_ids(session))
+    participant_names = list(participant_qs.values_list('nickname', flat=True))
 
     active_game_map: dict[str, list[dict[str, str]]] = {}
     participant_model_map = get_game_participant_model_map()

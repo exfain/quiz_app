@@ -214,7 +214,8 @@
 
     <script>
         document.addEventListener('DOMContentLoaded', function() {
-            const startButtonSelector = '#startQuizBtn';
+            const startButtonSelector = '[data-host-game-start]';
+            const leaveButtonSelector = '[data-host-game-leave]';
             const modalElement = document.getElementById('activeGameConflictModal');
             const conflictMessage = document.getElementById('activeGameConflictMessage');
             const endButton = document.getElementById('activeGameConflictEndBtn');
@@ -314,6 +315,11 @@
             }
 
             function isMonitorGameUnfinished() {
+                const monitor = getAdminGameMonitor();
+                if (typeof monitor?.isUnfinished === 'boolean') {
+                    return monitor.isUnfinished;
+                }
+
                 if (document.getElementById('activeQuestion')) {
                     return true;
                 }
@@ -449,6 +455,7 @@
             function navigateToHubMonitor() {
                 const hubMonitorUrl = getHubMonitorUrl();
                 if (hubMonitorUrl) {
+                    browserLeaveGuard.allowNavigation = true;
                     window.location.href = hubMonitorUrl;
                 }
             }
@@ -572,6 +579,41 @@
                 lobbyReturnModal.show();
             }
 
+            function showLobbyReturnGuard(presence, pendingButton = null) {
+                const button = pendingButton || document.querySelector(startButtonSelector);
+                if (button) button.disabled = true;
+                openLobbyReturnModal(presence || {}, 'start', button);
+                return Boolean(lobbyReturnModal);
+            }
+
+            function showActiveGameConflict(conflict, pendingButton = null) {
+                const context = getMonitorContext();
+                const button = pendingButton || document.querySelector(startButtonSelector);
+                if (!context || !button || !conflictModal || !conflictMessage) {
+                    return false;
+                }
+
+                button.disabled = true;
+                guardState.pendingButton = button;
+                guardState.pendingContext = context;
+                const activeName = conflict?.active_game?.display_name
+                    || conflict?.active_game?.title
+                    || 'Unbekanntes Spiel';
+                conflictMessage.textContent = conflict?.message || `Ein anderes Spiel ist noch aktiv: ${activeName}`;
+                setResolutionButtonsDisabled(false);
+                conflictModal.show();
+                return true;
+            }
+
+            window.hostGameStartGuard = {
+                showLobbyReturn: showLobbyReturnGuard,
+                showActiveGameConflict,
+            };
+
+            window.hostGameLeaveGuard = {
+                stateChanged: continuePendingLeaveNavigation,
+            };
+
             async function executeLobbyRecall() {
                 if (!lobbyReturnState.sessionCode) {
                     return;
@@ -669,7 +711,9 @@
             async function resolveConflict(action) {
                 if (!guardState.pendingButton || !guardState.pendingContext) return;
                 setResolutionButtonsDisabled(true);
-                const result = await requestActivation(guardState.pendingContext, action);
+                // Resolve the old-game conflict, but let the game-specific start
+                // action remain the sole authority that activates the target game.
+                const result = await requestActivation(guardState.pendingContext, action, true);
                 setResolutionButtonsDisabled(false);
 
                 if (result.success) {
@@ -748,7 +792,7 @@
             });
 
             document.addEventListener('click', function(event) {
-                const backButton = event.target.closest('#backToHubBtn');
+                const backButton = event.target.closest(leaveButtonSelector);
                 if (!backButton) return;
 
                 const context = getMonitorContext();
@@ -765,6 +809,28 @@
 
                 openLeaveModal();
             }, true);
+
+            const browserLeaveGuard = {
+                allowNavigation: false,
+                installed: false,
+            };
+
+            function installBrowserLeaveGuard() {
+                if (!getMonitorContext() || browserLeaveGuard.installed) return;
+                browserLeaveGuard.installed = true;
+                if (!window.history.state?.hostGameLeaveGuard) {
+                    window.history.pushState({ hostGameLeaveGuard: true }, '', window.location.href);
+                }
+                window.addEventListener('popstate', function() {
+                    if (browserLeaveGuard.allowNavigation || !isMonitorGameActive()) {
+                        browserLeaveGuard.allowNavigation = true;
+                        window.history.back();
+                        return;
+                    }
+                    window.history.pushState({ hostGameLeaveGuard: true }, '', window.location.href);
+                    openLeaveModal();
+                });
+            }
 
             document.addEventListener('click', async function(event) {
                 const startButton = event.target.closest(startButtonSelector);
@@ -793,19 +859,14 @@
                 }
 
                 if (presence.success && !presence.all_in_lobby) {
-                    openLobbyReturnModal(presence, 'start', startButton);
+                    showLobbyReturnGuard(presence, startButton);
                     return;
                 }
 
                 const previewResult = await requestActivation(context, null, true);
 
                 if (previewResult.conflict && conflictModal && conflictMessage) {
-                    guardState.pendingButton = startButton;
-                    guardState.pendingContext = context;
-                    const activeName = previewResult.active_game?.display_name || previewResult.active_game?.title || 'Unbekanntes Spiel';
-                    conflictMessage.textContent = `Ein anderes Spiel ist noch aktiv: ${activeName}`;
-                    setResolutionButtonsDisabled(false);
-                    conflictModal.show();
+                    showActiveGameConflict(previewResult, startButton);
                     return;
                 }
 
@@ -815,28 +876,9 @@
                     return;
                 }
 
-                const result = await requestActivation(context);
-
-                if (result.success) {
-                    guardState.pendingButton = startButton;
-                    guardState.pendingContext = context;
-                    releasePendingStart();
-                    return;
-                }
-
-                startButton.disabled = false;
-
-                if (result.conflict && conflictModal && conflictMessage) {
-                    guardState.pendingButton = startButton;
-                    guardState.pendingContext = context;
-                    const activeName = result.active_game?.display_name || result.active_game?.title || 'Unbekanntes Spiel';
-                    conflictMessage.textContent = `Ein anderes Spiel ist noch aktiv: ${activeName}`;
-                    setResolutionButtonsDisabled(false);
-                    conflictModal.show();
-                    return;
-                }
-
-                alert(result.error || result.message || 'Das Spiel konnte nicht gestartet werden.');
+                guardState.pendingButton = startButton;
+                guardState.pendingContext = context;
+                releasePendingStart();
             }, true);
 
             document.addEventListener('click', async function(event) {
@@ -870,6 +912,7 @@
 
             syncSetInactiveVisibility();
             continuePendingLeaveNavigation();
+            installBrowserLeaveGuard();
         });
     </script>
 

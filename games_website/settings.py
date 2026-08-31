@@ -15,7 +15,12 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 SECRET_KEY = os.environ.get('DJANGO_SECRET_KEY', 'your_default_secret_key_for_dev')
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+DEBUG = os.environ.get('DJANGO_DEBUG', 'true').strip().lower() in {
+    '1',
+    'true',
+    'yes',
+    'on',
+}
 
 ALLOWED_HOSTS = [
     "*"
@@ -87,6 +92,11 @@ DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.sqlite3',
         'NAME': BASE_DIR / 'db.sqlite3',
+        # Live-browser and Channels requests use separate threads against the
+        # same SQLite file. Let short concurrent writes serialize cleanly.
+        'OPTIONS': {
+            'timeout': 20,
+        },
         'TEST': {
             # Dateibasierte Test-DB – erforderlich für ChannelsLiveServerTestCase
             # (In-Memory-SQLite kann nicht zwischen ASGI-Server-Thread und
@@ -140,22 +150,38 @@ MEDIA_ROOT = BASE_DIR / 'media'
 # Default primary key field type
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
-# Channel Layers - Simple Redis setup
-if DEBUG:
+# Browser sockets heartbeat every 15 seconds; six missed heartbeats expire
+# connection presence without changing the participant's game membership.
+SOCKET_PRESENCE_TTL_SECONDS = 90
+
+# Channel layers use process-local memory only for local development and tests.
+# Production defaults to Redis so broadcasts remain consistent across workers.
+CHANNEL_LAYER_BACKEND = os.environ.get(
+    'DJANGO_CHANNEL_LAYER',
+    'memory' if DEBUG else 'redis',
+).strip().lower()
+if CHANNEL_LAYER_BACKEND == 'memory':
     CHANNEL_LAYERS = {
         "default": {
             "BACKEND": "channels.layers.InMemoryChannelLayer",
         }
     }
-else:
+elif CHANNEL_LAYER_BACKEND == 'redis':
     CHANNEL_LAYERS = {
         "default": {
             "BACKEND": "channels_redis.core.RedisChannelLayer",
             "CONFIG": {
-                "hosts": [("127.0.0.1", 6379)],
+                "hosts": [os.environ.get(
+                    'CHANNEL_REDIS_URL',
+                    'redis://127.0.0.1:6379/0',
+                )],
             },
         },
     }
+else:
+    raise ValueError(
+        "DJANGO_CHANNEL_LAYER must be either 'memory' or 'redis'."
+    )
 
 # Login URLs
 LOGIN_URL = '/admin-dashboard/login/'

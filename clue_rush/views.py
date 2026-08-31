@@ -3,8 +3,11 @@ from django.http import JsonResponse
 from django.views.decorators.http import require_http_methods, require_POST
 from django.views.decorators.csrf import csrf_exempt
 from django.utils import timezone
+from django.db import IntegrityError, transaction
 import json
-from .models import ClueRushGame, ClueRushParticipant, ClueAnswer
+from .models import ClueRushGame, ClueRushParticipant, ClueAnswer, ClueRushSession
+from .runtime import reconcile_clue_schedule
+from games_hub.authoritative_state import validate_and_reserve_action
 from games_hub.unit_tutorial_runtime import is_current_unit_tutorial_question, is_unit_tutorial_question
 
 
@@ -105,6 +108,7 @@ def play(request, room_code, participant_name):
     """Clue Rush play page for participants."""
     try:
         session_code = request.GET.get('hub_session')
+        reconcile_clue_schedule(room_code)
         quiz = get_object_or_404(ClueRushGame, room_code=room_code)
         participant = get_object_or_404(
             ClueRushParticipant,
@@ -148,39 +152,63 @@ def submit_guess(request, room_code, participant_name):
     """Submit a single guess for the current active question."""
     try:
         session_code = request.GET.get('hub_session')
-        quiz = get_object_or_404(ClueRushGame, room_code=room_code)
-        participant = get_object_or_404(
-            ClueRushParticipant,
-            quiz=quiz,
-            name=participant_name,
-            hub_session_code=session_code
-        )
-
-        if quiz.status != 'active':
-            return JsonResponse({'success': False, 'error': 'No active quiz.'})
-
-        if not quiz.current_question:
-            return JsonResponse({'success': False, 'error': 'No active question.'})
-
-        existing_answer = ClueAnswer.objects.filter(
-            quiz=quiz,
-            participant=participant,
-            question=quiz.current_question
-        ).first()
-        if existing_answer:
-            return JsonResponse({'success': False, 'error': 'You have already submitted your guess.'})
-
         data = json.loads(request.body)
         guess_text = data.get('guess', '').strip()
         if not guess_text:
             return JsonResponse({'success': False, 'error': 'Guess cannot be empty.'})
-
-        answer = ClueAnswer.objects.create(
-            quiz=quiz,
-            participant=participant,
-            question=quiz.current_question,
-            answer_text=guess_text,
+        decision = validate_and_reserve_action(
+            game_key='clue_rush',
+            room_code=room_code,
+            session_code=session_code,
+            participant_name=participant_name,
+            action_type='participant_submit_answer',
+            action=data,
         )
+        if not decision.accepted:
+            return JsonResponse({
+                'success': False,
+                'error': decision.code,
+            }, status=409)
+
+        with transaction.atomic():
+            quiz = (
+                ClueRushGame.objects
+                .select_for_update()
+                .select_related('current_question')
+                .get(room_code=room_code)
+            )
+            session = ClueRushSession.objects.select_for_update().get(quiz=quiz)
+            participant = ClueRushParticipant.objects.select_for_update().get(
+                quiz=quiz,
+                name=participant_name,
+                hub_session_code=session_code,
+            )
+            if (
+                quiz.status != 'active'
+                or not quiz.current_question_id
+                or not session.is_question_active
+            ):
+                return JsonResponse({'success': False, 'error': 'invalid_phase'}, status=409)
+            if str(data.get('question_id')) != str(quiz.current_question_id):
+                return JsonResponse({'success': False, 'error': 'stale_action'}, status=409)
+            received_at = timezone.now()
+            if not session.answer_deadline or received_at >= session.answer_deadline:
+                return JsonResponse({'success': False, 'error': 'deadline_expired'}, status=409)
+
+            try:
+                answer = ClueAnswer.objects.create(
+                    quiz=quiz,
+                    participant=participant,
+                    question=quiz.current_question,
+                    answer_text=guess_text,
+                    time_taken=(
+                        max(0, (received_at - quiz.question_start_time).total_seconds())
+                        if quiz.question_start_time
+                        else None
+                    ),
+                )
+            except IntegrityError:
+                return JsonResponse({'success': False, 'error': 'already_submitted'}, status=409)
         is_tutorial_answer = is_unit_tutorial_question(
             'clue_rush',
             quiz.room_code,
@@ -210,6 +238,7 @@ def get_game_status(request, room_code, participant_name):
     """Get current quiz status for participant."""
     try:
         session_code = request.GET.get('hub_session')
+        reconcile_clue_schedule(room_code)
         quiz = get_object_or_404(ClueRushGame, room_code=room_code)
         participant = get_object_or_404(
             ClueRushParticipant,

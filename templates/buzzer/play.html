@@ -24,8 +24,11 @@
         .status-pill { display: inline-flex; align-items: center; border-radius: 999px; padding: .35rem .75rem; background: rgba(148, 163, 184, .18); color: #cbd5e1; font-weight: 700; }
         .score-card { background: rgba(15, 23, 42, .78); border: 1px solid rgba(148, 163, 184, .18); border-radius: 16px; padding: 14px 16px; }
     </style>
+<script src="{% static 'js/authoritative-game-state.js' %}"></script>
 </head>
-<body class="buzzer-play-page">
+<body class="buzzer-play-page"
+      data-vhs-progress-kind="question"
+      data-vhs-progress-source="#roundNumber">
 <main class="buzzer-shell" data-participant-name="{{ participant.name }}">
     {% include 'includes/_unit_tutorial_notice.html' with tutorial_notice_label='Tutorialrunde' %}
     <div class="buzzer-card text-center">
@@ -49,7 +52,6 @@
             <p class="lead mb-0">
                 <span class="qa-game-title-font qa-local-start-title">{{ game.title }}</span>
                 <span class="qa-local-start-subtitle">beginnt gleich!</span>
-                <span class="buzzer-vhs-wait-copy d-none">Warte darauf, dass der Host das Spiel startet.</span>
             </p>
         </div>
 
@@ -96,6 +98,7 @@ const lobbyReturnController = createHubLobbyReturnController({
     csrfToken: '{{ csrf_token }}',
     buttonId: 'returnToLobbyBtn',
 });
+lobbyReturnController.connectHubRecallSocket();
 {% endif %}
 
 function send(payload) {

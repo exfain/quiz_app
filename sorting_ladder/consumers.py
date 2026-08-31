@@ -1,11 +1,23 @@
 import json
 import asyncio
 import random
+import uuid
 from channels.generic.websocket import AsyncWebsocketConsumer
 from channels.db import database_sync_to_async
 from django.db import transaction
 from django.utils import timezone
+from django.utils.dateparse import parse_datetime
 from games_hub.active_game_guard import resolve_session_game_activation_for_room
+from games_hub.authoritative_consumer import AuthoritativeGameConsumerMixin
+from games_hub.authoritative_state import (
+    QuestionPhaseDecision,
+    current_snapshot,
+    finish_question_flow,
+    open_answering,
+    present_question,
+    reset_question_flow,
+    reveal_question_content,
+)
 from games_hub.lobby_return_flow import ensure_session_players_ready_for_game_start_for_room
 from games_hub.tutorial_runtime import (
     activate_tutorial_runtime,
@@ -32,51 +44,121 @@ from .models import (
     SortingItem,
     RoundSubmission,
     SortingLadderSession,
+    SortingPendingRoundSelection,
 )
-from games_hub.models import HubGameStep, HubSession
+from games_hub.models import GameRuntimeState, HubGameStep, HubSession
+from .runtime import (
+    SORTING_LADDER_REVEAL_ANIMATION_MS,
+    SORTING_LADDER_REVEAL_STAGGER_MS,
+    sorting_ladder_reveal_counts,
+    sorting_ladder_reveal_ready_at,
+    sorting_ladder_reveal_step_count,
+)
 
 
-class SortingLadderGameConsumer(AsyncWebsocketConsumer):
-    _pending_round_orders = {}
+def _set_number_for_game(quiz, question_id, hub_session_code=None):
+    excluded_ids = get_scorebox_excluded_tutorial_question_ids(
+        'sorting_ladder',
+        quiz.room_code,
+        hub_session_code,
+    )
+    selected_ids = list(
+        quiz.selected_questions
+        .filter(is_active=True)
+        .exclude(id__in=excluded_ids)
+        .order_by('id')
+        .values_list('id', flat=True)
+    )
+    selected_id_set = set(selected_ids)
+    ordered_ids = []
+    for raw_id in quiz.question_order or []:
+        try:
+            normalized_id = int(raw_id)
+        except (TypeError, ValueError):
+            continue
+        if normalized_id in selected_id_set and normalized_id not in ordered_ids:
+            ordered_ids.append(normalized_id)
+    ordered_ids.extend(
+        question_id
+        for question_id in selected_ids
+        if question_id not in ordered_ids
+    )
+    try:
+        return ordered_ids.index(int(question_id)) + 1
+    except (TypeError, ValueError):
+        return None
 
-    @classmethod
-    def _participant_state_key(cls, participant_name, hub_session_code):
-        return f"{(hub_session_code or '').strip()}::{(participant_name or '').strip().lower()}"
 
-    @classmethod
-    def _pending_round_key(cls, room_code, question_id, round_number, participant_name, hub_session_code):
-        return (
-            room_code,
-            int(question_id or 0),
-            int(round_number or 0),
-            cls._participant_state_key(participant_name, hub_session_code),
+class SortingLadderGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
+    authoritative_game_key = 'sorting_ladder'
+    authoritative_required_actions = frozenset({
+        'participant_submit_move',
+        'participant_submit_round',
+        'participant_update_selection',
+    })
+
+    @staticmethod
+    def _pending_round_selection(
+        room_code,
+        question_id,
+        round_number,
+        participant_name,
+        hub_session_code,
+    ):
+        return SortingPendingRoundSelection.objects.filter(
+            quiz__room_code=room_code,
+            question_id=question_id,
+            round_number=max(int(round_number or 0), 1),
+            participant__name=participant_name,
+            participant__hub_session_code=hub_session_code,
         )
 
     @classmethod
     def _get_pending_round_order(cls, room_code, question_id, round_number, participant_name, hub_session_code):
-        return cls._pending_round_orders.get(
-            cls._pending_round_key(room_code, question_id, round_number, participant_name, hub_session_code),
-            [],
-        )
+        selection = cls._pending_round_selection(
+            room_code,
+            question_id,
+            round_number,
+            participant_name,
+            hub_session_code,
+        ).first()
+        return list(selection.ordered_item_ids or []) if selection else []
 
     @classmethod
     def _set_pending_round_order(cls, room_code, question_id, round_number, participant_name, hub_session_code, ordered_item_ids):
-        cls._pending_round_orders[
-            cls._pending_round_key(room_code, question_id, round_number, participant_name, hub_session_code)
-        ] = list(ordered_item_ids or [])
-
-    @classmethod
-    def _pop_pending_round_order(cls, room_code, question_id, round_number, participant_name, hub_session_code):
-        return cls._pending_round_orders.pop(
-            cls._pending_round_key(room_code, question_id, round_number, participant_name, hub_session_code),
-            [],
+        participant = SortingLadderParticipant.objects.filter(
+            quiz__room_code=room_code,
+            name=participant_name,
+            hub_session_code=hub_session_code,
+        ).first()
+        if not participant:
+            return
+        SortingPendingRoundSelection.objects.update_or_create(
+            quiz=participant.quiz,
+            participant=participant,
+            question_id=question_id,
+            round_number=max(int(round_number or 0), 1),
+            defaults={'ordered_item_ids': list(ordered_item_ids or [])},
         )
 
     @classmethod
-    def _clear_room_pending_round_orders(cls, room_code):
-        for key in list(cls._pending_round_orders.keys()):
-            if key[0] == room_code:
-                del cls._pending_round_orders[key]
+    def _pop_pending_round_order(cls, room_code, question_id, round_number, participant_name, hub_session_code):
+        selection = cls._pending_round_selection(
+            room_code,
+            question_id,
+            round_number,
+            participant_name,
+            hub_session_code,
+        ).first()
+        if not selection:
+            return []
+        ordered_item_ids = list(selection.ordered_item_ids or [])
+        selection.delete()
+        return ordered_item_ids
+
+    @staticmethod
+    def _clear_room_pending_round_orders(room_code):
+        SortingPendingRoundSelection.objects.filter(quiz__room_code=room_code).delete()
 
     async def connect(self):
         self.room_code = self.scope['url_route']['kwargs']['room_code']
@@ -128,6 +210,10 @@ class SortingLadderGameConsumer(AsyncWebsocketConsumer):
             await self.handle_admin_set_inactive(data)
         elif msg_type == 'admin_send_question':
             await self.handle_admin_send_question(data)
+        elif msg_type == 'admin_reveal_question_content':
+            await self.handle_admin_reveal_question_content(data)
+        elif msg_type == 'admin_open_answering':
+            await self.handle_admin_open_answering(data)
         elif msg_type == 'admin_end_question':
             await self.handle_admin_end_question(data)
         elif msg_type == 'admin_show_solution':
@@ -168,9 +254,14 @@ class SortingLadderGameConsumer(AsyncWebsocketConsumer):
         quiz = await self.get_quiz()
         if not quiz:
             return
+        fresh_start = quiz.status == 'waiting'
         show_tutorial = bool(data.get('show_tutorial', False))
         play_tutorial = bool(data.get('play_tutorial', False))
-        hub_session_code = await self._get_hub_session_code_for_room()
+        hub_session_code = (
+            data.get('hub_session')
+            or data.get('hub_session_code')
+            or await self._get_hub_session_code_for_room()
+        )
         unit_tutorial_validation = await database_sync_to_async(validate_unit_tutorial_request)(
             'sorting_ladder',
             self.room_code,
@@ -195,22 +286,42 @@ class SortingLadderGameConsumer(AsyncWebsocketConsumer):
                 payload['active_game'] = activation['active_game']
             await self.send(text_data=json.dumps(payload))
             return
-        await database_sync_to_async(prepare_unit_tutorial_runtime)(
-            'sorting_ladder',
-            self.room_code,
-            hub_session_code,
-            play_tutorial,
-            validate=False,
-        )
-        await self.start_quiz_db(quiz.id)
-        tutorial_payload = await self.activate_tutorial_runtime(quiz.id, hub_session_code, show_tutorial)
+        if fresh_start:
+            await database_sync_to_async(prepare_unit_tutorial_runtime)(
+                'sorting_ladder',
+                self.room_code,
+                hub_session_code,
+                play_tutorial,
+                validate=False,
+            )
+        await self.start_quiz_db(quiz.id, reset_runtime=fresh_start)
+        if fresh_start:
+            question_runtime = await database_sync_to_async(reset_question_flow)(
+                game_key='sorting_ladder',
+                room_code=self.room_code,
+                session_code=hub_session_code,
+                mode=GameRuntimeState.QUESTION_FLOW_MANUAL_THREE_PHASE,
+            )
+            tutorial_payload = await self.activate_tutorial_runtime(
+                quiz.id,
+                hub_session_code,
+                show_tutorial,
+            )
+        else:
+            question_runtime = await database_sync_to_async(current_snapshot)(
+                'sorting_ladder',
+                self.room_code,
+                hub_session_code,
+            )
+            tutorial_payload = None
 
         await self.channel_layer.group_send(
             self.room_group_name,
-            {
-                'type': 'quiz_started',
-                'message': 'Sorting Ladder quiz has started!'
-            }
+                {
+                    'type': 'quiz_started',
+                    'message': 'Sorting Ladder quiz has started!',
+                    **self.question_lifecycle_fields(question_runtime),
+                }
         )
 
         await self.hub_mirror_event('quiz_started', {
@@ -289,7 +400,13 @@ class SortingLadderGameConsumer(AsyncWebsocketConsumer):
         if await self.guard_tutorial_before_first_unit(data, quiz.id):
             return
 
-        round_state = await self.start_next_round_db(quiz.id)
+        round_state, phase_decision = await self.prepare_next_round_phase(quiz.id, data)
+        if not phase_decision.accepted:
+            await self.send_question_phase_rejection(
+                phase_decision,
+                quiz.current_question_id,
+            )
+            return
         if not round_state:
             await self.channel_layer.group_send(
                 self.room_group_name,
@@ -303,6 +420,13 @@ class SortingLadderGameConsumer(AsyncWebsocketConsumer):
                 'game_key': 'sorting_ladder',
             })
             return
+
+        round_state.update(self.question_lifecycle_fields(phase_decision.snapshot))
+        round_state.update(self.sorting_reveal_fields(
+            item_count=round_state.get('item_count', 0),
+            round_number=round_state.get('round_number', 1),
+            snapshot=phase_decision.snapshot,
+        ))
 
         await self.set_tutorial_active_db(quiz.id, False)
 
@@ -370,6 +494,8 @@ class SortingLadderGameConsumer(AsyncWebsocketConsumer):
         if not quiz:
             return
 
+        if quiz.current_question_id:
+            await self.finish_sorting_round_phase(quiz.current_question_id)
         await self.end_quiz_db(quiz.id)
         final_scores = await self.get_final_scores()
 
@@ -423,13 +549,19 @@ class SortingLadderGameConsumer(AsyncWebsocketConsumer):
         if is_tutorial_round:
             question_id = unit_tutorial.get('tutorial_question_id')
 
-        payload = await self.initialize_question_for_quiz(
+        payload, decision = await self.begin_sorting_question_phase(
             quiz_id=quiz.id,
             question_id=question_id,
             time_limit_seconds=custom_time_limit,
             hub_session_code=hub_session,
+            action=data,
         )
+        if not decision.accepted:
+            await self.send_question_phase_rejection(decision, question_id)
+            return
         if not payload:
+            if decision.duplicate:
+                return
             await self.send(text_data=json.dumps({
                 'type': 'error',
                 'message': 'Unable to start question. Ensure it has at least 2 items.',
@@ -438,6 +570,12 @@ class SortingLadderGameConsumer(AsyncWebsocketConsumer):
         await self.set_tutorial_active_db(quiz.id, False)
         payload['is_tutorial_round'] = is_tutorial_round
         payload.setdefault('question', {})['is_tutorial_round'] = is_tutorial_round
+        payload.update(self.question_lifecycle_fields(decision.snapshot))
+        payload.update(self.sorting_reveal_fields(
+            item_count=len(payload.get('items') or []),
+            round_number=payload.get('round_number', 1),
+            snapshot=decision.snapshot,
+        ))
 
         await self.channel_layer.group_send(
             self.room_group_name,
@@ -453,6 +591,116 @@ class SortingLadderGameConsumer(AsyncWebsocketConsumer):
             'game_key': 'sorting_ladder',
             **payload,
         })
+
+    async def handle_admin_reveal_question_content(self, data):
+        context = await self.get_current_round_context()
+        if not context:
+            return
+        decision = await self.reveal_sorting_round(context, data)
+        if not decision.accepted:
+            await self.send_question_phase_rejection(decision, context['question_id'])
+            return
+        await self.channel_layer.group_send(
+            self.room_group_name,
+            {
+                'type': 'question_content_revealed',
+                'question_id': context['question_id'],
+                'round_number': context['round_number'],
+                'set_number': context['set_number'],
+                **self.question_lifecycle_fields(decision.snapshot),
+                **self.sorting_reveal_fields(
+                    item_count=context['item_count'],
+                    round_number=context['round_number'],
+                    snapshot=decision.snapshot,
+                ),
+            },
+        )
+
+    async def handle_admin_open_answering(self, data):
+        context = await self.get_current_round_context()
+        if not context:
+            return
+        decision = await self.open_sorting_round(context, data)
+        if not decision.accepted:
+            await self.send_question_phase_rejection(decision, context['question_id'])
+            return
+        await self.channel_layer.group_send(
+            self.room_group_name,
+            {
+                'type': 'question_answering_opened',
+                'question_id': context['question_id'],
+                'round_number': context['round_number'],
+                'set_number': context['set_number'],
+                **self.question_lifecycle_fields(decision.snapshot),
+                **self.sorting_reveal_fields(
+                    item_count=context['item_count'],
+                    round_number=context['round_number'],
+                    snapshot=decision.snapshot,
+                ),
+            },
+        )
+
+    async def send_question_phase_rejection(self, decision, question_id=None):
+        await self.send(text_data=json.dumps({
+            'type': 'action_rejected',
+            'code': decision.code,
+            'message': decision.message,
+            'question_id': question_id,
+            'snapshot': decision.snapshot,
+        }))
+
+    @staticmethod
+    def question_lifecycle_fields(snapshot):
+        snapshot = snapshot or {}
+        return {
+            key: snapshot.get(key)
+            for key in (
+                'state_revision',
+                'server_now',
+                'game_id',
+                'question_flow_mode',
+                'question_phase',
+                'question_presented_at',
+                'question_visible_at',
+                'content_revealed_at',
+                'answering_started_at',
+                'answering_deadline_at',
+                'answering_allowed',
+                'timer_running',
+                'remaining_answer_time',
+                'starts_at',
+                'ends_at',
+            )
+        }
+
+    @staticmethod
+    def sorting_reveal_fields(*, item_count, round_number, snapshot):
+        snapshot = snapshot or {}
+        counts = sorting_ladder_reveal_counts(
+            item_count=item_count,
+            round_number=round_number,
+        )
+        content_revealed_at = parse_datetime(
+            str(snapshot.get('content_revealed_at') or '')
+        )
+        ready_at = sorting_ladder_reveal_ready_at(
+            content_revealed_at=content_revealed_at,
+            item_count=item_count,
+            round_number=round_number,
+        )
+        return {
+            'sorting_ladder_reveal_stagger_ms': SORTING_LADDER_REVEAL_STAGGER_MS,
+            'sorting_ladder_reveal_animation_ms': SORTING_LADDER_REVEAL_ANIMATION_MS,
+            'sorting_ladder_reveal_step_count': sorting_ladder_reveal_step_count(
+                item_count=item_count,
+                round_number=round_number,
+            ),
+            'sorting_ladder_reveal_label_count': counts['label_count'],
+            'sorting_ladder_reveal_element_count': counts['element_count'],
+            'sorting_ladder_reveal_fixed_count': counts['fixed_count'],
+            'sorting_ladder_reveal_marker_group_count': counts['marker_group_count'],
+            'sorting_ladder_reveal_ready_at': ready_at.isoformat() if ready_at else None,
+        }
 
     async def handle_admin_end_question(self, data):
         """Complete the final round, or clear an already revealed set."""
@@ -492,6 +740,8 @@ class SortingLadderGameConsumer(AsyncWebsocketConsumer):
 
         if not end_payload.get('transitioned'):
             return
+
+        await self.finish_sorting_round_phase(quiz.current_question_id)
 
         for auto_result in end_payload.get('auto_results', []):
             progress_history = await self.get_participant_progress_history_for_round_result(
@@ -876,6 +1126,18 @@ class SortingLadderGameConsumer(AsyncWebsocketConsumer):
             'round': event['round'],
         }))
 
+    async def question_content_revealed(self, event):
+        await self.send(text_data=json.dumps({
+            'type': 'question_content_revealed',
+            **event,
+        }))
+
+    async def question_answering_opened(self, event):
+        await self.send(text_data=json.dumps({
+            'type': 'question_answering_opened',
+            **event,
+        }))
+
     async def round_ended(self, event):
         await self.send(text_data=json.dumps({
             'type': 'round_ended',
@@ -987,9 +1249,11 @@ class SortingLadderGameConsumer(AsyncWebsocketConsumer):
             return None
 
     @database_sync_to_async
-    def start_quiz_db(self, quiz_id):
+    def start_quiz_db(self, quiz_id, reset_runtime=False):
         try:
             quiz = SortingLadderGame.objects.get(id=quiz_id)
+            if reset_runtime:
+                quiz.reset_runtime_state()
             quiz.start_quiz()
         except SortingLadderGame.DoesNotExist:
             pass
@@ -1116,8 +1380,15 @@ class SortingLadderGameConsumer(AsyncWebsocketConsumer):
             'active_element': None,
         }
 
-    @database_sync_to_async
-    def initialize_question_for_quiz(self, quiz_id, question_id, time_limit_seconds=None, hub_session_code=None):
+    def _initialize_question_for_quiz_sync(
+        self,
+        quiz_id,
+        question_id,
+        time_limit_seconds=None,
+        hub_session_code=None,
+        *,
+        start_answering=True,
+    ):
         """Initialize SortingLadderSession for a specific SortingQuestion.
 
         This sets a shared shuffled order of items for the current question,
@@ -1133,6 +1404,11 @@ class SortingLadderGameConsumer(AsyncWebsocketConsumer):
             self.room_code,
             hub_session_code,
             question.id,
+        )
+        set_number = (
+            None
+            if is_tutorial_round
+            else _set_number_for_game(quiz, question.id, hub_session_code)
         )
 
         elements = list(question.elements.all())
@@ -1153,7 +1429,7 @@ class SortingLadderGameConsumer(AsyncWebsocketConsumer):
         session, _ = SortingLadderSession.objects.get_or_create(quiz=quiz)
         session.shuffled_item_ids = ",".join(shuffled_ids)
         session.current_round = 1
-        session.is_round_active = True
+        session.is_round_active = bool(start_answering)
         session.reveal_state = SortingLadderSession.REVEAL_ACTIVE
 
         # Determine the effective per-round time limit: explicit override from
@@ -1169,8 +1445,15 @@ class SortingLadderGameConsumer(AsyncWebsocketConsumer):
             # If something goes wrong, keep the existing value but avoid crash.
             pass
 
-        session.round_start_time = timezone.now()
-        session.round_end_time = timezone.now() + timezone.timedelta(seconds=session.time_limit_seconds)
+        if start_answering:
+            session.round_start_time = timezone.now()
+            session.round_end_time = (
+                session.round_start_time
+                + timezone.timedelta(seconds=session.time_limit_seconds)
+            )
+        else:
+            session.round_start_time = None
+            session.round_end_time = None
         session.placed_elements.clear()
         session.active_element = None
         session.save()
@@ -1195,6 +1478,7 @@ class SortingLadderGameConsumer(AsyncWebsocketConsumer):
         return {
             'question': {
                 'id': question.id,
+                'set_number': set_number,
                 'text': question.question_text,
                 'description': question.description,
                 'upper_label': question.upper_label,
@@ -1208,10 +1492,107 @@ class SortingLadderGameConsumer(AsyncWebsocketConsumer):
                 for e in shuffled
             ],
             'time_limit_seconds': effective_time_limit,
+            'set_number': set_number,
+            'round_number': 1,
             'is_tutorial_round': is_tutorial_round,
+            'starts_at': session.round_start_time.isoformat() if session.round_start_time else None,
+            'ends_at': session.round_end_time.isoformat() if session.round_end_time else None,
+            'server_now': timezone.now().isoformat(),
         }
 
-    def _save_round_full_order_sync(self, quiz, session, participant, question, ordered_item_ids, round_time_out=False):
+    @database_sync_to_async
+    def initialize_question_for_quiz(self, quiz_id, question_id, time_limit_seconds=None, hub_session_code=None):
+        return self._initialize_question_for_quiz_sync(
+            quiz_id,
+            question_id,
+            time_limit_seconds,
+            hub_session_code,
+        )
+
+    @database_sync_to_async
+    def begin_sorting_question_phase(
+        self,
+        quiz_id,
+        question_id,
+        time_limit_seconds,
+        hub_session_code,
+        action,
+        *,
+        at=None,
+    ):
+        with transaction.atomic():
+            snapshot = current_snapshot(
+                'sorting_ladder',
+                self.room_code,
+                hub_session_code,
+            )
+            manual_flow = (
+                snapshot.get('question_flow_mode')
+                == GameRuntimeState.QUESTION_FLOW_MANUAL_THREE_PHASE
+            )
+            if not manual_flow:
+                payload = self._initialize_question_for_quiz_sync(
+                    quiz_id,
+                    question_id,
+                    time_limit_seconds,
+                    hub_session_code,
+                )
+                return payload, QuestionPhaseDecision(
+                    bool(payload),
+                    'accepted' if payload else 'invalid_action_context',
+                    '',
+                    state_revision=snapshot.get('state_revision'),
+                    snapshot=snapshot,
+                )
+
+            try:
+                question = SortingQuestion.objects.get(pk=question_id, is_active=True)
+            except SortingQuestion.DoesNotExist:
+                return None, QuestionPhaseDecision(False, 'invalid_action_context', 'Frage nicht gefunden.')
+            if question.elements.count() < 2:
+                return None, QuestionPhaseDecision(False, 'invalid_action_context', 'Zu wenige Elemente.')
+
+            effective_time_limit = (
+                time_limit_seconds
+                if time_limit_seconds is not None
+                else question.round_time_limit
+            )
+            decision = present_question(
+                game_key='sorting_ladder',
+                room_code=self.room_code,
+                session_code=hub_session_code,
+                action={**action, 'question_id': question_id},
+                answer_duration_seconds=effective_time_limit,
+                at=at,
+            )
+            if not decision.accepted or decision.duplicate:
+                return None, decision
+            payload = self._initialize_question_for_quiz_sync(
+                quiz_id,
+                question_id,
+                time_limit_seconds,
+                hub_session_code,
+                start_answering=False,
+            )
+            if payload is None:
+                transaction.set_rollback(True)
+                return None, QuestionPhaseDecision(
+                    False,
+                    'invalid_action_context',
+                    'Die Sorting-Ladder-Runde konnte nicht vorbereitet werden.',
+                )
+            return payload, decision
+
+    def _save_round_full_order_sync(
+        self,
+        quiz,
+        session,
+        participant,
+        question,
+        ordered_item_ids,
+        round_time_out=False,
+        allow_after_deadline=False,
+    ):
         """Synchronous core implementation used by explicit submits and host-forced resolution."""
         is_tutorial_round = is_unit_tutorial_question(
             'sorting_ladder',
@@ -1238,11 +1619,9 @@ class SortingLadderGameConsumer(AsyncWebsocketConsumer):
             or session.reveal_state != SortingLadderSession.REVEAL_ACTIVE
         ):
             return None
-        round_has_timed_out = bool(session.round_end_time and now > session.round_end_time)
-        if round_has_timed_out and not round_time_out:
-            has_visible_order = isinstance(ordered_item_ids, list) and len(ordered_item_ids) > 0
-            if not has_visible_order:
-                return None
+        round_has_timed_out = bool(session.round_end_time and now >= session.round_end_time)
+        if round_has_timed_out and not allow_after_deadline:
+            return None
 
         # Ignore submissions from already eliminated participants.
         if participant.is_eliminated:
@@ -1252,18 +1631,23 @@ class SortingLadderGameConsumer(AsyncWebsocketConsumer):
         # without requiring any ordered_item_ids and without modifying the
         # shuffled order.
         if round_time_out:
-            played_rounds = RoundSubmission.objects.filter(
+            round_number = max(int(session.current_round or 0), 1)
+            if RoundSubmission.objects.filter(
                 quiz=quiz,
                 participant=participant,
                 question=question,
-            ).count()
-            round_number = played_rounds + 1
-            RoundSubmission.objects.create(
+                round_number=round_number,
+            ).exists():
+                return None
+            _, created = RoundSubmission.objects.get_or_create(
                 quiz=quiz,
                 participant=participant,
                 question=question,
-                all_elements=[],
+                round_number=round_number,
+                defaults={'all_elements': []},
             )
+            if not created:
+                return None
             if not is_tutorial_round and not participant.is_eliminated:
                 participant.is_eliminated = True
                 participant.save(update_fields=['is_eliminated'])
@@ -1274,7 +1658,7 @@ class SortingLadderGameConsumer(AsyncWebsocketConsumer):
                 question=question,
                 is_correct=True,
             ).count()
-            points_for_question = 0 if is_tutorial_round else correct_rounds_for_question * question.points
+            points_for_question = 0 if is_tutorial_round else correct_rounds_for_question
 
             total_rounds_for_participant = RoundSubmission.objects.filter(
                 quiz=quiz,
@@ -1332,7 +1716,14 @@ class SortingLadderGameConsumer(AsyncWebsocketConsumer):
         if played_rounds >= max_rounds:
             return None
 
-        expected_round = played_rounds + 1
+        expected_round = max(int(session.current_round or 0), 1)
+        if RoundSubmission.objects.filter(
+            quiz=quiz,
+            participant=participant,
+            question=question,
+            round_number=expected_round,
+        ).exists():
+            return None
         expected_count = min(expected_round + 1, len(shuffled_ids))
         if len(visible_ids) != expected_count:
             return None
@@ -1344,8 +1735,9 @@ class SortingLadderGameConsumer(AsyncWebsocketConsumer):
                 participant=participant,
                 question=question,
                 is_correct=True,
+                round_number__lt=expected_round,
             )
-            .order_by('-submitted_at')
+            .order_by('-round_number')
             .first()
         )
         if previous_correct and isinstance(previous_correct.all_elements, list) and previous_correct.all_elements:
@@ -1366,12 +1758,15 @@ class SortingLadderGameConsumer(AsyncWebsocketConsumer):
         if reduced_visible != locked_ids:
             return None
 
-        submission = RoundSubmission.objects.create(
+        submission, created = RoundSubmission.objects.get_or_create(
             quiz=quiz,
             participant=participant,
             question=question,
-            all_elements=visible_ids,
+            round_number=expected_round,
+            defaults={'all_elements': visible_ids},
         )
+        if not created:
+            return None
 
         items = list(SortingItem.objects.filter(id__in=visible_ids))
         if len(items) != len(visible_ids):
@@ -1403,7 +1798,7 @@ class SortingLadderGameConsumer(AsyncWebsocketConsumer):
             question=question,
             is_correct=True,
         ).count()
-        points_for_question = 0 if is_tutorial_round else correct_rounds_for_question * question.points
+        points_for_question = 0 if is_tutorial_round else correct_rounds_for_question
 
         if not is_tutorial_round:
             try:
@@ -1427,12 +1822,13 @@ class SortingLadderGameConsumer(AsyncWebsocketConsumer):
 
     def _finalize_pending_round_for_participant(self, quiz, session, question, participant):
         current_round = max(int(session.current_round or 0), 1)
-        submitted_count = RoundSubmission.objects.filter(
+        already_submitted = RoundSubmission.objects.filter(
             quiz=quiz,
             participant=participant,
             question=question,
-        ).count()
-        if submitted_count >= current_round:
+            round_number=current_round,
+        ).exists()
+        if already_submitted:
             self._pop_pending_round_order(
                 quiz.room_code,
                 question.id,
@@ -1459,6 +1855,7 @@ class SortingLadderGameConsumer(AsyncWebsocketConsumer):
                 question=question,
                 ordered_item_ids=pending_order,
                 round_time_out=False,
+                allow_after_deadline=True,
             )
 
         if not result:
@@ -1469,6 +1866,7 @@ class SortingLadderGameConsumer(AsyncWebsocketConsumer):
                 question=question,
                 ordered_item_ids=[],
                 round_time_out=True,
+                allow_after_deadline=True,
             )
 
         if not result:
@@ -1480,14 +1878,17 @@ class SortingLadderGameConsumer(AsyncWebsocketConsumer):
             'result': result,
         }
 
-    @database_sync_to_async
-    def start_next_round_db(self, quiz_id):
+    def _start_next_round_sync(self, quiz_id, *, start_answering=True):
         """
         Chooses the next active element and starts the round.
         """
         try:
-            quiz = SortingLadderGame.objects.select_related('session', 'current_question').get(id=quiz_id)
-            session = quiz.session
+            quiz = (
+                SortingLadderGame.objects.select_for_update()
+                .select_related('current_question')
+                .get(id=quiz_id)
+            )
+            session = SortingLadderSession.objects.select_for_update().get(quiz=quiz)
             topic = quiz.current_question
         except (SortingLadderGame.DoesNotExist, SortingLadderSession.DoesNotExist, AttributeError):
             return None
@@ -1518,15 +1919,31 @@ class SortingLadderGameConsumer(AsyncWebsocketConsumer):
                     auto_results.append(auto_result)
 
             session.current_round += 1
-            session.is_round_active = True
-            session.round_start_time = timezone.now()
-            session.round_end_time = timezone.now() + timezone.timedelta(seconds=session.time_limit_seconds)
+            session.is_round_active = bool(start_answering)
+            if start_answering:
+                session.round_start_time = timezone.now()
+                session.round_end_time = (
+                    session.round_start_time
+                    + timezone.timedelta(seconds=session.time_limit_seconds)
+                )
+            else:
+                session.round_start_time = None
+                session.round_end_time = None
             session.save(update_fields=['current_round', 'is_round_active', 'round_start_time', 'round_end_time'])
 
             return {
                 'question_id': topic.id,
                 'round_number': session.current_round,
+                'set_number': _set_number_for_game(
+                    quiz,
+                    topic.id,
+                    self._get_hub_session_code_for_room_sync(),
+                ),
+                'item_count': len(shuffled_ids),
                 'time_limit_seconds': session.time_limit_seconds,
+                'starts_at': session.round_start_time.isoformat() if session.round_start_time else None,
+                'ends_at': session.round_end_time.isoformat() if session.round_end_time else None,
+                'server_now': timezone.now().isoformat(),
                 'auto_results': auto_results,
             }
 
@@ -1540,6 +1957,11 @@ class SortingLadderGameConsumer(AsyncWebsocketConsumer):
             return None
 
         session.start_next_round(next_element)
+        if not start_answering:
+            session.is_round_active = False
+            session.round_start_time = None
+            session.round_end_time = None
+            session.save(update_fields=['is_round_active', 'round_start_time', 'round_end_time'])
 
         return {
             'question_id': topic.id,
@@ -1554,6 +1976,250 @@ class SortingLadderGameConsumer(AsyncWebsocketConsumer):
                 .values('id', 'text')
             ),
         }
+
+    @database_sync_to_async
+    def start_next_round_db(self, quiz_id):
+        return self._start_next_round_sync(quiz_id)
+
+    @database_sync_to_async
+    def prepare_next_round_phase(self, quiz_id, action):
+        with transaction.atomic():
+            session_code = self._get_hub_session_code_for_room_sync()
+            snapshot = current_snapshot(
+                'sorting_ladder',
+                self.room_code,
+                session_code,
+            )
+            manual_flow = (
+                snapshot.get('question_flow_mode')
+                == GameRuntimeState.QUESTION_FLOW_MANUAL_THREE_PHASE
+            )
+            if not manual_flow:
+                round_state = self._start_next_round_sync(quiz_id)
+                return round_state, QuestionPhaseDecision(
+                    bool(round_state),
+                    'accepted' if round_state else 'invalid_action_context',
+                    '',
+                    state_revision=snapshot.get('state_revision'),
+                    snapshot=snapshot,
+                )
+
+            try:
+                quiz = SortingLadderGame.objects.select_related('session', 'current_question').get(pk=quiz_id)
+                current_round = int(quiz.session.current_round or 0)
+                question_id = quiz.current_question_id
+            except (SortingLadderGame.DoesNotExist, SortingLadderSession.DoesNotExist, AttributeError):
+                return None, QuestionPhaseDecision(False, 'invalid_action_context', 'Runde nicht gefunden.')
+            set_number = _set_number_for_game(quiz, question_id, session_code)
+            try:
+                action_matches = (
+                    int(action.get('expected_round', action.get('round_id'))) == current_round
+                    and int(action.get('expected_set', action.get('set_id'))) == int(set_number or 0)
+                    and int(action.get('state_revision')) == int(snapshot.get('state_revision'))
+                    and str(action.get('game_id') or '') == str(snapshot.get('game_id') or '')
+                )
+            except (TypeError, ValueError):
+                action_matches = False
+            if not action_matches:
+                return None, QuestionPhaseDecision(
+                    False,
+                    'stale_action',
+                    'Die Aktion gehoert zu einer anderen Sorting-Ladder-Runde.',
+                    state_revision=snapshot.get('state_revision'),
+                    snapshot=snapshot,
+                )
+            if snapshot.get('question_phase') != GameRuntimeState.QUESTION_PHASE_ANSWERING_OPEN:
+                return None, QuestionPhaseDecision(
+                    False,
+                    'invalid_phase',
+                    'Die aktuelle Runde ist noch nicht freigegeben.',
+                    state_revision=snapshot.get('state_revision'),
+                    snapshot=snapshot,
+                )
+
+            round_state = self._start_next_round_sync(quiz_id, start_answering=False)
+            if not round_state:
+                return None, QuestionPhaseDecision(
+                    False,
+                    'invalid_action_context',
+                    'Es gibt keine weitere Runde.',
+                    state_revision=snapshot.get('state_revision'),
+                    snapshot=snapshot,
+                )
+            finished = finish_question_flow(
+                game_key='sorting_ladder',
+                room_code=self.room_code,
+                session_code=session_code,
+                question_id=question_id,
+            )
+            decision = present_question(
+                game_key='sorting_ladder',
+                room_code=self.room_code,
+                session_code=session_code,
+                action={
+                    **action,
+                    'state_revision': finished['state_revision'],
+                    'game_id': finished.get('game_id'),
+                    'question_id': question_id,
+                    'round_id': round_state['round_number'],
+                    'set_id': set_number,
+                },
+                answer_duration_seconds=round_state['time_limit_seconds'],
+            )
+            if not decision.accepted:
+                transaction.set_rollback(True)
+                return None, decision
+            return round_state, decision
+
+    @database_sync_to_async
+    def get_current_round_context(self):
+        session_code = self._get_hub_session_code_for_room_sync()
+        try:
+            quiz = SortingLadderGame.objects.select_related('session', 'current_question').get(
+                room_code=self.room_code,
+            )
+            session = quiz.session
+            question = quiz.current_question
+        except (SortingLadderGame.DoesNotExist, SortingLadderSession.DoesNotExist, AttributeError):
+            return None
+        if not question:
+            return None
+        item_count = len([item for item in session.shuffled_item_ids.split(',') if item])
+        return {
+            'question_id': question.id,
+            'round_number': max(int(session.current_round or 0), 1),
+            'set_number': _set_number_for_game(quiz, question.id, session_code),
+            'time_limit': session.time_limit_seconds,
+            'item_count': item_count,
+            'session_code': session_code,
+        }
+
+    @staticmethod
+    def _sorting_action_matches_context(action, context):
+        try:
+            return (
+                int(action.get('expected_round', action.get('round_id')))
+                == int(context['round_number'])
+                and int(action.get('expected_set', action.get('set_id')))
+                == int(context['set_number'] or 0)
+            )
+        except (TypeError, ValueError):
+            return False
+
+    @database_sync_to_async
+    def reveal_sorting_round(self, context, action, *, at=None):
+        if not self._sorting_action_matches_context(action, context):
+            snapshot = current_snapshot(
+                'sorting_ladder',
+                self.room_code,
+                context['session_code'],
+            )
+            return QuestionPhaseDecision(
+                False,
+                'stale_action',
+                'Die Aktion gehoert zu einer anderen Sorting-Ladder-Runde.',
+                state_revision=snapshot.get('state_revision'),
+                snapshot=snapshot,
+            )
+        return reveal_question_content(
+            game_key='sorting_ladder',
+            room_code=self.room_code,
+            session_code=context['session_code'],
+            action={**action, 'question_id': context['question_id']},
+            at=at,
+        )
+
+    @database_sync_to_async
+    def open_sorting_round(self, context, action, *, at=None):
+        with transaction.atomic():
+            if not self._sorting_action_matches_context(action, context):
+                snapshot = current_snapshot(
+                    'sorting_ladder',
+                    self.room_code,
+                    context['session_code'],
+                )
+                return QuestionPhaseDecision(
+                    False,
+                    'stale_action',
+                    'Die Aktion gehoert zu einer anderen Sorting-Ladder-Runde.',
+                    state_revision=snapshot.get('state_revision'),
+                    snapshot=snapshot,
+                )
+            snapshot = current_snapshot(
+                'sorting_ladder',
+                self.room_code,
+                context['session_code'],
+            )
+            revealed_at = parse_datetime(str(snapshot.get('content_revealed_at') or ''))
+            ready_at = sorting_ladder_reveal_ready_at(
+                content_revealed_at=revealed_at,
+                item_count=context['item_count'],
+                round_number=context['round_number'],
+            )
+            transition_at = at or timezone.now()
+            if not ready_at or transition_at < ready_at:
+                return QuestionPhaseDecision(
+                    False,
+                    'content_reveal_in_progress',
+                    'Leiter und Elemente sind noch nicht vollstaendig enthuellt.',
+                    state_revision=snapshot.get('state_revision'),
+                    snapshot=snapshot,
+                )
+            decision = open_answering(
+                game_key='sorting_ladder',
+                room_code=self.room_code,
+                session_code=context['session_code'],
+                action={**action, 'question_id': context['question_id']},
+                answer_duration_seconds=context['time_limit'],
+                at=transition_at,
+            )
+            if not decision.accepted or decision.duplicate:
+                return decision
+            started_at = parse_datetime(str(decision.snapshot.get('answering_started_at') or ''))
+            ends_at = parse_datetime(str(decision.snapshot.get('answering_deadline_at') or ''))
+            try:
+                quiz = SortingLadderGame.objects.select_for_update().get(room_code=self.room_code)
+                session = SortingLadderSession.objects.select_for_update().get(quiz=quiz)
+            except (SortingLadderGame.DoesNotExist, SortingLadderSession.DoesNotExist):
+                transaction.set_rollback(True)
+                return QuestionPhaseDecision(False, 'stale_action', 'Runde nicht gefunden.')
+            if (
+                quiz.current_question_id != context['question_id']
+                or int(session.current_round or 0) != int(context['round_number'])
+                or not started_at
+                or not ends_at
+            ):
+                transaction.set_rollback(True)
+                return QuestionPhaseDecision(
+                    False,
+                    'stale_action',
+                    'Die Sorting-Ladder-Runde hat sich geaendert.',
+                    state_revision=decision.state_revision,
+                    snapshot=decision.snapshot,
+                )
+            session.is_round_active = True
+            session.round_start_time = started_at
+            session.round_end_time = ends_at
+            session.save(update_fields=['is_round_active', 'round_start_time', 'round_end_time'])
+            return decision
+
+    @database_sync_to_async
+    def finish_sorting_round_phase(self, question_id):
+        session_code = self._get_hub_session_code_for_room_sync()
+        snapshot = current_snapshot('sorting_ladder', self.room_code, session_code)
+        if (
+            snapshot.get('question_flow_mode')
+            != GameRuntimeState.QUESTION_FLOW_MANUAL_THREE_PHASE
+            or snapshot.get('question_phase')
+            != GameRuntimeState.QUESTION_PHASE_ANSWERING_OPEN
+        ):
+            return snapshot
+        return finish_question_flow(
+            game_key='sorting_ladder',
+            room_code=self.room_code,
+            session_code=session_code,
+            question_id=question_id,
+        )
 
     async def broadcast_round_answer_status(self, quiz_id):
         status_payload = await self.get_round_answer_status_db(quiz_id)
@@ -1871,10 +2537,25 @@ class SortingLadderGameConsumer(AsyncWebsocketConsumer):
             hub_session_code,
             question.id,
         )
+        set_number = (
+            None
+            if is_tutorial_round
+            else _set_number_for_game(quiz, question.id, hub_session_code)
+        )
+        phase_snapshot = current_snapshot(
+            'sorting_ladder',
+            self.room_code,
+            hub_session_code,
+        )
+        manual_flow = (
+            phase_snapshot.get('question_flow_mode')
+            == GameRuntimeState.QUESTION_FLOW_MANUAL_THREE_PHASE
+        )
 
         question_payload = {
             'question': {
                 'id': question.id,
+                'set_number': set_number,
                 'text': question.question_text,
                 'description': question.description,
                 'upper_label': question.upper_label,
@@ -1885,8 +2566,31 @@ class SortingLadderGameConsumer(AsyncWebsocketConsumer):
             },
             'items': [{'id': i.id, 'text': i.text} for i in shuffled_items],
             'time_limit_seconds': session.time_limit_seconds,
+            'set_number': set_number,
+            'round_number': max(int(session.current_round or 0), 1),
             'is_tutorial_round': is_tutorial_round,
+            'starts_at': (
+                phase_snapshot.get('answering_started_at')
+                if manual_flow
+                else session.round_start_time.isoformat()
+                if session.round_start_time
+                else None
+            ),
+            'ends_at': (
+                phase_snapshot.get('answering_deadline_at')
+                if manual_flow
+                else session.round_end_time.isoformat()
+                if session.round_end_time
+                else None
+            ),
+            'server_now': timezone.now().isoformat(),
         }
+        question_payload.update(self.question_lifecycle_fields(phase_snapshot))
+        question_payload.update(self.sorting_reveal_fields(
+            item_count=len(shuffled_items),
+            round_number=session.current_round,
+            snapshot=phase_snapshot,
+        ))
 
         submissions = list(
             RoundSubmission.objects.filter(
@@ -1909,7 +2613,7 @@ class SortingLadderGameConsumer(AsyncWebsocketConsumer):
         if submissions:
             latest = submissions[-1]
             correct_rounds = sum(1 for s in submissions if s.is_correct)
-            points_for_question = 0 if is_tutorial_round else correct_rounds * question.points
+            points_for_question = 0 if is_tutorial_round else correct_rounds
             has_more_rounds = (not participant.is_eliminated) and len(submissions) < max_rounds
 
             visible_ids = latest.all_elements if isinstance(latest.all_elements, list) else []
@@ -1925,7 +2629,7 @@ class SortingLadderGameConsumer(AsyncWebsocketConsumer):
             else:
                 sorted_visible = []
 
-            result_round = len(submissions)
+            result_round = latest.round_number
             set_has_more_rounds = result_round < max_rounds
 
             latest_round_result = {
@@ -1950,24 +2654,101 @@ class SortingLadderGameConsumer(AsyncWebsocketConsumer):
         # If participant has not submitted the current server round yet and is
         # still active, explicitly sync round start so interaction unlocks.
         if (
+            manual_flow
+            and session.reveal_state == SortingLadderSession.REVEAL_ACTIVE
+            and int(session.current_round or 0) > 1
+            and phase_snapshot.get('question_phase') in {
+                GameRuntimeState.QUESTION_PHASE_PROMPT_VISIBLE,
+                GameRuntimeState.QUESTION_PHASE_CONTENT_VISIBLE,
+                GameRuntimeState.QUESTION_PHASE_ANSWERING_OPEN,
+            }
+        ):
+            round_started = {
+                'question_id': question.id,
+                'round_number': session.current_round,
+                'set_number': set_number,
+                'item_count': len(shuffled_items),
+                'time_limit_seconds': session.time_limit_seconds,
+                'is_tutorial_round': is_tutorial_round,
+                'starts_at': phase_snapshot.get('answering_started_at'),
+                'ends_at': phase_snapshot.get('answering_deadline_at'),
+                'server_now': timezone.now().isoformat(),
+                **self.question_lifecycle_fields(phase_snapshot),
+                **self.sorting_reveal_fields(
+                    item_count=len(shuffled_items),
+                    round_number=session.current_round,
+                    snapshot=phase_snapshot,
+                ),
+            }
+        elif (
             session.reveal_state == SortingLadderSession.REVEAL_ACTIVE
             and session.is_round_active
             and not participant.is_eliminated
-            and len(submissions) < int(session.current_round or 0)
+            and not any(
+                submission.round_number == int(session.current_round or 0)
+                for submission in submissions
+            )
         ):
             round_started = {
                 'question_id': question.id,
                 'round_number': session.current_round,
                 'time_limit_seconds': session.time_limit_seconds,
                 'is_tutorial_round': is_tutorial_round,
+                'starts_at': (
+                    session.round_start_time.isoformat()
+                    if session.round_start_time
+                    else None
+                ),
+                'ends_at': (
+                    session.round_end_time.isoformat()
+                    if session.round_end_time
+                    else None
+                ),
+                'server_now': timezone.now().isoformat(),
             }
 
+        pending_order = self._get_pending_round_order(
+            quiz.room_code,
+            question.id,
+            max(int(session.current_round or 0), 1),
+            participant.name,
+            participant.hub_session_code,
+        )
+        if session.reveal_state == SortingLadderSession.REVEAL_REVEALED:
+            phase = 'solution'
+        elif session.reveal_state == SortingLadderSession.REVEAL_AWAITING:
+            phase = 'waiting_reveal'
+        elif latest_round_result and not round_started:
+            phase = 'round_result'
+        elif round_started:
+            phase = 'answer_locked' if any(
+                submission.round_number == int(session.current_round or 0)
+                for submission in submissions
+            ) else 'active_round'
+        else:
+            phase = 'waiting'
+
         return {
+            'phase': phase,
             'question_payload': question_payload,
             'latest_round_result': latest_round_result,
             'round_started': round_started,
             'reveal_state': session.reveal_state,
             'reveal_order_ids': reveal_order_ids,
+            'own_selection': pending_order or [],
+            'answer_locked': phase == 'answer_locked',
+            'starts_at': (
+                session.round_start_time.isoformat()
+                if session.round_start_time
+                else None
+            ),
+            'ends_at': (
+                session.round_end_time.isoformat()
+                if session.round_end_time
+                else None
+            ),
+            'server_now': timezone.now().isoformat(),
+            **self.question_lifecycle_fields(phase_snapshot),
         }
 
     @database_sync_to_async
@@ -2022,12 +2803,21 @@ class SortingLadderGameConsumer(AsyncWebsocketConsumer):
         return None
 
     @database_sync_to_async
+    @transaction.atomic
     def save_round_full_order(self, participant_name, hub_session_code, ordered_item_ids, round_time_out=False):
         """Validate and persist a participant's result for this round."""
         try:
-            quiz = SortingLadderGame.objects.select_related('session', 'current_question').get(room_code=self.room_code)
-            session = quiz.session
-            participant = quiz.participants.get(name=participant_name, hub_session_code=hub_session_code)
+            quiz = (
+                SortingLadderGame.objects.select_for_update()
+                .select_related('current_question')
+                .get(room_code=self.room_code)
+            )
+            session = SortingLadderSession.objects.select_for_update().get(quiz=quiz)
+            participant = SortingLadderParticipant.objects.select_for_update().get(
+                quiz=quiz,
+                name=participant_name,
+                hub_session_code=hub_session_code,
+            )
         except (SortingLadderGame.DoesNotExist, SortingLadderSession.DoesNotExist, SortingLadderParticipant.DoesNotExist, AttributeError):
             return None
 

@@ -1,5 +1,4 @@
 from django.db import models, transaction
-from django.core.cache import cache
 from games_website.models import SyncBase
 from django.contrib.auth.models import User
 from django.utils import timezone
@@ -11,38 +10,36 @@ import string
 import json
 
 
-RECENTLY_ENDED_QUESTION_CACHE_TTL_SECONDS = 30
 logger = logging.getLogger(__name__)
-
-
-def _get_recently_ended_question_cache_key(room_code):
-    return f'who_recently_ended_question:{room_code}'
 
 
 def remember_recently_ended_question(room_code, question_id):
     if not room_code or not question_id:
         return
-    cache.set(
-        _get_recently_ended_question_cache_key(room_code),
-        int(question_id),
-        RECENTLY_ENDED_QUESTION_CACHE_TTL_SECONDS,
+    WhoSession.objects.filter(quiz__room_code=room_code).update(
+        recently_ended_question_id=int(question_id),
+        recently_ended_at=timezone.now(),
     )
 
 
 def get_recently_ended_question_id(room_code):
     if not room_code:
         return None
-    question_id = cache.get(_get_recently_ended_question_cache_key(room_code))
-    try:
-        return int(question_id) if question_id is not None else None
-    except (TypeError, ValueError):
-        return None
+    return (
+        WhoSession.objects
+        .filter(quiz__room_code=room_code)
+        .values_list('recently_ended_question_id', flat=True)
+        .first()
+    )
 
 
 def clear_recently_ended_question(room_code):
     if not room_code:
         return
-    cache.delete(_get_recently_ended_question_cache_key(room_code))
+    WhoSession.objects.filter(quiz__room_code=room_code).update(
+        recently_ended_question=None,
+        recently_ended_at=None,
+    )
 
 
 def get_question_timer_state(question, question_start_time=None, question_end_time=None, people_count=None, server_now=None):
@@ -453,6 +450,14 @@ class WhoSession(SyncBase):
     total_questions_sent = models.IntegerField(default=0)
     is_question_active = models.BooleanField(default=False)
     question_end_time = models.DateTimeField(null=True, blank=True)
+    recently_ended_question = models.ForeignKey(
+        WhoQuestion,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='+',
+    )
+    recently_ended_at = models.DateTimeField(null=True, blank=True)
     
     # Session statistics
     total_responses_current_question = models.IntegerField(default=0)
@@ -462,25 +467,45 @@ class WhoSession(SyncBase):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     
-    def send_question(self, question, time_per_person=None):
-        """Send a question to all participants"""
+    def prepare_question(self, question):
+        """Prepare a set without starting its people timeline."""
         self.quiz.current_question = question
-        self.quiz.question_start_time = timezone.now()
+        self.quiz.question_start_time = None
         self.current_question_number += 1
         self.total_questions_sent += 1
-        self.is_question_active = True
-        total_duration = question.get_total_duration_seconds(time_per_person)
-        self.question_end_time = timezone.now() + timezone.timedelta(seconds=total_duration)
+        self.is_question_active = False
+        self.question_end_time = None
         self.total_responses_current_question = 0
         self.average_score_current_question = 0
         self.average_accuracy_current_question = 0
         
         self.quiz.save()
         self.save()
+
+    def send_question(self, question, time_per_person=None):
+        """Compatibility name for preparing a manually controlled set."""
+        self.prepare_question(question)
+
+    def open_answering(self, question, *, started_at, answer_duration_seconds):
+        """Start the people timeline from the authoritative answering timestamp."""
+        if self.quiz.current_question_id != question.id:
+            raise ValueError('The prepared Who Is Lying set is no longer current.')
+        self.quiz.question_start_time = started_at
+        self.is_question_active = True
+        self.question_end_time = started_at + timezone.timedelta(
+            seconds=answer_duration_seconds,
+        )
+        self.quiz.save(update_fields=['question_start_time', 'updated_at'])
+        self.save(update_fields=[
+            'is_question_active',
+            'question_end_time',
+            'updated_at',
+        ])
     
     def end_current_question(self):
         """End the current active question"""
         self.is_question_active = False
+        self.question_end_time = None
         self.quiz.current_question = None
         self.quiz.question_start_time = None
         

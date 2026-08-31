@@ -128,7 +128,7 @@
       </div>
       <div class="field">
         <label for="nickname">Dein Name</label>
-        <input id="nickname" name="nickname" type="text" maxlength="30"
+        <input id="nickname" name="nickname" type="text" minlength="3" maxlength="30"
                placeholder="z.B. Anna" autocomplete="off"
                value="{{ request.POST.nickname|default:'' }}"/>
       </div>

@@ -19,8 +19,11 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<script src="{% static 'js/authoritative-game-state.js' %}"></script>
 </head>
-<body class="estimation-play-page">
+<body class="estimation-play-page"
+      data-vhs-progress-kind="question"
+      data-vhs-progress-source="#currentQuestionNumber">
     <div class="play-container">
         <!-- Header -->
         <header class="quiz-header">
@@ -60,7 +63,7 @@
                             </div>
                         </div>
 
-                        <div id="waitingQuestionState" class="game-state d-none">
+                        <div id="waitingQuestionState" class="game-state {% if initial_participant_phase != 'presentation_delay' %}d-none{% endif %}">
                             <div class="waiting-card">
                                 <div class="waiting-animation">
                                     <div class="qa-wait-loader" aria-hidden="true"></div>
@@ -71,14 +74,14 @@
                         </div>
 
                         <!-- Question State -->
-                        <div id="questionState" class="game-state {% if initial_participant_phase != 'answering' and initial_participant_phase != 'answered_waiting' %}d-none{% endif %}">
+                        <div id="questionState" class="game-state {% if initial_participant_phase != 'prompt_visible' and initial_participant_phase != 'content_visible' and initial_participant_phase != 'answering' and initial_participant_phase != 'answered_waiting' %}d-none{% endif %}">
                             <div class="question-card qa-active-answer-card estimation-answer-card">
                                 <!-- Question Header -->
                                 <div class="question-header">
                                     <div class="question-number d-none" aria-hidden="true">
                                         Question <span id="currentQuestionNumber">1</span>
                                     </div>
-                                    <div class="question-timer">
+                                    <div class="question-timer{% if initial_participant_phase != 'answering' and initial_participant_phase != 'answered_waiting' %} d-none{% endif %}" id="playerTimerWrapper">
                                         <div class="timer-circle" id="playerTimerCircle">
                                             <span id="playerTimeLeft">90</span>
                                         </div>
@@ -93,6 +96,7 @@
                                         {% endif %}
                                     </div>
 
+                                    <div id="estimationQuestionContent">
                                     <!-- Hint Display -->
                                     <div class="hint-display" id="hintDisplay" style="display: none;">
                                         <div class="hint-icon">
@@ -111,7 +115,8 @@
                                                            id="estimateInput"
                                                            placeholder="Antwort"
                                                            step="any"
-                                                           autocomplete="off">
+                                                           autocomplete="off"
+                                                           {% if initial_participant_phase != 'answering' %}disabled{% endif %}>
                                                     <span class="unit-display{% if not quiz.current_question or not quiz.current_question.get_unit_display_text %} d-none{% endif %}" id="unitDisplay">{% if quiz.current_question %}{{ quiz.current_question.get_unit_display_text }}{% endif %}</span>
                                                 </div>
                                             </div>
@@ -131,6 +136,7 @@
                                                 Waiting for the other participants...
                                             </div>
                                         </div>
+                                    </div>
                                     </div>
                                 </div>
                             </div>
@@ -1257,7 +1263,6 @@
                     this.hubSession = '{{ hub_session }}';
                     this.websocket = null;
                     this.questionTimer = null;
-                    this.questionStartTime = null;
                     this.hasAnswered = false;
                     this.currentUnit = '';
                     this.scoringMode = '{{ quiz.get_effective_scoring_mode }}';
@@ -1271,6 +1276,12 @@
                     this.currentQuestionIndex = Number(this.readJsonScript('estimationCurrentQuestionNumber', 0)) || 0;
                     this.initialState = this.readJsonScript('estimationInitialState', {phase: 'waiting'});
                     this.currentStateId = null;
+                    this.questionPhase = this.initialState?.current_question?.question_phase || '';
+                    this.stateRevision = Number(this.initialState?.current_question?.state_revision ?? -1);
+                    this.questionPresentationTimer = null;
+                    this.presentationServerNow = this.initialState?.current_question?.server_now || '';
+                    this.presentationServerReceivedAt = performance.now();
+                    this.renderedQuestionId = null;
                     
                     this.init();
                 }
@@ -1319,6 +1330,7 @@
                 }
 
                 handleWebSocketMessage(data) {
+                    if (!this.applyAuthoritativeMetadata(data)) return;
                     window.sessionGameStartIntro?.handleState(data);
                     switch(data.type) {
                         case 'quiz_started':
@@ -1336,7 +1348,11 @@
                         case 'question_started':
                             window.gameTutorial?.forceClose();
                             window.unitTutorialNotice?.setFromPayload(data);
-                            this.onQuestionStarted(data.question);
+                            this.onQuestionStarted(this.mergeQuestionLifecycle(data.question, data));
+                            break;
+
+                        case 'question_answering_opened':
+                            this.onQuestionStarted(this.mergeQuestionLifecycle(data.question, data));
                             break;
                             
                         case 'question_ended':
@@ -1380,7 +1396,13 @@
                     const estimateInput = document.getElementById('estimateInput');
                     estimateInput.addEventListener('input', () => {
                         const hasValue = estimateInput.value.trim() !== '';
-                        document.getElementById('submitAnswerBtn').disabled = !hasValue || this.hasAnswered;
+                        const submitButton = document.getElementById('submitAnswerBtn');
+                        submitButton.disabled = (
+                            this.questionPhase !== 'answering_open'
+                            || !hasValue
+                            || this.hasAnswered
+                        );
+                        submitButton.setAttribute('aria-disabled', String(submitButton.disabled));
                         this.syncPendingAnswer(estimateInput.value);
                     });
 
@@ -1393,7 +1415,11 @@
                 }
 
                 syncPendingAnswer(userAnswer) {
-                    if (this.hasAnswered || !this.currentQuestionId) return;
+                    if (
+                        this.questionPhase !== 'answering_open'
+                        || this.hasAnswered
+                        || !this.currentQuestionId
+                    ) return;
                     if (!this.websocket || this.websocket.readyState !== WebSocket.OPEN) return;
 
                     this.websocket.send(JSON.stringify({
@@ -1403,6 +1429,21 @@
                         question_id: this.currentQuestionId,
                         user_answer: userAnswer
                     }));
+                }
+
+                applyAuthoritativeMetadata(data = {}) {
+                    const source = data.snapshot && typeof data.snapshot === 'object' ? data.snapshot : data;
+                    const revision = Number(source.state_revision);
+                    if (Number.isFinite(revision) && revision < this.stateRevision) return false;
+                    if (Number.isFinite(revision)) this.stateRevision = revision;
+                    if (source.question_phase !== undefined && source.question_phase !== null) {
+                        this.questionPhase = String(source.question_phase);
+                    }
+                    if (source.server_now) {
+                        this.presentationServerNow = String(source.server_now);
+                        this.presentationServerReceivedAt = performance.now();
+                    }
+                    return true;
                 }
 
                 normalizeHubSessionValue(value) {
@@ -1499,6 +1540,9 @@
                         return;
                     }
                     clearInterval(this.questionTimer);
+                    clearTimeout(this.questionPresentationTimer);
+                    this.questionPhase = '';
+                    this.renderedQuestionId = null;
                     this.hasAnswered = false;
                     this.currentQuestionId = null;
                     this.currentQuestionIsTutorial = false;
@@ -1517,60 +1561,161 @@
                     this.showState('waitingQuizState');
                 }
 
+                mergeQuestionLifecycle(question, lifecycle = {}) {
+                    const mergedQuestion = {...question};
+                    [
+                        'question_phase',
+                        'question_visible_at',
+                        'server_now',
+                        'answering_started_at',
+                        'answering_deadline_at',
+                        'starts_at',
+                        'ends_at',
+                        'remaining_answer_time',
+                        'state_revision',
+                    ].forEach((field) => {
+                        if (lifecycle[field] !== undefined && lifecycle[field] !== null) {
+                            mergedQuestion[field] = lifecycle[field];
+                        }
+                    });
+                    return mergedQuestion;
+                }
+
                 onQuestionStarted(question) {
-                    this.hasAnswered = false;
-                    const elapsedSeconds = Number(question?.elapsed_seconds || 0);
-                    this.questionStartTime = Date.now() - (Number.isFinite(elapsedSeconds) ? elapsedSeconds * 1000 : 0);
-                    this.currentQuestionIsTutorial = !!question?.is_tutorial_round;
-                    this.currentQuestionId = this.currentQuestionIsTutorial ? null : (Number(question.id) || null);
-                    this.currentUnit = question.unit_display || '';
-                    const currentEntry = this.currentQuestionIsTutorial ? null : this.moveQuestionToNextFreeScoreSlot(question.id, question.max_points);
-                    const nextQuestionNumber = Number(currentEntry?.number || question.question_number);
-                    this.currentQuestionIndex = Number.isNaN(nextQuestionNumber) || nextQuestionNumber <= 0
-                        ? this.currentQuestionIndex + 1
-                        : nextQuestionNumber;
-                    this.currentQuestionMaxPoints = parseInt(question.max_points || 0, 10) || 0;
-                    this.lastPointsEarned = 0;
-                    this.lastSubmittedNumericAnswer = null;
-                    this.lastAccuracyPercentage = 0;
-                    document.getElementById('submittedEstimate').textContent = '-';
-                    document.getElementById('pointsEarned').textContent = '0';
-                    document.getElementById('accuracyPercent').textContent = '0%';
-                    const qn = document.getElementById('currentQuestionNumber');
-                    if (qn) qn.textContent = this.currentQuestionIndex;
-                    
-                    this.loadQuestion(question);
-                    const timeLimit = Number(question.time_limit);
-                    this.startQuestionTimer(Number.isFinite(timeLimit) ? Math.max(0, timeLimit) : 90);
+                    if (!question) return;
+                    const mergedQuestion = {...question};
+                    this.applyAuthoritativeMetadata(mergedQuestion);
+
+                    const incomingQuestionId = Number(mergedQuestion.id) || null;
+                    const isNewQuestion = this.renderedQuestionId !== incomingQuestionId;
+                    clearTimeout(this.questionPresentationTimer);
+                    clearInterval(this.questionTimer);
+
+                    if (isNewQuestion) {
+                        this.renderedQuestionId = incomingQuestionId;
+                        this.hasAnswered = false;
+                        this.currentQuestionIsTutorial = !!mergedQuestion.is_tutorial_round;
+                        this.currentQuestionId = this.currentQuestionIsTutorial ? null : incomingQuestionId;
+                        const currentEntry = this.currentQuestionIsTutorial
+                            ? null
+                            : this.moveQuestionToNextFreeScoreSlot(question.id, question.max_points);
+                        const nextQuestionNumber = Number(currentEntry?.number || mergedQuestion.question_number);
+                        this.currentQuestionIndex = Number.isNaN(nextQuestionNumber) || nextQuestionNumber <= 0
+                            ? this.currentQuestionIndex + 1
+                            : nextQuestionNumber;
+                        this.currentQuestionMaxPoints = parseInt(mergedQuestion.max_points || 0, 10) || 0;
+                        this.lastPointsEarned = 0;
+                        this.lastSubmittedNumericAnswer = null;
+                        this.lastAccuracyPercentage = 0;
+                        document.getElementById('submittedEstimate').textContent = '-';
+                        document.getElementById('pointsEarned').textContent = '0';
+                        document.getElementById('accuracyPercent').textContent = '0%';
+                        const qn = document.getElementById('currentQuestionNumber');
+                        if (qn) qn.textContent = this.currentQuestionIndex;
+                    }
+
+                    this.questionPhase = mergedQuestion.question_phase || this.questionPhase;
+                    this.currentUnit = mergedQuestion.unit_display || this.currentUnit || '';
+                    this.loadQuestion(mergedQuestion, {resetInput: isNewQuestion});
                     if (!this.currentQuestionIsTutorial) this.renderScoreHistory();
+
+                    if (
+                        this.questionPhase === 'prompt_visible'
+                        && this.remainingQuestionPresentationDelay(mergedQuestion) > 0
+                    ) {
+                        this.setQuestionContentVisible(false);
+                        this.setQuestionInteraction(false);
+                        this.setQuestionTimerVisible(false);
+                        this.showState('waitingQuestionState');
+                        this.questionPresentationTimer = setTimeout(() => {
+                            if (
+                                this.renderedQuestionId === incomingQuestionId
+                                && this.questionPhase === 'prompt_visible'
+                            ) {
+                                this.renderQuestionPhase(mergedQuestion);
+                            }
+                        }, this.remainingQuestionPresentationDelay(mergedQuestion));
+                        return;
+                    }
+
+                    this.renderQuestionPhase(mergedQuestion);
+                }
+
+                remainingQuestionPresentationDelay(question) {
+                    const visibleAt = Date.parse(question?.question_visible_at || '');
+                    const serverNow = Date.parse(question?.server_now || this.presentationServerNow || '');
+                    if (!Number.isFinite(visibleAt) || !Number.isFinite(serverNow)) return 0;
+                    const estimatedServerNow = serverNow + (performance.now() - this.presentationServerReceivedAt);
+                    return Math.max(0, visibleAt - estimatedServerNow);
+                }
+
+                renderQuestionPhase(question) {
+                    const contentVisible = ['prompt_visible', 'content_visible', 'answering_open'].includes(this.questionPhase);
+                    const answeringOpen = this.questionPhase === 'answering_open';
+                    this.setQuestionContentVisible(contentVisible);
+                    this.setQuestionTimerVisible(answeringOpen);
 
                     if (question?.has_answered && question?.existing_answer) {
                         this.applyEvaluatedPendingAnswer(question.existing_answer);
                         this.showSubmittedWaitingState(
                             question.existing_answer.formatted_answer || question.existing_answer.user_answer,
-                            {formatted: true}
+                            {formatted: true},
                         );
-                        this.showState('questionState');
-                        return;
+                    } else {
+                        const estimateInput = document.getElementById('estimateInput');
+                        if (answeringOpen && question?.pending_answer !== undefined) {
+                            estimateInput.value = question.pending_answer;
+                        }
+                        this.setQuestionInteraction(answeringOpen);
                     }
 
+                    if (answeringOpen) {
+                        const timeLimit = Number(question.remaining_answer_time ?? question.time_limit);
+                        this.startQuestionTimer(
+                            Number.isFinite(timeLimit) ? Math.max(0, timeLimit) : 0,
+                            question.answering_deadline_at || question.ends_at || null,
+                            question.server_now || null,
+                        );
+                    }
                     this.showState('questionState');
-                    
-                    // Focus on input
-                    setTimeout(() => {
-                        document.getElementById('estimateInput').focus();
-                    }, 500);
+                    if (answeringOpen && !this.hasAnswered) {
+                        setTimeout(() => document.getElementById('estimateInput')?.focus(), 0);
+                    }
+                }
+
+                setQuestionContentVisible(visible) {
+                    document.getElementById('estimationQuestionContent')?.classList.toggle('d-none', !visible);
+                }
+
+                setQuestionTimerVisible(visible) {
+                    document.getElementById('playerTimerWrapper')?.classList.toggle('d-none', !visible);
+                }
+
+                setQuestionInteraction(enabled) {
+                    const estimateInput = document.getElementById('estimateInput');
+                    const submitButton = document.getElementById('submitAnswerBtn');
+                    if (estimateInput) estimateInput.disabled = !enabled || this.hasAnswered;
+                    if (submitButton) {
+                        submitButton.disabled = !enabled || this.hasAnswered || !estimateInput?.value.trim();
+                        submitButton.setAttribute('aria-disabled', String(submitButton.disabled));
+                    }
                 }
 
                 onQuestionEnded(data) {
                     if (
                         !this.currentQuestionIsTutorial
-                        && (!this.currentQuestionId || !['questionState', 'answerSubmittedState'].includes(this.currentStateId))
+                        && (
+                            !this.currentQuestionId
+                            || String(data.current_question_id || '') !== String(this.currentQuestionId)
+                            || !['questionState', 'answerSubmittedState'].includes(this.currentStateId)
+                        )
                     ) {
-                        console.warn('Ignoring stale question_ended without an active estimation question.');
+                        console.warn('Ignoring stale question_ended outside the active estimation question.');
                         return;
                     }
                     clearInterval(this.questionTimer);
+                    clearTimeout(this.questionPresentationTimer);
+                    this.questionPhase = '';
 
                     if (!this.currentQuestionIsTutorial && !this.hasAnswered) {
                         const evaluatedPendingAnswer = this.getOwnEvaluatedPendingAnswer(data.evaluated_pending_answers);
@@ -1613,7 +1758,10 @@
                         return;
                     }
 
-                    if ((phase === 'answering' || phase === 'answered_waiting') && this.initialState.current_question) {
+                    if (
+                        ['presentation_delay', 'prompt_visible', 'content_visible', 'answering', 'answered_waiting'].includes(phase)
+                        && this.initialState.current_question
+                    ) {
                         this.onQuestionStarted(this.initialState.current_question);
                         return;
                     }
@@ -1666,7 +1814,7 @@
                     {% endif %}
                 }
 
-                loadQuestion(question) {
+                loadQuestion(question, {resetInput = true} = {}) {
                     this.currentQuestionId = Number(question.id) || null;
                     document.getElementById('questionText').textContent = question.question_text;
                     
@@ -1692,8 +1840,8 @@
                     
                     // Reset input
                     const estimateInput = document.getElementById('estimateInput');
-                    estimateInput.value = '';
-                    estimateInput.disabled = false;
+                    if (resetInput) estimateInput.value = '';
+                    estimateInput.disabled = true;
                     
                     // Reset submit button
                     const submitBtn = document.getElementById('submitAnswerBtn');
@@ -1714,24 +1862,28 @@
                     this.currentUnit = question.unit_display || '';
                 }
 
-                startQuestionTimer(timeLimit) {
+                startQuestionTimer(timeLimit, endsAt = null, serverNow = null) {
                     clearInterval(this.questionTimer);
-                    let timeLeft = timeLimit;
                     const timerElement = document.getElementById('playerTimeLeft');
                     const circleElement = document.getElementById('playerTimerCircle');
                     const submittedTimerElement = document.getElementById('playerTimeLeftSubmitted');
                     const submittedCircleElement = document.getElementById('playerTimerCircleSubmitted');
-                    
-                    // Initialize both timers
-                    timerElement.textContent = timeLeft;
-                    circleElement.className = 'timer-circle';
-                    if (submittedTimerElement && submittedCircleElement) {
-                        submittedTimerElement.textContent = timeLeft;
-                        submittedCircleElement.className = 'timer-circle';
-                    }
-                    
-                    this.questionTimer = setInterval(() => {
-                        timeLeft--;
+
+                    const timerContext = {
+                        game_key: 'estimation',
+                        game_id: this.roomCode,
+                        session_id: this.hubSession,
+                        current_question_id: this.currentQuestionId,
+                        ends_at: endsAt,
+                        server_now: serverNow
+                    };
+                    const fallbackDeadline = performance.now() + (Math.max(0, Number(timeLimit || 0)) * 1000);
+                    let expired = false;
+                    const renderTimer = () => {
+                        const remainingMilliseconds = endsAt && window.AuthoritativeGameState
+                            ? window.AuthoritativeGameState.remainingMilliseconds(timerContext)
+                            : Math.max(0, fallbackDeadline - performance.now());
+                        const timeLeft = Math.max(0, Math.ceil(remainingMilliseconds / 1000));
                         timerElement.textContent = timeLeft;
                         if (submittedTimerElement) {
                             submittedTimerElement.textContent = timeLeft;
@@ -1744,20 +1896,28 @@
                             submittedCircleElement.className = 'timer-circle ' + timerClass;
                         }
                         
-                        if (timeLeft <= 0) {
+                        if (timeLeft <= 0 && !expired) {
+                            expired = true;
                             clearInterval(this.questionTimer);
                             this.onTimeUp();
                         }
-                    }, 1000);
+                    };
+
+                    renderTimer();
+                    if (!expired) {
+                        this.questionTimer = setInterval(renderTimer, 250);
+                    }
                 }
 
                 submitAnswer() {
                     const estimateInput = document.getElementById('estimateInput');
                     const userAnswer = estimateInput.value.trim();
                     
-                    if (!userAnswer || this.hasAnswered) return;
-                    
-                    const timeTaken = (Date.now() - this.questionStartTime) / 1000;
+                    if (
+                        this.questionPhase !== 'answering_open'
+                        || !userAnswer
+                        || this.hasAnswered
+                    ) return;
                     
                     // Disable interface
                     estimateInput.disabled = true;
@@ -1771,8 +1931,7 @@
                         participant_name: this.participantName,
                         hub_session: this.hubSession,
                         question_id: this.currentQuestionId,
-                        user_answer: parseFloat(userAnswer),
-                        time_taken: timeTaken
+                        user_answer: parseFloat(userAnswer)
                     }));
                     
                     this.hasAnswered = true;
@@ -2164,9 +2323,9 @@
 
             // Minimal Hub listener for centralized navigation
             (function() {
-                let hubCode = null;
+                let hubCode = '{{ hub_session|default_if_none:""|escapejs }}';
                 try {
-                    hubCode = localStorage.getItem('hub_session_code');
+                    hubCode = hubCode || localStorage.getItem('hub_session_code');
                     console.log("[HubScript2] Retrieved hub_session_code from localStorage:", hubCode);
                 } catch (err) {
                     console.error("[HubScript2] Error accessing localStorage:", err);

@@ -19,9 +19,13 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<script src="{% static 'js/authoritative-game-state.js' %}"></script>
 </head>
-<body class="quiz-play-page sorting-ladder-play-page">
+<body class="quiz-play-page sorting-ladder-play-page"
+      data-vhs-progress-kind="set"
+      data-vhs-progress-source="#vhsProgressNumber">
     <div class="play-container">
+        <span id="vhsProgressNumber" hidden aria-hidden="true">0</span>
         <!-- Header -->
         <header class="quiz-header">
             <div class="container">
@@ -1117,6 +1121,36 @@
                 font-size: 0.875rem;
             }
         }
+        #topicState.sorting-ladder-phase--prompt .question-timer,
+        #topicState.sorting-ladder-phase--prompt #roundIndicators,
+        #topicState.sorting-ladder-phase--prompt #topicLayout,
+        #topicState.sorting-ladder-phase--prompt #topicButtons,
+        #topicState.sorting-ladder-phase--prompt #roundLockBanner,
+        #topicState.sorting-ladder-phase--content .question-timer {
+            display: none !important;
+        }
+
+        .sorting-ladder-reveal-pending {
+            opacity: 0;
+            visibility: hidden;
+            transform: translateY(10px);
+            pointer-events: none;
+        }
+
+        .sorting-ladder-reveal-visible {
+            animation: sorting-ladder-phase-reveal 160ms ease-out both;
+        }
+
+        @keyframes sorting-ladder-phase-reveal {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        @media (prefers-reduced-motion: reduce) {
+            .sorting-ladder-reveal-visible {
+                animation: none;
+            }
+        }
     </style>
 
     {% include 'includes/_hub_return_to_lobby_player.html' %}
@@ -1159,6 +1193,20 @@
                     this.eliminatedTransitionTimer = null;
                     this.pointerDrag = null;
                     this.progressHistory = [];
+                    this.questionFlowMode = 'legacy_immediate';
+                    this.questionPhase = '';
+                    this.questionVisibleAt = '';
+                    this.contentRevealedAt = '';
+                    this.answeringStartedAt = '';
+                    this.answeringDeadlineAt = '';
+                    this.stateRevision = -1;
+                    this.gameId = '';
+                    this.phaseServerNow = '';
+                    this.phaseServerReceivedAt = performance.now();
+                    this.sortingRevealStaggerMs = 120;
+                    this.sortingRevealAnimationMs = 160;
+                    this.sortingRevealTimers = [];
+                    this.questionVisibilityTimer = null;
                     
                     this.init();
                 }
@@ -1246,6 +1294,12 @@
                             window.unitTutorialNotice?.setFromPayload(data);
                             this.onQuestionStarted(data);
                             break;
+                        case 'question_content_revealed':
+                        case 'question_answering_opened':
+                            if (this.applyQuestionLifecycle(data)) {
+                                this.applySortingQuestionPhase();
+                            }
+                            break;
                         case 'round_result':
                             this.onRoundResult(data);
                             break;
@@ -1285,9 +1339,15 @@
                                 break;
                             }
                             this.hasSubmittedMove = false;
-                            this.setInteractionLock(false);
+                            this.setInteractionLock(this.questionPhase !== 'answering_open');
                             this.showState('topicState');
                             alert(data.message || 'Submission was rejected by the server.');
+                            break;
+
+                        case 'action_rejected':
+                            if (this.applyQuestionLifecycle(data.snapshot || {})) {
+                                this.applySortingQuestionPhase();
+                            }
                             break;
                             
                         case 'participant_count_updated':
@@ -1344,12 +1404,195 @@
                     this.showState('quizEndedState');
                 }
 
+                applyQuestionLifecycle(source = {}) {
+                    const revision = Number(source.state_revision);
+                    if (Number.isFinite(revision) && revision < this.stateRevision) {
+                        return false;
+                    }
+                    if (Number.isFinite(revision)) this.stateRevision = revision;
+                    if (source.game_id) this.gameId = String(source.game_id);
+                    if (source.question_flow_mode !== undefined && source.question_flow_mode !== null) {
+                        this.questionFlowMode = String(source.question_flow_mode);
+                    }
+                    if (source.question_phase !== undefined && source.question_phase !== null) {
+                        this.questionPhase = String(source.question_phase);
+                    }
+                    if (source.question_visible_at !== undefined && source.question_visible_at !== null) {
+                        this.questionVisibleAt = String(source.question_visible_at);
+                    }
+                    if (source.content_revealed_at !== undefined && source.content_revealed_at !== null) {
+                        this.contentRevealedAt = String(source.content_revealed_at);
+                    }
+                    if (source.answering_started_at !== undefined && source.answering_started_at !== null) {
+                        this.answeringStartedAt = String(source.answering_started_at);
+                    }
+                    if (source.answering_deadline_at !== undefined && source.answering_deadline_at !== null) {
+                        this.answeringDeadlineAt = String(source.answering_deadline_at);
+                    }
+                    const stagger = Number(source.sorting_ladder_reveal_stagger_ms);
+                    if (Number.isFinite(stagger) && stagger >= 0) {
+                        this.sortingRevealStaggerMs = stagger;
+                    }
+                    const animation = Number(source.sorting_ladder_reveal_animation_ms);
+                    if (Number.isFinite(animation) && animation >= 0) {
+                        this.sortingRevealAnimationMs = animation;
+                    }
+                    if (source.server_now) {
+                        this.phaseServerNow = String(source.server_now);
+                        this.phaseServerReceivedAt = performance.now();
+                    }
+                    return true;
+                }
+
+                estimatedPhaseServerNow() {
+                    const serverNow = Date.parse(this.phaseServerNow || '');
+                    if (!Number.isFinite(serverNow)) return Date.now();
+                    return serverNow + (performance.now() - this.phaseServerReceivedAt);
+                }
+
+                clearSortingRevealTimers({ showAll = false } = {}) {
+                    this.sortingRevealTimers.forEach(timer => clearTimeout(timer));
+                    this.sortingRevealTimers = [];
+                    if (this.questionVisibilityTimer) {
+                        clearTimeout(this.questionVisibilityTimer);
+                        this.questionVisibilityTimer = null;
+                    }
+                    if (showAll) {
+                        document.querySelectorAll('.sorting-ladder-reveal-pending, .sorting-ladder-reveal-visible')
+                            .forEach(element => element.classList.remove(
+                                'sorting-ladder-reveal-pending',
+                                'sorting-ladder-reveal-visible',
+                            ));
+                    }
+                }
+
+                sortingRevealSteps() {
+                    const markerGroup = Array.from(document.querySelectorAll('#ladderContainer .triangle-container'));
+                    if (this.currentRound > 1) {
+                        return markerGroup.length ? [markerGroup] : [];
+                    }
+                    const steps = [];
+                    const upper = document.getElementById('ladderUpperLabel');
+                    const lower = document.getElementById('ladderLowerLabel');
+                    if (upper) steps.push([upper]);
+                    if (lower) steps.push([lower]);
+                    document.querySelectorAll('#itemPool .answer-card').forEach(card => steps.push([card]));
+                    const fixed = document.querySelector('#ladderContainer .ladder-row');
+                    if (fixed) steps.push([fixed]);
+                    if (markerGroup.length) steps.push(markerGroup);
+                    return steps;
+                }
+
+                revealSortingStep(elements) {
+                    if (this.questionPhase !== 'content_visible') return;
+                    elements.forEach(element => {
+                        element.classList.remove('sorting-ladder-reveal-pending');
+                        element.classList.add('sorting-ladder-reveal-visible');
+                    });
+                }
+
+                revealSortingContentFromServerTime() {
+                    this.clearSortingRevealTimers({ showAll: true });
+                    const steps = this.sortingRevealSteps();
+                    steps.flat().forEach(element => element.classList.add('sorting-ladder-reveal-pending'));
+                    const revealedAt = Date.parse(this.contentRevealedAt || '');
+                    const elapsed = Number.isFinite(revealedAt)
+                        ? Math.max(0, this.estimatedPhaseServerNow() - revealedAt)
+                        : 0;
+                    steps.forEach((elements, index) => {
+                        const delay = index * this.sortingRevealStaggerMs;
+                        if (elapsed >= delay) {
+                            this.revealSortingStep(elements);
+                            return;
+                        }
+                        this.sortingRevealTimers.push(setTimeout(
+                            () => this.revealSortingStep(elements),
+                            delay - elapsed,
+                        ));
+                    });
+                }
+
+                applySortingQuestionPhase() {
+                    const topicState = document.getElementById('topicState');
+                    if (!topicState) return;
+                    topicState.classList.remove(
+                        'sorting-ladder-phase--prompt',
+                        'sorting-ladder-phase--content',
+                    );
+
+                    if (this.questionFlowMode !== 'manual_three_phase') {
+                        this.clearSortingRevealTimers({ showAll: true });
+                        this.showState('topicState');
+                        this.setInteractionLock(false);
+                        const timing = this.currentPhaseTiming || {};
+                        this.startPlayerTimer(
+                            timing.time_limit_seconds || this.currentQuestion?.round_time_limit || 0,
+                            timing.ends_at,
+                            timing.server_now,
+                        );
+                        return;
+                    }
+
+                    if (this.questionPhase === 'prompt_visible') {
+                        this.clearSortingRevealTimers({ showAll: true });
+                        topicState.classList.add('sorting-ladder-phase--prompt');
+                        this.setInteractionLock(true, 'Warte auf die Freigabe der Runde.');
+                        if (this.roundTimer) clearInterval(this.roundTimer);
+                        this.roundTimer = null;
+                        const visibleAt = Date.parse(this.questionVisibleAt || '');
+                        const remaining = Number.isFinite(visibleAt)
+                            ? Math.max(0, visibleAt - this.estimatedPhaseServerNow())
+                            : 0;
+                        if (remaining > 0) {
+                            this.showState('waitingQuestionState');
+                            this.questionVisibilityTimer = setTimeout(() => {
+                                if (this.questionPhase === 'prompt_visible') this.showState('topicState');
+                            }, remaining);
+                        } else {
+                            this.showState('topicState');
+                        }
+                        return;
+                    }
+
+                    if (this.questionPhase === 'content_visible') {
+                        topicState.classList.add('sorting-ladder-phase--content');
+                        this.showState('topicState');
+                        this.setInteractionLock(true, 'Warte auf die Freigabe der Runde.');
+                        if (this.roundTimer) clearInterval(this.roundTimer);
+                        this.roundTimer = null;
+                        this.revealSortingContentFromServerTime();
+                        return;
+                    }
+
+                    if (this.questionPhase === 'answering_open') {
+                        this.clearSortingRevealTimers({ showAll: true });
+                        this.showState('topicState');
+                        this.setInteractionLock(
+                            this.isEliminated || this.hasSubmittedMove,
+                            this.isEliminated
+                                ? 'Du bist für dieses Set ausgeschieden und verfolgst die weiteren Runden.'
+                                : 'Warte auf die nächste Runde.',
+                        );
+                        const timing = this.currentPhaseTiming || {};
+                        this.startPlayerTimer(
+                            timing.time_limit_seconds || this.currentQuestion?.round_time_limit || 0,
+                            this.answeringDeadlineAt || timing.ends_at,
+                            this.phaseServerNow || timing.server_now,
+                        );
+                    }
+                }
+
                 onQuestionStarted(data) {
+                    if (!this.applyQuestionLifecycle(data)) return;
                     this.cancelActiveSortingDrag();
+                    const setNumber = Number(data?.set_number || data?.question?.set_number);
+                    if (Number.isInteger(setNumber) && setNumber > 0) {
+                        document.getElementById('vhsProgressNumber').textContent = String(setNumber);
+                    }
                     // Reset per-question state
                     this.currentQuestion = data.question;
                     this.shuffledItems = data.items || [];
-                    this.currentRound = 1;
+                    this.currentRound = Number(data.round_number || 1);
                     this.currentSelection = [];
                     this.isEliminated = false;
                     this.moreRoundsInQuestion = true;
@@ -1385,8 +1628,6 @@
                     }
 
                     // Show the main topic state
-                    this.showState('topicState');
-                    this.setInteractionLock(false);
                     const titleEl = document.getElementById('topicTitle');
                     const descEl = document.getElementById('topicDescription');
                     const upperLabelEl = document.getElementById('ladderUpperLabel');
@@ -1402,25 +1643,24 @@
                     // Render round indicator circles
                     this.renderRoundIndicators();
 
-                    // Start timer from payload or question's per-round limit
-                    const timeLimit = data.time_limit_seconds || this.currentQuestion?.round_time_limit || 0;
-                    // If there is no timer, mark as "timer ended" so results are applied immediately
-                    this.roundTimerEnded = (timeLimit <= 0);
-                    console.log('Starting player timer with time limit:', timeLimit);
-                    console.log("Data Time Limit ", data.time_limit_seconds);
-                    console.log({"Current Question Time ": this.currentQuestion?.round_time_limit});
-                    this.startPlayerTimer(timeLimit);
-
                     // Render first round
                     this.renderCurrentRound();
+                    this.currentPhaseTiming = data;
+                    this.applySortingQuestionPhase();
                 }
 
-                startPlayerTimer(seconds) {
+                startPlayerTimer(seconds, endsAt = null, serverNow = null) {
                     if (!seconds || seconds <= 0) return;
                     if (this.roundTimer) {
                         clearInterval(this.roundTimer);
                     }
-                    this.roundTimeLeft = seconds;
+                    const timerContext = {
+                        ends_at: endsAt,
+                        server_now: serverNow,
+                    };
+                    this.roundTimeLeft = endsAt
+                        ? Math.ceil(AuthoritativeGameState.remainingMilliseconds(timerContext) / 1000)
+                        : seconds;
                     // Reset per-round submission state
                     this.hasSubmittedMove = false;
                     this.lastSubmitWasTimeout = false;
@@ -1460,7 +1700,9 @@
                     applyTimerClasses(circleFinal);
 
                     this.roundTimer = setInterval(() => {
-                        this.roundTimeLeft -= 1;
+                        this.roundTimeLeft = endsAt
+                            ? Math.ceil(AuthoritativeGameState.remainingMilliseconds(timerContext) / 1000)
+                            : this.roundTimeLeft - 1;
                         const safeValue = Math.max(this.roundTimeLeft, 0);
                         if (timeEl) timeEl.textContent = safeValue;
                         if (timeElResult) timeElResult.textContent = safeValue;
@@ -1695,7 +1937,19 @@
                         participant_name: this.participantName,
                         hub_session_code: this.hubSession,
                         ordered_item_ids: this.ladderItems.map(it => it.id),
+                        ...this.participantActionContext(),
                     }));
+                }
+
+                participantActionContext() {
+                    return {
+                        question_id: this.currentQuestion?.id || null,
+                        round_id: this.currentRound,
+                        set_id: this.currentQuestion?.set_number || null,
+                        game_id: this.gameId || null,
+                        state_revision: this.stateRevision,
+                        client_action_id: window.AuthoritativeGameState?.createActionId?.(),
+                    };
                 }
 
                 onCardDragStart(event, card) {
@@ -1925,6 +2179,7 @@
                         hub_session_code: this.hubSession,
                         ordered_item_ids: orderedIds,
                         round_time_out: !!roundTimeOut,
+                        ...this.participantActionContext(),
                     };
                     this.websocket.send(JSON.stringify(payload));
 
@@ -1968,6 +2223,7 @@
                 }
 
                 onRoundStarted(roundData) {
+                    if (!this.applyQuestionLifecycle(roundData || {})) return;
                     if (!this.moreRoundsInQuestion || this.setPhase !== 'active') return;
                     if (roundData?.question_id && this.currentQuestion?.id && Number(roundData.question_id) !== Number(this.currentQuestion.id)) {
                         return;
@@ -1984,9 +2240,6 @@
                         this.applyRoundResult(pendingRoundResult, true);
                         this.setProgressHistory(pendingRoundResult.progress_history);
                         this.pendingRoundResult = null;
-                        if (this.isEliminated) {
-                            return;
-                        }
                     }
 
                     this.showState('topicState');
@@ -2001,6 +2254,8 @@
                     if (this.isEliminated) {
                         this.setInteractionLock(true, 'Du bist für dieses Set ausgeschieden und verfolgst die weiteren Runden.');
                         this.renderCurrentRound();
+                        this.currentPhaseTiming = roundData || {};
+                        this.applySortingQuestionPhase();
                         return;
                     }
 
@@ -2010,8 +2265,9 @@
                     this.containerItems = this.shuffledItems.filter(it => !this.lockedIds.has(it.id));
                     this.setInteractionLock(false);
 
-                    this.startPlayerTimer(timeLimit);
                     this.renderCurrentRound();
+                    this.currentPhaseTiming = roundData || {};
+                    this.applySortingQuestionPhase();
                 }
 
                 onRoundEnded(_survivors) {}

@@ -103,6 +103,11 @@ class ReadinessCheckConsumerTests(TransactionTestCase):
         self.consumer = HubConsumer()
         self.consumer.session_code = self.session.code
         self.consumer.group_name = f'hub_{self.session.code}'
+        self.consumer.hub_participant_id = HubParticipant.objects.get(
+            session=self.session,
+            nickname='Alice',
+        ).id
+        self.consumer.hub_participant_name = 'Alice'
         self.consumer.channel_layer = SimpleNamespace(group_send=AsyncMock())
         self.consumer.send = AsyncMock()
 

@@ -7,11 +7,14 @@ from django.views.decorators.http import require_http_methods, require_POST
 from django.db.models import Max
 from django.contrib.auth.decorators import login_required
 from django.http import JsonResponse, Http404
+from django.urls import reverse
 from django.db.models import Sum, F, Case, When, Value, IntegerField, Q
 from django.db import connection, transaction
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
 from .models import HubGameParticipantSnapshot, HubSession, HubParticipant, HubGameStep
+from .host_permissions import authorize_game_host, user_can_manage_hub_session
+from .lobby_join import MIN_NICKNAME_LENGTH, check_nickname_availability
 from .active_game_guard import resolve_session_game_activation
 from .check_in import (
     complete_session_check_in,
@@ -60,6 +63,21 @@ def gen_code(length=6):
     return ''.join(random.choices(string.ascii_uppercase + string.digits, k=length))
 
 
+def _session_join_url(request, session_code):
+    return request.build_absolute_uri(reverse('games_hub:lobby', args=[session_code]))
+
+
+def _managed_session_or_error(request, session_code):
+    session = get_object_or_404(HubSession, code=session_code)
+    if user_can_manage_hub_session(request.user, session):
+        return session, None
+    return None, JsonResponse({
+        'success': False,
+        'error': 'Keine Berechtigung fuer diese Session.',
+        'code': 'unauthorized',
+    }, status=403)
+
+
 @require_http_methods(["GET", "POST"])
 def join_session(request):
     """Participants enter a session code + nickname to join a hub session."""
@@ -71,6 +89,8 @@ def join_session(request):
             error = 'Bitte einen Session-Code eingeben.'
         elif not nickname:
             error = 'Bitte einen Namen eingeben.'
+        elif len(nickname) < MIN_NICKNAME_LENGTH:
+            error = 'Der Name ist zu kurz.'
         else:
             try:
                 session = HubSession.objects.get(code=code)
@@ -108,9 +128,22 @@ def create_session(request):
         except json.JSONDecodeError:
             games_ordered = []
 
+        for entry in games_ordered:
+            game_key = entry.get('game_key', '')
+            room_code = entry.get('room_code', '')
+            if not game_key or not room_code:
+                continue
+            authorization = authorize_game_host(request.user, game_key, room_code)
+            if not authorization.allowed:
+                return render(request, 'hub/create_session.html', {
+                    'error': authorization.message,
+                    **_get_game_instances(),
+                }, status=403)
+
         session = HubSession.objects.create(
             code=code,
             name=name,
+            creator=request.user,
             is_active=False,
             **scoring_settings,
         )
@@ -856,6 +889,8 @@ def set_hub_participant_score(request):
     try:
         data = json.loads(request.body)
         participant = get_object_or_404(HubParticipant, id=data['participant_id'])
+        if not user_can_manage_hub_session(request.user, participant.session):
+            return JsonResponse({'success': False, 'error': 'Unauthorized'}, status=403)
         participant.score_adjustment = int(data['score'])
         participant.save(update_fields=['score_adjustment'])
         return JsonResponse({'success': True, 'new_score': participant.score_adjustment})
@@ -866,7 +901,9 @@ def set_hub_participant_score(request):
 @login_required
 @require_POST
 def update_session_scoring_settings(request, session_code):
-    session = get_object_or_404(HubSession, code=session_code)
+    session, error = _managed_session_or_error(request, session_code)
+    if error:
+        return error
     if session.scoring_settings_locked:
         return JsonResponse({
             'success': False,
@@ -920,7 +957,9 @@ def session_check_in_state_api(request, session_code):
 @login_required
 @require_POST
 def start_check_in(request, session_code):
-    session = get_object_or_404(HubSession, code=session_code)
+    session, error = _managed_session_or_error(request, session_code)
+    if error:
+        return error
     result = start_session_check_in(session)
     if result.get('success'):
         session.refresh_from_db()
@@ -931,7 +970,9 @@ def start_check_in(request, session_code):
 @login_required
 @require_POST
 def complete_check_in(request, session_code):
-    session = get_object_or_404(HubSession, code=session_code)
+    session, error = _managed_session_or_error(request, session_code)
+    if error:
+        return error
     try:
         data = json.loads(request.body or '{}')
     except json.JSONDecodeError:
@@ -946,7 +987,9 @@ def complete_check_in(request, session_code):
 @login_required
 @require_POST
 def reset_check_in(request, session_code):
-    session = get_object_or_404(HubSession, code=session_code)
+    session, error = _managed_session_or_error(request, session_code)
+    if error:
+        return error
     result = reset_session_check_in(session)
     if result.get('success'):
         session.refresh_from_db()
@@ -962,6 +1005,17 @@ def participant_check_in_api(request, session_code):
     except json.JSONDecodeError:
         return JsonResponse({'success': False, 'error': 'Invalid JSON'}, status=400)
     nickname = data.get('nickname') or data.get('participant_name')
+    identity = check_nickname_availability(
+        session_code,
+        nickname,
+        data.get('rejoin_token') or '',
+    )
+    if identity.get('status') != 'rejoin':
+        return JsonResponse({
+            'success': False,
+            'error': 'Die Teilnahme wurde noch nicht bestätigt.',
+        }, status=403)
+    nickname = identity['nickname']
     result = participant_check_in(session, nickname)
     if result.get('success'):
         session.refresh_from_db()
@@ -972,7 +1026,9 @@ def participant_check_in_api(request, session_code):
 @login_required
 @require_POST
 def set_check_in_participant(request, session_code):
-    session = get_object_or_404(HubSession, code=session_code)
+    session, error = _managed_session_or_error(request, session_code)
+    if error:
+        return error
     try:
         data = json.loads(request.body or '{}')
     except json.JSONDecodeError:
@@ -1074,6 +1130,7 @@ def lobby(request, session_code: str):
     return render(request, 'hub/lobby.html', {
         'session_code': session_code,
         'session_name': session.name or session_code,
+        'join_url': _session_join_url(request, session_code),
         'participants': list(participants.values('id', 'nickname')),
         'next_game_number': next_game_number,
     })
@@ -1100,7 +1157,11 @@ def session_leaderboard(request, session_code: str):
         'is_admin': is_admin
     })
 
+@login_required
 def monitor(request, session_code: str):
+    if not (request.user.is_staff or request.user.is_superuser):
+        raise Http404
+
     session = get_object_or_404(HubSession, code=session_code)
     steps = list(session.steps.all())
 
@@ -1172,6 +1233,7 @@ def spectate_session(request, session_code: str):
     return render(request, 'hub/spectate.html', {
         'session': session,
         'session_code': session_code,
+        'join_url': _session_join_url(request, session_code),
     })
 
 
@@ -1188,7 +1250,9 @@ def spectate_session_state(request, session_code: str):
 @require_POST
 def add_step_to_session(request, session_code):
     """Add a new game step to a running session."""
-    session = get_object_or_404(HubSession, code=session_code)
+    session, error = _managed_session_or_error(request, session_code)
+    if error:
+        return error
     try:
         data = json.loads(request.body)
     except json.JSONDecodeError:
@@ -1226,6 +1290,13 @@ def add_step_to_session(request, session_code):
                 game_instance = game_model.objects.get(id=gid)
             except game_model.DoesNotExist:
                 continue
+            authorization = authorize_game_host(request.user, game_key, game_instance.room_code)
+            if not authorization.allowed:
+                return JsonResponse({
+                    'success': False,
+                    'error': authorization.message,
+                    'code': authorization.code,
+                }, status=403)
             # Reset game state so it can be played again
             game_instance.status = 'waiting'
             game_instance.synced = False
@@ -1458,7 +1529,9 @@ def reorder_steps(request, session_code):
         except (TypeError, ValueError):
             return JsonResponse({'success': False, 'error': 'Order contains invalid step ids.'}, status=400)
 
-        session = get_object_or_404(HubSession, code=session_code)
+        session, error = _managed_session_or_error(request, session_code)
+        if error:
+            return error
         with transaction.atomic():
             steps = list(session.steps.select_for_update().order_by('order'))
             known_ids = {step.id for step in steps}
@@ -1483,6 +1556,9 @@ def reorder_steps(request, session_code):
 @login_required
 @require_POST
 def activate_session_game(request, session_code):
+    session, error = _managed_session_or_error(request, session_code)
+    if error:
+        return error
     try:
         data = json.loads(request.body)
     except json.JSONDecodeError:
@@ -1495,6 +1571,14 @@ def activate_session_game(request, session_code):
 
     if not game_key or not room_code:
         return JsonResponse({'success': False, 'error': 'Missing game_key or room_code'}, status=400)
+
+    authorization = authorize_game_host(request.user, game_key, room_code, session.code)
+    if not authorization.allowed:
+        return JsonResponse({
+            'success': False,
+            'error': authorization.message,
+            'code': authorization.code,
+        }, status=403)
 
     result = resolve_session_game_activation(
         session_code,
@@ -1514,7 +1598,9 @@ def activate_session_game(request, session_code):
 @require_POST
 def delete_step(request, session_code, step_id):
     """Delete a game step from a session and renumber remaining steps."""
-    session = get_object_or_404(HubSession, code=session_code)
+    session, error = _managed_session_or_error(request, session_code)
+    if error:
+        return error
     step = get_object_or_404(HubGameStep, id=step_id, session=session)
     step.delete()
     # Renumber remaining steps
@@ -1555,7 +1641,9 @@ def get_votes(request, session_code):
 @login_required
 @require_POST
 def configure_voting(request, session_code):
-    session = get_object_or_404(HubSession, code=session_code)
+    session, error = _managed_session_or_error(request, session_code)
+    if error:
+        return error
     try:
         data = json.loads(request.body or '{}')
     except json.JSONDecodeError:
@@ -1582,7 +1670,9 @@ def session_lobby_presence_api(request, session_code):
     if request.method != 'GET':
         return JsonResponse({'success': False, 'error': 'Method not allowed'}, status=405)
 
-    session = get_object_or_404(HubSession, code=session_code)
+    session, error = _managed_session_or_error(request, session_code)
+    if error:
+        return error
     presence = ensure_session_players_ready_for_game_start(session.code)
     return JsonResponse({'success': True, **presence})
 
@@ -1592,7 +1682,9 @@ def session_recall_countdown_state_api(request, session_code):
     if request.method != 'GET':
         return JsonResponse({'success': False, 'error': 'Method not allowed'}, status=405)
 
-    get_object_or_404(HubSession, code=session_code)
+    _session, error = _managed_session_or_error(request, session_code)
+    if error:
+        return error
     return JsonResponse({
         'success': True,
         **get_lobby_return_countdown_state(session_code),
@@ -1602,7 +1694,9 @@ def session_recall_countdown_state_api(request, session_code):
 @login_required
 @require_POST
 def start_recall_countdown(request, session_code):
-    get_object_or_404(HubSession, code=session_code)
+    _session, error = _managed_session_or_error(request, session_code)
+    if error:
+        return error
     countdown_state = broadcast_lobby_return_countdown_started(
         session_code,
         duration_seconds=LOBBY_RETURN_COUNTDOWN_SECONDS,
@@ -1618,7 +1712,9 @@ def start_recall_countdown(request, session_code):
 @login_required
 @require_POST
 def recall_session_participants_to_lobby(request, session_code):
-    session = get_object_or_404(HubSession, code=session_code)
+    session, error = _managed_session_or_error(request, session_code)
+    if error:
+        return error
     presence = mark_session_game_participants_inactive(session.code)
     broadcast_players_recalled_to_lobby(session.code)
     return JsonResponse({'success': True, **presence})

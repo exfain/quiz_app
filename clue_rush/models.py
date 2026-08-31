@@ -1,4 +1,4 @@
-from django.db import models
+from django.db import models, transaction
 from games_website.models import SyncBase
 from django.contrib.auth.models import User
 from django.utils import timezone
@@ -63,8 +63,9 @@ class ClueRushGame(SyncBase):
             return self.participants.filter(is_active=True, hub_session_code=session_code)
         return self.participants.filter(is_active=True)
 
-    def start_quiz(self):
-        if self.status == 'waiting':
+    @transaction.atomic
+    def start_quiz(self, *, reset_runtime=False):
+        if self.status == 'waiting' or reset_runtime:
             self.current_question = None
             self.question_start_time = None
             self.current_clue = None
@@ -89,6 +90,11 @@ class ClueRushGame(SyncBase):
                 session.current_clue_number = 0
                 session.is_clue_active = False
                 session.clue_end_time = None
+                session.answer_deadline = None
+                session.clue_duration_override = None
+                session.clue_schedule = []
+                session.question_finalized_at = None
+                session.finalized_question_id = None
                 session.total_responses_current_question = 0
                 session.correct_responses_current_question = 0
                 session.save(update_fields=[
@@ -99,9 +105,15 @@ class ClueRushGame(SyncBase):
                     'current_clue_number',
                     'is_clue_active',
                     'clue_end_time',
+                    'answer_deadline',
+                    'clue_duration_override',
+                    'clue_schedule',
+                    'question_finalized_at',
+                    'finalized_question_id',
                     'total_responses_current_question',
                     'correct_responses_current_question',
                 ])
+            CluePendingInput.objects.filter(quiz=self).delete()
         self.status = 'active'
         self.started_at = timezone.now()
         self.save(update_fields=['status', 'started_at'])
@@ -319,6 +331,11 @@ class ClueRushSession(SyncBase):
     current_clue_number = models.PositiveIntegerField(default=0)
     is_clue_active = models.BooleanField(default=False)
     clue_end_time = models.DateTimeField(null=True, blank=True)
+    answer_deadline = models.DateTimeField(null=True, blank=True)
+    clue_duration_override = models.PositiveIntegerField(null=True, blank=True)
+    clue_schedule = models.JSONField(default=list, blank=True)
+    question_finalized_at = models.DateTimeField(null=True, blank=True)
+    finalized_question_id = models.PositiveIntegerField(null=True, blank=True)
 
     # Session statistics
     total_responses_current_question = models.IntegerField(default=0)
@@ -328,44 +345,25 @@ class ClueRushSession(SyncBase):
     updated_at = models.DateTimeField(auto_now=True)
 
     def start_next_clue(self):
-        # next_clue = self.quiz.clues.filter(order=self.current_clue_number + 1).first()
-        next_clue = Clue.objects.filter(clue_question__game=self.quiz, order=self.current_clue_number + 1).first()
-        if not next_clue:
-            self.end_game()
-            return
+        from .runtime import reconcile_clue_schedule
 
-        self.current_clue_number = next_clue.order
-        self.quiz.current_clue = next_clue
-        self.quiz.clue_start_time = timezone.now()
-
-        self.is_clue_active = True
-        self.clue_end_time = timezone.now() + timezone.timedelta(seconds=next_clue.duration)
-
-        self.quiz.save()
-        self.save()
+        return reconcile_clue_schedule(self.quiz.room_code)
 
     def send_question(self, question):
-        """Send a question to all participants"""
-        self.quiz.current_question = question
-        self.quiz.question_start_time = timezone.now()
-        self.current_question_number += 1
-        self.total_questions_sent += 1
-        self.is_question_active = True
-        self.question_end_time = timezone.now() + timezone.timedelta(seconds=question.time_limit)
-        self.total_responses_current_question = 0
-        self.correct_responses_current_question = 0
-        
-        self.quiz.save()
-        self.save()
+        from .runtime import start_question_schedule
+
+        return start_question_schedule(
+            quiz_id=self.quiz_id,
+            question_id=question.id,
+        )
     
     def end_current_question(self):
-        """End the current active question"""
-        self.is_question_active = False
-        self.quiz.current_question = None
-        self.quiz.question_start_time = None
-        
-        self.quiz.save()
-        self.save()
+        from .runtime import finalize_clue_question
+
+        return finalize_clue_question(
+            self.quiz.room_code,
+            force=True,
+        )
     
     def record_answer(self, is_correct):
         """Record statistics for an answer"""

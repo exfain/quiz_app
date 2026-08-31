@@ -1,11 +1,13 @@
 import json
 
 from django.http import JsonResponse
+from django.contrib.auth.decorators import login_required
 from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
 from django.views.decorators.http import require_http_methods, require_POST
 
 from games_hub.views import get_post_game_results
+from games_hub.host_permissions import authorize_game_host
 
 from .models import HostPointsGame, HostPointsParticipant
 
@@ -114,9 +116,24 @@ def host_points_state(request, room_code):
 
 
 @require_POST
+@login_required
 def host_points_adjust_score(request, room_code):
     game = get_object_or_404(HostPointsGame, room_code=room_code)
+    if not request.user.is_superuser and game.creator != request.user:
+        return JsonResponse({'success': False, 'error': 'Unauthorized'}, status=403)
     data = _json_body(request)
+    authorization = authorize_game_host(
+        request.user,
+        'host_points',
+        room_code,
+        data.get('hub_session') or data.get('hub_session_code'),
+    )
+    if not authorization.allowed:
+        return JsonResponse({
+            'success': False,
+            'error': authorization.message,
+            'code': authorization.code,
+        }, status=403)
     success, result = game.adjust_score(data.get('participant_id'), data.get('delta'))
     status = 200 if success else 400
     return JsonResponse({

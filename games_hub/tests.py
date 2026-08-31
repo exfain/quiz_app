@@ -110,15 +110,26 @@ class ParticipantFlowBrowserTest(_Base):
 
     Startet zwei Browser-Kontexte:
       • Admin   – steuert die Session
-      • Teilnehmer – nimmt an allen Spielen teil
+      • Teilnehmer – nimmt an einem isolierten Spiel teil
 
-    Der Test iteriert über alle 9 Spieltypen in einem ``subTest``-Block,
-    sodass ein einzelner Fehler die übrigen Spielzyklen nicht abbricht.
+    Jeder Spieltyp besitzt einen eigenen Test mit eigener Session und eigenen
+    Browser-Kontexten, damit ein Fehler keinen anderen Spielzyklus beschädigt.
     """
 
     NICKNAME = "TestSpieler"
     TIMEOUT  = 20_000   # ms – Standard-Wartezeit
     LONG     = 35_000   # ms – Wartezeit für WebSocket-Navigation
+    FLOW_GAME_BY_TEST = {
+        "test_quiz_participant_flow": "quiz",
+        "test_estimation_participant_flow": "estimation",
+        "test_assign_participant_flow": "assign",
+        "test_where_participant_flow": "where",
+        "test_who_participant_flow": "who",
+        "test_who_that_participant_flow": "who_that",
+        "test_blackjack_participant_flow": "blackjack",
+        "test_clue_rush_participant_flow": "clue_rush",
+        "test_sorting_ladder_participant_flow": "sorting_ladder",
+    }
 
     # ── Klassen-Setup: Playwright starten ────────────────────────────────────
 
@@ -149,8 +160,9 @@ class ParticipantFlowBrowserTest(_Base):
         self.dc = DjangoClient()
         self.dc.force_login(self.admin)
 
-        # Spiele + Fragen erstellen und Session anlegen
-        self.game_data = self._create_all_games_with_questions()
+        # Each browser flow gets its own Hub/session state.
+        game_key = self.FLOW_GAME_BY_TEST[self._testMethodName]
+        self.game_data = self._create_all_games_with_questions((game_key,))
         self.session_code = self._create_session()
 
         # Browser-Kontexte öffnen
@@ -158,12 +170,17 @@ class ParticipantFlowBrowserTest(_Base):
         self.part_ctx  = self._browser.new_context()
         install_browser_test_stubs(self.admin_ctx)
         install_browser_test_stubs(self.part_ctx)
+        self.part_ctx.add_init_script(
+            "localStorage.setItem('participant_interface_theme', 'vhs');"
+        )
         self.admin_page = self.admin_ctx.new_page()
         self.part_page  = self.part_ctx.new_page()
 
         self._admin_login()
 
     def tearDown(self):
+        for page in (self.admin_page, self.part_page):
+            self._close_page_websockets(page)
         for page in (self.admin_page, self.part_page):
             try:
                 page.close()
@@ -175,12 +192,43 @@ class ParticipantFlowBrowserTest(_Base):
             except Exception:
                 pass
 
+    def _close_page_websockets(self, page):
+        """Complete current Hub/game socket handshakes before the next DB test."""
+        try:
+            page.evaluate(
+                """() => {
+                    const sockets = [
+                        window.hubMonitorSocket,
+                        window.hubLobbySocket,
+                        window.adminGameMonitor?.websocket,
+                    ].filter((socket, index, all) => (
+                        socket instanceof WebSocket && all.indexOf(socket) === index
+                    ));
+                    return Promise.all(sockets.map((socket) => new Promise((resolve) => {
+                        if (socket.readyState === WebSocket.CLOSED) {
+                            resolve();
+                            return;
+                        }
+                        const fallback = setTimeout(resolve, 2000);
+                        socket.addEventListener('close', () => {
+                            clearTimeout(fallback);
+                            resolve();
+                        }, {once: true});
+                        if (socket.readyState < WebSocket.CLOSING) socket.close(1000);
+                    })));
+                }"""
+            )
+        except Exception:
+            pass
+
     # ── Hilfsmethoden: Testdaten ─────────────────────────────────────────────
 
-    def _create_all_games_with_questions(self):
+    def _create_all_games_with_questions(self, game_keys=None):
         """Legt für jeden Spieltyp eine Instanz mit einer Testfrage an."""
         data = {}
-        for game_key, url_name in GAME_CREATE_URLS.items():
+        selected_game_keys = tuple(game_keys or GAME_CREATE_URLS)
+        for game_key in selected_game_keys:
+            url_name = GAME_CREATE_URLS[game_key]
             resp = self.dc.post(
                 reverse(url_name),
                 data=json.dumps({"title": f"Flow-Test {GAME_TYPE_DISPLAY[game_key]}"}),
@@ -315,7 +363,7 @@ class ParticipantFlowBrowserTest(_Base):
                     "title": "Sortiere nach Größe",
                     "description": "Vom größten zum kleinsten",
                     "points": "10",
-                    "round_time_limit": "30",
+                    "round_time_limit": "180",
                     "upper_label": "Größte",
                     "lower_label": "Kleinste",
                     "items_json": json.dumps([
@@ -408,6 +456,47 @@ class ParticipantFlowBrowserTest(_Base):
             timeout=self.TIMEOUT,
         )
 
+    def _wait_participant_game_interactive(self):
+        readiness_check = """() => {
+            const intro = document.getElementById('sessionGameStartIntro');
+            const introHidden = !intro
+                || intro.hidden
+                || getComputedStyle(intro).display === 'none';
+            const shell = document.querySelector('.vhs-theme-shell');
+            return introHidden
+                && !document.documentElement.classList.contains(
+                    'is-session-game-intro-active'
+                )
+                && !document.documentElement.classList.contains(
+                    'qa-vhs-transition--active'
+                )
+                && (!shell || !shell.hasAttribute('inert'))
+                && getComputedStyle(document.body).pointerEvents !== 'none';
+        }"""
+        try:
+            self.part_page.wait_for_function(readiness_check, timeout=self.LONG)
+        except Exception as exc:
+            diagnostics = self.part_page.evaluate(
+                """() => {
+                    const intro = document.getElementById('sessionGameStartIntro');
+                    const shell = document.querySelector('.vhs-theme-shell');
+                    return {
+                        url: location.href,
+                        introHidden: intro?.hidden ?? null,
+                        introDisplay: intro ? getComputedStyle(intro).display : null,
+                        introActive: document.documentElement.classList.contains(
+                            'is-session-game-intro-active'
+                        ),
+                        transitionActive: document.documentElement.classList.contains(
+                            'qa-vhs-transition--active'
+                        ),
+                        shellInert: shell?.hasAttribute('inert') ?? null,
+                        bodyPointerEvents: getComputedStyle(document.body).pointerEvents,
+                    };
+                }"""
+            )
+            self.fail(f"Participant screen did not become interactive: {diagnostics}; {exc}")
+
     def _start_game(self):
         """
         Klickt 'Spiel starten' und wartet auf den aktiven Monitor-Zustand.
@@ -438,6 +527,8 @@ class ParticipantFlowBrowserTest(_Base):
 
     def _complete_check_in_for_joined_participant(self):
         """Complete the required Hub check-in for the already joined participant."""
+        self.admin_page.click('[data-session-panel-target="checkInPanel"]')
+        self.admin_page.wait_for_selector("#checkInPanel.is-open", timeout=self.TIMEOUT)
         self.admin_page.wait_for_selector("#startCheckInBtn:not([disabled])", timeout=self.TIMEOUT)
         self.admin_page.click("#startCheckInBtn")
 
@@ -455,10 +546,10 @@ class ParticipantFlowBrowserTest(_Base):
             timeout=self.TIMEOUT,
         )
 
-    def test_full_participant_flow(self):
+    def _run_participant_flow(self, game_key):
         """
         Vollständiger Teilnehmer-Flow:
-        Lobby beitreten → alle Spieltypen durchspielen → Final Leaderboard.
+        Lobby beitreten → einen Spieltyp durchspielen → Final Leaderboard.
         """
         # ── 1. Teilnehmer öffnet Lobby ──────────────────────────────────────
         self.part_page.goto(
@@ -489,12 +580,10 @@ class ParticipantFlowBrowserTest(_Base):
             "#startSessionBtn", state="detached", timeout=self.TIMEOUT
         )
 
-        # ── 4. Alle Spiele durchspielen ─────────────────────────────────────
+        # ── 4. Spiel durchspielen ───────────────────────────────────────────
         self._complete_check_in_for_joined_participant()
 
-        for game_key, room_code in self.game_data.items():
-            with self.subTest(spiel=game_key):
-                self._play_game_cycle(game_key, room_code)
+        self._play_game_cycle(game_key, self.game_data[game_key])
 
         # ── 5. Admin beendet die Session ────────────────────────────────────
         # Sicherstellen, dass Admin auf Hub-Monitor ist
@@ -518,6 +607,33 @@ class ParticipantFlowBrowserTest(_Base):
             "Final Leaderboard nicht auf der Teilnehmer-Seite sichtbar",
         )
 
+    def test_quiz_participant_flow(self):
+        self._run_participant_flow("quiz")
+
+    def test_estimation_participant_flow(self):
+        self._run_participant_flow("estimation")
+
+    def test_assign_participant_flow(self):
+        self._run_participant_flow("assign")
+
+    def test_where_participant_flow(self):
+        self._run_participant_flow("where")
+
+    def test_who_participant_flow(self):
+        self._run_participant_flow("who")
+
+    def test_who_that_participant_flow(self):
+        self._run_participant_flow("who_that")
+
+    def test_blackjack_participant_flow(self):
+        self._run_participant_flow("blackjack")
+
+    def test_clue_rush_participant_flow(self):
+        self._run_participant_flow("clue_rush")
+
+    def test_sorting_ladder_participant_flow(self):
+        self._run_participant_flow("sorting_ladder")
+
     # ── Spielzyklus ──────────────────────────────────────────────────────────
 
     def _play_game_cycle(self, game_key, room_code):
@@ -538,6 +654,9 @@ class ParticipantFlowBrowserTest(_Base):
 
         # ── b. Admin: Spiel starten ──────────────────────────────────────────
         self._start_game()
+        if game_key == "assign":
+            self._safe_reload(self.admin_page)
+            self.admin_page.wait_for_selector("#endQuizBtn", timeout=self.TIMEOUT)
 
         # ── c. Admin: Frage senden ──────────────────────────────────────────
         self._wait_admin_game_ws_open()
@@ -549,19 +668,99 @@ class ParticipantFlowBrowserTest(_Base):
         self._wait_for_reload(self.admin_page)
         # Nach Reload: Frage aktiv – Assign: Runden-Button oder endQuestionBtn (je nach Rundenanzahl)
         if game_key == "assign":
+            self._wait_admin_game_ws_open()
+            try:
+                self.admin_page.wait_for_selector(
+                    "#revealAssignContentBtn:not([disabled])", timeout=self.TIMEOUT
+                )
+            except Exception:
+                diagnostics = self.admin_page.evaluate(
+                    """() => {
+                        const monitor = window.adminGameMonitor;
+                        const button = document.querySelector('#revealAssignContentBtn');
+                        return {
+                            phase: monitor?.questionPhase,
+                            visibleAt: monitor?.questionVisibleAt,
+                            serverNow: monitor?.presentationServerNow,
+                            estimatedServerNow: monitor?.estimatedServerNow?.(),
+                            buttonDisabled: button?.disabled,
+                            buttonAriaDisabled: button?.getAttribute('aria-disabled'),
+                            buttonVisible: !!button && getComputedStyle(button).display !== 'none',
+                        };
+                    }"""
+                )
+                self.fail(f"Assign reveal action did not become ready: {diagnostics}")
+            self.admin_page.click("#revealAssignContentBtn")
+            self._wait_for_reload(self.admin_page)
             self.admin_page.wait_for_selector(
                 "#endRoundEarlyBtn, #nextRoundBtn, #endQuestionBtn", timeout=self.TIMEOUT
             )
+        elif game_key == "sorting_ladder":
+            self._open_sorting_ladder_round()
+        elif game_key == "quiz":
+            self._wait_admin_game_ws_open()
+            self.admin_page.wait_for_selector(
+                "#revealQuestionContentBtn:not([disabled])", timeout=self.TIMEOUT
+            )
+            self.admin_page.click("#revealQuestionContentBtn")
+            self.assertEqual(self.admin_page.locator("#openAnsweringBtn").count(), 0)
+            self.admin_page.wait_for_selector("#endQuestionBtn", timeout=self.TIMEOUT)
+            self.admin_page.wait_for_selector(
+                "#questionTimerWrapper:not(.d-none)", timeout=self.TIMEOUT
+            )
+        elif game_key == "estimation":
+            self._wait_admin_game_ws_open()
+            self.admin_page.wait_for_selector(
+                "#openAnsweringBtn:not([disabled])", timeout=self.TIMEOUT
+            )
+            self.admin_page.click("#openAnsweringBtn")
+            self.admin_page.wait_for_selector("#endQuestionBtn", timeout=self.TIMEOUT)
+        elif game_key == "who_that":
+            self._wait_admin_game_ws_open()
+            self.assertEqual(
+                self.admin_page.locator("#questionEndedStatus").count(),
+                0,
+            )
+            self.admin_page.wait_for_selector("#endQuestionBtn", timeout=self.TIMEOUT)
+            self.assertEqual(
+                self.admin_page.locator("#openAnsweringBtn").count(),
+                0,
+            )
+            self.assertEqual(
+                self.admin_page.locator("#questionEndedStatus").count(),
+                0,
+            )
+        elif game_key == "who":
+            self._wait_admin_game_ws_open()
+            self.admin_page.wait_for_selector(
+                "#startSetBtn:not([disabled])", timeout=self.TIMEOUT
+            )
+            self.admin_page.click("#startSetBtn")
+            self._wait_for_reload(self.admin_page)
+            self.admin_page.wait_for_selector("#endQuestionBtn", timeout=self.TIMEOUT)
+        elif game_key == "blackjack":
+            self._wait_admin_game_ws_open()
+            self.admin_page.wait_for_selector(
+                "#openAnsweringBtn:not([disabled])", timeout=self.TIMEOUT
+            )
+            self.admin_page.click("#openAnsweringBtn")
+            self._wait_for_reload(self.admin_page)
+            self.admin_page.wait_for_selector("#endQuestionBtn", timeout=self.TIMEOUT)
+        elif game_key == "clue_rush":
+            self._wait_admin_game_ws_open()
+            self.admin_page.wait_for_selector(
+                "#startCluesBtn:not([disabled])", timeout=self.TIMEOUT
+            )
+            self.admin_page.click("#startCluesBtn")
+            self._wait_for_reload(self.admin_page)
+            self.admin_page.wait_for_selector("#endQuestionBtn", timeout=self.TIMEOUT)
         else:
             self.admin_page.wait_for_selector("#endQuestionBtn", timeout=self.TIMEOUT)
-            if game_key == "clue_rush":
-                self._wait_admin_game_ws_open()
-                self.admin_page.wait_for_selector("#sendClueBtn", timeout=self.TIMEOUT)
-                self.admin_page.click("#sendClueBtn")
 
         # ── d. Teilnehmer: Wird zur Spielseite navigiert ───────────────────
         play_pattern = f"**{PARTICIPANT_PLAY_PREFIX[game_key]}{room_code}/**"
         self.part_page.wait_for_url(play_pattern, timeout=self.LONG)
+        self._wait_participant_game_interactive()
 
         # ── e. Teilnehmer: Frage beantworten ───────────────────────────────
         self._submit_participant_answer(game_key)
@@ -574,10 +773,45 @@ class ParticipantFlowBrowserTest(_Base):
                 "#endRoundEarlyBtn, #nextRoundBtn, #endQuestionBtn"
             ).first.click()
             self._wait_for_reload(self.admin_page)
+        elif game_key == "sorting_ladder":
+            total_rounds = int(
+                self.admin_page.locator("#activeQuestion").get_attribute("data-total-rounds")
+                or "1"
+            )
+            for expected_round in range(2, total_rounds + 1):
+                self._wait_admin_game_ws_open()
+                self.admin_page.wait_for_selector(
+                    "#startNextRoundBtn:not([disabled]):not(.d-none)",
+                    timeout=self.TIMEOUT,
+                )
+                self.admin_page.click("#startNextRoundBtn")
+                self._wait_for_reload(self.admin_page)
+                self.part_page.wait_for_function(
+                    "(roundNumber) => window.sortingPlayer?.currentRound === roundNumber",
+                    arg=expected_round,
+                    timeout=self.TIMEOUT,
+                )
+                self._open_sorting_ladder_round()
+                self._submit_participant_answer(game_key)
+
+            self._wait_admin_game_ws_open()
+            self.admin_page.wait_for_selector(
+                "#endQuestionBtn:not(.d-none)", timeout=self.TIMEOUT
+            )
+            self.admin_page.click("#endQuestionBtn")
+            self.admin_page.wait_for_selector("#showSolutionBtn", timeout=self.TIMEOUT)
+            self.admin_page.click("#showSolutionBtn")
+            self.admin_page.wait_for_selector("#endQuestionBtn", timeout=self.TIMEOUT)
+            self.admin_page.click("#endQuestionBtn")
+            self._wait_for_reload(self.admin_page)
         else:
             self._wait_admin_game_ws_open()
             self.admin_page.click("#endQuestionBtn")
             self._wait_for_reload(self.admin_page)
+            if game_key == "who_that":
+                self.admin_page.wait_for_selector(
+                    "#questionEndedStatus", timeout=self.TIMEOUT
+                )
 
         # ── g. Admin: Spiel beenden ─────────────────────────────────────────
         self.admin_page.wait_for_selector("#endQuizBtn", timeout=self.TIMEOUT)
@@ -598,11 +832,31 @@ class ParticipantFlowBrowserTest(_Base):
         self.part_page.wait_for_url(
             f"**/hub/lobby/{self.session_code}/**", timeout=self.LONG
         )
-        # Lobby-Titel ist immer sichtbar (Join-Card kann ausgeblendet sein)
-        self.part_page.wait_for_selector("#lobbyTitle", timeout=self.TIMEOUT)
+        # The VHS shell replaces the legacy heading while keeping the lobby root.
+        self.part_page.wait_for_selector(
+            "[data-participant-lobby].vhs-lobby-root", timeout=self.TIMEOUT
+        )
         self._wait_participant_hub_ws_open()
 
     # ── Antwort-Logik pro Spieltyp ───────────────────────────────────────────
+
+    def _open_sorting_ladder_round(self):
+        self._wait_admin_game_ws_open()
+        self.admin_page.wait_for_selector(
+            "#revealSortingContentBtn:not([disabled])", timeout=self.TIMEOUT
+        )
+        self.admin_page.click("#revealSortingContentBtn")
+        self._wait_for_reload(self.admin_page)
+        self._wait_admin_game_ws_open()
+        self.admin_page.wait_for_selector(
+            "#openSortingRoundBtn:not([disabled])", timeout=self.TIMEOUT
+        )
+        self.admin_page.click("#openSortingRoundBtn")
+        self._wait_for_reload(self.admin_page)
+        self.admin_page.wait_for_selector(
+            "#startNextRoundBtn:not(.d-none), #endQuestionBtn:not(.d-none)",
+            timeout=self.TIMEOUT,
+        )
 
     def _submit_participant_answer(self, game_key):
         """
@@ -636,6 +890,25 @@ class ParticipantFlowBrowserTest(_Base):
             self.part_page.wait_for_selector(".draggable-item", timeout=self.LONG)
             source = self.part_page.locator(".draggable-item").first
             target = self.part_page.locator(".drop-zone").first
+            target.scroll_into_view_if_needed(timeout=self.TIMEOUT)
+            target.evaluate(
+                """(element) => new Promise((resolve) => {
+                    const animations = element.closest('.game-state')?.getAnimations() || [];
+                    Promise.allSettled(animations.map((animation) => animation.finished)).then(resolve);
+                })"""
+            )
+            self.part_page.wait_for_function(
+                """(element) => {
+                    const rect = element.getBoundingClientRect();
+                    const hit = document.elementFromPoint(
+                        rect.left + rect.width / 2,
+                        rect.top + rect.height / 2
+                    );
+                    return hit === element || element.contains(hit);
+                }""",
+                arg=target.element_handle(),
+                timeout=self.TIMEOUT,
+            )
             source.drag_to(target)
             self.part_page.wait_for_selector(
                 "#logRoundBtn:not(.d-none)", timeout=self.TIMEOUT
@@ -685,14 +958,56 @@ class ParticipantFlowBrowserTest(_Base):
 
         elif game_key == "sorting_ladder":
             # Use the current ladder UI: drag one item into a slot, then lock it in.
-            self.part_page.wait_for_selector(".answer-card", timeout=self.LONG)
-            source = self.part_page.locator(".answer-card").first
-            target = self.part_page.locator(".triangle-container").first
+            active_card = "#topicLayout:not(.round-locked) .answer-card[draggable='true']"
+            try:
+                self.part_page.wait_for_selector(active_card, timeout=self.LONG)
+            except Exception as exc:
+                diagnostics = self.part_page.evaluate(
+                    """() => ({
+                        phase: window.sortingPlayer?.setPhase,
+                        round: window.sortingPlayer?.currentRound,
+                        locked: window.sortingPlayer?.isInputLocked,
+                        eliminated: window.sortingPlayer?.isEliminated,
+                        hasSubmitted: window.sortingPlayer?.hasSubmittedMove,
+                        moreRounds: window.sortingPlayer?.moreRoundsInQuestion,
+                        timeLeft: window.sortingPlayer?.roundTimeLeft,
+                        timerEnded: window.sortingPlayer?.roundTimerEnded,
+                        layoutClass: document.querySelector('#topicLayout')?.className,
+                        visibleState: Array.from(document.querySelectorAll('.game-state'))
+                            .filter((element) => !element.classList.contains('d-none'))
+                            .map((element) => element.id),
+                    })"""
+                )
+                self.fail(f'Sorting Ladder did not unlock its active round: {diagnostics}')
+            source = self.part_page.locator(active_card).first
+            test_ranks = {"Elefant": 1, "Hund": 2, "Maus": 3}
+            source_text = source.locator(".option-text").inner_text().strip()
+            ladder_texts = [
+                text.strip()
+                for text in self.part_page.locator(".ladder-row-text").all_inner_texts()
+            ]
+            source_rank = test_ranks[source_text]
+            target_position = sum(
+                test_ranks[text] < source_rank for text in ladder_texts
+            )
+            target = self.part_page.locator(
+                f".triangle-container[data-position='{target_position}']"
+            )
             source.drag_to(target)
             self.part_page.wait_for_selector(
                 "#submitRoundBtn:not([disabled])", timeout=self.TIMEOUT
             )
             self.part_page.click("#submitRoundBtn")
+            self.admin_page.wait_for_function(
+                """participantName => Array.from(
+                    document.querySelectorAll('#roundAnswerStatusList > div')
+                ).some(row => (
+                    row.querySelector('strong')?.textContent.trim() === participantName
+                    && row.querySelector('.badge-success')?.textContent.trim() === 'eingeloggt'
+                ))""",
+                arg=self.NICKNAME,
+                timeout=self.TIMEOUT,
+            )
 
         # Warte auf Bestätigungsanzeige (where/sorting_ladder ohne Selektor)
         if game_key == "estimation":

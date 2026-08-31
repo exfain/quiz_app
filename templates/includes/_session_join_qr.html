@@ -1,0 +1,30 @@
+{% load session_game_tags %}
+{% session_join_qr_svg join_url as join_qr_svg %}
+<details
+  class="session-join-qr session-join-qr--{{ join_qr_variant|default:'participant' }}"
+  data-session-join-disclosure
+>
+  <summary class="session-join-qr__summary" data-session-join-toggle>
+    <span>Teilnahme-QR-Code</span>
+    <span class="session-join-qr__indicator session-join-qr__indicator--closed" aria-hidden="true">&#9660;</span>
+    <span class="session-join-qr__indicator session-join-qr__indicator--open" aria-hidden="true">&#9650;</span>
+  </summary>
+  <div class="session-join-qr__body">
+    {% if join_qr_svg %}
+      <div
+        class="session-join-qr__code"
+        data-session-join-qr
+        data-qr-payload="{{ join_url }}"
+      >{{ join_qr_svg }}</div>
+    {% endif %}
+    <div class="session-join-qr__alternative">
+      <span class="session-join-qr__label" data-participant-lobby-share-label>Lobby-Link</span>
+      <a
+        class="session-join-qr__link"
+        data-participant-lobby-share-value
+        data-session-join-url
+        href="{{ join_url }}"
+      >{{ join_url }}</a>
+    </div>
+  </div>
+</details>

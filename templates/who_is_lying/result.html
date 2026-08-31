@@ -20,8 +20,11 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 </head>
-<body class="who-result-page participant-result-page">
+<body class="who-result-page participant-result-page"
+      data-vhs-progress-kind="set"
+      data-vhs-progress-source="#vhsProgressNumber">
     <div class="result-container" data-participant-name="{{ participant.name }}">
+        <span id="vhsProgressNumber" hidden aria-hidden="true">{{ quiz.session.current_question_number|default:0 }}</span>
         <!-- Header -->
         <header class="result-header">
             <div class="container">
@@ -136,7 +139,7 @@
                                         {% for processed_answer in processed_answers %}
                                         <div class="answer-item">
                                             <div class="answer-header">
-                                                <div class="question-number">Q{{ forloop.counter }}</div>
+                                                <div class="question-number">S{{ forloop.counter }}</div>
                                                 <div class="answer-score">
                                                     <div class="points">{{ processed_answer.answer.points_earned }} pts</div>
                                                     <div class="accuracy-badge accuracy-{{ processed_answer.answer.get_accuracy_percentage|floatformat:0 }}">
@@ -241,7 +244,7 @@
                                     <div class="no-answers">
                                         <i data-lucide="inbox"></i>
                                         <h4>No Answers Recorded</h4>
-                                        <p>It looks like you didn't answer any questions in this quiz.</p>
+                                        <p>It looks like you didn't answer any sets in this quiz.</p>
                                     </div>
                                 {% endif %}
                             </div>

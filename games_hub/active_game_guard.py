@@ -17,6 +17,8 @@ CHECK_IN_REQUIRED_MESSAGE = (
     'damit die Teilnehmerzahl für die Sessionwertung fixiert wird.'
 )
 
+REUSABLE_COMPLETED_GAME_KEYS = frozenset({'host_points'})
+
 
 def get_game_model_map():
     from QuizGame.models import Quiz as QuizGameModel
@@ -209,7 +211,15 @@ def resolve_session_game_activation(
             if getattr(game, 'status', None) == 'active':
                 conflicts.append((step, game))
 
-        if target_game and getattr(target_game, 'status', None) == 'completed':
+        completed_in_current_session = bool(
+            target_game
+            and getattr(target_game, 'status', None) == 'completed'
+            and (
+                target_game_key not in REUSABLE_COMPLETED_GAME_KEYS
+                or getattr(target_game, 'active_hub_session_code', '') == session.code
+            )
+        )
+        if completed_in_current_session:
             return {'success': False, 'error': 'Dieses Spiel ist bereits beendet.'}
 
         if conflicts and action not in ('end', 'inactive'):

@@ -297,7 +297,10 @@ class HostQuestionStartTemplateTest(TestCase):
         self.assertIn("case 'error':", content)
         self.assertIn("showHostError", content)
         self.assertIn("Verbindung zum Server ist nicht bereit", content)
-        self.assertIn("this.renderActiveQuestion(data.question || {})", block)
+        self.assertIn(
+            "this.renderActiveQuestion(data.question || {}, data.question_phase, data)",
+            block,
+        )
         self.assertNotIn("location.reload()", block)
 
 

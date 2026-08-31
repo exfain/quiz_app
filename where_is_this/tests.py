@@ -1,4 +1,5 @@
 import json
+import uuid
 from pathlib import Path
 
 from asgiref.sync import async_to_sync
@@ -9,6 +10,7 @@ from django.urls import reverse
 from django.utils import timezone
 
 from games_hub.models import HubGameStep, HubParticipant, HubSession
+from games_hub.authoritative_state import attach_snapshot_metadata
 from games_hub.views import get_leaderboard_data
 from .consumers import WhereConsumer
 from .geo import (
@@ -432,9 +434,27 @@ class WhereScoringModeTests(TransactionTestCase):
             creator=self.user,
             status='active',
             current_question=self.question,
+            question_start_time=timezone.now() - timezone.timedelta(seconds=1),
+        )
+        WhereSession.objects.create(
+            quiz=quiz,
+            is_question_active=True,
+            question_end_time=timezone.now() + timezone.timedelta(seconds=20),
         )
         WhereParticipant.objects.create(quiz=quiz, name='Ada', hub_session_code='HUB1')
 
+        snapshot = attach_snapshot_metadata(
+            {
+                'phase': 'question_active',
+                'game': {'id': quiz.id, 'status': 'active'},
+                'question': {'id': self.question.id},
+                'starts_at': quiz.question_start_time,
+                'ends_at': quiz.session.question_end_time,
+            },
+            game_key='where',
+            room_code=quiz.room_code,
+            session_code='HUB1',
+        )
         response = self.client.post(
             reverse('where_is_this:submit_answer', args=[quiz.room_code, 'Ada']),
             data=json.dumps({
@@ -444,6 +464,12 @@ class WhereScoringModeTests(TransactionTestCase):
                 'longitude': 42,
                 'time_taken': 1,
                 'hub_session': 'HUB1',
+                'game_id': snapshot['game_id'],
+                'question_id': snapshot['current_question_id'],
+                'round_id': snapshot.get('current_round_id'),
+                'set_id': snapshot.get('current_set_id'),
+                'state_revision': snapshot['state_revision'],
+                'client_action_id': str(uuid.uuid4()),
             }),
             content_type='application/json',
             QUERY_STRING='hub_session=HUB1',
@@ -944,6 +970,8 @@ class WhereStartSyncTests(TransactionTestCase):
             status='active',
             current_question=question,
         )
+        session = WhereSession.objects.create(quiz=quiz)
+        session.send_question(question)
         WhereParticipant.objects.create(
             quiz=quiz,
             name='Ada',

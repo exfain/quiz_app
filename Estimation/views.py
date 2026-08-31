@@ -4,18 +4,21 @@ from django.urls import reverse
 from django.views.decorators.http import require_http_methods, require_POST
 from django.views.decorators.csrf import csrf_exempt
 from django.utils import timezone
+from django.utils.dateparse import parse_datetime
+from django.db import transaction
 from django.db.models import Avg, Count, Q
 import json
 import math
 from urllib.parse import urlencode
 from .models import EstimationQuiz, EstimationQuestion, EstimationParticipant, EstimationAnswer, EstimationSession
+from games_hub.authoritative_state import current_snapshot, validate_and_reserve_action
 from games_hub.unit_tutorial_runtime import (
     get_scorebox_excluded_tutorial_question_ids,
     get_unit_tutorial_state,
     is_current_unit_tutorial_question,
     is_unit_tutorial_question,
 )
-from games_hub.models import HubGameStep
+from games_hub.models import GameRuntimeState, HubGameStep
 
 
 def _get_run_tutorial_question_id(quiz, session_code=None):
@@ -203,7 +206,30 @@ def _serialize_estimation_answer(answer):
     }
 
 
-def _serialize_estimation_question(quiz, question, participant, session_code=None, question_number=0, max_points=0):
+def _serialize_estimation_question(
+    quiz,
+    question,
+    participant,
+    session_code=None,
+    question_number=0,
+    max_points=0,
+    runtime=None,
+):
+    runtime = runtime or {}
+    question_phase = runtime.get('question_phase')
+    manual_flow = (
+        runtime.get('question_flow_mode')
+        == GameRuntimeState.QUESTION_FLOW_MANUAL_THREE_PHASE
+    )
+    prompt_details_visible = (
+        not manual_flow
+        or question_phase in {
+            GameRuntimeState.QUESTION_PHASE_PROMPT_VISIBLE,
+            GameRuntimeState.QUESTION_PHASE_CONTENT_VISIBLE,
+            GameRuntimeState.QUESTION_PHASE_ANSWERING_OPEN,
+        }
+    )
+    timing = _get_estimation_time_payload(quiz) if not manual_flow else {}
     answer = EstimationAnswer.objects.filter(
         quiz=quiz,
         participant=participant,
@@ -212,18 +238,56 @@ def _serialize_estimation_question(quiz, question, participant, session_code=Non
     payload = {
         'id': question.id,
         'question_text': question.question_text,
-        'unit': question.unit,
-        'unit_display': question.get_unit_display_text(),
+        'unit': question.unit if prompt_details_visible else '',
+        'unit_display': question.get_unit_display_text() if prompt_details_visible else '',
         'question_number': question_number or 0,
         'max_points': max_points,
-        'hint_text': question.hint_text,
-        **_get_estimation_time_payload(quiz),
+        'hint_text': question.hint_text if prompt_details_visible else None,
+        'time_limit': runtime.get('remaining_answer_time') or timing.get('time_limit', 0),
+        'elapsed_seconds': (
+            max(0, math.floor((timezone.now() - quiz.question_start_time).total_seconds()))
+            if quiz.question_start_time else 0
+        ),
+        'starts_at': (
+            runtime.get('answering_started_at')
+            or (quiz.question_start_time.isoformat() if quiz.question_start_time else None)
+        ),
+        'ends_at': (
+            runtime.get('answering_deadline_at')
+            or (
+                quiz.session.question_end_time.isoformat()
+                if not manual_flow and getattr(quiz, 'session', None) and quiz.session.question_end_time
+                else None
+            )
+        ),
+        'server_now': runtime.get('server_now'),
+        'remaining_seconds': runtime.get('remaining_answer_time') or timing.get('time_limit', 0),
+        'question_phase': question_phase,
+        'question_presented_at': runtime.get('question_presented_at'),
+        'question_visible_at': runtime.get('question_visible_at'),
+        'content_revealed_at': runtime.get('content_revealed_at'),
+        'answering_started_at': runtime.get('answering_started_at'),
+        'answering_deadline_at': runtime.get('answering_deadline_at'),
+        'answering_allowed': bool(runtime.get('answering_allowed')),
+        'timer_running': bool(runtime.get('timer_running')),
+        'state_revision': runtime.get('state_revision'),
+        'game_id': runtime.get('game_id'),
     }
     if answer:
         payload['has_answered'] = True
         payload['existing_answer'] = _serialize_estimation_answer(answer)
     else:
         payload['has_answered'] = False
+        if (
+            not manual_flow
+            or question_phase == GameRuntimeState.QUESTION_PHASE_ANSWERING_OPEN
+        ):
+            try:
+                pending = (quiz.session.pending_answers or {}).get(str(participant.id)) or {}
+            except EstimationSession.DoesNotExist:
+                pending = {}
+            if str(pending.get('question_id') or '') == str(question.id):
+                payload['pending_answer'] = pending.get('user_answer', '')
     return payload
 
 
@@ -240,7 +304,7 @@ def _serialize_estimation_correct_answer(quiz, question):
     }
 
 
-def _get_last_revealed_estimation_question(quiz, participant, session_code=None):
+def _get_last_revealed_estimation_question(quiz, session_code=None):
     session = getattr(quiz, 'session', None)
     if (
         not session
@@ -250,20 +314,24 @@ def _get_last_revealed_estimation_question(quiz, participant, session_code=None)
     ):
         return None, 0
 
-    ordered_questions = _get_ordered_quiz_questions(quiz, session_code)
-    index = session.current_question_number - 1
-    if 0 <= index < len(ordered_questions):
-        return ordered_questions[index], session.current_question_number
+    runtime = current_snapshot('estimation', quiz.room_code, session_code)
+    if (
+        runtime.get('phase') not in {'question_result', 'revealed'}
+        or str(runtime.get('game_id') or '') != str(quiz.pk)
+    ):
+        return None, 0
 
-    latest_answer = (
-        EstimationAnswer.objects
-        .filter(quiz=quiz)
-        .select_related('question')
-        .order_by('-submitted_at', '-id')
-        .first()
+    revealed_question_id = str(
+        runtime.get('current_question_id')
+        or (runtime.get('question') or {}).get('id')
+        or ''
     )
-    if latest_answer:
-        return latest_answer.question, session.current_question_number
+    if not revealed_question_id:
+        return None, 0
+    ordered_questions = _get_ordered_quiz_questions(quiz, session_code)
+    for index, question in enumerate(ordered_questions, start=1):
+        if str(question.id) == revealed_question_id:
+            return question, index
     return None, 0
 
 
@@ -283,6 +351,7 @@ def _build_estimation_initial_state(quiz, participant, session_code, current_que
 
     if quiz.current_question:
         current_question = quiz.current_question
+        runtime = current_snapshot('estimation', quiz.room_code, session_code)
         question_payload = _serialize_estimation_question(
             quiz,
             current_question,
@@ -290,12 +359,33 @@ def _build_estimation_initial_state(quiz, participant, session_code, current_que
             session_code,
             question_number=current_question_number or 0,
             max_points=current_question_max_points or 0,
+            runtime=runtime,
         )
         state['current_question'] = question_payload
-        state['phase'] = 'answered_waiting' if question_payload.get('has_answered') else 'answering'
+        question_phase = runtime.get('question_phase')
+        if (
+            runtime.get('question_flow_mode')
+            != GameRuntimeState.QUESTION_FLOW_MANUAL_THREE_PHASE
+        ):
+            state['phase'] = 'answered_waiting' if question_payload.get('has_answered') else 'answering'
+            return state
+        visible_at = parse_datetime(runtime.get('question_visible_at') or '')
+        server_now = parse_datetime(runtime.get('server_now') or '') or timezone.now()
+        if question_phase == GameRuntimeState.QUESTION_PHASE_PROMPT_VISIBLE:
+            state['phase'] = (
+                'prompt_visible'
+                if not visible_at or server_now >= visible_at
+                else 'presentation_delay'
+            )
+        elif question_phase == GameRuntimeState.QUESTION_PHASE_CONTENT_VISIBLE:
+            state['phase'] = 'content_visible'
+        elif question_phase == GameRuntimeState.QUESTION_PHASE_ANSWERING_OPEN:
+            state['phase'] = 'answered_waiting' if question_payload.get('has_answered') else 'answering'
+        else:
+            state['phase'] = 'waiting'
         return state
 
-    revealed_question, revealed_question_number = _get_last_revealed_estimation_question(quiz, participant, session_code)
+    revealed_question, revealed_question_number = _get_last_revealed_estimation_question(quiz, session_code)
     if not revealed_question:
         return state
 
@@ -647,8 +737,6 @@ def submit_answer(request, room_code, participant_name):
         
         data = json.loads(request.body)
         user_answer = data.get('user_answer')
-        time_taken = data.get('time_taken', 0)
-        
         if user_answer is None or user_answer == '':
             return JsonResponse({
                 'success': False,
@@ -664,14 +752,57 @@ def submit_answer(request, room_code, participant_name):
                 'error': 'Please provide a valid number.'
             })
         
-        # Create answer
-        answer = EstimationAnswer.objects.create(
-            quiz=quiz,
-            participant=participant,
-            question=quiz.current_question,
-            user_answer=user_answer_float,
-            time_taken=time_taken
+        question = quiz.current_question
+        decision = validate_and_reserve_action(
+            game_key='estimation',
+            room_code=room_code,
+            session_code=session_code,
+            participant_name=participant_name,
+            action_type='participant_submit_answer',
+            action=data,
         )
+        if not decision.accepted:
+            return JsonResponse({
+                'success': False,
+                'type': 'action_rejected',
+                'code': decision.code,
+                'error': decision.message,
+            }, status=409)
+        with transaction.atomic():
+            locked_quiz = EstimationQuiz.objects.select_for_update().get(pk=quiz.pk)
+            locked_session = EstimationSession.objects.select_for_update().filter(quiz=locked_quiz).first()
+            received_at = timezone.now()
+            if (
+                locked_quiz.status != 'active'
+                or locked_quiz.current_question_id != question.id
+                or not locked_session
+                or not locked_session.is_question_active
+                or not locked_session.question_end_time
+                or received_at >= locked_session.question_end_time
+            ):
+                return JsonResponse({
+                    'success': False,
+                    'error': 'The answer deadline has expired.'
+                })
+            server_time_taken = (
+                max(0.0, (received_at - locked_quiz.question_start_time).total_seconds())
+                if locked_quiz.question_start_time
+                else 0.0
+            )
+            answer, created = EstimationAnswer.objects.get_or_create(
+                quiz=locked_quiz,
+                participant=participant,
+                question=question,
+                defaults={
+                    'user_answer': user_answer_float,
+                    'time_taken': server_time_taken,
+                },
+            )
+            if not created:
+                return JsonResponse({
+                    'success': False,
+                    'error': 'You have already answered this question.'
+                })
         is_tutorial_answer = is_unit_tutorial_question(
             'estimation',
             quiz.room_code,
@@ -741,18 +872,23 @@ def get_quiz_status(request, room_code, participant_name):
         # Include current question if active
         if quiz.current_question and quiz.status == 'active':
             question = quiz.current_question
-            status_data['current_question'] = {
-                'id': question.id,
-                'question_text': question.question_text,
-                'unit': question.unit,
-                'unit_display': question.get_unit_display_text(),
-                'max_points': question.get_max_points_for_mode(
+            runtime = current_snapshot('estimation', room_code, session_code)
+            quiz_session = getattr(quiz, 'session', None)
+            status_data['current_question'] = _serialize_estimation_question(
+                quiz,
+                question,
+                participant,
+                session_code,
+                question_number=(quiz_session.current_question_number if quiz_session else 0),
+                max_points=question.get_max_points_for_mode(
                     quiz.get_effective_scoring_mode(),
-                    quiz.get_participant_count(session_code)
+                    quiz.get_participant_count(session_code),
                 ),
-                'hint_text': question.hint_text,
-                'time_limit': 90  # Default time limit
-            }
+                runtime=runtime,
+            )
+            status_data['question_phase'] = runtime.get('question_phase')
+            status_data['state_revision'] = runtime.get('state_revision')
+            status_data['server_now'] = runtime.get('server_now')
             
             # Check if user has already answered
             has_answered = EstimationAnswer.objects.filter(

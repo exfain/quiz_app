@@ -3,9 +3,13 @@ from django.http import JsonResponse
 from django.views.decorators.http import require_http_methods, require_POST
 from django.views.decorators.csrf import csrf_exempt
 from django.utils import timezone
+from django.utils.dateparse import parse_datetime
+from django.db import transaction
 from django.db.models import Avg, Count, Q
 import json
 from .models import BlackJackQuiz, BlackJackQuestion, BlackJackParticipant, BlackJackAnswer, BlackJackSession
+from games_hub.authoritative_state import attach_snapshot_metadata, current_snapshot, validate_and_reserve_action
+from games_hub.models import GameRuntimeState
 from games_hub.unit_tutorial_runtime import get_scorebox_excluded_tutorial_question_ids, get_unit_tutorial_state, is_unit_tutorial_question
 
 
@@ -397,6 +401,34 @@ def blackjack_play(request, room_code, participant_name):
         )
         quiz_session = getattr(quiz, 'session', None)
         current_question_end_time = quiz_session.question_end_time if quiz_session else None
+        question_runtime = current_snapshot('blackjack', quiz.room_code, session_code)
+        visible_at = parse_datetime(question_runtime.get('question_visible_at') or '')
+        server_now = parse_datetime(question_runtime.get('server_now') or '') or timezone.now()
+        manual_flow = (
+            question_runtime.get('question_flow_mode')
+            == GameRuntimeState.QUESTION_FLOW_MANUAL_THREE_PHASE
+        )
+        question_prompt_visible = bool(
+            quiz.current_question
+            and (
+                not manual_flow
+                or question_runtime.get('question_phase')
+                != GameRuntimeState.QUESTION_PHASE_PROMPT_VISIBLE
+                or not visible_at
+                or server_now >= visible_at
+            )
+        )
+        question_answering_open = bool(
+            quiz.current_question
+            and (
+                not manual_flow
+                or (
+                    question_runtime.get('question_phase')
+                    == GameRuntimeState.QUESTION_PHASE_ANSWERING_OPEN
+                    and question_runtime.get('answering_allowed')
+                )
+            )
+        )
         current_set_number = quiz.get_current_set_number()
         if quiz_session and not quiz.current_question_id:
             current_set_number = quiz_session.get_normalized_selected_set_number(active_only=True)
@@ -407,6 +439,9 @@ def blackjack_play(request, room_code, participant_name):
             'participant': participant,
             'hub_session': session_code,
             'current_question_end_time': current_question_end_time,
+            'question_runtime': question_runtime,
+            'question_prompt_visible': question_prompt_visible,
+            'question_answering_open': question_answering_open,
             'participant_count': quiz.get_participant_count(session_code),
             'current_question_in_set': quiz.get_current_question_position_in_set() or 1,
             'current_set_question_count': quiz.get_set_question_count(
@@ -584,7 +619,6 @@ def submit_answer(request, room_code, participant_name):
         
         data = json.loads(request.body)
         user_answer = data.get('user_answer')
-        time_taken = data.get('time_taken', 0)
         
         if user_answer is None or user_answer == '':
             return JsonResponse({
@@ -606,30 +640,76 @@ def submit_answer(request, room_code, participant_name):
             session_code,
             quiz.current_question_id,
         )
-        previous_participant_state = {
-            'total_points': participant.total_points,
-            'overall_points': participant.overall_points,
-            'questions_answered': participant.questions_answered,
-            'is_busted': participant.is_busted,
-            'final_score': participant.final_score,
-        }
-        
-        # Create answer
-        answer = BlackJackAnswer.objects.create(
-            quiz=quiz,
-            participant=participant,
-            question=quiz.current_question,
-            user_answer=user_answer_int,
-            time_taken=time_taken,
-            question_number=quiz.current_question_number
+        question = quiz.current_question
+        decision = validate_and_reserve_action(
+            game_key='blackjack',
+            room_code=room_code,
+            session_code=session_code,
+            participant_name=participant_name,
+            action_type='participant_submit_answer',
+            action=data,
         )
-        if is_tutorial_answer:
-            if answer.points_earned:
-                answer.points_earned = 0
-                answer.save(update_fields=['points_earned'])
-            for field, value in previous_participant_state.items():
-                setattr(participant, field, value)
-            participant.save(update_fields=list(previous_participant_state.keys()))
+        if not decision.accepted:
+            return JsonResponse({
+                'success': False,
+                'type': 'action_rejected',
+                'code': decision.code,
+                'error': decision.message,
+            }, status=409)
+        with transaction.atomic():
+            locked_quiz = BlackJackQuiz.objects.select_for_update().get(pk=quiz.pk)
+            locked_session = BlackJackSession.objects.select_for_update().filter(quiz=locked_quiz).first()
+            participant = BlackJackParticipant.objects.select_for_update().get(pk=participant.pk)
+            received_at = timezone.now()
+            if (
+                locked_quiz.status != 'active'
+                or locked_quiz.current_question_id != question.id
+                or participant.is_busted
+                or not locked_session
+                or not locked_session.is_question_active
+                or not locked_quiz.question_start_time
+                or received_at < locked_quiz.question_start_time
+                or not locked_session.question_end_time
+                or received_at >= locked_session.question_end_time
+            ):
+                return JsonResponse({
+                    'success': False,
+                    'error': 'The answer deadline has expired or the question is no longer active.'
+                })
+            previous_participant_state = {
+                'total_points': participant.total_points,
+                'overall_points': participant.overall_points,
+                'questions_answered': participant.questions_answered,
+                'is_busted': participant.is_busted,
+                'final_score': participant.final_score,
+            }
+            server_time_taken = (
+                max(0.0, (received_at - locked_quiz.question_start_time).total_seconds())
+                if locked_quiz.question_start_time
+                else 0.0
+            )
+            answer, created = BlackJackAnswer.objects.get_or_create(
+                quiz=locked_quiz,
+                participant=participant,
+                question=question,
+                defaults={
+                    'user_answer': user_answer_int,
+                    'time_taken': server_time_taken,
+                    'question_number': locked_quiz.current_question_number,
+                },
+            )
+            if not created:
+                return JsonResponse({
+                    'success': False,
+                    'error': 'You have already answered this question.'
+                })
+            if is_tutorial_answer:
+                if answer.points_earned:
+                    answer.points_earned = 0
+                    answer.save(update_fields=['points_earned'])
+                for field, value in previous_participant_state.items():
+                    setattr(participant, field, value)
+                participant.save(update_fields=list(previous_participant_state.keys()))
         
         # Refresh participant to get updated totals
         participant.refresh_from_db()
@@ -650,7 +730,7 @@ def submit_answer(request, room_code, participant_name):
             'status': participant.get_status(),
             'questions_remaining': max(
                 0,
-                quiz.get_set_question_count(question_id=quiz.current_question_id) - participant.questions_answered
+                quiz.get_set_question_count(question_id=question.id) - participant.questions_answered
             )
         })
         
@@ -705,6 +785,7 @@ def get_quiz_status(request, room_code, participant_name):
         if quiz.current_question and quiz.status == 'active':
             question = quiz.current_question
             quiz_session = getattr(quiz, 'session', None)
+            runtime = current_snapshot('blackjack', room_code, session_code)
             status_data['current_question'] = {
                 'id': question.id,
                 'question_text': question.question_text,
@@ -715,6 +796,22 @@ def get_quiz_status(request, room_code, participant_name):
                 'set_question_count': quiz.get_set_question_count(question_id=question.id),
                 'set_number': quiz.get_current_set_number(),
                 'total_sets': quiz.get_total_sets(),
+                **{
+                    key: runtime.get(key)
+                    for key in (
+                        'state_revision',
+                        'server_now',
+                        'game_id',
+                        'question_phase',
+                        'question_presented_at',
+                        'question_visible_at',
+                        'answering_started_at',
+                        'answering_deadline_at',
+                        'answering_allowed',
+                        'timer_running',
+                        'remaining_answer_time',
+                    )
+                },
             }
             
             # Check if user has already answered
@@ -725,10 +822,16 @@ def get_quiz_status(request, room_code, participant_name):
             ).exists()
             status_data['has_answered'] = has_answered
         
-        return JsonResponse({
+        response_payload = {
             'success': True,
             **status_data
-        })
+        }
+        return JsonResponse(attach_snapshot_metadata(
+            response_payload,
+            game_key='blackjack',
+            room_code=quiz.room_code,
+            session_code=session_code,
+        ))
         
     except (BlackJackQuiz.DoesNotExist, BlackJackParticipant.DoesNotExist):
         return JsonResponse({

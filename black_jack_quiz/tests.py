@@ -1,4 +1,5 @@
 import json
+import uuid
 from datetime import timedelta
 from pathlib import Path
 from unittest.mock import patch
@@ -9,8 +10,17 @@ from django.contrib.auth.models import User
 from django.test import SimpleTestCase, TestCase, TransactionTestCase
 from django.urls import reverse
 from django.utils import timezone
+from django.utils.dateparse import parse_datetime
 
-from games_hub.models import HubGameStep, HubParticipant, HubSession
+from games_hub.models import GameRuntimeState, HubGameStep, HubParticipant, HubSession
+from games_hub.authoritative_state import (
+    attach_snapshot_metadata,
+    current_snapshot,
+    finish_question_flow,
+    get_runtime_state,
+    get_question_flow_capabilities,
+    reset_question_flow,
+)
 from games_hub.tutorial_runtime import activate_tutorial_runtime as activate_game_tutorial_runtime
 from games_hub.unit_tutorial_runtime import get_unit_tutorial_state, prepare_unit_tutorial_runtime
 
@@ -55,8 +65,7 @@ class BlackJackVhsWaitingScreenTests(SimpleTestCase):
             '.vhs-theme-shell'
         )
         self.assertIn(
-            f'{scope}\n  :is(#waitingQuizState, #waitingQuestionState) '
-            '.blackjack-vhs-signal-card',
+            f'{scope}\n  :is(#waitingQuizState, #waitingQuestionState) .blackjack-vhs-signal-card',
             self.vhs_css,
         )
         self.assertIn('grid-template-rows: auto 44px minmax(132px, auto) 8px auto;', self.vhs_css)
@@ -216,22 +225,21 @@ class BlackJackVhsQuestionScreenTests(SimpleTestCase):
         )
         self.assertIn('width: min(100%, 560px) !important;', self.vhs_css)
         self.assertIn('.qa-score-widget__toggle', self.vhs_css)
-        self.assertIn("document.body.classList.contains('blackjack-play-page')", self.accessibility)
-        self.assertIn("'REC · SET '", self.accessibility)
+        self.assertIn('data-vhs-progress-kind="set"', self.template)
+        self.assertIn('data-vhs-progress-source=".play-container"', self.template)
         self.assertIn(
-            "'[data-blackjack-current-set][data-blackjack-total-sets]'",
-            self.accessibility,
+            'data-vhs-progress-attribute="data-blackjack-current-set"',
+            self.template,
         )
         self.assertIn(
-            'blackjackSetState && blackjackSetState.dataset.blackjackCurrentSet',
+            "var kind = String(document.body.dataset.vhsProgressKind",
             self.accessibility,
         )
+        self.assertIn("label: kind === 'set' ? 'SET' : 'FRAGE'", self.accessibility)
         self.assertIn(
-            'blackjackSetState && blackjackSetState.dataset.blackjackTotalSets',
+            "'REC · ' + progressStatus.label + ' ' + progressStatus.number",
             self.accessibility,
         )
-        self.assertIn("'data-blackjack-current-set'", self.accessibility)
-        self.assertIn("'data-blackjack-total-sets'", self.accessibility)
         self.assertNotIn('.blackjack-vhs-live-score', self.vhs_css)
         self.assertIn(
             'body.blackjack-play-page\n'
@@ -254,6 +262,32 @@ class BlackJackVhsQuestionScreenTests(SimpleTestCase):
         self.assertIn("'data-current-stars'", self.accessibility)
         self.assertNotIn('#bustWarning.show', self.vhs_css)
         self.assertNotIn('.blackjack-vhs-question-meta', self.template.split('<style>', 1)[-1])
+
+
+class BlackJackQuestionPhaseTemplateTests(SimpleTestCase):
+    def setUp(self):
+        base_dir = Path(settings.BASE_DIR)
+        self.monitor = (
+            base_dir / 'templates' / 'admin_dashboard' / 'blackjack_monitor.html'
+        ).read_text(encoding='utf-8')
+        self.participant = (
+            base_dir / 'templates' / 'black_jack_quiz' / 'play.html'
+        ).read_text(encoding='utf-8')
+
+    def test_host_uses_direct_question_release_without_content_step(self):
+        self.assertIn('FRAGE SENDEN', self.monitor)
+        self.assertIn('FRAGE FREIGEBEN', self.monitor)
+        self.assertNotIn('ANTWORTFELD ANZEIGEN', self.monitor)
+        self.assertIn("sendQuestionPhaseAction(\n                    'admin_open_answering'", self.monitor)
+        self.assertNotIn('override_time_', self.monitor)
+
+    def test_participant_interaction_is_derived_from_answering_phase(self):
+        self.assertIn("this.questionPhase === 'answering_open'", self.participant)
+        self.assertIn("this.questionPhase !== 'answering_open'", self.participant)
+        self.assertIn('state_revision: this.stateRevision', self.participant)
+        self.assertIn('game_id: this.gameId || null', self.participant)
+        self.assertIn('client_action_id: window.AuthoritativeGameState', self.participant)
+        self.assertIn("submitBtn.setAttribute('aria-disabled', String(submitBtn.disabled));", self.participant)
 
 
 class BlackJackVhsSubmittedScreenTests(SimpleTestCase):
@@ -543,7 +577,8 @@ class BlackJackVhsEndScreenTests(SimpleTestCase):
         self.assertIn('SPIEL BEENDET', self.template)
         self.assertIn('data-vhs-end-label="SET BEENDET"', self.template)
         self.assertIn('blackjack-vhs-set-end-signal', self.template)
-        self.assertIn('id="returnToLobbyAfterSetBtn"', self.template)
+        self.assertNotIn('id="returnToLobbyAfterSetBtn"', self.template)
+        self.assertNotIn('blackjack-vhs-set-return', self.template)
         self.assertIn('SET-STERNE', self.template)
         self.assertIn('SETPUNKTE', self.template)
         self.assertIn('GESAMTPUNKTE', self.template)
@@ -1117,15 +1152,49 @@ class BlackJackTotalQuestionsConfigTests(TestCase):
         )
         question = self._question(42)
         quiz.current_question = question
-        quiz.save(update_fields=['current_question', 'status', 'total_questions', 'current_question_number'])
+        quiz.question_start_time = timezone.now() - timedelta(seconds=1)
+        quiz.save(update_fields=[
+            'current_question',
+            'status',
+            'total_questions',
+            'current_question_number',
+            'question_start_time',
+        ])
+        BlackJackSession.objects.create(
+            quiz=quiz,
+            is_question_active=True,
+            question_end_time=timezone.now() + timedelta(seconds=20),
+        )
         participant = BlackJackParticipant.objects.create(
             quiz=quiz,
             name='Alice',
         )
 
+        snapshot = attach_snapshot_metadata(
+            {
+                'phase': 'question_active',
+                'game': {'id': quiz.id, 'status': 'active'},
+                'question': {'id': question.id},
+                'round': {'number': quiz.current_question_number},
+                'set_number': quiz.get_current_set_number(),
+                'starts_at': quiz.question_start_time,
+                'ends_at': quiz.session.question_end_time,
+            },
+            game_key='blackjack',
+            room_code=quiz.room_code,
+        )
         response = self.client.post(
             reverse('black_jack_quiz:submit_answer', args=[quiz.room_code, participant.name]),
-            data=json.dumps({'user_answer': 40, 'time_taken': 1.2}),
+            data=json.dumps({
+                'user_answer': 40,
+                'time_taken': 1.2,
+                'game_id': snapshot['game_id'],
+                'question_id': snapshot['current_question_id'],
+                'round_id': snapshot.get('current_round_id'),
+                'set_id': snapshot.get('current_set_id'),
+                'state_revision': snapshot['state_revision'],
+                'client_action_id': str(uuid.uuid4()),
+            }),
             content_type='application/json',
         )
 
@@ -1701,7 +1770,10 @@ class BlackJackExplicitSetRuntimeTests(TestCase):
         self.assertContains(response, "case 'question_ending':")
         self.assertContains(response, 'this.onQuestionEnding(data);')
         self.assertContains(response, 'this.questionClosedAwaitingAutoSubmit = true;')
-        self.assertContains(response, 'question_id: options.questionId || null,')
+        self.assertContains(
+            response,
+            'question_id: options.questionId || this.currentQuestionId || null,',
+        )
         self.assertContains(response, 'if (this.questionClosedAwaitingAutoSubmit && this.pendingQuestionEndedData) {')
         self.assertContains(response, 'this.finalizeQuestionEnd(endedData);')
 
@@ -1899,6 +1971,11 @@ class BlackJackExplicitSetRuntimeTests(TestCase):
         self.assertContains(response, 'id="setEndedStars"')
         self.assertContains(response, 'id="setEndedAwardedPoints"')
         self.assertContains(response, 'id="setEndedOverallPoints"')
+        self.assertNotContains(response, 'id="returnToLobbyAfterSetBtn"')
+        self.assertContains(
+            response,
+            "document.querySelector('#quizEndedState .ended-card')",
+        )
 
     def test_play_view_counter_uses_played_order_for_out_of_order_questions(self):
         questions = self.questions + [
@@ -1986,6 +2063,11 @@ class BlackJackExplicitSetRuntimeTests(TestCase):
         self.assertContains(response, 'All Sets Summary')
         self.assertContains(response, 'createHubLobbyReturnController')
         self.assertContains(response, 'Zur Lobby zur')
+        self.assertNotContains(response, 'id="returnToLobbyAfterSetBtn"')
+        self.assertContains(
+            response,
+            "document.querySelector('#quizEndedState .ended-card')",
+        )
 
     def test_play_view_uses_actual_set_play_order_for_out_of_order_current_set(self):
         self.quiz.current_question = self.questions[0]
@@ -2405,6 +2487,8 @@ class BlackJackHostSetProgressTests(TransactionTestCase):
         self.assertNotIn('location.reload()', start_function)
         self.assertIn('this.handleQuizStarted(data);', content)
         self.assertIn('renderActiveControls()', content)
+        self.assertIn("this.runKey = '' || 'not-started';", content)
+        self.assertIn("${this.hubSession || 'no-session'}_${this.runKey}", content)
 
     def test_monitor_keeps_second_question_sendable_after_first_question(self):
         quiz = self._create_quiz(
@@ -3876,6 +3960,188 @@ class BlackJackHostSetProgressTests(TransactionTestCase):
         self.assertContains(response, 'All 3 questions have been asked. The quiz is finished.')
 
 
+class BlackJackQuestionPhaseFlowTests(TransactionTestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username='blackjack-phase-user', password='pass')
+        self.questions = [
+            BlackJackQuestion.objects.create(
+                question_text=f'Phase question {index}',
+                correct_answer=20 + index,
+                time_limit=30,
+                created_by=self.user,
+            )
+            for index in range(1, 4)
+        ]
+        self.quiz = BlackJackQuiz.objects.create(
+            creator=self.user,
+            title='Black Jack Phase Quiz',
+            room_code='BJPHASE',
+            status='active',
+            total_questions=3,
+            question_order=[
+                [self.questions[0].id, self.questions[1].id],
+                [self.questions[2].id],
+            ],
+        )
+        self.quiz.selected_questions.set(self.questions)
+        self.session = BlackJackSession.objects.create(quiz=self.quiz)
+        self.participant = BlackJackParticipant.objects.create(
+            quiz=self.quiz,
+            name='Alice',
+            hub_session_code='',
+            is_active=True,
+        )
+        self.consumer = BlackJackConsumer()
+        self.consumer.room_code = self.quiz.room_code
+        self.consumer.room_group_name = f'blackjack_{self.quiz.room_code}'
+        self.consumer.channel_layer = FakeChannelLayer()
+        self.consumer.channel_name = 'blackjack-phase-channel'
+        self.snapshot = reset_question_flow(
+            game_key='blackjack',
+            room_code=self.quiz.room_code,
+            session_code='',
+            mode=GameRuntimeState.QUESTION_FLOW_MANUAL_THREE_PHASE,
+        )
+
+    def _action(self, question_id, snapshot=None, action_id=None):
+        snapshot = snapshot or current_snapshot('blackjack', self.quiz.room_code, '')
+        return {
+            'question_id': question_id,
+            'game_id': snapshot['game_id'],
+            'state_revision': snapshot['state_revision'],
+            'client_action_id': str(action_id or uuid.uuid4()),
+        }
+
+    def _present(self, question, at):
+        snapshot = current_snapshot('blackjack', self.quiz.room_code, '')
+        return async_to_sync(self.consumer.present_blackjack_question)(
+            self.quiz.id,
+            question.id,
+            '',
+            self._action(question.id, snapshot),
+            question.time_limit,
+            at=at,
+        )
+
+    def _open(self, question, at, action=None):
+        snapshot = current_snapshot('blackjack', self.quiz.room_code, '')
+        return async_to_sync(self.consumer.open_blackjack_answering)(
+            self.quiz.id,
+            question.id,
+            '',
+            action or self._action(question.id, snapshot),
+            at=at,
+        )
+
+    def _finish(self, question):
+        self.session.refresh_from_db()
+        self.session.end_current_question()
+        finish_question_flow(
+            game_key='blackjack',
+            room_code=self.quiz.room_code,
+            session_code='',
+            question_id=question.id,
+        )
+
+    def test_present_question_has_prompt_only_and_no_deadline(self):
+        capabilities = get_question_flow_capabilities('blackjack')
+        self.assertTrue(capabilities.uses_prompt_phase)
+        self.assertFalse(capabilities.uses_content_phase)
+
+        presented_at = timezone.now()
+        decision = self._present(self.questions[0], presented_at)
+
+        self.assertTrue(decision.accepted)
+        self.assertEqual(decision.snapshot['question_phase'], 'prompt_visible')
+        self.assertIsNone(decision.snapshot['content_revealed_at'])
+        self.assertIsNone(decision.snapshot['answering_started_at'])
+        self.assertIsNone(decision.snapshot['answering_deadline_at'])
+        visible_at = parse_datetime(decision.snapshot['question_visible_at'])
+        self.assertEqual(visible_at - presented_at, timedelta(seconds=1))
+        self.quiz.refresh_from_db()
+        self.session.refresh_from_db()
+        self.assertEqual(self.quiz.current_question_id, self.questions[0].id)
+        self.assertIsNone(self.quiz.question_start_time)
+        self.assertFalse(self.session.is_question_active)
+        self.assertIsNone(self.session.question_end_time)
+
+    def test_open_answering_is_direct_idempotent_and_sets_single_deadline(self):
+        presented_at = timezone.now()
+        presented = self._present(self.questions[0], presented_at)
+        visible_at = parse_datetime(presented.snapshot['question_visible_at'])
+        early = self._open(self.questions[0], visible_at - timedelta(milliseconds=1))
+        self.assertFalse(early.accepted)
+        self.assertEqual(early.code, 'question_not_visible')
+
+        action = self._action(self.questions[0].id)
+        opened = self._open(self.questions[0], visible_at, action=action)
+        self.assertTrue(opened.accepted)
+        self.assertEqual(opened.snapshot['question_phase'], 'answering_open')
+        self.assertIsNone(opened.snapshot['content_revealed_at'])
+        started_at = parse_datetime(opened.snapshot['answering_started_at'])
+        deadline = parse_datetime(opened.snapshot['answering_deadline_at'])
+        self.assertEqual(started_at, visible_at)
+        self.assertEqual(deadline - started_at, timedelta(seconds=30))
+        self.quiz.refresh_from_db()
+        self.session.refresh_from_db()
+        self.assertEqual(self.quiz.question_start_time, started_at)
+        self.assertTrue(self.session.is_question_active)
+        self.assertEqual(self.session.question_end_time, deadline)
+
+        duplicate = self._open(
+            self.questions[0],
+            visible_at + timedelta(seconds=5),
+            action=action,
+        )
+        self.assertTrue(duplicate.accepted)
+        self.assertTrue(duplicate.duplicate)
+        self.session.refresh_from_db()
+        self.assertEqual(self.session.question_end_time, deadline)
+
+    def test_answers_are_rejected_before_release_and_accepted_afterwards(self):
+        presented = self._present(
+            self.questions[0],
+            timezone.now() - timedelta(seconds=1),
+        )
+        rejected = async_to_sync(self.consumer.save_participant_answer)(
+            self.participant.name,
+            self.participant.hub_session_code,
+            21,
+            0,
+            question_id=self.questions[0].id,
+        )
+        self.assertIsNone(rejected)
+        self.assertFalse(BlackJackAnswer.objects.exists())
+
+        visible_at = parse_datetime(presented.snapshot['question_visible_at'])
+        self.assertTrue(self._open(self.questions[0], visible_at).accepted)
+        accepted = async_to_sync(self.consumer.save_participant_answer)(
+            self.participant.name,
+            self.participant.hub_session_code,
+            21,
+            0,
+            question_id=self.questions[0].id,
+        )
+        self.assertIsNotNone(accepted)
+        self.assertEqual(BlackJackAnswer.objects.count(), 1)
+
+    def test_each_question_and_new_set_reset_to_prompt_without_old_deadline(self):
+        at = timezone.now()
+        for index, question in enumerate(self.questions):
+            presented = self._present(question, at + timedelta(seconds=index * 40))
+            self.session.refresh_from_db()
+            self.assertEqual(presented.snapshot['question_phase'], 'prompt_visible')
+            self.assertIsNone(self.session.question_end_time)
+            visible_at = parse_datetime(presented.snapshot['question_visible_at'])
+            self.assertTrue(self._open(question, visible_at).accepted)
+            self._finish(question)
+
+        self.session.refresh_from_db()
+        self.assertEqual(self.session.get_asked_question_ids(), [question.id for question in self.questions])
+        self.assertEqual(self.session.current_question_number, 3)
+        self.assertEqual(self.session.get_normalized_selected_set_number(), 2)
+
+
 class BlackJackTutorialRuntimeTests(TransactionTestCase):
     def setUp(self):
         self.user = User.objects.create_user(username='blackjack-tutorial-user', password='pass')
@@ -3905,6 +4171,36 @@ class BlackJackTutorialRuntimeTests(TransactionTestCase):
 
         self.consumer.send = _capture_send
 
+    def _reset_manual_flow(self, hub_session_code=''):
+        return reset_question_flow(
+            game_key='blackjack',
+            room_code=self.quiz.room_code,
+            session_code=hub_session_code,
+            mode=GameRuntimeState.QUESTION_FLOW_MANUAL_THREE_PHASE,
+        )
+
+    def _host_action(self, question_id, hub_session_code=''):
+        snapshot = current_snapshot('blackjack', self.quiz.room_code, hub_session_code)
+        return {
+            'question_id': question_id,
+            'game_id': snapshot['game_id'],
+            'state_revision': snapshot['state_revision'],
+            'client_action_id': str(uuid.uuid4()),
+        }
+
+    def _open_question(self, question, hub_session_code=''):
+        release_at = timezone.now()
+        runtime = get_runtime_state('blackjack', self.quiz.room_code, hub_session_code)
+        runtime.question_presented_at = release_at - timedelta(seconds=1)
+        runtime.save(update_fields=['question_presented_at', 'updated_at'])
+        return async_to_sync(self.consumer.open_blackjack_answering)(
+            self.quiz.id,
+            question.id,
+            hub_session_code,
+            self._host_action(question.id, hub_session_code),
+            at=release_at,
+        )
+
     @patch('black_jack_quiz.consumers.resolve_session_game_activation_for_room', return_value={'success': True})
     @patch('black_jack_quiz.consumers.ensure_session_players_ready_for_game_start_for_room', return_value={'allowed': True})
     def test_admin_start_quiz_with_tutorial_sets_runtime_state_and_broadcasts_tutorial(self, _ready_mock, _activation_mock):
@@ -3931,10 +4227,12 @@ class BlackJackTutorialRuntimeTests(TransactionTestCase):
         self.quiz.question_order = [[question.id]]
         self.quiz.save(update_fields=['status', 'tutorial_active', 'question_order'])
         self.quiz.selected_questions.set([question])
+        self._reset_manual_flow()
 
         async_to_sync(self.consumer.handle_admin_send_question)({
             'question_id': question.id,
             'selected_set_number': 1,
+            **self._host_action(question.id),
         })
 
         self.quiz.refresh_from_db()
@@ -4038,11 +4336,13 @@ class BlackJackTutorialRuntimeTests(TransactionTestCase):
         ])
         self.quiz.selected_questions.set([tutorial_question, normal_question])
         prepare_unit_tutorial_runtime('blackjack', self.quiz.room_code, hub_session.code, True)
+        self._reset_manual_flow(hub_session.code)
 
         async_to_sync(self.consumer.handle_admin_send_question)({
             'question_id': normal_question.id,
             'selected_set_number': 2,
             'hub_session_code': hub_session.code,
+            **self._host_action(normal_question.id, hub_session.code),
         })
 
         question_started = [
@@ -4064,6 +4364,8 @@ class BlackJackTutorialRuntimeTests(TransactionTestCase):
             [2],
         )
         self.assertContains(play_response, 'Tutorialset - keine Wertung')
+
+        self.assertTrue(self._open_question(tutorial_question, hub_session.code).accepted)
 
         tutorial_result = async_to_sync(self.consumer.save_participant_answer)(
             participant.name,
@@ -4096,6 +4398,7 @@ class BlackJackTutorialRuntimeTests(TransactionTestCase):
             'question_id': normal_question.id,
             'selected_set_number': 2,
             'hub_session_code': hub_session.code,
+            **self._host_action(normal_question.id, hub_session.code),
         })
 
         scored_question_started = [

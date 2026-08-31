@@ -1,11 +1,14 @@
 import json
+import uuid
 
 from channels.db import database_sync_to_async
 from channels.generic.websocket import AsyncWebsocketConsumer
 
 from games_hub.active_game_guard import resolve_session_game_activation_for_room
+from games_hub.authoritative_consumer import AuthoritativeGameConsumerMixin
+from games_hub.authoritative_state import current_snapshot, reset_question_flow
 from games_hub.lobby_return_flow import ensure_session_players_ready_for_game_start_for_room
-from games_hub.models import HubGameStep
+from games_hub.models import GameRuntimeState, HubGameStep
 from games_hub.tutorial_runtime import (
     activate_tutorial_runtime,
     deactivate_tutorial_runtime,
@@ -25,18 +28,21 @@ from .services import (
     apply_manual_correction,
     build_game_state,
     clear_current_set,
-    end_current_round,
-    finish_set,
-    next_round_or_finish,
+    end_current_round_with_question_flow,
+    finish_set_with_question_flow,
+    open_prepared_round,
+    present_next_round,
+    present_set_round,
     prepare_set_start,
-    start_set,
-    start_next_round_after_review,
     store_pending_input,
     submit_answer,
 )
 
 
-class WerWeissMehrConsumer(AsyncWebsocketConsumer):
+class WerWeissMehrConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
+    authoritative_game_key = 'wer_weiss_mehr'
+    authoritative_required_actions = frozenset({'participant_submit_answer'})
+
     async def connect(self):
         self.room_code = self.scope['url_route']['kwargs']['room_code']
         self.room_group_name = f'werweissmehr_{self.room_code}'
@@ -66,6 +72,8 @@ class WerWeissMehrConsumer(AsyncWebsocketConsumer):
                 await self.handle_admin_end_quiz(data)
             elif msg_type == 'admin_start_set':
                 await self.handle_admin_start_set(data)
+            elif msg_type == 'admin_open_round':
+                await self.handle_admin_open_round(data)
             elif msg_type == 'admin_end_round':
                 await self.handle_admin_end_round(data)
             elif msg_type == 'admin_apply_correction':
@@ -163,6 +171,12 @@ class WerWeissMehrConsumer(AsyncWebsocketConsumer):
             validate=False,
         )
         await self.start_quiz_db(hub_session_code)
+        await database_sync_to_async(reset_question_flow)(
+            game_key='wer_weiss_mehr',
+            room_code=self.room_code,
+            session_code=hub_session_code,
+            mode=GameRuntimeState.QUESTION_FLOW_MANUAL_THREE_PHASE,
+        )
         tutorial_payload = await self.activate_tutorial_runtime_db(
             hub_session_code,
             bool(data.get('show_tutorial', False)),
@@ -219,14 +233,29 @@ class WerWeissMehrConsumer(AsyncWebsocketConsumer):
                 hub_session_code=hub_session_code,
             )
             await self.deactivate_tutorial_runtime_db(hub_session_code)
-            await database_sync_to_async(start_set)(
+            snapshot = await database_sync_to_async(current_snapshot)(
+                'wer_weiss_mehr',
+                self.room_code,
+                hub_session_code,
+            )
+            action = self._host_question_action(data, snapshot, question_id)
+            decision = await database_sync_to_async(present_set_round)(
                 await self.get_quiz(),
                 question_id,
                 hub_session_code=hub_session_code,
                 time_limit_seconds=data.get('time_limit_seconds'),
+                action=action,
             )
         except Exception as exc:  # pylint: disable=broad-except
             await self.send_json({'type': 'error', 'message': str(exc)})
+            return
+        if not decision.accepted:
+            await self.send_json({
+                'type': 'action_rejected',
+                'code': decision.code,
+                'message': decision.message,
+                'snapshot': decision.snapshot,
+            })
             return
         await self.broadcast_state(data)
         await self.hub_mirror_event('question_started', {
@@ -265,7 +294,10 @@ class WerWeissMehrConsumer(AsyncWebsocketConsumer):
     async def handle_admin_end_round(self, data=None):
         data = data or {}
         hub_session_code = data.get('hub_session_code') or data.get('hub_session')
-        await database_sync_to_async(end_current_round)(await self.get_quiz())
+        await database_sync_to_async(end_current_round_with_question_flow)(
+            await self.get_quiz(),
+            hub_session_code=hub_session_code,
+        )
         await self.broadcast_state(data)
         await self.hub_mirror_event('round_ended', {
             'room_code': self.room_code,
@@ -285,7 +317,53 @@ class WerWeissMehrConsumer(AsyncWebsocketConsumer):
     async def handle_admin_next_round(self, data=None):
         data = data or {}
         hub_session_code = data.get('hub_session_code') or data.get('hub_session')
-        await database_sync_to_async(start_next_round_after_review)(await self.get_quiz())
+        quiz = await self.get_quiz()
+        snapshot = await database_sync_to_async(current_snapshot)(
+            'wer_weiss_mehr',
+            self.room_code,
+            hub_session_code,
+        )
+        decision = await database_sync_to_async(present_next_round)(
+            quiz,
+            hub_session_code=hub_session_code,
+            action=self._host_question_action(data, snapshot, quiz.current_question_id),
+        )
+        if not decision.accepted:
+            await self.send_json({
+                'type': 'action_rejected',
+                'code': decision.code,
+                'message': decision.message,
+                'snapshot': decision.snapshot,
+            })
+            return
+        await self.broadcast_state(data)
+        await self.hub_mirror_event('round_started', {
+            'room_code': self.room_code,
+            'game_key': 'wer_weiss_mehr',
+        }, session_code=hub_session_code)
+
+    async def handle_admin_open_round(self, data=None):
+        data = data or {}
+        hub_session_code = data.get('hub_session_code') or data.get('hub_session')
+        quiz = await self.get_quiz()
+        snapshot = await database_sync_to_async(current_snapshot)(
+            'wer_weiss_mehr',
+            self.room_code,
+            hub_session_code,
+        )
+        decision = await database_sync_to_async(open_prepared_round)(
+            quiz,
+            hub_session_code=hub_session_code,
+            action=self._host_question_action(data, snapshot, quiz.current_question_id),
+        )
+        if not decision.accepted:
+            await self.send_json({
+                'type': 'action_rejected',
+                'code': decision.code,
+                'message': decision.message,
+                'snapshot': decision.snapshot,
+            })
+            return
         await self.broadcast_state(data)
         await self.hub_mirror_event('round_started', {
             'room_code': self.room_code,
@@ -295,7 +373,10 @@ class WerWeissMehrConsumer(AsyncWebsocketConsumer):
     async def handle_admin_finish_set(self, data=None):
         data = data or {}
         hub_session_code = data.get('hub_session_code') or data.get('hub_session')
-        await database_sync_to_async(finish_set)(await self.get_quiz())
+        await database_sync_to_async(finish_set_with_question_flow)(
+            await self.get_quiz(),
+            hub_session_code=hub_session_code,
+        )
         await self.finish_current_unit_tutorial_db(hub_session_code)
         await self.broadcast_state(data)
         await self.hub_mirror_event('question_ended', {
@@ -363,6 +444,17 @@ class WerWeissMehrConsumer(AsyncWebsocketConsumer):
                 'hub_session_code': data.get('hub_session_code') or data.get('hub_session'),
             },
         })
+
+    @staticmethod
+    def _host_question_action(data, snapshot, question_id):
+        return {
+            'client_action_id': data.get('client_action_id') or str(uuid.uuid4()),
+            'state_revision': data.get('state_revision', snapshot.get('state_revision')),
+            'game_id': data.get('game_id', snapshot.get('game_id')),
+            'question_id': question_id,
+            'round_id': data.get('round_id', snapshot.get('current_round_id')),
+            'set_id': data.get('set_id', snapshot.get('current_set_id')),
+        }
 
     @database_sync_to_async
     def get_quiz(self):

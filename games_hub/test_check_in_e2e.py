@@ -224,6 +224,8 @@ class SessionCheckInBrowserE2ETest(_BaseLiveServerTestCase):
         self._start_session_from_monitor()
         self._assert_activation_blocked_before_check_in()
 
+        self.host_page.click('[data-session-panel-target="checkInPanel"]')
+        self.host_page.wait_for_selector("#checkInPanel.is-open", timeout=self.TIMEOUT)
         self.host_page.click("#startCheckInBtn")
         self.participant_one_page.wait_for_selector("#readyCheckInBtn:not([disabled])", timeout=self.TIMEOUT)
         self.participant_two_page.wait_for_selector("#readyCheckInBtn:not([disabled])", timeout=self.TIMEOUT)
@@ -272,3 +274,122 @@ class SessionCheckInBrowserE2ETest(_BaseLiveServerTestCase):
 
         self.participant_one_page.reload()
         self.participant_one_page.wait_for_url(play_pattern, timeout=self.TIMEOUT)
+
+    def test_lobby_join_requires_token_for_rejoin_and_uses_vhs_states(self):
+        lobby_url = f"{self.live_server_url}{reverse('games_hub:lobby', args=[self.session.code])}"
+        self.participant_one_page.add_init_script(
+            "localStorage.setItem('participant_interface_theme', 'vhs')"
+        )
+        self.participant_one_page.goto(lobby_url)
+        self.participant_one_page.wait_for_selector(
+            "html[data-participant-theme='vhs'] #nickname",
+            timeout=self.TIMEOUT,
+        )
+
+        status = self.participant_one_page.locator("#nicknameStatus")
+        join_button = self.participant_one_page.locator("#joinBtn")
+        self.assertTrue(status.is_hidden())
+        self.assertTrue(join_button.is_disabled())
+
+        self.participant_one_page.fill("#nickname", "ab")
+        self.participant_one_page.wait_for_function(
+            "() => document.querySelector('#nicknameStatus')?.textContent === 'Der Name ist zu kurz.'",
+            timeout=self.TIMEOUT,
+        )
+        self.assertTrue(join_button.is_disabled())
+
+        disabled_transform = join_button.evaluate(
+            "(element) => getComputedStyle(element).transform"
+        )
+        disabled_box = join_button.bounding_box()
+        self.assertIsNotNone(disabled_box)
+        self.participant_one_page.mouse.move(
+            disabled_box["x"] + disabled_box["width"] / 2,
+            disabled_box["y"] + disabled_box["height"] / 2,
+        )
+        self.assertEqual(
+            join_button.evaluate("(element) => getComputedStyle(element).transform"),
+            disabled_transform,
+        )
+
+        self.participant_one_page.fill("#nickname", "Alice")
+        self.participant_one_page.wait_for_function(
+            "() => document.querySelector('#nicknameStatus')?.textContent === 'Verfügbar'",
+            timeout=self.TIMEOUT,
+        )
+        self.assertFalse(join_button.is_disabled())
+        default_transform = join_button.evaluate(
+            "(element) => getComputedStyle(element).transform"
+        )
+        join_button.hover()
+        self.participant_one_page.wait_for_timeout(250)
+        hover_transform = join_button.evaluate(
+            "(element) => getComputedStyle(element).transform"
+        )
+        self.assertNotEqual(hover_transform, default_transform)
+        button_box = join_button.bounding_box()
+        self.participant_one_page.mouse.down()
+        self.participant_one_page.wait_for_timeout(80)
+        active_transform = join_button.evaluate(
+            "(element) => getComputedStyle(element).transform"
+        )
+        self.assertNotEqual(active_transform, hover_transform)
+        self.participant_one_page.mouse.move(0, 0)
+        self.participant_one_page.mouse.up()
+        self.assertIsNotNone(button_box)
+
+        styles = self.participant_one_page.evaluate(
+            """() => {
+                const card = document.querySelector('#joinCard');
+                const status = document.querySelector('#nicknameStatus');
+                const recDot = document.querySelector('.vhs-theme-rec-dot');
+                const cardStyle = getComputedStyle(card);
+                return {
+                    backgroundColor: cardStyle.backgroundColor,
+                    backgroundImage: cardStyle.backgroundImage,
+                    borderTopWidth: cardStyle.borderTopWidth,
+                    boxShadow: cardStyle.boxShadow,
+                    paddingTop: cardStyle.paddingTop,
+                    statusFont: getComputedStyle(status).fontFamily,
+                    recColor: getComputedStyle(recDot).backgroundColor,
+                };
+            }"""
+        )
+        self.assertEqual(styles["backgroundColor"], "rgba(0, 0, 0, 0)")
+        self.assertEqual(styles["backgroundImage"], "none")
+        self.assertEqual(styles["borderTopWidth"], "0px")
+        self.assertEqual(styles["boxShadow"], "none")
+        self.assertEqual(styles["paddingTop"], "0px")
+        self.assertIn("Courier New", styles["statusFont"])
+
+        self.participant_one_page.fill("#nickname", "ab")
+        self.participant_one_page.wait_for_function(
+            "() => document.querySelector('#nicknameStatus')?.textContent === 'Der Name ist zu kurz.'",
+            timeout=self.TIMEOUT,
+        )
+        error_color = status.evaluate("(element) => getComputedStyle(element).color")
+        self.assertEqual(error_color, styles["recColor"])
+
+        self.participant_one_page.fill("#nickname", "Alice")
+        self.participant_one_page.wait_for_selector("#joinBtn:not([disabled])", timeout=self.TIMEOUT)
+        self.participant_one_page.click("#joinBtn")
+        self.participant_one_page.wait_for_selector("#joinCard", state="hidden", timeout=self.TIMEOUT)
+        credential = self.participant_one_page.evaluate(
+            f"localStorage.getItem('hub_lobby_rejoin:{self.session.code}')"
+        )
+        self.assertTrue(credential)
+
+        self.participant_two_page.goto(lobby_url)
+        self.participant_two_page.fill("#nickname", "Alice")
+        self.participant_two_page.wait_for_function(
+            "() => document.querySelector('#nicknameStatus')?.textContent === 'Dieser Name ist bereits vergeben.'",
+            timeout=self.TIMEOUT,
+        )
+        self.assertTrue(self.participant_two_page.locator("#joinBtn").is_disabled())
+
+        self.participant_one_page.reload()
+        self.participant_one_page.wait_for_selector("#joinCard", state="hidden", timeout=self.TIMEOUT)
+        self.assertEqual(
+            HubParticipant.objects.filter(session=self.session, nickname="Alice").count(),
+            1,
+        )

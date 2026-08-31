@@ -20,8 +20,11 @@
         .qa-local-start-subtitle { display: block; margin-top: .7rem; font-size: clamp(1rem, 2.2vw, 1.25rem); font-weight: 600; color: #cbd5e1; }
         .metric { background: rgba(15, 23, 42, .78); border: 1px solid rgba(148, 163, 184, .18); border-radius: 16px; padding: 14px 16px; }
     </style>
+<script src="{% static 'js/authoritative-game-state.js' %}"></script>
 </head>
-<body class="host-points-play-page">
+<body class="host-points-play-page"
+      data-vhs-progress-kind="question"
+      data-vhs-progress-source="#roundNumber">
 <main class="points-shell" data-participant-name="{{ participant.name }}">
     <div class="points-card text-center">
         <div class="host-points-summary d-flex flex-wrap justify-content-between align-items-center gap-2 mb-4">
@@ -91,6 +94,7 @@ const lobbyReturnController = createHubLobbyReturnController({
     csrfToken: '{{ csrf_token }}',
     buttonId: 'returnToLobbyBtn',
 });
+lobbyReturnController.connectHubRecallSocket();
 {% endif %}
 
 function send(payload) {

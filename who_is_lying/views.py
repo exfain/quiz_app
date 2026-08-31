@@ -7,6 +7,8 @@ from django.http import JsonResponse
 from django.views.decorators.http import require_http_methods, require_POST
 from django.views.decorators.csrf import csrf_exempt
 from django.utils import timezone
+from django.utils.dateparse import parse_datetime
+from django.db import transaction
 from django.db.models import Avg, Count, Q
 from django.urls import reverse
 from .models import (
@@ -16,9 +18,10 @@ from .models import (
     WhoAnswer,
     WhoSession,
     get_question_timer_state,
-    get_recently_ended_question_id,
     ensure_who_participant_for_hub,
 )
+from games_hub.authoritative_state import current_snapshot, validate_and_reserve_action
+from games_hub.models import GameRuntimeState
 from games_hub.unit_tutorial_runtime import get_scorebox_excluded_tutorial_question_ids, is_current_unit_tutorial_question
 
 
@@ -485,8 +488,29 @@ def who_play(request, room_code, participant_name):
         current_question_started_at = None
         current_question_end_time = None
         server_now = timezone.now()
+        question_runtime = current_snapshot('who', room_code, session_code)
+        manual_question_flow = (
+            question_runtime.get('question_flow_mode')
+            == GameRuntimeState.QUESTION_FLOW_MANUAL_THREE_PHASE
+        )
+        question_phase = question_runtime.get('question_phase')
+        question_answering_open = (
+            not manual_question_flow
+            or question_phase == GameRuntimeState.QUESTION_PHASE_ANSWERING_OPEN
+        )
+        question_visible_at = parse_datetime(
+            question_runtime.get('question_visible_at') or ''
+        )
+        question_prompt_visible = bool(quiz.current_question) and (
+            question_answering_open
+            or (
+                question_phase == GameRuntimeState.QUESTION_PHASE_PROMPT_VISIBLE
+                and (not question_visible_at or server_now >= question_visible_at)
+            )
+        )
         if quiz.current_question:
-            current_question_people = quiz.current_question.get_randomized_people(room_code=quiz.room_code).get('people', [])
+            all_question_people = quiz.current_question.get_randomized_people(room_code=quiz.room_code).get('people', [])
+            current_question_people = all_question_people if question_answering_open else []
             try:
                 quiz_session = quiz.session
             except WhoSession.DoesNotExist:
@@ -495,7 +519,7 @@ def who_play(request, room_code, participant_name):
                 quiz.current_question,
                 question_start_time=quiz.question_start_time,
                 question_end_time=quiz_session.question_end_time if quiz_session else None,
-                people_count=len(current_question_people),
+                people_count=len(all_question_people),
                 server_now=server_now,
             )
             current_question_started_at = quiz.question_start_time
@@ -509,11 +533,15 @@ def who_play(request, room_code, participant_name):
             'question_scoreboard': question_scoreboard,
             'initial_progress_history': initial_progress_history,
             'current_question_number': current_question_number,
+            'total_sets': len(question_scoreboard),
             'current_question_people': current_question_people,
             'current_question_timer_state': current_question_timer_state,
             'current_question_started_at': current_question_started_at,
             'current_question_end_time': current_question_end_time,
             'who_timer_server_now': server_now,
+            'question_runtime': question_runtime,
+            'question_prompt_visible': question_prompt_visible,
+            'question_answering_open': question_answering_open,
             'current_unit_is_tutorial': is_current_unit_tutorial_question('who', quiz.room_code, session_code, quiz.current_question_id),
         }
         return render(request, 'who_is_lying/play.html', context)
@@ -630,21 +658,17 @@ def submit_answer(request, room_code, participant_name):
             })
 
         submitted_question_id = data.get('question_id')
-        if quiz.current_question_id:
-            if submitted_question_id is not None and str(submitted_question_id) != str(quiz.current_question_id):
-                return JsonResponse({
-                    'success': False,
-                    'error': 'The active question has changed.'
-                })
-            target_question = quiz.current_question
-        else:
-            recent_question_id = get_recently_ended_question_id(room_code)
-            if recent_question_id is None or submitted_question_id is None or str(submitted_question_id) != str(recent_question_id):
-                return JsonResponse({
-                    'success': False,
-                    'error': 'No active question available.'
-                })
-            target_question = get_object_or_404(WhoQuestion, id=recent_question_id)
+        if not quiz.current_question_id:
+            return JsonResponse({
+                'success': False,
+                'error': 'No active question available.'
+            })
+        if submitted_question_id is not None and str(submitted_question_id) != str(quiz.current_question_id):
+            return JsonResponse({
+                'success': False,
+                'error': 'The active question has changed.'
+            })
+        target_question = quiz.current_question
 
         # Check if participant has already answered this question
         existing_answer = WhoAnswer.objects.filter(
@@ -660,16 +684,57 @@ def submit_answer(request, room_code, participant_name):
             })
 
         selected_liars = data.get('selected_liars', [])
-        time_taken = data.get('time_taken', 0)
-        
-        # Create answer (can be empty list if no one is selected as lying)
-        answer = WhoAnswer.objects.create(
-            quiz=quiz,
-            participant=participant,
-            question=target_question,
-            selected_liars=selected_liars,
-            time_taken=time_taken
+
+        decision = validate_and_reserve_action(
+            game_key='who',
+            room_code=room_code,
+            session_code=session_code,
+            participant_name=participant_name,
+            action_type='participant_submit_answer',
+            action=data,
         )
+        if not decision.accepted:
+            return JsonResponse({
+                'success': False,
+                'type': 'action_rejected',
+                'code': decision.code,
+                'error': decision.message,
+            }, status=409)
+        with transaction.atomic():
+            locked_quiz = WhoQuiz.objects.select_for_update().get(pk=quiz.pk)
+            locked_session = WhoSession.objects.select_for_update().filter(quiz=locked_quiz).first()
+            received_at = timezone.now()
+            if (
+                locked_quiz.status != 'active'
+                or locked_quiz.current_question_id != target_question.id
+                or not locked_session
+                or not locked_session.is_question_active
+                or not locked_session.question_end_time
+                or received_at >= locked_session.question_end_time
+            ):
+                return JsonResponse({
+                    'success': False,
+                    'error': 'The answer deadline has expired.'
+                })
+            server_time_taken = (
+                max(0.0, (received_at - locked_quiz.question_start_time).total_seconds())
+                if locked_quiz.question_start_time
+                else 0.0
+            )
+            answer, created = WhoAnswer.objects.get_or_create(
+                quiz=locked_quiz,
+                participant=participant,
+                question=target_question,
+                defaults={
+                    'selected_liars': selected_liars,
+                    'time_taken': server_time_taken,
+                },
+            )
+            if not created:
+                return JsonResponse({
+                    'success': False,
+                    'error': 'You have already answered this question.'
+                })
         
         # Update participant's last activity
         participant.last_activity = timezone.now()

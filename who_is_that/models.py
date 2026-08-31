@@ -330,16 +330,14 @@ class WhoThatSession(SyncBase):
             'updated_at',
         ])
     
-    def send_question(self, question, time_limit_seconds=None):
-        """Send a question to all participants"""
-        effective_time_limit = time_limit_seconds if time_limit_seconds is not None else question.time_limit
-        now = timezone.now()
+    def prepare_question(self, question):
+        """Persist a question without opening its answer window."""
         self.quiz.current_question = question
-        self.quiz.question_start_time = now
+        self.quiz.question_start_time = None
         self.current_question_number += 1
         self.total_questions_sent += 1
-        self.is_question_active = True
-        self.question_end_time = now + timezone.timedelta(seconds=effective_time_limit)
+        self.is_question_active = False
+        self.question_end_time = None
         self.total_responses_current_question = 0
         self.correct_responses_current_question = 0
         self.average_response_time_current_question = 0
@@ -347,6 +345,21 @@ class WhoThatSession(SyncBase):
         
         self.quiz.save(update_fields=['current_question', 'question_start_time'])
         self.save()
+
+    def open_answering(self, question, *, started_at, answer_duration_seconds):
+        """Open the prepared question using the authoritative phase timestamp."""
+        if self.quiz.current_question_id != question.id:
+            raise ValueError('Cannot open answering for a different question.')
+        duration = float(answer_duration_seconds)
+        self.quiz.question_start_time = started_at
+        self.is_question_active = True
+        self.question_end_time = started_at + timezone.timedelta(seconds=duration)
+        self.quiz.save(update_fields=['question_start_time'])
+        self.save(update_fields=[
+            'is_question_active',
+            'question_end_time',
+            'updated_at',
+        ])
     
     def end_current_question(self):
         """End the current active question"""

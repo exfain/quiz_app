@@ -96,7 +96,8 @@ class GameTitleFontTests(unittest.TestCase):
 
         self.assertIn('qa-start-waiting-game-name', waiting_include)
         self.assertIn('qa-start-waiting-subtitle', waiting_include)
-        self.assertIn('session-game-start-intro__title', intro_include)
+        self.assertIn('qa-vhs-intro__layer--white', intro_include)
+        self.assertNotIn('session-game-start-intro__title', intro_include)
 
         for relative_path in PLAYER_TITLE_TEMPLATES:
             with self.subTest(template=relative_path):

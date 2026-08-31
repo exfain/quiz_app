@@ -507,7 +507,7 @@ class ActiveGameGuardTests(TransactionTestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        self.assertNotContains(response, 'setInactiveBtn')
+        self.assertNotContains(response, 'id="setInactiveBtn"')
         self.assertNotContains(response, 'Set inactive')
 
     def test_set_inactive_helper_preserves_current_question(self):

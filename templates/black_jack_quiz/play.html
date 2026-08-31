@@ -19,8 +19,12 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<script src="{% static 'js/authoritative-game-state.js' %}"></script>
 </head>
-<body class="blackjack-play-page">
+<body class="blackjack-play-page"
+      data-vhs-progress-kind="set"
+      data-vhs-progress-source=".play-container"
+      data-vhs-progress-attribute="data-blackjack-current-set">
     <div class="play-container"
          data-blackjack-current-set="{{ current_set_number }}"
          data-blackjack-total-sets="{{ total_sets }}">
@@ -133,7 +137,7 @@
                             </div>
                         </div>
 
-                        <div id="waitingQuestionState" class="game-state blackjack-vhs-wait-state d-none">
+                        <div id="waitingQuestionState" class="game-state blackjack-vhs-wait-state {% if not quiz.current_question or question_prompt_visible %}d-none{% endif %}">
                             <div class="waiting-card blackjack-vhs-signal-card">
                                 <p class="blackjack-vhs-signal-kicker d-none">SIGNALWECHSEL</p>
                                 <div class="waiting-animation">
@@ -154,7 +158,7 @@
                         </div>
 
                         <!-- Question State -->
-                        <div id="questionState" class="game-state blackjack-vhs-question-state {% if not quiz.current_question %}d-none{% endif %}">
+                        <div id="questionState" class="game-state blackjack-vhs-question-state {% if not question_prompt_visible %}d-none{% endif %}">
                             <div class="question-card blackjack-vhs-question-card">
                                 <!-- Question Header -->
                                 <div class="question-header blackjack-vhs-question-meta">
@@ -163,7 +167,7 @@
                                         <span class="blackjack-vhs-question-copy d-none">FRAGE</span>
                                         <span id="currentQuestionNumber">{{ current_question_in_set }}</span>/<span id="currentSetQuestionCount">{{ current_set_question_count }}</span>
                                     </div>
-                                    <div class="question-timer">
+                                    <div class="question-timer{% if not question_answering_open %} d-none{% endif %}">
                                         <div class="timer-circle" id="playerTimerCircle">
                                             <span id="playerTimeLeft">30</span>
                                         </div>
@@ -192,7 +196,8 @@
                                                        aria-label="Zahleneingabe"
                                                        min="0"
                                                        max="10000"
-                                                       autocomplete="off">
+                                                       autocomplete="off"
+                                                       {% if not question_answering_open %}disabled aria-disabled="true"{% endif %}>
                                             </div>
                                             <div class="input-help blackjack-vhs-integer-help">
                                                 <i data-lucide="info"></i>
@@ -372,14 +377,6 @@
 
                         <div id="setEndedState" class="game-state blackjack-vhs-end-state blackjack-vhs-set-end-state {% if show_initial_set_end_state %}{% else %}d-none{% endif %}">
                             <div class="ended-card blackjack-vhs-credits" data-vhs-end-label="SET BEENDET">
-                                {% if hub_session %}
-                                    <div class="quiz-actions blackjack-vhs-copy blackjack-vhs-set-return d-none">
-                                        <button type="button" class="btn btn-primary btn-lg" id="returnToLobbyAfterSetBtn">
-                                            <i data-lucide="arrow-left"></i>
-                                            Zur Lobby zurückkehren
-                                        </button>
-                                    </div>
-                                {% endif %}
                                 <div class="ended-animation blackjack-vhs-credits-signal blackjack-vhs-set-end-signal" aria-hidden="true">
                                     <i data-lucide="layers-3" class="result-icon normal"></i>
                                 </div>
@@ -1551,6 +1548,7 @@
     {% include 'includes/_game_tutorial_overlay.html' %}
     {% include 'includes/_session_game_start_intro.html' %}
     {{ last_completed_set_summary|json_script:"blackjackLastSetSummaryData" }}
+    {{ question_runtime|json_script:"blackjackQuestionRuntimeData" }}
 <script>
         document.addEventListener('DOMContentLoaded', function() {
             lucide.createIcons();
@@ -1563,7 +1561,6 @@
                     this.hubSession = '{{ hub_session }}';
                     this.websocket = null;
                     this.questionTimer = null;
-                    this.questionStartTime = null;
                     this.hasAnswered = false;
                     this.currentPoints = {{ participant.total_points }};
                     this.overallPoints = {{ participant.overall_points }};
@@ -1576,11 +1573,20 @@
                     this.pendingQuestionEndedData = null;
                     this.questionClosedAwaitingAutoSubmit = false;
                     this.lastCompletedSetSummary = this.readJSONScript('blackjackLastSetSummaryData');
+                    this.questionRuntime = this.readJSONScript('blackjackQuestionRuntimeData') || {};
+                    this.questionPhase = this.questionRuntime.question_phase || '';
+                    this.gameId = this.questionRuntime.game_id || '';
+                    this.stateRevision = Number(this.questionRuntime.state_revision ?? -1);
+                    this.presentationServerNow = this.questionRuntime.server_now || '';
+                    this.presentationServerReceivedAt = performance.now();
+                    this.questionPresentationTimer = null;
                     this.hasActiveQuestionAtLoad = {% if quiz.current_question %}true{% else %}false{% endif %};
                     this.currentQuestionId = {% if quiz.current_question %}{{ quiz.current_question.id }}{% else %}null{% endif %};
                     this.currentQuestionEndTime = {% if current_question_end_time %}'{{ current_question_end_time|date:"c" }}'{% else %}null{% endif %};
                     this.timeoutSyncInFlight = false;
                     this.timeoutStatusSyncTimer = null;
+                    this.timeoutStatusRequestSequence = 0;
+                    this.timeoutStatusAbortController = null;
                     this.quizStatusUrl = '{% url "black_jack_quiz:quiz_status" quiz.room_code participant.name %}';
                     
                     this.init();
@@ -1604,9 +1610,7 @@
                     this.updateSetScoreTotal();
                     this.renderCompletedSetScreens();
                     
-                    // Start timer if there's an active question
                     {% if quiz.current_question %}
-                        this.startQuestionTimer({{ quiz.current_question.time_limit }}, this.currentQuestionEndTime);
                         this.loadCurrentQuestion();
                     {% endif %}
 
@@ -1681,7 +1685,11 @@
                         case 'question_started':
                             window.gameTutorial?.forceClose();
                             window.unitTutorialNotice?.setFromPayload(data, 'Tutorialset');
-                            this.onQuestionStarted(data.question);
+                            this.onQuestionStarted(this.mergeQuestionLifecycle(data.question, data));
+                            break;
+
+                        case 'question_answering_opened':
+                            this.onQuestionStarted(this.mergeQuestionLifecycle(data.question, data));
                             break;
                             
                         case 'question_ended':
@@ -1729,7 +1737,14 @@
                     const answerInput = document.getElementById('answerInput');
                     answerInput.addEventListener('input', () => {
                         const hasValue = answerInput.value.trim() !== '';
-                        document.getElementById('submitAnswerBtn').disabled = !hasValue || this.hasAnswered || this.isBusted;
+                        const submitBtn = document.getElementById('submitAnswerBtn');
+                        submitBtn.disabled = (
+                            this.questionPhase !== 'answering_open'
+                            || !hasValue
+                            || this.hasAnswered
+                            || this.isBusted
+                        );
+                        submitBtn.setAttribute('aria-disabled', String(submitBtn.disabled));
                     });
 
                     // Allow Enter key to submit
@@ -1745,6 +1760,15 @@
                 }
 
                 onQuestionStarted(question) {
+                    const revision = Number(question?.state_revision);
+                    if (Number.isFinite(revision) && revision < this.stateRevision) return;
+                    if (Number.isFinite(revision)) this.stateRevision = revision;
+                    if (question?.game_id) this.gameId = String(question.game_id);
+                    if (question?.server_now) {
+                        this.presentationServerNow = String(question.server_now);
+                        this.presentationServerReceivedAt = performance.now();
+                    }
+                    this.questionPhase = question?.question_phase || this.questionPhase;
                     this.currentQuestionIsTutorial = !!question?.is_tutorial_round;
                     const questionInSet = question.question_in_set || question.question_number || 0;
                     const setNumber = question.set_number || 1;
@@ -1757,7 +1781,6 @@
                     this.pendingAnswerResult = null;
                     this.pendingQuestionEndedData = null;
                     this.questionClosedAwaitingAutoSubmit = false;
-                    this.questionStartTime = Date.now();
                     this.currentQuestionId = question.id || null;
                     this.currentQuestionEndTime = question.question_end_time || null;
                     if (!this.currentQuestionIsTutorial) {
@@ -1769,8 +1792,27 @@
                     if (!this.currentQuestionIsTutorial) this.updateSetScoreRowStates();
                     
                     this.loadQuestion(question);
-                    this.startQuestionTimer(question.time_limit || 30, question.question_end_time || null);
-                    this.showState('questionState');
+                    clearTimeout(this.questionPresentationTimer);
+                    clearInterval(this.questionTimer);
+                    if (
+                        this.questionPhase === 'prompt_visible'
+                        && this.remainingQuestionPresentationDelay(question) > 0
+                    ) {
+                        this.setQuestionInteraction(false);
+                        this.setQuestionTimerVisible(false);
+                        this.showState('waitingQuestionState');
+                        const questionId = this.currentQuestionId;
+                        this.questionPresentationTimer = setTimeout(() => {
+                            if (
+                                this.currentQuestionId === questionId
+                                && this.questionPhase === 'prompt_visible'
+                            ) {
+                                this.renderQuestionPhase(question);
+                            }
+                        }, this.remainingQuestionPresentationDelay(question));
+                    } else {
+                        this.renderQuestionPhase(question);
+                    }
                     
                     // Update question progress
                     document.getElementById('questionProgress').textContent = `${questionInSet}/${this.totalQuestions}`;
@@ -1788,7 +1830,9 @@
 
                 onQuestionEnded(data) {
                     clearInterval(this.questionTimer);
+                    clearTimeout(this.questionPresentationTimer);
                     clearTimeout(this.timeoutStatusSyncTimer);
+                    this.questionPhase = '';
                     this.timeoutSyncInFlight = false;
                     this.currentQuestionId = null;
                     this.currentQuestionEndTime = null;
@@ -1916,13 +1960,72 @@
                         set_number: {{ current_set_number }},
                         total_sets: {{ total_sets }}
                     };
-                    this.loadQuestion(question);
+                    this.onQuestionStarted({...question, ...this.questionRuntime});
                     {% endif %}
+                }
+
+                mergeQuestionLifecycle(question = {}, lifecycle = {}) {
+                    const merged = {...question};
+                    [
+                        'state_revision',
+                        'server_now',
+                        'game_id',
+                        'question_phase',
+                        'question_presented_at',
+                        'question_visible_at',
+                        'answering_started_at',
+                        'answering_deadline_at',
+                        'answering_allowed',
+                        'timer_running',
+                        'remaining_answer_time',
+                    ].forEach((key) => {
+                        if (lifecycle[key] !== undefined) merged[key] = lifecycle[key];
+                    });
+                    return merged;
+                }
+
+                remainingQuestionPresentationDelay(question) {
+                    const visibleAt = Date.parse(question?.question_visible_at || '');
+                    const serverNow = Date.parse(question?.server_now || this.presentationServerNow || '');
+                    if (!Number.isFinite(visibleAt) || !Number.isFinite(serverNow)) return 0;
+                    const estimatedServerNow = serverNow + (performance.now() - this.presentationServerReceivedAt);
+                    return Math.max(0, visibleAt - estimatedServerNow);
+                }
+
+                renderQuestionPhase(question) {
+                    const answeringOpen = this.questionPhase === 'answering_open';
+                    this.setQuestionInteraction(answeringOpen);
+                    this.setQuestionTimerVisible(answeringOpen);
+                    this.showState('questionState');
+                    if (answeringOpen) {
+                        this.startQuestionTimer(
+                            question.time_limit || 30,
+                            question.answering_deadline_at || question.question_end_time || null,
+                        );
+                    }
+                }
+
+                setQuestionInteraction(enabled) {
+                    const interactive = enabled && !this.isBusted && !this.hasAnswered;
+                    const answerInput = document.getElementById('answerInput');
+                    if (answerInput) {
+                        answerInput.disabled = !interactive;
+                        answerInput.setAttribute('aria-disabled', String(!interactive));
+                    }
+                    const submitBtn = document.getElementById('submitAnswerBtn');
+                    if (submitBtn) {
+                        submitBtn.disabled = !interactive || !answerInput?.value.trim();
+                        submitBtn.setAttribute('aria-disabled', String(submitBtn.disabled));
+                    }
+                }
+
+                setQuestionTimerVisible(visible) {
+                    document.querySelector('#questionState .question-timer')?.classList.toggle('d-none', !visible);
                 }
 
                 loadQuestion(question) {
                     this.currentQuestionId = question.id || this.currentQuestionId || null;
-                    this.currentQuestionEndTime = question.question_end_time || this.currentQuestionEndTime || null;
+                    this.currentQuestionEndTime = question.answering_deadline_at || question.question_end_time || null;
                     document.getElementById('questionText').textContent = question.question_text;
                     document.getElementById('currentQuestionNumber').textContent = question.question_in_set || question.question_number;
                     const currentSetQuestionCount = document.getElementById('currentSetQuestionCount');
@@ -1933,7 +2036,8 @@
                     // Reset input
                     const answerInput = document.getElementById('answerInput');
                     answerInput.value = '';
-                    answerInput.disabled = this.isBusted;
+                    answerInput.disabled = this.isBusted || this.questionPhase !== 'answering_open';
+                    answerInput.setAttribute('aria-disabled', String(answerInput.disabled));
 
                     const answerInterface = document.getElementById('answerInterface');
                     if (answerInterface) {
@@ -1993,14 +2097,12 @@
                 }
 
                 submitAnswer(options = {}) {
-                    if (this.isBusted) return;
+                    if (this.isBusted || this.questionPhase !== 'answering_open') return;
                     
                     const answerInput = document.getElementById('answerInput');
                     const userAnswer = answerInput.value.trim();
                     
                     if (!userAnswer || this.hasAnswered) return;
-                    
-                    const timeTaken = (Date.now() - this.questionStartTime) / 1000;
                     
                     // Disable interface
                     answerInput.disabled = true;
@@ -2012,9 +2114,11 @@
                         type: 'participant_submit_answer',
                         participant_name: this.participantName,
                         hub_session: this.hubSession,
-                        question_id: options.questionId || null,
+                        question_id: options.questionId || this.currentQuestionId || null,
                         user_answer: parseInt(userAnswer),
-                        time_taken: timeTaken
+                        game_id: this.gameId || null,
+                        state_revision: this.stateRevision,
+                        client_action_id: window.AuthoritativeGameState?.createActionId?.()
                     }));
                     
                     this.hasAnswered = true;
@@ -2092,14 +2196,27 @@
 
                 syncQuestionStateAfterTimeout() {
                     try {
+                        const requestSequence = ++this.timeoutStatusRequestSequence;
+                        this.timeoutStatusAbortController?.abort();
+                        this.timeoutStatusAbortController = new AbortController();
                         const statusUrl = new URL(this.quizStatusUrl, window.location.origin);
                         if (this.hubSession) {
                             statusUrl.searchParams.set('hub_session', this.hubSession);
                         }
-                        fetch(statusUrl.toString(), { credentials: 'same-origin' })
+                        fetch(statusUrl.toString(), {
+                            credentials: 'same-origin',
+                            signal: this.timeoutStatusAbortController.signal,
+                        })
                             .then((response) => response.json())
-                            .then((data) => this.applyServerStatusAfterTimeout(data))
-                            .catch((error) => console.warn('Unable to sync BlackJack timeout state:', error));
+                            .then((data) => {
+                                if (requestSequence !== this.timeoutStatusRequestSequence) return;
+                                if (!window.AuthoritativeGameState.acceptSnapshot(data)) return;
+                                this.applyServerStatusAfterTimeout(data);
+                            })
+                            .catch((error) => {
+                                if (error?.name === 'AbortError') return;
+                                console.warn('Unable to sync BlackJack timeout state:', error);
+                            });
                     } catch (error) {
                         console.warn('Unable to build BlackJack status URL:', error);
                     }
@@ -2481,9 +2598,6 @@
                 roomCode: '{{ quiz.room_code }}',
                 participantName: '{{ participant.name|escapejs }}',
                 csrfToken: '{{ csrf_token }}',
-            });
-            document.getElementById('returnToLobbyAfterSetBtn')?.addEventListener('click', () => {
-                lobbyReturnController.returnToLobby();
             });
             
             // Minimal Hub listener for centralized navigation

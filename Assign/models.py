@@ -274,27 +274,49 @@ class AssignSession(SyncBase):
     updated_at = models.DateTimeField(auto_now=True)
     
     def send_question(self, question):
-        """Send a question to all participants"""
-        self.quiz.current_question = question
-        self.quiz.question_start_time = timezone.now()
-        self.current_question_number += 1
-        self.total_questions_sent += 1
-        self.is_question_active = True
-        self.question_end_time = timezone.now() + timezone.timedelta(seconds=question.time_limit)
-        self.total_responses_current_question = 0
-        self.average_score_current_question = 0
-        
-        self.quiz.save()
-        self.save()
+        """Start the persistent round runtime for legacy HTTP callers."""
+        from .runtime import start_set_runtime
+        from games_hub.models import HubGameStep
+
+        step = (
+            HubGameStep.objects
+            .select_related('session')
+            .filter(
+                game_key='assign',
+                room_code=self.quiz.room_code,
+                session__ended_at__isnull=True,
+            )
+            .order_by('-id')
+            .first()
+        )
+        runtime, _ = start_set_runtime(
+            quiz_id=self.quiz_id,
+            question_id=question.id,
+            hub_session_code=step.session.code if step else '',
+            effective_time_limit=question.time_limit,
+        )
+        self.refresh_from_db()
+        return runtime
     
     def end_current_question(self):
-        """End the current active question"""
+        """End the persistent runtime for legacy HTTP callers."""
+        from .runtime import (
+            current_set_runtime,
+            mark_ended,
+            persist_final_answers,
+        )
+
+        runtime = current_set_runtime(self.quiz.room_code)
+        if runtime:
+            persist_final_answers(runtime)
+            mark_ended(self.quiz.room_code, runtime.hub_session_code)
         self.is_question_active = False
+        self.question_end_time = None
         self.quiz.current_question = None
         self.quiz.question_start_time = None
         
         self.quiz.save()
-        self.save()
+        self.save(update_fields=['is_question_active', 'question_end_time', 'updated_at'])
     
     def record_answer(self, points_earned):
         """Record statistics for an answer"""
@@ -322,3 +344,80 @@ class AssignSession(SyncBase):
     
     def __str__(self):
         return f"Session for {self.quiz.room_code}"
+
+
+class AssignSetRuntime(models.Model):
+    PHASE_ACTIVE = 'active'
+    PHASE_WAITING_REVEAL = 'waiting_reveal'
+    PHASE_REVEALED = 'revealed'
+    PHASE_ENDED = 'ended'
+    PHASE_CHOICES = [
+        (PHASE_ACTIVE, 'Active'),
+        (PHASE_WAITING_REVEAL, 'Waiting for reveal'),
+        (PHASE_REVEALED, 'Revealed'),
+        (PHASE_ENDED, 'Ended'),
+    ]
+
+    quiz = models.ForeignKey(
+        AssignQuiz,
+        on_delete=models.CASCADE,
+        related_name='set_runtimes',
+    )
+    question = models.ForeignKey(
+        AssignQuestion,
+        on_delete=models.CASCADE,
+        related_name='assign_set_runtimes',
+    )
+    hub_session_code = models.CharField(max_length=16, blank=True, default='', db_index=True)
+    set_number = models.PositiveIntegerField()
+    phase = models.CharField(max_length=24, choices=PHASE_CHOICES, default=PHASE_ACTIVE)
+    effective_time_limit = models.PositiveIntegerField()
+    current_round_index = models.PositiveIntegerField(default=0)
+    round_started_at = models.DateTimeField()
+    round_ends_at = models.DateTimeField()
+    solved_matches = models.JSONField(default=dict, blank=True)
+    round_participant_ids = models.JSONField(default=dict, blank=True)
+    evaluated_rounds = models.JSONField(default=list, blank=True)
+    revealed_at = models.DateTimeField(null=True, blank=True)
+    ended_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=['quiz', 'hub_session_code', 'set_number'],
+                name='assign_unique_set_runtime',
+            ),
+        ]
+
+
+class AssignRoundParticipantState(models.Model):
+    set_runtime = models.ForeignKey(
+        AssignSetRuntime,
+        on_delete=models.CASCADE,
+        related_name='participant_round_states',
+    )
+    participant = models.ForeignKey(
+        AssignParticipant,
+        on_delete=models.CASCADE,
+        related_name='assign_round_states',
+    )
+    round_index = models.PositiveIntegerField()
+    left_item_index = models.PositiveIntegerField(null=True, blank=True)
+    user_match = models.JSONField(default=dict, blank=True)
+    is_locked = models.BooleanField(default=False)
+    locked_at = models.DateTimeField(null=True, blank=True)
+    evaluated_at = models.DateTimeField(null=True, blank=True)
+    is_correct = models.BooleanField(null=True, blank=True)
+    original_right_index = models.PositiveIntegerField(null=True, blank=True)
+    elimination_reason = models.CharField(max_length=32, blank=True, default='')
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=['set_runtime', 'participant', 'round_index'],
+                name='assign_unique_participant_round_state',
+            ),
+        ]

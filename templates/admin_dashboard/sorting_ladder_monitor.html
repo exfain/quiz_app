@@ -1,4 +1,5 @@
 {% extends "admin_dashboard/base.html" %}
+{% load static %}
 
 {% block title %}Sorting Ladder Monitor - QuizMaster Admin{% endblock %}
 
@@ -50,7 +51,7 @@
                                 <label class="form-check-label" for="playTutorialToggle">Tutorial spielen</label>
                             </div>
                             {% endif %}
-                            <button class="btn btn-success" id="startQuizBtn">
+                            <button class="btn btn-success" id="startQuizBtn" data-host-game-start>
                                 <i data-lucide="play"></i>
                                 {% if quiz.status == 'inactive' %}Spiel reaktivieren{% else %}Spiel starten{% endif %}
                             </button>
@@ -71,7 +72,7 @@
                         <i data-lucide="trophy"></i>
                         Leaderboard einblenden
                     </button>
-                    <button type="button" class="btn btn-outline-secondary" id="backToHubBtn">
+                    <button type="button" class="btn btn-outline-secondary" id="backToHubBtn" data-host-game-leave>
                         <i data-lucide="arrow-left"></i>
                         Back to Overview
                     </button>
@@ -155,10 +156,22 @@
                         </div>
                     {% else %}
                         <!-- Active Question Display -->
-                        <div id="activeQuestion" data-total-rounds="{{ quiz.current_question.elements.count|add:'-1' }}" data-current-round="{{ session.current_round }}" data-time-left="{{ current_round_time_left }}" data-round-active="{% if session.is_round_active %}1{% else %}0{% endif %}" data-reveal-state="{{ session.reveal_state }}">
+                        <div id="activeQuestion"
+                             data-total-rounds="{{ quiz.current_question.elements.count|add:'-1' }}"
+                             data-current-round="{{ session.current_round }}"
+                             data-current-set="{{ question_runtime.current_set_id|default:'0' }}"
+                             data-time-left="{{ current_round_time_left }}"
+                             data-round-active="{% if session.is_round_active %}1{% else %}0{% endif %}"
+                             data-reveal-state="{{ session.reveal_state }}"
+                             data-question-phase="{{ question_runtime.question_phase|default:'' }}"
+                             data-state-revision="{{ question_runtime.state_revision|default:'-1' }}"
+                             data-game-id="{{ question_runtime.game_id|default:'' }}"
+                             data-question-visible-at="{{ question_runtime.question_visible_at|default:'' }}"
+                             data-reveal-ready-at="{% if sorting_reveal_ready_at %}{{ sorting_reveal_ready_at|date:'c' }}{% endif %}"
+                             data-server-now="{{ question_runtime.server_now|default:'' }}">
                             <div class="active-question-header">
                                 <h6>Current Question</h6>
-                                <div class="question-timer" id="questionTimerWrapper" {% if not session.is_round_active %}style="display:none;"{% endif %}>
+                                <div class="question-timer" id="questionTimerWrapper" {% if question_runtime.question_phase != 'answering_open' %}style="display:none;"{% endif %}>
                                     <div class="timer-circle" id="hostTimerCircle">
                                         <span id="hostTimeLeft">{{ current_round_time_left }}</span>
                                     </div>
@@ -184,14 +197,24 @@
                                         Set abschließen
                                     </button>
                                     {% else %}
+                                    {% if question_runtime.question_phase == 'prompt_visible' %}
+                                    <button class="btn btn-primary primary-action" id="revealSortingContentBtn" data-question-id="{{ quiz.current_question.id }}" disabled aria-disabled="true">
+                                        LADDER UND ELEMENTE ENTHÜLLEN
+                                    </button>
+                                    {% elif question_runtime.question_phase == 'content_visible' %}
+                                    <button class="btn btn-primary primary-action" id="openSortingRoundBtn" data-question-id="{{ quiz.current_question.id }}" disabled aria-disabled="true">
+                                        RUNDE FREIGEBEN
+                                    </button>
+                                    {% elif question_runtime.question_phase == 'answering_open' %}
                                     <button class="btn btn-primary primary-action" id="startNextRoundBtn">
                                         <i data-lucide="play-circle"></i>
-                                        Nächste Runde starten
+                                        Nächste Runde senden
                                     </button>
                                     <button class="btn btn-warning secondary-action" id="endQuestionBtn">
                                         <i data-lucide="skip-forward"></i>
                                         Set abschließen
                                     </button>
+                                    {% endif %}
                                     {% endif %}
                                 </div>
                             </div>
@@ -893,6 +916,7 @@
 }
 </style>
 
+<script src="{% static 'js/authoritative-game-state.js' %}"></script>
 <script>
 document.addEventListener('DOMContentLoaded', function() {
     // Save hub_session immediately for Back to Overview button
@@ -922,7 +946,17 @@ document.addEventListener('DOMContentLoaded', function() {
             this.currentPhaseLabel = 'Warte auf Antworten';
             this.totalRoundsForQuestion = parseInt(activeQuestion?.dataset?.totalRounds || '0', 10) || 0;
             this.currentRoundNumber = parseInt(activeQuestion?.dataset?.currentRound || '0', 10) || 0;
+            this.currentSetNumber = parseInt(activeQuestion?.dataset?.currentSet || '0', 10) || 0;
             this.revealState = activeQuestion?.dataset?.revealState || 'active';
+            this.questionPhase = activeQuestion?.dataset?.questionPhase || '{{ question_runtime.question_phase|default:""|escapejs }}';
+            this.stateRevision = Number(activeQuestion?.dataset?.stateRevision || '{{ question_runtime.state_revision|default:"-1" }}');
+            this.gameId = activeQuestion?.dataset?.gameId || '{{ question_runtime.game_id|default:""|escapejs }}';
+            this.questionVisibleAt = activeQuestion?.dataset?.questionVisibleAt || '{{ question_runtime.question_visible_at|default:""|escapejs }}';
+            this.sortingRevealReadyAt = activeQuestion?.dataset?.revealReadyAt || '';
+            this.presentationServerNow = activeQuestion?.dataset?.serverNow || '{{ question_runtime.server_now|default:""|escapejs }}';
+            this.presentationServerReceivedAt = performance.now();
+            this.phaseAvailabilityTimer = null;
+            this.pendingPhaseAction = null;
             this.nextRoundEnabled = true;
             this.allAnswersInRound = false;
             this.roundTimerExpired = false;
@@ -996,6 +1030,7 @@ document.addEventListener('DOMContentLoaded', function() {
             this.applySentStates();
             this.initializeLiveResponseState();
             this.initializeRoundTimer();
+            this.scheduleSortingPhaseAvailability();
             if (this.revealState === 'awaiting_reveal') {
                 this.onRoundsComplete();
             } else if (this.revealState === 'revealed') {
@@ -1005,6 +1040,82 @@ document.addEventListener('DOMContentLoaded', function() {
                 this.updateQuestionActionLabels();
             }
             this.updateMonitorPhase();
+        }
+
+        applyAuthoritativeMetadata(data = {}) {
+            const source = data.snapshot && typeof data.snapshot === 'object' ? data.snapshot : data;
+            const revision = Number(source.state_revision);
+            if (Number.isFinite(revision) && revision >= this.stateRevision) {
+                this.stateRevision = revision;
+            }
+            if (source.game_id) this.gameId = String(source.game_id);
+            if (source.question_phase !== undefined && source.question_phase !== null) {
+                this.questionPhase = String(source.question_phase);
+            }
+            if (source.question_visible_at !== undefined && source.question_visible_at !== null) {
+                this.questionVisibleAt = String(source.question_visible_at);
+            }
+            if (source.sorting_ladder_reveal_ready_at) {
+                this.sortingRevealReadyAt = String(source.sorting_ladder_reveal_ready_at);
+            }
+            if (source.server_now) {
+                this.presentationServerNow = String(source.server_now);
+                this.presentationServerReceivedAt = performance.now();
+            }
+        }
+
+        estimatedServerNow() {
+            const serverNow = Date.parse(this.presentationServerNow || '');
+            if (!Number.isFinite(serverNow)) return Date.now();
+            return serverNow + (performance.now() - this.presentationServerReceivedAt);
+        }
+
+        scheduleSortingPhaseAvailability() {
+            clearTimeout(this.phaseAvailabilityTimer);
+            const button = (
+                document.getElementById('revealSortingContentBtn')
+                || document.getElementById('openSortingRoundBtn')
+            );
+            if (!button) return;
+            const readyAt = Date.parse(
+                button.id === 'revealSortingContentBtn'
+                    ? this.questionVisibleAt
+                    : this.sortingRevealReadyAt
+            );
+            const remaining = Number.isFinite(readyAt)
+                ? Math.max(0, readyAt - this.estimatedServerNow())
+                : 0;
+            const enable = () => {
+                button.disabled = false;
+                button.setAttribute('aria-disabled', 'false');
+            };
+            if (remaining <= 0) {
+                enable();
+                return;
+            }
+            this.phaseAvailabilityTimer = setTimeout(enable, remaining);
+        }
+
+        hostActionContext(questionId) {
+            return {
+                question_id: questionId,
+                game_id: this.gameId || null,
+                state_revision: this.stateRevision,
+                client_action_id: window.AuthoritativeGameState?.createActionId?.(),
+                expected_round: this.currentRoundNumber,
+                expected_set: this.currentSetNumber,
+            };
+        }
+
+        sendSortingPhaseAction(type, questionId, button) {
+            if (this.pendingPhaseAction || button.disabled) return;
+            this.pendingPhaseAction = type;
+            button.disabled = true;
+            button.setAttribute('aria-disabled', 'true');
+            this.websocket?.send(JSON.stringify({
+                type,
+                ...this.hostActionContext(questionId),
+            }));
         }
 
         initializeRoundTimer() {
@@ -1115,6 +1226,7 @@ document.addEventListener('DOMContentLoaded', function() {
                     });
                     // Re-apply sent state so already-sent questions remain blocked
                     this.applySentStates();
+                    location.reload();
                     break;
                     
                 case 'tutorial_start':
@@ -1134,6 +1246,7 @@ document.addEventListener('DOMContentLoaded', function() {
                     break;
                     
                 case 'question_started':
+                    this.applyAuthoritativeMetadata(data);
                     window.unitTutorialNotice?.setFromPayload(data);
                     this.resetLiveResponseStateForQuestion();
                     this.setNextRoundButtonEnabled(true);
@@ -1150,8 +1263,26 @@ document.addEventListener('DOMContentLoaded', function() {
                     location.reload();
                     break;
 
+                case 'question_content_revealed':
+                case 'question_answering_opened':
+                    this.applyAuthoritativeMetadata(data);
+                    this.pendingPhaseAction = null;
+                    location.reload();
+                    break;
+
+                case 'action_rejected':
+                    this.applyAuthoritativeMetadata(data);
+                    this.pendingPhaseAction = null;
+                    this.scheduleSortingPhaseAvailability();
+                    break;
+
                 case 'round_started':
-                    this.onRoundStarted(data.round);
+                    this.applyAuthoritativeMetadata(data.round || {});
+                    if (data.round?.question_phase === 'prompt_visible') {
+                        location.reload();
+                    } else {
+                        this.onRoundStarted(data.round);
+                    }
                     break;
 
                 case 'round_ended':
@@ -1330,6 +1461,21 @@ document.addEventListener('DOMContentLoaded', function() {
             document.getElementById('startNextRoundBtn')?.addEventListener('click', () => {
                 this.startNextRound();
             });
+
+            document.getElementById('revealSortingContentBtn')?.addEventListener('click', (event) => {
+                this.sendSortingPhaseAction(
+                    'admin_reveal_question_content',
+                    event.currentTarget.dataset.questionId,
+                    event.currentTarget,
+                );
+            });
+            document.getElementById('openSortingRoundBtn')?.addEventListener('click', (event) => {
+                this.sendSortingPhaseAction(
+                    'admin_open_answering',
+                    event.currentTarget.dataset.questionId,
+                    event.currentTarget,
+                );
+            });
             
             // Share Code button
             document.getElementById('shareCodeBtn')?.addEventListener('click', () => {
@@ -1339,10 +1485,10 @@ document.addEventListener('DOMContentLoaded', function() {
         
         startQuiz() {
             if (this.websocket && this.websocket.readyState === WebSocket.OPEN) {
+                const qs = new URLSearchParams(window.location.search);
+                const hub = qs.get('hub_session') || window.__hubCode || (function(){ try { return sessionStorage.getItem("_hub_admin"); } catch(_) { return null; } })();
                 // Also notify hub directly (in case backend mirror is unavailable)
                 try {
-                    const qs = new URLSearchParams(window.location.search);
-                    const hub = qs.get('hub_session') || window.__hubCode || (function(){ try { return sessionStorage.getItem("_hub_admin"); } catch(_) { return null; } })();
                     if (hub) {
                         const hubWs = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws/hub/' + hub + '/');
                         console.log('{{quiz.room_code}}');
@@ -1365,10 +1511,9 @@ document.addEventListener('DOMContentLoaded', function() {
                 this.websocket.send(JSON.stringify({
                     type: 'admin_start_quiz',
                     show_tutorial: showTutorial,
-                    play_tutorial: playTutorial
+                    play_tutorial: playTutorial,
+                    hub_session: hub
                 }));
-                //reload page
-                location.reload();
             }
         }
         
@@ -1437,7 +1582,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
                 const payload = {
                     type: 'admin_send_question',
-                    question_id: questionId
+                    ...this.hostActionContext(questionId),
                 };
                 if (customTime) {
                     payload.custom_time_limit = customTime;
@@ -1515,7 +1660,8 @@ document.addEventListener('DOMContentLoaded', function() {
                     if (!proceed) return;
                 }
                 this.websocket.send(JSON.stringify({
-                    type: 'admin_start_round'
+                    type: 'admin_start_round',
+                    ...this.hostActionContext('{{ quiz.current_question_id|default:"" }}'),
                 }));
             }
         }

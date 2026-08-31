@@ -505,14 +505,14 @@ class EstimationSession(SyncBase):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     
-    def send_question(self, question):
-        """Send a question to all participants"""
+    def prepare_question(self, question):
+        """Prepare a question without opening the participant answer window."""
         self.quiz.current_question = question
-        self.quiz.question_start_time = timezone.now()
+        self.quiz.question_start_time = None
         self.current_question_number += 1
         self.total_questions_sent += 1
-        self.is_question_active = True
-        self.question_end_time = timezone.now() + timezone.timedelta(seconds=90)  # Default 90 seconds
+        self.is_question_active = False
+        self.question_end_time = None
         self.pending_answers = {}
         self.total_responses_current_question = 0
         self.average_score_current_question = 0
@@ -520,10 +520,31 @@ class EstimationSession(SyncBase):
         
         self.quiz.save()
         self.save()
+
+    def send_question(self, question):
+        """Compatibility name for preparing a manually controlled question."""
+        self.prepare_question(question)
+
+    def open_answering(self, question, *, started_at, answer_duration_seconds):
+        """Open the answer window using the authoritative phase timestamps."""
+        if self.quiz.current_question_id != question.id:
+            raise ValueError('The prepared estimation question is no longer current.')
+        self.quiz.question_start_time = started_at
+        self.is_question_active = True
+        self.question_end_time = started_at + timezone.timedelta(
+            seconds=answer_duration_seconds,
+        )
+        self.quiz.save(update_fields=['question_start_time', 'updated_at'])
+        self.save(update_fields=[
+            'is_question_active',
+            'question_end_time',
+            'updated_at',
+        ])
     
     def end_current_question(self):
         """End the current active question"""
         self.is_question_active = False
+        self.question_end_time = None
         self.pending_answers = {}
         self.quiz.current_question = None
         self.quiz.question_start_time = None

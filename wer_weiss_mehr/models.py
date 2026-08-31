@@ -257,6 +257,17 @@ class WerWeissMehrSession(SyncBase):
 
     @transaction.atomic
     def start_set(self, question, participants_qs=None, time_limit_seconds=None):
+        prepared_round = self.prepare_set(
+            question,
+            participants_qs=participants_qs,
+            time_limit_seconds=time_limit_seconds,
+        )
+        if not prepared_round:
+            return None
+        return self.open_prepared_round()
+
+    @transaction.atomic
+    def prepare_set(self, question, participants_qs=None, time_limit_seconds=None):
         self.quiz.current_question = question
         self.quiz.save(update_fields=['current_question'])
 
@@ -285,10 +296,17 @@ class WerWeissMehrSession(SyncBase):
         if states:
             WerWeissMehrParticipantState.objects.bulk_create(states, ignore_conflicts=True)
 
-        return self.start_next_round()
+        return self.prepare_next_round()
 
     @transaction.atomic
     def start_next_round(self):
+        prepared_round = self.prepare_next_round()
+        if not prepared_round:
+            return None
+        return self.open_prepared_round()
+
+    @transaction.atomic
+    def prepare_next_round(self):
         question = self.quiz.current_question
         if not question:
             self.phase = self.PHASE_IDLE
@@ -307,11 +325,38 @@ class WerWeissMehrSession(SyncBase):
             return None
 
         self.current_round += 1
+        self.phase = self.PHASE_IDLE
+        self.round_start_time = None
+        self.round_end_time = None
+        self.save(update_fields=['current_round', 'phase', 'round_start_time', 'round_end_time'])
+        return self.current_round
+
+    @transaction.atomic
+    def open_prepared_round(self, started_at=None):
+        question = self.quiz.current_question
+        if not question or self.current_round <= 0:
+            return None
+        if self.phase == self.PHASE_ROUND_ACTIVE:
+            return WerWeissMehrRound.objects.filter(
+                quiz=self.quiz,
+                question=question,
+                round_number=self.current_round,
+            ).first()
+        if self.phase != self.PHASE_IDLE:
+            return None
+        if self.get_active_state_count() <= 0 or self.get_hidden_answer_count() <= 0:
+            self.phase = self.PHASE_SET_COMPLETED
+            self.round_start_time = None
+            self.round_end_time = None
+            self.save(update_fields=['phase', 'round_start_time', 'round_end_time'])
+            self._mark_current_question_completed()
+            return None
+
+        now = started_at or timezone.now()
         self.phase = self.PHASE_ROUND_ACTIVE
-        now = timezone.now()
         self.round_start_time = now
         self.round_end_time = now + timezone.timedelta(seconds=self.time_limit_seconds)
-        self.save(update_fields=['current_round', 'phase', 'round_start_time', 'round_end_time'])
+        self.save(update_fields=['phase', 'round_start_time', 'round_end_time'])
 
         revealed_ids = list(self.revealed_answers.filter(question=question).values_list('id', flat=True))
         round_state, _ = WerWeissMehrRound.objects.update_or_create(
@@ -430,7 +475,7 @@ class WerWeissMehrSession(SyncBase):
         return round_state
 
     @transaction.atomic
-    def finalize_review(self, advance=True):
+    def finalize_review(self, advance=True, open_round=True):
         question = self.quiz.current_question
         if not question or self.phase != self.PHASE_REVIEW:
             return None
@@ -449,7 +494,9 @@ class WerWeissMehrSession(SyncBase):
             self.save(update_fields=['phase', 'round_start_time', 'round_end_time'])
             self._mark_current_question_completed()
             return round_state
-        return self.start_next_round()
+        if open_round:
+            return self.start_next_round()
+        return self.prepare_next_round()
 
     @transaction.atomic
     def finish_current_set(self):
@@ -566,6 +613,7 @@ class WerWeissMehrRoundResponse(SyncBase):
     final_status = models.CharField(max_length=32, choices=STATUS_CHOICES, default=STATUS_WRONG)
     is_correct = models.BooleanField(default=False)
     is_manual_override = models.BooleanField(default=False)
+    time_taken = models.FloatField(default=0)
     submitted_at = models.DateTimeField(auto_now_add=True)
     evaluated_at = models.DateTimeField(null=True, blank=True)
 

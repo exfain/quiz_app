@@ -2,10 +2,19 @@ import json
 
 from channels.db import database_sync_to_async
 from channels.generic.websocket import AsyncWebsocketConsumer
+from django.db import transaction
+from django.utils import timezone
+from django.utils.dateparse import parse_datetime
 
 from games_hub.active_game_guard import resolve_session_game_activation_for_room
+from games_hub.authoritative_consumer import AuthoritativeGameConsumerMixin
+from games_hub.authoritative_state import (
+    open_answering,
+    present_question,
+    reset_question_flow,
+)
 from games_hub.lobby_return_flow import ensure_session_players_ready_for_game_start_for_room
-from games_hub.models import HubGameStep
+from games_hub.models import GameRuntimeState, HubGameStep
 from games_hub.tutorial_runtime import (
     activate_tutorial_runtime,
     force_close_tutorial_runtime,
@@ -23,7 +32,10 @@ from games_hub.unit_tutorial_runtime import (
 from .models import WannWarDasGame, WannWarDasParticipant, WannWarDasQuestion
 
 
-class WannWarDasConsumer(AsyncWebsocketConsumer):
+class WannWarDasConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
+    authoritative_game_key = 'wann_war_das'
+    authoritative_required_actions = frozenset({'participant_submit_answer'})
+
     async def connect(self):
         self.room_code = self.scope['url_route']['kwargs']['room_code']
         self.room_group_name = f'wann_war_das_{self.room_code}'
@@ -46,10 +58,14 @@ class WannWarDasConsumer(AsyncWebsocketConsumer):
             await self.handle_admin_start_game(data)
         elif message_type == 'admin_start_question':
             await self.handle_admin_start_question(data)
+        elif message_type == 'admin_open_answering':
+            await self.handle_admin_open_answering(data)
         elif message_type == 'admin_end_question':
             await self.handle_admin_end_question(data)
         elif message_type == 'admin_end_game':
             await self.handle_admin_end_game(data)
+        elif message_type == 'admin_set_inactive':
+            await self.handle_admin_set_inactive(data)
         elif message_type == 'participant_submit_answer':
             await self.handle_participant_submit_answer(data)
         elif message_type == 'participant_join':
@@ -116,6 +132,12 @@ class WannWarDasConsumer(AsyncWebsocketConsumer):
             validate=False,
         )
         await database_sync_to_async(game.start_quiz)(hub_session)
+        await database_sync_to_async(reset_question_flow)(
+            game_key='wann_war_das',
+            room_code=self.room_code,
+            session_code=hub_session,
+            mode=GameRuntimeState.QUESTION_FLOW_MANUAL_THREE_PHASE,
+        )
         tutorial_payload = await database_sync_to_async(activate_tutorial_runtime)(
             'wann_war_das',
             self.room_code,
@@ -180,14 +202,51 @@ class WannWarDasConsumer(AsyncWebsocketConsumer):
         if not allowed:
             await self.send(text_data=json.dumps({'type': 'error', 'message': 'Diese Frage gehoert nicht zum Spiel.'}))
             return
-        started = await database_sync_to_async(game.start_question)(question, hub_session, is_tutorial_round)
-        if not started:
-            await self.send(text_data=json.dumps({
-                'type': 'error',
-                'message': 'Die Frage konnte fuer diesen Spieldurchlauf nicht gestartet werden.',
-            }))
+        phase_action = dict(data)
+        phase_action['question_id'] = question.id
+        decision = await self.present_wann_war_das_question(
+            game.id,
+            question.id,
+            hub_session,
+            is_tutorial_round,
+            phase_action,
+            question.get_effective_time_limit(),
+        )
+        if not decision.accepted:
+            await self.send_question_phase_rejection(decision, question.id)
             return
         await self.broadcast_state({'type': 'question_started'}, hub_session)
+
+    async def handle_admin_open_answering(self, data):
+        game = await self.get_game()
+        if not game or not game.current_question_id:
+            await self.send(text_data=json.dumps({
+                'type': 'error',
+                'message': 'Es ist keine aktuelle Frage vorhanden.',
+            }))
+            return
+        hub_session = data.get('hub_session') or data.get('hub_session_code') or await self.get_hub_session_code()
+        phase_action = dict(data)
+        phase_action.setdefault('question_id', game.current_question_id)
+        decision = await self.open_wann_war_das_answering(
+            game.id,
+            game.current_question_id,
+            hub_session,
+            phase_action,
+        )
+        if not decision.accepted:
+            await self.send_question_phase_rejection(decision, game.current_question_id)
+            return
+        await self.broadcast_state({'type': 'question_answering_opened'}, hub_session)
+
+    async def send_question_phase_rejection(self, decision, question_id=None):
+        await self.send(text_data=json.dumps({
+            'type': 'action_rejected',
+            'code': decision.code,
+            'message': decision.message,
+            'question_id': question_id,
+            'snapshot': decision.snapshot,
+        }))
 
     async def handle_participant_submit_answer(self, data):
         game = await self.get_game()
@@ -213,7 +272,7 @@ class WannWarDasConsumer(AsyncWebsocketConsumer):
             return
         hub_session = data.get('hub_session') or data.get('hub_session_code') or await self.get_hub_session_code()
         await database_sync_to_async(finish_current_unit_tutorial)('wann_war_das', self.room_code, hub_session)
-        await database_sync_to_async(game.reveal_current_question)()
+        await database_sync_to_async(game.reveal_current_question)(hub_session)
         await self.broadcast_state({'type': 'question_ended'}, hub_session)
 
     async def handle_admin_end_game(self, data):
@@ -225,12 +284,26 @@ class WannWarDasConsumer(AsyncWebsocketConsumer):
         if not ended:
             await self.send_state(data)
             return
+        await database_sync_to_async(reset_question_flow)(
+            game_key='wann_war_das',
+            room_code=self.room_code,
+            session_code=hub_session,
+            mode=GameRuntimeState.QUESTION_FLOW_MANUAL_THREE_PHASE,
+        )
         await self.broadcast_state({'type': 'game_ended'}, hub_session)
         await self.hub_mirror_event('game_ended', {
             'game_key': 'wann_war_das',
             'room_code': self.room_code,
             'title': game.title,
         }, hub_session)
+
+    async def handle_admin_set_inactive(self, data):
+        changed = await self.set_game_inactive()
+        if not changed:
+            await self.send_state(data)
+            return
+        hub_session = data.get('hub_session') or data.get('hub_session_code') or await self.get_hub_session_code()
+        await self.broadcast_state({'type': 'game_inactive'}, hub_session)
 
     async def handle_participant_join(self, data):
         participant_name = (data.get('participant_name') or data.get('name') or '').strip()
@@ -291,6 +364,13 @@ class WannWarDasConsumer(AsyncWebsocketConsumer):
         return WannWarDasGame.objects.filter(room_code=self.room_code).first()
 
     @database_sync_to_async
+    def set_game_inactive(self):
+        return WannWarDasGame.objects.filter(
+            room_code=self.room_code,
+            status='active',
+        ).update(status='inactive', updated_at=timezone.now()) == 1
+
+    @database_sync_to_async
     def get_question(self, question_id):
         if not question_id:
             return None
@@ -300,6 +380,71 @@ class WannWarDasConsumer(AsyncWebsocketConsumer):
     def question_is_selected(self, game_id, question_id):
         game = WannWarDasGame.objects.get(id=game_id)
         return not game.selected_questions.exists() or game.selected_questions.filter(id=question_id).exists()
+
+    @database_sync_to_async
+    @transaction.atomic
+    def present_wann_war_das_question(
+        self,
+        game_id,
+        question_id,
+        hub_session,
+        is_tutorial_round,
+        action,
+        answer_duration_seconds,
+        at=None,
+    ):
+        game = WannWarDasGame.objects.select_for_update().get(id=game_id)
+        question = WannWarDasQuestion.objects.get(id=question_id)
+        decision = present_question(
+            game_key='wann_war_das',
+            room_code=self.room_code,
+            session_code=hub_session,
+            action=action,
+            answer_duration_seconds=answer_duration_seconds,
+            at=at,
+        )
+        if decision.accepted and not decision.duplicate:
+            if not game.prepare_question(question, hub_session, is_tutorial_round):
+                raise ValueError('The Wann war das question could not be prepared.')
+        return decision
+
+    @database_sync_to_async
+    @transaction.atomic
+    def open_wann_war_das_answering(
+        self,
+        game_id,
+        question_id,
+        hub_session,
+        action,
+        at=None,
+    ):
+        game = (
+            WannWarDasGame.objects.select_for_update()
+            .select_related('current_question')
+            .get(id=game_id)
+        )
+        decision = open_answering(
+            game_key='wann_war_das',
+            room_code=self.room_code,
+            session_code=hub_session,
+            action=action,
+            at=at,
+        )
+        if decision.accepted and not decision.duplicate:
+            started_at = parse_datetime(decision.snapshot.get('answering_started_at') or '')
+            deadline = parse_datetime(decision.snapshot.get('answering_deadline_at') or '')
+            if not started_at or not deadline:
+                raise ValueError('Authoritative answering timestamps are missing.')
+            if game.current_question_id != question_id:
+                raise ValueError('The prepared Wann war das question is no longer current.')
+            if not game.open_answering(game.current_question, started_at=started_at):
+                raise ValueError('The Wann war das answer window could not be opened.')
+            expected_deadline = started_at + timezone.timedelta(
+                seconds=game.current_question.get_effective_time_limit(),
+            )
+            if abs((deadline - expected_deadline).total_seconds()) > 0.001:
+                raise ValueError('The authoritative Wann war das deadline is inconsistent.')
+        return decision
 
     @database_sync_to_async
     def is_configured_tutorial_question(self, game_id, question_id):

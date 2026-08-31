@@ -50,7 +50,7 @@ class InterQuestionWaitingSourceTests(unittest.TestCase):
             (
                 "templates/sorting_ladder/play.html",
                 [
-                    ("onQuestionEnded(data) {", "showCorrectAnswer(correctAnswerData) {", ["this.showWaitingForNextQuestion();"]),
+                    ("onQuestionEnded(_data) {", "showCorrectAnswer(correctAnswerData) {", ["this.showWaitingForNextQuestion();"]),
                     ("showCorrectAnswer(correctAnswerData) {", "showWaitingForNextQuestion() {", ["this.showWaitingForNextQuestion();"]),
                 ],
             ),
@@ -104,7 +104,7 @@ class InterQuestionWaitingSourceTests(unittest.TestCase):
             ("templates/estimation/play.html", "onQuestionStarted(question) {", "this.showState('questionState');"),
             ("templates/who_is_lying/play.html", "onQuestionStarted(question) {", "this.showState('questionState');"),
             ("templates/who_is_that/play.html", "onQuestionStarted(question) {", ["this.showState('questionState');", "this.showState(submittedState ? 'answerSubmittedState' : 'questionState');"]),
-            ("templates/sorting_ladder/play.html", "onQuestionEnded(data) {", "this.showState('finalOrderState');"),
+            ("templates/sorting_ladder/play.html", "onShowSolution(data) {", "this.showState('finalOrderState');"),
             ("templates/where_is_this/play.html", "onQuestionStarted(question) {", "this.showState('questionState');"),
             ("templates/clue_rush/play.html", "showCorrectAnswer(correctAnswerData) {", "this.showState('correctAnswerState');"),
             ("templates/assign/play.html", "onShowSolution(data) {", "this.showState('solutionState');"),

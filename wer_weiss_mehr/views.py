@@ -1,5 +1,6 @@
 import json
 import logging
+import uuid
 
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
@@ -10,6 +11,13 @@ from django.utils import timezone
 from django.views.decorators.http import require_POST
 
 from games_hub.active_game_guard import resolve_session_game_activation_for_room
+from games_hub.authoritative_state import (
+    current_snapshot,
+    reset_question_flow,
+    validate_and_reserve_action,
+)
+from games_hub.models import GameRuntimeState
+from games_hub.host_permissions import authorize_game_host
 from games_hub.lobby_return_flow import ensure_session_players_ready_for_game_start_for_room
 from games_hub.tutorial_runtime import (
     activate_tutorial_runtime,
@@ -29,18 +37,46 @@ from .services import (
     apply_manual_correction,
     build_game_state,
     clear_current_set,
-    end_current_round,
-    finish_set,
+    end_current_round_with_question_flow,
+    finish_set_with_question_flow,
+    open_prepared_round,
+    present_next_round,
+    present_set_round,
     prepare_set_start,
     skip_tutorial_set,
-    start_set,
-    start_next_round_after_review,
     store_pending_input,
     submit_answer,
 )
 
 
 logger = logging.getLogger(__name__)
+
+
+def _host_question_action(data, snapshot, question_id):
+    return {
+        'client_action_id': data.get('client_action_id') or str(uuid.uuid4()),
+        'state_revision': data.get('state_revision', snapshot.get('state_revision')),
+        'game_id': data.get('game_id', snapshot.get('game_id')),
+        'question_id': question_id,
+        'round_id': data.get('round_id', snapshot.get('current_round_id')),
+        'set_id': data.get('set_id', snapshot.get('current_set_id')),
+    }
+
+
+def _host_context_error(request, quiz, hub_session):
+    authorization = authorize_game_host(
+        request.user,
+        'wer_weiss_mehr',
+        quiz.room_code,
+        hub_session,
+    )
+    if authorization.allowed:
+        return None
+    return JsonResponse({
+        'success': False,
+        'error': authorization.message,
+        'code': authorization.code,
+    }, status=403)
 
 
 def join_view(request):
@@ -169,6 +205,27 @@ def participant_submit_answer(request, room_code):
     if not participant:
         return JsonResponse({'success': False, 'error': 'Participant not found.'}, status=404)
 
+    decision = validate_and_reserve_action(
+        game_key='wer_weiss_mehr',
+        room_code=room_code,
+        session_code=hub_session,
+        participant_name=participant_name,
+        action_type='participant_submit_answer',
+        action=data,
+    )
+    if not decision.accepted:
+        return JsonResponse({
+            'success': False,
+            'type': 'action_rejected',
+            'code': decision.code,
+            'error': decision.message,
+            'state': build_game_state(
+                quiz,
+                hub_session_code=hub_session,
+                participant_name=participant_name,
+            ),
+        }, status=409)
+
     try:
         submit_answer(quiz, participant, data.get('answer_text') or '')
     except ValueError as exc:
@@ -200,6 +257,9 @@ def start_game(request, room_code):
         return JsonResponse({'success': False, 'error': 'Unauthorized'}, status=403)
 
     hub_session = (data.get('hub_session') or data.get('hub_session_code') or '').strip() or None
+    context_error = _host_context_error(request, quiz, hub_session)
+    if context_error:
+        return context_error
     lobby_ready = ensure_session_players_ready_for_game_start_for_room(
         'wer_weiss_mehr',
         quiz.room_code,
@@ -254,6 +314,12 @@ def start_game(request, room_code):
         validate=False,
     )
     quiz.start_quiz(hub_session_code=hub_session)
+    reset_question_flow(
+        game_key='wer_weiss_mehr',
+        room_code=quiz.room_code,
+        session_code=hub_session,
+        mode=GameRuntimeState.QUESTION_FLOW_MANUAL_THREE_PHASE,
+    )
     tutorial_payload = activate_tutorial_runtime(
         'wer_weiss_mehr',
         quiz.room_code,
@@ -287,6 +353,9 @@ def start_game_set(request, room_code):
         return JsonResponse({'success': False, 'error': 'Set-ID fehlt oder ist ungueltig.'}, status=400)
 
     hub_session = (data.get('hub_session') or data.get('hub_session_code') or '').strip() or None
+    context_error = _host_context_error(request, quiz, hub_session)
+    if context_error:
+        return context_error
     warning = get_tutorial_start_warning('wer_weiss_mehr', quiz.room_code, hub_session)
     if warning and not data.get('force_tutorial_continue'):
         return JsonResponse({
@@ -302,14 +371,25 @@ def start_game_set(request, room_code):
     try:
         unit_tutorial = prepare_set_start(quiz, question_id, hub_session_code=hub_session)
         deactivate_tutorial_runtime('wer_weiss_mehr', quiz.room_code, hub_session, quiz)
-        start_set(
+        snapshot = current_snapshot('wer_weiss_mehr', quiz.room_code, hub_session)
+        decision = present_set_round(
             quiz,
             question_id,
             hub_session_code=hub_session,
             time_limit_seconds=data.get('time_limit_seconds'),
+            action=_host_question_action(data, snapshot, question_id),
         )
     except Exception as exc:  # pylint: disable=broad-except
         return JsonResponse({'success': False, 'error': str(exc)}, status=400)
+
+    if not decision.accepted:
+        return JsonResponse({
+            'success': False,
+            'type': 'action_rejected',
+            'code': decision.code,
+            'error': decision.message,
+            'state': build_game_state(quiz, hub_session_code=hub_session),
+        }, status=409)
 
     quiz.refresh_from_db()
     state_payload = build_game_state(quiz, hub_session_code=hub_session)
@@ -341,6 +421,9 @@ def skip_tutorial_set_view(request, room_code):
         return JsonResponse({'success': False, 'error': 'Das Spiel wurde noch nicht gestartet.'}, status=400)
 
     hub_session = (data.get('hub_session') or data.get('hub_session_code') or '').strip() or None
+    context_error = _host_context_error(request, quiz, hub_session)
+    if context_error:
+        return context_error
     skip_tutorial_set(quiz, hub_session_code=hub_session)
     quiz.refresh_from_db()
     state_payload = build_game_state(quiz, hub_session_code=hub_session)
@@ -367,8 +450,14 @@ def end_round(request, room_code):
         return JsonResponse({'success': False, 'error': 'Unauthorized'}, status=403)
 
     hub_session = (data.get('hub_session') or data.get('hub_session_code') or '').strip() or None
+    context_error = _host_context_error(request, quiz, hub_session)
+    if context_error:
+        return context_error
     try:
-        round_state = end_current_round(quiz)
+        round_state = end_current_round_with_question_flow(
+            quiz,
+            hub_session_code=hub_session,
+        )
     except ValueError as exc:
         return JsonResponse({'success': False, 'error': str(exc)}, status=400)
     except Exception as exc:  # pylint: disable=broad-except
@@ -402,8 +491,16 @@ def next_round(request, room_code):
         return JsonResponse({'success': False, 'error': 'Unauthorized'}, status=403)
 
     hub_session = (data.get('hub_session') or data.get('hub_session_code') or '').strip() or None
+    context_error = _host_context_error(request, quiz, hub_session)
+    if context_error:
+        return context_error
     try:
-        start_next_round_after_review(quiz)
+        snapshot = current_snapshot('wer_weiss_mehr', quiz.room_code, hub_session)
+        decision = present_next_round(
+            quiz,
+            hub_session_code=hub_session,
+            action=_host_question_action(data, snapshot, quiz.current_question_id),
+        )
     except ValueError as exc:
         return JsonResponse({'success': False, 'error': str(exc)}, status=400)
     except Exception as exc:  # pylint: disable=broad-except
@@ -413,6 +510,62 @@ def next_round(request, room_code):
             'error': 'Die naechste Runde konnte nicht gestartet werden.',
             'details': str(exc),
         }, status=500)
+
+    if not decision.accepted:
+        return JsonResponse({
+            'success': False,
+            'type': 'action_rejected',
+            'code': decision.code,
+            'error': decision.message,
+            'state': build_game_state(quiz, hub_session_code=hub_session),
+        }, status=409)
+
+    quiz.refresh_from_db()
+    state_payload = build_game_state(quiz, hub_session_code=hub_session)
+    _broadcast_state_updated(quiz, hub_session)
+    _broadcast_hub_event(quiz, hub_session, 'round_started')
+    return JsonResponse(state_payload)
+
+
+@login_required
+@require_POST
+def open_round(request, room_code):
+    try:
+        data = json.loads(request.body or '{}')
+    except json.JSONDecodeError:
+        return JsonResponse({'success': False, 'error': 'Invalid request format.'}, status=400)
+
+    quiz = get_object_or_404(WerWeissMehrGame, room_code=room_code)
+    if not request.user.is_superuser and quiz.creator != request.user:
+        return JsonResponse({'success': False, 'error': 'Unauthorized'}, status=403)
+    hub_session = (data.get('hub_session') or data.get('hub_session_code') or '').strip() or None
+    context_error = _host_context_error(request, quiz, hub_session)
+    if context_error:
+        return context_error
+    snapshot = current_snapshot('wer_weiss_mehr', quiz.room_code, hub_session)
+    try:
+        decision = open_prepared_round(
+            quiz,
+            hub_session_code=hub_session,
+            action=_host_question_action(data, snapshot, quiz.current_question_id),
+        )
+    except ValueError as exc:
+        return JsonResponse({'success': False, 'error': str(exc)}, status=400)
+    except Exception as exc:  # pylint: disable=broad-except
+        logger.exception('Failed to open Wer weiss mehr round for %s', room_code)
+        return JsonResponse({
+            'success': False,
+            'error': 'Die Runde konnte nicht freigegeben werden.',
+            'details': str(exc),
+        }, status=500)
+    if not decision.accepted:
+        return JsonResponse({
+            'success': False,
+            'type': 'action_rejected',
+            'code': decision.code,
+            'error': decision.message,
+            'state': build_game_state(quiz, hub_session_code=hub_session),
+        }, status=409)
 
     quiz.refresh_from_db()
     state_payload = build_game_state(quiz, hub_session_code=hub_session)
@@ -434,8 +587,11 @@ def finish_current_set(request, room_code):
         return JsonResponse({'success': False, 'error': 'Unauthorized'}, status=403)
 
     hub_session = (data.get('hub_session') or data.get('hub_session_code') or '').strip() or None
+    context_error = _host_context_error(request, quiz, hub_session)
+    if context_error:
+        return context_error
     try:
-        finish_set(quiz)
+        finish_set_with_question_flow(quiz, hub_session_code=hub_session)
         finish_current_unit_tutorial('wer_weiss_mehr', quiz.room_code, hub_session)
     except ValueError as exc:
         return JsonResponse({'success': False, 'error': str(exc)}, status=400)
@@ -467,6 +623,9 @@ def clear_set_selection(request, room_code):
         return JsonResponse({'success': False, 'error': 'Unauthorized'}, status=403)
 
     hub_session = (data.get('hub_session') or data.get('hub_session_code') or '').strip() or None
+    context_error = _host_context_error(request, quiz, hub_session)
+    if context_error:
+        return context_error
     try:
         clear_current_set(quiz)
     except ValueError as exc:
@@ -504,6 +663,9 @@ def apply_correction(request, room_code):
         return JsonResponse({'success': False, 'error': 'Antwort oder Zielantwort fehlt.'}, status=400)
 
     hub_session = (data.get('hub_session') or data.get('hub_session_code') or '').strip() or None
+    context_error = _host_context_error(request, quiz, hub_session)
+    if context_error:
+        return context_error
     try:
         apply_manual_correction(quiz, response_id, target_answer_id, hub_session_code=hub_session)
     except ValueError as exc:
@@ -539,6 +701,9 @@ def end_game(request, room_code):
         return JsonResponse({'success': False, 'error': 'Unauthorized'}, status=403)
 
     hub_session = (data.get('hub_session') or data.get('hub_session_code') or '').strip() or None
+    context_error = _host_context_error(request, quiz, hub_session)
+    if context_error:
+        return context_error
     try:
         deactivate_tutorial_runtime('wer_weiss_mehr', quiz.room_code, hub_session, quiz)
         quiz.end_quiz()

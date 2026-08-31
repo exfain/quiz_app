@@ -8,6 +8,12 @@ from django.core.validators import MinValueValidator
 from django.db import models, transaction
 from django.db.models import Max
 from django.utils import timezone
+from games_hub.authoritative_state import (
+    attach_snapshot_metadata,
+    current_snapshot,
+    finish_question_flow,
+)
+from games_hub.models import GameRuntimeState
 
 from games_website.models import SyncBase
 
@@ -189,7 +195,7 @@ class WannWarDasGame(SyncBase):
             'updated_at',
         ])
 
-    def start_question(self, question, session_code=None, is_tutorial_round=False):
+    def prepare_question(self, question, session_code=None, is_tutorial_round=False):
         if self.status != 'active':
             return False
         if (
@@ -202,8 +208,8 @@ class WannWarDasGame(SyncBase):
         self.current_question_is_tutorial = bool(is_tutorial_round)
         if not is_tutorial_round:
             self.current_question_number = (self.current_question_number or 0) + 1
-        self.question_state = 'active'
-        self.question_started_at = timezone.now()
+        self.question_state = 'ready'
+        self.question_started_at = None
         self.question_ended_at = None
         self.save(update_fields=[
             'current_question',
@@ -216,12 +222,54 @@ class WannWarDasGame(SyncBase):
         ])
         return True
 
-    def reveal_current_question(self):
+    def open_answering(self, question, *, started_at):
+        if (
+            self.status != 'active'
+            or self.current_question_id != question.id
+            or self.question_state not in {'ready', 'active'}
+        ):
+            return False
+        if self.question_state == 'active' and self.question_started_at:
+            return True
+        self.question_state = 'active'
+        self.question_started_at = started_at
+        self.question_ended_at = None
+        self.save(update_fields=[
+            'question_state',
+            'question_started_at',
+            'question_ended_at',
+            'updated_at',
+        ])
+        return True
+
+    def start_question(self, question, session_code=None, is_tutorial_round=False):
+        """Compatibility path for legacy callers that still start immediately."""
+        if not self.prepare_question(question, session_code, is_tutorial_round):
+            return False
+        return self.open_answering(question, started_at=timezone.now())
+
+    def reveal_current_question(self, session_code=None):
         if not self.current_question_id:
             return False
+        question_id = self.current_question_id
         self.question_state = 'revealed'
         self.question_ended_at = timezone.now()
         self.save(update_fields=['question_state', 'question_ended_at', 'updated_at'])
+        session_code = session_code or self.active_hub_session_code or ''
+        phase_snapshot = current_snapshot('wann_war_das', self.room_code, session_code)
+        if (
+            phase_snapshot.get('question_flow_mode')
+            == GameRuntimeState.QUESTION_FLOW_MANUAL_THREE_PHASE
+            and phase_snapshot.get('question_phase')
+            == GameRuntimeState.QUESTION_PHASE_ANSWERING_OPEN
+            and str(phase_snapshot.get('current_question_id') or '') == str(question_id)
+        ):
+            finish_question_flow(
+                game_key='wann_war_das',
+                room_code=self.room_code,
+                session_code=session_code,
+                question_id=question_id,
+            )
         return True
 
     def end_quiz(self, status='completed'):
@@ -258,52 +306,70 @@ class WannWarDasGame(SyncBase):
             qs = qs.filter(hub_session_code=session_code)
         return qs.order_by('name')
 
+    @transaction.atomic
     def submit_answer(self, participant, raw_answer, submitted_at=None):
         submitted_at = submitted_at or timezone.now()
-        if self.status != 'active' or self.question_state != 'active' or not self.current_question_id:
-            return None, 'Die Frage ist nicht aktiv.'
-        if not self.is_official_participant(participant):
+        if participant is None:
             return None, 'Teilnehmer ist nicht spielberechtigt.'
-        if self.question_started_at:
-            elapsed = max(0.0, (submitted_at - self.question_started_at).total_seconds())
-            if elapsed >= self.current_question.get_effective_time_limit():
+        game = (
+            type(self).objects.select_for_update()
+            .select_related('current_question')
+            .get(pk=self.pk)
+        )
+        participant = WannWarDasParticipant.objects.select_for_update().get(
+            pk=participant.pk,
+            quiz=game,
+        )
+        if game.status != 'active' or game.question_state != 'active' or not game.current_question_id:
+            return None, 'Die Frage ist nicht aktiv.'
+        if not game.is_official_participant(participant):
+            return None, 'Teilnehmer ist nicht spielberechtigt.'
+        if game.question_started_at:
+            if submitted_at < game.question_started_at:
+                return None, 'Die Frage ist noch nicht freigegeben.'
+            elapsed = max(0.0, (submitted_at - game.question_started_at).total_seconds())
+            if elapsed >= game.current_question.get_effective_time_limit():
                 return None, 'Die Frage ist bereits beendet.'
-        if self.question_ended_at and submitted_at >= self.question_ended_at:
+        if game.question_ended_at and submitted_at >= game.question_ended_at:
             return None, 'Die Frage ist bereits beendet.'
         existing = WannWarDasAnswer.objects.filter(
-            quiz=self,
+            quiz=game,
             participant=participant,
-            question=self.current_question,
+            question=game.current_question,
             hub_session_code=participant.hub_session_code,
         ).first()
         if existing:
             return existing, 'Antwort wurde bereits abgegeben.'
 
-        evaluation = self.current_question.evaluate_answer(
+        evaluation = game.current_question.evaluate_answer(
             raw_answer,
             submitted_at=submitted_at,
-            started_at=self.question_started_at,
+            started_at=game.question_started_at,
         )
-        if self.current_question_is_tutorial:
+        if game.current_question_is_tutorial:
             evaluation['points_earned'] = 0
 
-        answer = WannWarDasAnswer.objects.create(
-            quiz=self,
+        answer, created = WannWarDasAnswer.objects.get_or_create(
+            quiz=game,
             participant=participant,
-            question=self.current_question,
+            question=game.current_question,
             hub_session_code=participant.hub_session_code,
-            raw_answer='' if raw_answer is None else str(raw_answer).strip(),
-            user_answer=evaluation['user_answer'],
-            is_numeric=evaluation['is_numeric'],
-            absolute_deviation=evaluation['absolute_deviation'],
-            tolerance_at_submit=evaluation['current_tolerance'],
-            step_index=evaluation['step_index'],
-            points_earned=evaluation['points_earned'],
-            is_correct=evaluation['is_correct'],
-            time_taken=evaluation['elapsed_time'],
-            is_tutorial=self.current_question_is_tutorial,
-            submitted_at=submitted_at,
+            defaults={
+                'raw_answer': '' if raw_answer is None else str(raw_answer).strip(),
+                'user_answer': evaluation['user_answer'],
+                'is_numeric': evaluation['is_numeric'],
+                'absolute_deviation': evaluation['absolute_deviation'],
+                'tolerance_at_submit': evaluation['current_tolerance'],
+                'step_index': evaluation['step_index'],
+                'points_earned': evaluation['points_earned'],
+                'is_correct': evaluation['is_correct'],
+                'time_taken': evaluation['elapsed_time'],
+                'is_tutorial': game.current_question_is_tutorial,
+                'submitted_at': submitted_at,
+            },
         )
+        if not created:
+            return answer, 'Antwort wurde bereits abgegeben.'
         participant.calculate_score()
         return answer, None
 
@@ -313,7 +379,7 @@ class WannWarDasGame(SyncBase):
         session_code = session_code or self.active_hub_session_code or ''
         self.ensure_snapshot_participants(session_code or None)
         if session_code and self.active_hub_session_code and session_code != self.active_hub_session_code:
-            return {
+            return attach_snapshot_metadata({
                 'game': {
                     'id': self.id,
                     'title': self.title,
@@ -334,8 +400,13 @@ class WannWarDasGame(SyncBase):
                 'own_answer': None,
                 'can_answer': False,
                 'server_now': timezone.now().isoformat(),
-            }
+            }, game_key='wann_war_das', room_code=self.room_code, session_code=session_code)
         now = timezone.now()
+        question_flow = current_snapshot('wann_war_das', self.room_code, session_code)
+        manual_question_flow = (
+            question_flow.get('question_flow_mode')
+            == GameRuntimeState.QUESTION_FLOW_MANUAL_THREE_PHASE
+        )
         question = self.current_question
         if (
             question
@@ -343,11 +414,20 @@ class WannWarDasGame(SyncBase):
             and self.question_started_at
             and (now - self.question_started_at).total_seconds() >= question.get_effective_time_limit()
         ):
-            self.reveal_current_question()
+            self.reveal_current_question(session_code)
             self.refresh_from_db()
+            question_flow = current_snapshot('wann_war_das', self.room_code, session_code)
             question = self.current_question
         timer = None
-        if question and self.question_started_at and self.question_state == 'active':
+        if (
+            question
+            and self.question_started_at
+            and self.question_state == 'active'
+            and (
+                not manual_question_flow
+                or question_flow.get('answering_allowed')
+            )
+        ):
             timer = question.get_timer_state(self.question_started_at, now)
 
         answers = []
@@ -387,9 +467,13 @@ class WannWarDasGame(SyncBase):
             and self.question_state == 'active'
             and question
             and own_answer is None
+            and (
+                not manual_question_flow
+                or question_flow.get('answering_allowed')
+            )
         )
 
-        return {
+        state = {
             'game': {
                 'id': self.id,
                 'title': self.title,
@@ -411,6 +495,21 @@ class WannWarDasGame(SyncBase):
             'can_answer': can_answer,
             'server_now': now.isoformat(),
         }
+        state['_revision_state'] = {
+            'game': state['game'],
+            'question': state['question'],
+            'question_state': state['question_state'],
+            'question_number': state['question_number'],
+            'participants': state['participants'],
+            'answers': state['answers'],
+            'scorebox': state['scorebox'],
+        }
+        return attach_snapshot_metadata(
+            state,
+            game_key='wann_war_das',
+            room_code=self.room_code,
+            session_code=session_code,
+        )
 
     def build_scorebox(self, session_code=None):
         questions = self.get_ordered_questions(session_code)

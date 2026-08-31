@@ -5,6 +5,7 @@ from django.contrib.auth.models import User
 from django.db import models, transaction
 from django.db.models import Max
 from django.utils import timezone
+from games_hub.authoritative_state import attach_snapshot_metadata
 
 from games_website.models import SyncBase
 
@@ -147,23 +148,31 @@ class BuzzerGame(SyncBase):
             included_in_scoring=True,
         ).exists()
 
+    @transaction.atomic
     def start_quiz(self, session_code=None):
-        session_code = session_code or self.active_hub_session_code or ''
-        self.ensure_snapshot_participants(session_code or None)
+        game = BuzzerGame.objects.select_for_update().get(pk=self.pk)
+        session_code = session_code or game.active_hub_session_code or ''
+        if (
+            game.status == 'active'
+            and game.started_at
+            and game.active_hub_session_code == session_code
+        ):
+            return False
+        game.ensure_snapshot_participants(session_code or None)
         if session_code:
-            self.participants.exclude(hub_session_code=session_code).update(is_active=False)
-            self.participants.filter(hub_session_code=session_code).update(total_score=0, is_active=True)
-        self.status = 'active'
-        self.started_at = timezone.now()
-        self.ended_at = None
-        self.active_hub_session_code = session_code
-        self.current_round = None
-        self.current_round_number = 0
-        self.current_buzz_participant = None
-        self.buzzer_open = False
-        self.round_state = 'ready'
-        self.tutorial_active = False
-        self.save(update_fields=[
+            game.participants.exclude(hub_session_code=session_code).update(is_active=False)
+            game.participants.filter(hub_session_code=session_code).update(total_score=0, is_active=True)
+        game.status = 'active'
+        game.started_at = timezone.now()
+        game.ended_at = None
+        game.active_hub_session_code = session_code
+        game.current_round = None
+        game.current_round_number = 0
+        game.current_buzz_participant = None
+        game.buzzer_open = False
+        game.round_state = 'ready'
+        game.tutorial_active = False
+        game.save(update_fields=[
             'status',
             'started_at',
             'ended_at',
@@ -176,23 +185,28 @@ class BuzzerGame(SyncBase):
             'tutorial_active',
             'updated_at',
         ])
+        self.refresh_from_db()
+        return True
 
+    @transaction.atomic
     def end_quiz(self, status='completed'):
-        if self.status == status and self.ended_at:
+        game = BuzzerGame.objects.select_for_update().get(pk=self.pk)
+        if game.status == status and game.ended_at:
             return False
 
         now = timezone.now()
-        if self.current_round and self.current_round.status not in {'ended', 'answered'}:
-            self.current_round.status = 'ended'
-            self.current_round.buzzer_open = False
-            self.current_round.ended_at = now
-            self.current_round.save(update_fields=['status', 'buzzer_open', 'ended_at', 'updated_at'])
-        self.status = status
-        self.ended_at = now
-        self.buzzer_open = False
-        self.round_state = 'ended'
-        self.current_buzz_participant = None
-        self.save(update_fields=[
+        if game.current_round and game.current_round.status not in {'ended', 'answered'}:
+            round_obj = BuzzerRound.objects.select_for_update().get(pk=game.current_round_id)
+            round_obj.status = 'ended'
+            round_obj.buzzer_open = False
+            round_obj.ended_at = now
+            round_obj.save(update_fields=['status', 'buzzer_open', 'ended_at', 'updated_at'])
+        game.status = status
+        game.ended_at = now
+        game.buzzer_open = False
+        game.round_state = 'ended'
+        game.current_buzz_participant = None
+        game.save(update_fields=[
             'status',
             'ended_at',
             'buzzer_open',
@@ -200,38 +214,39 @@ class BuzzerGame(SyncBase):
             'current_buzz_participant',
             'updated_at',
         ])
+        self.refresh_from_db()
         return True
 
+    @transaction.atomic
     def start_round(self, session_code=None):
-        if self.pk:
-            self.refresh_from_db()
-        session_code = session_code or self.active_hub_session_code or ''
-        if self.status != 'active':
+        game = BuzzerGame.objects.select_for_update().get(pk=self.pk)
+        session_code = session_code or game.active_hub_session_code or ''
+        if game.status != 'active':
             return None
         if (
             session_code
-            and self.active_hub_session_code
-            and session_code != self.active_hub_session_code
+            and game.active_hub_session_code
+            and session_code != game.active_hub_session_code
         ):
             return None
-        if self.current_round_id and self.round_state not in {'answered', 'ended'}:
+        if game.current_round_id and game.round_state not in {'answered', 'ended'}:
             return None
 
-        last_number = self.rounds.filter(hub_session_code=session_code).aggregate(Max('round_number'))['round_number__max'] or 0
+        last_number = game.rounds.filter(hub_session_code=session_code).aggregate(Max('round_number'))['round_number__max'] or 0
         next_number = last_number + 1
         round_obj = BuzzerRound.objects.create(
-            quiz=self,
+            quiz=game,
             hub_session_code=session_code,
             round_number=next_number,
             status='ready',
             started_at=timezone.now(),
         )
-        self.current_round = round_obj
-        self.current_round_number = next_number
-        self.current_buzz_participant = None
-        self.buzzer_open = False
-        self.round_state = 'ready'
-        self.save(update_fields=[
+        game.current_round = round_obj
+        game.current_round_number = next_number
+        game.current_buzz_participant = None
+        game.buzzer_open = False
+        game.round_state = 'ready'
+        game.save(update_fields=[
             'current_round',
             'current_round_number',
             'current_buzz_participant',
@@ -239,6 +254,7 @@ class BuzzerGame(SyncBase):
             'round_state',
             'updated_at',
         ])
+        self.refresh_from_db()
         return round_obj
 
     @transaction.atomic
@@ -383,6 +399,8 @@ class BuzzerGame(SyncBase):
         if not game.current_round_id:
             return False
         round_obj = BuzzerRound.objects.select_for_update().get(pk=game.current_round_id)
+        if round_obj.status in {'answered', 'ended'}:
+            return False
         round_obj.status = 'ended'
         round_obj.buzzer_open = False
         round_obj.ended_at = timezone.now()
@@ -495,7 +513,7 @@ class BuzzerGame(SyncBase):
             and round_obj.status == 'open'
         )
 
-        return {
+        state = {
             'game': {
                 'id': self.id,
                 'title': self.title,
@@ -505,6 +523,7 @@ class BuzzerGame(SyncBase):
                 'planned_rounds': self.planned_rounds,
             },
             'round': {
+                'id': round_obj.id if round_obj else None,
                 'number': round_number,
                 'status': round_state,
                 'buzzer_open': buzzer_open,
@@ -518,6 +537,17 @@ class BuzzerGame(SyncBase):
             'round_results': round_results,
             'can_buzz': round_open_for_participant,
         }
+        state['_revision_state'] = {
+            'game': state['game'],
+            'round': state['round'],
+            'participants': state['participants'],
+        }
+        return attach_snapshot_metadata(
+            state,
+            game_key='buzzer',
+            room_code=self.room_code,
+            session_code=session_code,
+        )
 
 
 class BuzzerParticipant(SyncBase):

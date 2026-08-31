@@ -1,19 +1,29 @@
 import json
+import os
+import uuid
+from datetime import timedelta
 from pathlib import Path
 from unittest.mock import AsyncMock
 
+os.environ.setdefault('DJANGO_ALLOW_ASYNC_UNSAFE', '1')
+
 from asgiref.sync import async_to_sync
+from django.conf import settings
 from django.contrib.auth.models import User
 from django.contrib.staticfiles import finders
-from django.test import TestCase, TransactionTestCase
+from django.test import LiveServerTestCase, TestCase, TransactionTestCase
 from django.urls import reverse
+from django.utils import timezone
+from django.utils.dateparse import parse_datetime
 
 from games_hub.active_game_guard import (
     is_game_routable_for_hub_auto_redirect,
     resolve_session_game_activation,
 )
 from games_hub.check_in import complete_session_check_in, participant_check_in, start_session_check_in
-from games_hub.models import HubGameParticipantSnapshot, HubGameStep, HubParticipant, HubSession
+from games_hub.authoritative_state import reset_question_flow
+from games_hub.models import GameRuntimeState, HubGameParticipantSnapshot, HubGameStep, HubParticipant, HubSession
+from games_hub.playwright_e2e import install_browser_test_stubs, start_chromium_browser
 from games_hub.tutorial_runtime import activate_tutorial_runtime, mark_tutorial_completed
 from games_hub.unit_tutorial_runtime import get_unit_tutorial_state
 from games_hub.views import get_leaderboard_data
@@ -36,10 +46,16 @@ from .services import (
     end_current_round,
     finish_set,
     next_round_or_finish,
+    open_prepared_round,
     start_set,
     store_pending_input,
     submit_answer,
 )
+
+try:
+    from channels.testing import ChannelsLiveServerTestCase as _BrowserTestBase
+except ImportError:
+    _BrowserTestBase = LiveServerTestCase
 
 
 class DummyChannelLayer:
@@ -127,6 +143,7 @@ class WerWeissMehrRuntimeTests(TestCase):
         source = template_path.read_text(encoding='utf-8')
 
         self.assertIn('const correctionDrafts = new Map();', source)
+
         self.assertIn(
             'correctionDrafts.set(Number(select.dataset.responseId), Number(select.value));',
             source,
@@ -146,6 +163,23 @@ class WerWeissMehrRuntimeTests(TestCase):
         self.assertIn('!correctionDrafts.has(responseId)', render_responses)
         self.assertIn('tbody.insertBefore(row, currentRow || null);', render_responses)
         self.assertIn("responsesBox.dataset.correctionEventsBound = 'true';", source)
+
+    def test_manual_round_templates_use_automatic_field_reveal_without_board_button(self):
+        templates_root = Path(__file__).resolve().parents[1] / 'templates'
+        host_source = (
+            templates_root / 'admin_dashboard' / 'wer_weiss_mehr_monitor.html'
+        ).read_text(encoding='utf-8')
+        participant_source = (
+            templates_root / 'wer_weiss_mehr' / 'play.html'
+        ).read_text(encoding='utf-8')
+
+        self.assertIn('FRAGE FREIGEBEN', host_source)
+        self.assertNotIn('ANTWORTTAFEL ANZEIGEN', host_source)
+        self.assertNotIn('reveal_question_content', host_source)
+        self.assertIn('field_reveal_ready_at', host_source)
+        self.assertIn('field_reveal_stagger_ms', participant_source)
+        self.assertIn('tile.presentation_index', participant_source)
+        self.assertIn("latestState?.question_phase === 'answering_open'", participant_source)
 
     def test_vhs_answer_grid_uses_column_flow_and_shared_action_button(self):
         response = self.client.get(
@@ -199,6 +233,35 @@ class WerWeissMehrRuntimeTests(TestCase):
             [tile['id'] for tile in state['question']['tiles']],
             [self.bayern.id, self.saarland.id, self.thueringen.id],
         )
+
+    def test_participant_snapshot_uses_configured_set_number(self):
+        second_question = WerWeissMehrQuestion.objects.create(
+            question_text='Welche Planeten kennst du?',
+            round_time_limit=30,
+            created_by=self.user,
+        )
+        WerWeissMehrAnswerOption.objects.create(
+            question=second_question,
+            canonical_text='Erde',
+        )
+        self.game.selected_questions.add(second_question)
+        self.game.question_order = [self.question.id, second_question.id]
+        self.game.save(update_fields=['question_order'])
+        self.game.start_quiz(hub_session_code='ABC')
+        start_set(
+            self.game,
+            second_question.id,
+            hub_session_code='ABC',
+        )
+        self.game.refresh_from_db()
+
+        state = build_game_state(
+            self.game,
+            hub_session_code='ABC',
+            participant_name=self.p1.name,
+        )
+
+        self.assertEqual(state['current_set_number'], 2)
 
     def test_normalization_accepts_umlauts_and_aliases(self):
         self.assertEqual(normalize_answer_text(' Thüringen '), 'thueringen')
@@ -591,6 +654,68 @@ class WerWeissMehrAdminIntegrationTests(TestCase):
         participant_check_in(session, nickname)
         complete_session_check_in(session)
 
+    def _link_game_to_session(self, game, session):
+        HubGameStep.objects.get_or_create(
+            session=session,
+            game_key='wer_weiss_mehr',
+            room_code=game.room_code,
+            defaults={
+                'order': session.steps.count(),
+                'title': game.title,
+            },
+        )
+
+    def _action_context(self, game, session_code, participant_name=None):
+        state = build_game_state(
+            game,
+            hub_session_code=session_code,
+            participant_name=participant_name,
+        )
+        return {
+            'client_action_id': str(uuid.uuid4()),
+            'state_revision': state['state_revision'],
+            'game_id': state['game_id'],
+            'question_id': state['current_question_id'],
+            'round_id': state['current_round_id'],
+            'set_id': state.get('current_set_id'),
+        }
+
+    def _enable_manual_question_flow(self, game, session_code):
+        return reset_question_flow(
+            game_key='wer_weiss_mehr',
+            room_code=game.room_code,
+            session_code=session_code,
+            mode=GameRuntimeState.QUESTION_FLOW_MANUAL_THREE_PHASE,
+        )
+
+    def _open_presented_round(self, game, session_code):
+        game.refresh_from_db()
+        state = build_game_state(game, hub_session_code=session_code)
+        ready_at = parse_datetime(state['field_reveal_ready_at'])
+        presented_at = parse_datetime(state['question_presented_at'])
+        self.assertIsNotNone(ready_at)
+        self.assertIsNotNone(presented_at)
+        runtime = GameRuntimeState.objects.get(
+            game_key='wer_weiss_mehr',
+            room_code=game.room_code,
+            session__code=session_code,
+        )
+        runtime.question_presented_at = timezone.now() - (ready_at - presented_at) - timedelta(milliseconds=10)
+        runtime.save(update_fields=['question_presented_at', 'updated_at'])
+        action_context = self._action_context(game, session_code)
+        self.assertEqual(str(action_context['set_id']), str(game.current_question_id))
+        response = self.client.post(
+            reverse('admin_dashboard:open_wer_weiss_mehr_round', args=[game.room_code]),
+            data=json.dumps({
+                'hub_session': session_code,
+                **action_context,
+            }),
+            content_type='application/json',
+        )
+        if response.status_code != 200:
+            self.fail(response.json())
+        return response
+
     def _create_tutorial_set_game(self, session_code='WWMTSET'):
         game = WerWeissMehrGame.objects.create(
             title='Tutorial Flow',
@@ -757,6 +882,7 @@ class WerWeissMehrAdminIntegrationTests(TestCase):
             hub_session_code=session.code,
         )
         game.start_quiz()
+        self._enable_manual_question_flow(game, session.code)
 
         response = self.client.post(
             f'/wer-weiss-mehr/start-set/{game.room_code}/',
@@ -771,11 +897,15 @@ class WerWeissMehrAdminIntegrationTests(TestCase):
         self.assertEqual(response.status_code, 200)
         payload = response.json()
         self.assertTrue(payload['success'])
-        self.assertEqual(payload['phase'], WerWeissMehrSession.PHASE_ROUND_ACTIVE)
+        self.assertEqual(payload['phase'], WerWeissMehrSession.PHASE_IDLE)
+        self.assertEqual(payload['question_phase'], GameRuntimeState.QUESTION_PHASE_PROMPT_VISIBLE)
         self.assertEqual(payload['current_round'], 1)
+        self.assertIsNone(payload['answering_deadline_at'])
+        self.assertIsNone(payload['timer']['ends_at'])
         self.assertEqual(payload['question']['id'], question.id)
         self.assertEqual(payload['question']['answer_count'], 2)
         self.assertEqual([tile['text'] for tile in payload['question']['tiles']], ['Bayern', 'Saarland'])
+        self.assertEqual([tile['presentation_index'] for tile in payload['question']['tiles']], [0, 1])
         self.assertFalse(any(tile['revealed'] for tile in payload['question']['tiles']))
         self.assertEqual(
             sorted(answer['text'] for answer in payload['target_answers']),
@@ -786,9 +916,9 @@ class WerWeissMehrAdminIntegrationTests(TestCase):
         runtime_session.refresh_from_db()
         game.refresh_from_db()
         self.assertEqual(game.current_question_id, question.id)
-        self.assertEqual(runtime_session.phase, WerWeissMehrSession.PHASE_ROUND_ACTIVE)
+        self.assertEqual(runtime_session.phase, WerWeissMehrSession.PHASE_IDLE)
         self.assertEqual(runtime_session.current_round, 1)
-        self.assertIsNotNone(runtime_session.round_end_time)
+        self.assertIsNone(runtime_session.round_end_time)
 
         participant_payload = build_game_state(
             game,
@@ -796,11 +926,83 @@ class WerWeissMehrAdminIntegrationTests(TestCase):
             participant_name='Lisa',
         )
         participant_state = participant_payload['participant_state']
-        self.assertTrue(participant_state['can_answer'])
+        self.assertFalse(participant_state['can_answer'])
         self.assertEqual(participant_payload['available_questions'], [])
         self.assertEqual(participant_payload['target_answers'], [])
         self.assertEqual(participant_payload['responses'], [])
         self.assertTrue(all(tile['text'] == '' for tile in participant_payload['question']['tiles']))
+
+        early_submit = self.client.post(
+            reverse('wer_weiss_mehr:participant_submit_answer', args=[game.room_code]),
+            data=json.dumps({
+                'participant_name': 'Lisa',
+                'hub_session': session.code,
+                'answer_text': 'Bayern',
+                **self._action_context(game, session.code, 'Lisa'),
+            }),
+            content_type='application/json',
+        )
+        self.assertEqual(early_submit.status_code, 409)
+        self.assertEqual(early_submit.json()['code'], 'invalid_phase')
+        self.assertFalse(WerWeissMehrRoundResponse.objects.exists())
+
+        early_state = build_game_state(game, hub_session_code=session.code)
+        early_decision = open_prepared_round(
+            game,
+            hub_session_code=session.code,
+            action={
+                'client_action_id': str(uuid.uuid4()),
+                'state_revision': early_state['state_revision'],
+                'game_id': early_state['game_id'],
+                'question_id': early_state['current_question_id'],
+                'round_id': early_state['current_round_id'],
+                'set_id': early_state['current_set_id'],
+            },
+            at=parse_datetime(early_state['question_presented_at']),
+        )
+        self.assertFalse(early_decision.accepted)
+        self.assertEqual(early_decision.code, 'content_reveal_incomplete')
+
+        open_response = self._open_presented_round(game, session.code)
+        self.assertEqual(open_response.status_code, 200)
+        open_payload = open_response.json()
+        self.assertEqual(open_payload['phase'], WerWeissMehrSession.PHASE_ROUND_ACTIVE)
+        self.assertEqual(open_payload['question_phase'], GameRuntimeState.QUESTION_PHASE_ANSWERING_OPEN)
+        self.assertIsNotNone(open_payload['answering_deadline_at'])
+        open_participant_state = build_game_state(
+            game,
+            hub_session_code=session.code,
+            participant_name='Lisa',
+        )
+        self.assertTrue(open_participant_state['participant_state']['can_answer'])
+        runtime_session.refresh_from_db()
+        self.assertIsNotNone(runtime_session.round_end_time)
+
+        first_deadline = runtime_session.round_end_time
+        duplicate_open = self.client.post(
+            reverse('admin_dashboard:open_wer_weiss_mehr_round', args=[game.room_code]),
+            data=json.dumps({
+                'hub_session': session.code,
+                **self._action_context(game, session.code),
+            }),
+            content_type='application/json',
+        )
+        self.assertEqual(duplicate_open.status_code, 200)
+        runtime_session.refresh_from_db()
+        self.assertEqual(runtime_session.round_end_time, first_deadline)
+
+        accepted_submit = self.client.post(
+            reverse('wer_weiss_mehr:participant_submit_answer', args=[game.room_code]),
+            data=json.dumps({
+                'participant_name': 'Lisa',
+                'hub_session': session.code,
+                'answer_text': 'Bayern',
+                **self._action_context(game, session.code, 'Lisa'),
+            }),
+            content_type='application/json',
+        )
+        self.assertEqual(accepted_submit.status_code, 200)
+        self.assertEqual(WerWeissMehrRoundResponse.objects.count(), 1)
 
     def test_tutorial_set_is_visible_and_regular_sets_locked_until_completed(self):
         game, session, tutorial, normal = self._create_tutorial_set_game('WWMTVIS')
@@ -898,6 +1100,8 @@ class WerWeissMehrAdminIntegrationTests(TestCase):
             }),
             content_type='application/json',
         )
+        open_response = self._open_presented_round(game, session.code)
+        self.assertEqual(open_response.status_code, 200)
         submit_answer(game, participant, 'falsch')
         response = WerWeissMehrRoundResponse.objects.get(
             quiz=game,
@@ -1095,6 +1299,7 @@ class WerWeissMehrAdminIntegrationTests(TestCase):
         question.recalculate_answer_sort_order()
         game.selected_questions.add(question)
         session = HubSession.objects.create(code='WWMCORR', name='Correction')
+        self._link_game_to_session(game, session)
         participant = WerWeissMehrParticipant.objects.create(
             quiz=game,
             name='Lisa',
@@ -1172,6 +1377,7 @@ class WerWeissMehrAdminIntegrationTests(TestCase):
         question.recalculate_answer_sort_order()
         game.selected_questions.add(question)
         session = HubSession.objects.create(code='WWMLIVECORR', name='Live Correction')
+        self._link_game_to_session(game, session)
         participant = WerWeissMehrParticipant.objects.create(
             quiz=game,
             name='Lisa',
@@ -1236,10 +1442,26 @@ class WerWeissMehrAdminIntegrationTests(TestCase):
         lisa = WerWeissMehrParticipant.objects.create(quiz=game, name='Lisa', hub_session_code=session.code)
         max_player = WerWeissMehrParticipant.objects.create(quiz=game, name='Max', hub_session_code=session.code)
         game.start_quiz()
-        start_set(game, question.id, hub_session_code=session.code, time_limit_seconds=30)
+        self._enable_manual_question_flow(game, session.code)
+        start_response = self.client.post(
+            reverse('wer_weiss_mehr:start_game_set', args=[game.room_code]),
+            data=json.dumps({
+                'hub_session': session.code,
+                'question_id': question.id,
+                'time_limit_seconds': 30,
+            }),
+            content_type='application/json',
+        )
+        self.assertEqual(start_response.status_code, 200)
+        self.assertEqual(self._open_presented_round(game, session.code).status_code, 200)
         submit_answer(game, lisa, 'Bayern')
         submit_answer(game, max_player, 'Falsch')
-        end_current_round(game)
+        end_response = self.client.post(
+            reverse('admin_dashboard:end_wer_weiss_mehr_round', args=[game.room_code]),
+            data=json.dumps({'hub_session': session.code}),
+            content_type='application/json',
+        )
+        self.assertEqual(end_response.status_code, 200)
 
         review_state = build_game_state(game, hub_session_code=session.code)
         self.assertEqual(review_state['phase'], WerWeissMehrSession.PHASE_REVIEW)
@@ -1254,14 +1476,24 @@ class WerWeissMehrAdminIntegrationTests(TestCase):
         self.assertEqual(response.status_code, 200)
         payload = response.json()
         self.assertTrue(payload['success'])
-        self.assertEqual(payload['phase'], WerWeissMehrSession.PHASE_ROUND_ACTIVE)
+        self.assertEqual(payload['phase'], WerWeissMehrSession.PHASE_IDLE)
+        self.assertEqual(payload['question_phase'], GameRuntimeState.QUESTION_PHASE_PROMPT_VISIBLE)
         self.assertEqual(payload['current_round'], 2)
+        self.assertIsNone(payload['timer']['ends_at'])
         self.assertTrue(any(tile['id'] == bayern.id and tile['revealed'] for tile in payload['question']['tiles']))
+        self.assertTrue(all(tile['presentation_index'] is None for tile in payload['question']['tiles']))
         self.assertFalse(any(item['answer_text'] == 'Bayern' for item in payload['responses']))
         participants = {item['name']: item for item in payload['participants']}
         self.assertFalse(participants['Lisa']['is_eliminated'])
         self.assertTrue(participants['Max']['is_eliminated'])
 
+        lisa_state = build_game_state(game, hub_session_code=session.code, participant_name='Lisa')
+        max_state = build_game_state(game, hub_session_code=session.code, participant_name='Max')
+        self.assertFalse(lisa_state['participant_state']['can_answer'])
+        self.assertFalse(max_state['participant_state']['can_answer'])
+
+        open_response = self._open_presented_round(game, session.code)
+        self.assertEqual(open_response.status_code, 200)
         lisa_state = build_game_state(game, hub_session_code=session.code, participant_name='Lisa')
         max_state = build_game_state(game, hub_session_code=session.code, participant_name='Max')
         self.assertTrue(lisa_state['participant_state']['can_answer'])
@@ -1278,6 +1510,7 @@ class WerWeissMehrAdminIntegrationTests(TestCase):
         WerWeissMehrAnswerOption.objects.create(question=question, canonical_text='Bayern')
         game.selected_questions.add(question)
         session = HubSession.objects.create(code='WWMNONEXT', name='No Next Round')
+        self._link_game_to_session(game, session)
         participant = WerWeissMehrParticipant.objects.create(quiz=game, name='Lisa', hub_session_code=session.code)
         game.start_quiz()
         start_set(game, question.id, hub_session_code=session.code, time_limit_seconds=30)
@@ -1309,6 +1542,7 @@ class WerWeissMehrAdminIntegrationTests(TestCase):
         question.recalculate_answer_sort_order()
         game.selected_questions.add(question)
         session = HubSession.objects.create(code='WWMFINISH', name='Finish Review')
+        self._link_game_to_session(game, session)
         lisa = WerWeissMehrParticipant.objects.create(quiz=game, name='Lisa', hub_session_code=session.code)
         max_player = WerWeissMehrParticipant.objects.create(quiz=game, name='Max', hub_session_code=session.code)
         game.start_quiz()
@@ -1354,6 +1588,69 @@ class WerWeissMehrAdminIntegrationTests(TestCase):
         self.assertEqual(participant_payload['phase'], WerWeissMehrSession.PHASE_SET_COMPLETED)
         self.assertFalse(participant_payload['participant_state']['can_answer'])
 
+    def test_finish_set_during_presentation_does_not_block_the_next_set(self):
+        game = WerWeissMehrGame.objects.create(
+            title='Finish Presentation',
+            creator=self.user,
+            status='waiting',
+        )
+        WerWeissMehrSession.objects.create(quiz=game)
+        first_question = WerWeissMehrQuestion.objects.create(
+            question_text='Erstes Set',
+            round_time_limit=30,
+            created_by=self.user,
+        )
+        second_question = WerWeissMehrQuestion.objects.create(
+            question_text='Zweites Set',
+            round_time_limit=30,
+            created_by=self.user,
+        )
+        WerWeissMehrAnswerOption.objects.create(question=first_question, canonical_text='Eins')
+        WerWeissMehrAnswerOption.objects.create(question=second_question, canonical_text='Zwei')
+        first_question.recalculate_answer_sort_order()
+        second_question.recalculate_answer_sort_order()
+        game.selected_questions.add(first_question, second_question)
+        session = HubSession.objects.create(code='WWMFINPROMPT', name='Finish Presentation')
+        self._link_game_to_session(game, session)
+        game.start_quiz()
+        self._enable_manual_question_flow(game, session.code)
+
+        start_response = self.client.post(
+            reverse('wer_weiss_mehr:start_game_set', args=[game.room_code]),
+            data=json.dumps({'hub_session': session.code, 'question_id': first_question.id}),
+            content_type='application/json',
+        )
+        self.assertEqual(start_response.status_code, 200)
+        self.assertEqual(
+            start_response.json()['question_phase'],
+            GameRuntimeState.QUESTION_PHASE_PROMPT_VISIBLE,
+        )
+
+        finish_response = self.client.post(
+            reverse('admin_dashboard:finish_wer_weiss_mehr_set', args=[game.room_code]),
+            data=json.dumps({'hub_session': session.code}),
+            content_type='application/json',
+        )
+        self.assertEqual(finish_response.status_code, 200)
+        self.assertFalse(finish_response.json()['question_phase'])
+        clear_response = self.client.post(
+            reverse('admin_dashboard:clear_wer_weiss_mehr_set', args=[game.room_code]),
+            data=json.dumps({'hub_session': session.code}),
+            content_type='application/json',
+        )
+        self.assertEqual(clear_response.status_code, 200)
+
+        next_response = self.client.post(
+            reverse('wer_weiss_mehr:start_game_set', args=[game.room_code]),
+            data=json.dumps({'hub_session': session.code, 'question_id': second_question.id}),
+            content_type='application/json',
+        )
+        self.assertEqual(next_response.status_code, 200, next_response.json())
+        self.assertEqual(
+            next_response.json()['question_phase'],
+            GameRuntimeState.QUESTION_PHASE_PROMPT_VISIBLE,
+        )
+
     def test_clear_set_endpoint_returns_host_to_set_selection_without_resetting_scores(self):
         game = WerWeissMehrGame.objects.create(title='Clear Set', creator=self.user, status='waiting')
         WerWeissMehrSession.objects.create(quiz=game)
@@ -1375,6 +1672,7 @@ class WerWeissMehrAdminIntegrationTests(TestCase):
         game.question_order = [first_question.id, second_question.id]
         game.save(update_fields=['question_order'])
         session = HubSession.objects.create(code='WWMCLEAR', name='Clear Set')
+        self._link_game_to_session(game, session)
         participant = WerWeissMehrParticipant.objects.create(
             quiz=game,
             name='Lisa',
@@ -1424,6 +1722,7 @@ class WerWeissMehrAdminIntegrationTests(TestCase):
         question.recalculate_answer_sort_order()
         game.selected_questions.add(question)
         session = HubSession.objects.create(code='WWMFINACT', name='Finish Active')
+        self._link_game_to_session(game, session)
         lisa = WerWeissMehrParticipant.objects.create(quiz=game, name='Lisa', hub_session_code=session.code)
         max_player = WerWeissMehrParticipant.objects.create(quiz=game, name='Max', hub_session_code=session.code)
         tom = WerWeissMehrParticipant.objects.create(quiz=game, name='Tom', hub_session_code=session.code)
@@ -1658,6 +1957,7 @@ class WerWeissMehrAdminIntegrationTests(TestCase):
                 'participant_name': 'Lisa',
                 'hub_session': session.code,
                 'answer_text': 'Bayern',
+                **self._action_context(game, session.code, 'Lisa'),
             }),
             content_type='application/json',
         )
@@ -1790,7 +2090,7 @@ class WerWeissMehrAdminIntegrationTests(TestCase):
                 }),
                 content_type='application/json',
             )
-            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.status_code, 200, response.json())
             self.assertTrue(response.json()['success'])
         participants = {
             participant.name: participant
@@ -1804,13 +2104,20 @@ class WerWeissMehrAdminIntegrationTests(TestCase):
         )
         self.assertEqual(response.status_code, 200)
         set_payload = response.json()
-        self.assertEqual(set_payload['phase'], WerWeissMehrSession.PHASE_ROUND_ACTIVE)
+        self.assertEqual(set_payload['phase'], WerWeissMehrSession.PHASE_IDLE)
+        self.assertEqual(set_payload['question_phase'], GameRuntimeState.QUESTION_PHASE_PROMPT_VISIBLE)
         self.assertEqual(set_payload['current_round'], 1)
+        self.assertIsNone(set_payload['answering_deadline_at'])
         self.assertEqual([tile['text'] for tile in set_payload['question']['tiles']], ['Bayern', 'Hamburg', 'Hessen', 'Saarland', 'Thueringen'])
         game.refresh_from_db()
         anna_state = build_game_state(game, hub_session_code=session.code, participant_name='Anna')
         self.assertEqual([tile['text'] for tile in anna_state['question']['tiles']], ['', '', '', '', ''])
         self.assertFalse(any(tile['revealed'] for tile in anna_state['question']['tiles']))
+        self.assertFalse(anna_state['participant_state']['can_answer'])
+
+        open_response = self._open_presented_round(game, session.code)
+        self.assertEqual(open_response.status_code, 200)
+        self.assertEqual(open_response.json()['question_phase'], GameRuntimeState.QUESTION_PHASE_ANSWERING_OPEN)
 
         submissions = {
             'Anna': 'Bayern',
@@ -1824,10 +2131,11 @@ class WerWeissMehrAdminIntegrationTests(TestCase):
                     'participant_name': nickname,
                     'hub_session': session.code,
                     'answer_text': answer_text,
+                    **self._action_context(game, session.code, nickname),
                 }),
                 content_type='application/json',
             )
-            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.status_code, 200, response.json())
             self.assertTrue(response.json()['success'])
 
         game.refresh_from_db()
@@ -1909,8 +2217,19 @@ class WerWeissMehrAdminIntegrationTests(TestCase):
         )
         self.assertEqual(response.status_code, 200)
         round_two_payload = response.json()
-        self.assertEqual(round_two_payload['phase'], WerWeissMehrSession.PHASE_ROUND_ACTIVE)
+        self.assertEqual(round_two_payload['phase'], WerWeissMehrSession.PHASE_IDLE)
+        self.assertEqual(round_two_payload['question_phase'], GameRuntimeState.QUESTION_PHASE_PROMPT_VISIBLE)
         self.assertEqual(round_two_payload['current_round'], 2)
+        self.assertIsNone(round_two_payload['timer']['ends_at'])
+        self.assertTrue(any(
+            tile['id'] == answers['Bayern'].id and tile['revealed']
+            for tile in round_two_payload['question']['tiles']
+        ))
+        self.assertTrue(all(
+            tile['presentation_index'] is None
+            for tile in round_two_payload['question']['tiles']
+        ))
+        self.assertEqual(self._open_presented_round(game, session.code).status_code, 200)
         game.refresh_from_db()
         self.assertTrue(build_game_state(game, hub_session_code=session.code, participant_name='Anna')['participant_state']['can_answer'])
         self.assertFalse(build_game_state(game, hub_session_code=session.code, participant_name='Ben')['participant_state']['can_answer'])
@@ -1922,6 +2241,7 @@ class WerWeissMehrAdminIntegrationTests(TestCase):
                 'participant_name': 'Ben',
                 'hub_session': session.code,
                 'answer_text': 'Hamburg',
+                **self._action_context(game, session.code, 'Ben'),
             }),
             content_type='application/json',
         )
@@ -1997,3 +2317,286 @@ class WerWeissMehrAdminIntegrationTests(TestCase):
         self.assertEqual(play_response.status_code, 200)
         self.assertContains(play_response, 'id="lobbyActions"', html=False)
         self.assertContains(play_response, "endedStatuses.includes(state?.game_status)", html=False)
+
+
+class WerWeissMehrQuestionPhaseBrowserTests(_BrowserTestBase):
+    @staticmethod
+    def _stop_live_connections(page):
+        page.evaluate(
+            """() => {
+                if (typeof pollTimer !== 'undefined' && pollTimer) {
+                    clearInterval(pollTimer);
+                    pollTimer = null;
+                }
+                if (typeof liveResponsePollTimer !== 'undefined' && liveResponsePollTimer) {
+                    clearInterval(liveResponsePollTimer);
+                    liveResponsePollTimer = null;
+                }
+                if (typeof reconnectTimer !== 'undefined' && reconnectTimer) {
+                    clearTimeout(reconnectTimer);
+                    reconnectTimer = null;
+                }
+                if (typeof ws !== 'undefined' && ws) {
+                    ws.onclose = null;
+                    ws.onerror = null;
+                    ws.close();
+                    ws = null;
+                }
+                if (typeof hubWs !== 'undefined' && hubWs) {
+                    hubWs.onclose = null;
+                    hubWs.close();
+                    hubWs = null;
+                }
+                if (typeof connectSocket === 'function') connectSocket = () => {};
+                if (typeof connectHubSocket === 'function') connectHubSocket = () => {};
+            }"""
+        )
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        try:
+            cls._playwright, cls._browser = start_chromium_browser(headless=True)
+            cls._playwright_error = None
+        except Exception as exc:  # pragma: no cover - environment dependent
+            cls._playwright = None
+            cls._browser = None
+            cls._playwright_error = exc
+
+    @classmethod
+    def tearDownClass(cls):
+        if cls._browser:
+            cls._browser.close()
+            cls._playwright.stop()
+        super().tearDownClass()
+
+    def setUp(self):
+        if not self._browser:
+            self.skipTest(f'Playwright/Chromium nicht verfuegbar: {self._playwright_error}')
+
+        self.admin = User.objects.create_superuser(
+            username='wwm-browser-admin',
+            password='testpass123',
+            email='',
+        )
+        self.client.force_login(self.admin)
+        self.hub_session = HubSession.objects.create(
+            code='WWMBROWSER',
+            name='WWM Browser',
+            is_active=True,
+            started_at=timezone.now(),
+        )
+        self.game = WerWeissMehrGame.objects.create(
+            title='WWM Browser Flow',
+            creator=self.admin,
+            status='waiting',
+        )
+        WerWeissMehrSession.objects.create(quiz=self.game)
+        self.question = WerWeissMehrQuestion.objects.create(
+            question_text='Nenne fuenf Planeten',
+            round_time_limit=30,
+            created_by=self.admin,
+        )
+        for answer in ('Erde', 'Jupiter', 'Mars', 'Merkur', 'Venus'):
+            WerWeissMehrAnswerOption.objects.create(
+                question=self.question,
+                canonical_text=answer,
+            )
+        self.question.recalculate_answer_sort_order()
+        self.game.selected_questions.add(self.question)
+        self.game.question_order = [self.question.id]
+        self.game.save(update_fields=['question_order'])
+        HubGameStep.objects.create(
+            session=self.hub_session,
+            order=0,
+            game_key='wer_weiss_mehr',
+            room_code=self.game.room_code,
+            title=self.game.title,
+        )
+        for name in ('Anna', 'Ben'):
+            WerWeissMehrParticipant.objects.create(
+                quiz=self.game,
+                name=name,
+                hub_session_code=self.hub_session.code,
+            )
+        self.game.start_quiz(hub_session_code=self.hub_session.code)
+        reset_question_flow(
+            game_key='wer_weiss_mehr',
+            room_code=self.game.room_code,
+            session_code=self.hub_session.code,
+            mode=GameRuntimeState.QUESTION_FLOW_MANUAL_THREE_PHASE,
+        )
+
+        self.admin_context = self._browser.new_context(viewport={'width': 1366, 'height': 768})
+        install_browser_test_stubs(self.admin_context)
+        session_cookie = self.client.cookies[settings.SESSION_COOKIE_NAME]
+        self.admin_context.add_cookies([{
+            'name': settings.SESSION_COOKIE_NAME,
+            'value': session_cookie.value,
+            'url': self.live_server_url,
+        }])
+        self.admin_page = self.admin_context.new_page()
+
+        self.participant_contexts = []
+        self.participant_pages = []
+        for name, viewport in (
+            ('Anna', {'width': 390, 'height': 844}),
+            ('Ben', {'width': 1366, 'height': 768}),
+        ):
+            context = self._browser.new_context(viewport=viewport)
+            install_browser_test_stubs(context)
+            context.add_init_script("localStorage.setItem('participant_interface_theme', 'vhs');")
+            page = context.new_page()
+            page.goto(
+                f'{self.live_server_url}'
+                f'{reverse("wer_weiss_mehr:play", args=[self.game.room_code, name])}'
+                f'?hub_session={self.hub_session.code}'
+            )
+            page.wait_for_selector('#answerInput', state='attached')
+            page.wait_for_function('latestState !== null')
+            self._stop_live_connections(page)
+            page.evaluate(
+                """() => {
+                    window.__wwmRevealOrder = [];
+                    const seen = new Set();
+                    const tiles = document.getElementById('tiles');
+                    const scan = () => {
+                        tiles.querySelectorAll('.tile:not(.wwm-tile-presentation-pending)').forEach(tile => {
+                            if (tile.dataset.presentationIndex === '') return;
+                            const position = Number(tile.dataset.tilePosition);
+                            if (seen.has(position)) return;
+                            seen.add(position);
+                            window.__wwmRevealOrder.push({position, at: performance.now()});
+                        });
+                    };
+                    new MutationObserver(scan).observe(tiles, {
+                        childList: true,
+                        subtree: true,
+                        attributes: true,
+                        attributeFilter: ['class'],
+                    });
+                    scan();
+                }"""
+            )
+            self.participant_contexts.append(context)
+            self.participant_pages.append(page)
+
+    def tearDown(self):
+        for page in [getattr(self, 'admin_page', None), *getattr(self, 'participant_pages', [])]:
+            if not page:
+                continue
+            try:
+                self._stop_live_connections(page)
+            except Exception:
+                pass
+            try:
+                page.close()
+            except Exception:
+                pass
+        for context in [getattr(self, 'admin_context', None), *getattr(self, 'participant_contexts', [])]:
+            if not context:
+                continue
+            try:
+                context.close()
+            except Exception:
+                pass
+
+    def test_two_participants_receive_ordered_fields_before_host_opens_answering(self):
+        monitor_url = reverse(
+            'admin_dashboard:wer_weiss_mehr_monitor',
+            args=[self.game.room_code],
+        )
+        self.admin_page.goto(f'{self.live_server_url}{monitor_url}?hub_session={self.hub_session.code}')
+        self.admin_page.wait_for_selector('.start-set-btn')
+        self.admin_page.wait_for_function('state !== null')
+        self._stop_live_connections(self.admin_page)
+        self.assertEqual(self.admin_page.get_by_text('ANTWORTTAFEL ANZEIGEN').count(), 0)
+        self.admin_page.locator('.start-set-btn').first.click()
+        self.admin_page.wait_for_selector('#openRoundBtn')
+        self.assertTrue(self.admin_page.locator('#openRoundBtn').is_disabled())
+        runtime = GameRuntimeState.objects.get(
+            game_key='wer_weiss_mehr',
+            room_code=self.game.room_code,
+            session__code=self.hub_session.code,
+        )
+        runtime.question_presented_at = timezone.now()
+        runtime.save(update_fields=['question_presented_at', 'updated_at'])
+
+        pending_counts = []
+        for page in self.participant_pages:
+            page.evaluate('fetchState()')
+            page.wait_for_selector('.tile')
+            pending_count = page.locator('.wwm-tile-presentation-pending').count()
+            pending_counts.append(pending_count)
+            self.assertTrue(page.locator('#answerArea').evaluate(
+                "element => element.classList.contains('d-none')"
+            ))
+            page.wait_for_function('window.__wwmRevealOrder.length === 5', timeout=10_000)
+            reveal_order = page.evaluate('window.__wwmRevealOrder.map(item => item.position)')
+            self.assertEqual(reveal_order, [1, 2, 3, 4, 5])
+            self.assertFalse(page.locator('#questionText').evaluate(
+                "element => element.classList.contains('wwm-question-presentation-pending')"
+            ))
+            self.assertTrue(page.locator('#answerInput').is_disabled())
+            self.assertTrue(page.locator('#timerBox').evaluate(
+                "element => element.classList.contains('d-none')"
+            ))
+        self.assertGreater(max(pending_counts), 0)
+
+        self.admin_page.wait_for_function(
+            "!document.getElementById('openRoundBtn').disabled",
+            timeout=10_000,
+        )
+        self.admin_page.locator('#openRoundBtn').click()
+        self.admin_page.wait_for_function("state?.question_phase === 'answering_open'")
+
+        for page in self.participant_pages:
+            page.evaluate('fetchState()')
+            page.wait_for_function(
+                "!document.getElementById('answerInput').disabled",
+                timeout=10_000,
+            )
+            self.assertEqual(page.locator('.wwm-tile-presentation-pending').count(), 0)
+            self.assertFalse(page.locator('#timerBox').evaluate(
+                "element => element.classList.contains('d-none')"
+            ))
+
+        typing_page = self.participant_pages[1]
+        typing_page.reload()
+        typing_page.wait_for_function(
+            "latestState?.phase === 'round_active' && !document.getElementById('answerInput').disabled",
+            timeout=10_000,
+        )
+        typing_input = typing_page.locator('#answerInput')
+        typing_input.click()
+        expected_text = ''
+        for character in 'Mars':
+            typing_page.keyboard.insert_text(character)
+            expected_text += character
+            typing_page.wait_for_timeout(350)
+            typing_page.evaluate('fetchState()')
+            typing_page.wait_for_timeout(150)
+            self.assertTrue(typing_page.evaluate(
+                "document.activeElement === document.getElementById('answerInput')"
+            ))
+            self.assertEqual(typing_input.input_value(), expected_text)
+
+        self.participant_pages[0].locator('#answerInput').fill('Erde')
+        self.participant_pages[0].locator('#submitBtn').click()
+        self.participant_pages[0].wait_for_function(
+            "document.getElementById('answerInput').disabled",
+            timeout=10_000,
+        )
+        self.assertFalse(self.participant_pages[1].locator('#answerInput').is_disabled())
+
+        for viewport in (
+            {'width': 360, 'height': 800},
+            {'width': 390, 'height': 844},
+            {'width': 768, 'height': 1024},
+            {'width': 1366, 'height': 768},
+            {'width': 1920, 'height': 1080},
+        ):
+            self.participant_pages[1].set_viewport_size(viewport)
+            self.assertTrue(self.participant_pages[1].evaluate(
+                'document.documentElement.scrollWidth <= window.innerWidth + 1'
+            ))

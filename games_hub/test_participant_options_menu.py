@@ -44,6 +44,50 @@ def read_text(relative_path: str) -> str:
 
 
 class ParticipantOptionsMenuTests(unittest.TestCase):
+    def test_vhs_participant_templates_declare_authoritative_progress_sources(self):
+        question_templates = {
+            "templates/quiz/play.html",
+            "templates/estimation/play.html",
+            "templates/where_is_this/play.html",
+            "templates/who_is_that/play.html",
+            "templates/clue_rush/play.html",
+            "templates/assign/play.html",
+            "templates/buzzer/play.html",
+            "templates/host_points/play.html",
+            "templates/wann_war_das/play.html",
+        }
+        set_templates = {
+            "templates/sorting_ladder/play.html",
+            "templates/black_jack_quiz/play.html",
+            "templates/who_is_lying/play.html",
+            "templates/wer_weiss_mehr/play.html",
+        }
+
+        for relative_path in question_templates:
+            with self.subTest(template=relative_path):
+                content = read_text(relative_path)
+                self.assertIn('data-vhs-progress-kind="question"', content)
+                self.assertIn('data-vhs-progress-source=', content)
+
+        for relative_path in set_templates:
+            with self.subTest(template=relative_path):
+                content = read_text(relative_path)
+                self.assertIn('data-vhs-progress-kind="set"', content)
+                self.assertIn('data-vhs-progress-source=', content)
+
+        for relative_path in PARTICIPANT_RESULT_TEMPLATES:
+            with self.subTest(result_template=relative_path):
+                content = read_text(relative_path)
+                expected_kind = "set" if relative_path in {
+                    "templates/black_jack_quiz/result.html",
+                    "templates/who_is_lying/result.html",
+                } else "question"
+                self.assertIn(f'data-vhs-progress-kind="{expected_kind}"', content)
+                self.assertIn('data-vhs-progress-source="#vhsProgressNumber"', content)
+
+        lobby = read_text("templates/hub/lobby.html")
+        self.assertNotIn("data-vhs-progress-kind", lobby)
+
     def test_all_participant_result_templates_use_existing_theme_infrastructure(self):
         widget = read_text("templates/includes/accessibility_widget.html")
         vhs_css = read_text("static/themes/vhs/vhs.css")
@@ -156,7 +200,7 @@ class ParticipantOptionsMenuTests(unittest.TestCase):
         quiz_template = read_text("templates/quiz/play.html")
         vhs_css = read_text("static/themes/vhs/vhs.css")
 
-        self.assertIn('class="quick-quiz-response-area"', quiz_template)
+        self.assertIn('class="quick-quiz-response-area', quiz_template)
         self.assertIn("quick-quiz-short-answer-field", quiz_template)
         self.assertIn("label.htmlFor = inputId", quiz_template)
         self.assertIn("input.id = inputId", quiz_template)
@@ -169,8 +213,8 @@ class ParticipantOptionsMenuTests(unittest.TestCase):
             vhs_css,
         )
         self.assertIn("#questionState:has(.quick-quiz-short-answer-form)", vhs_css)
-        self.assertIn("padding-top: 215px", vhs_css)
-        self.assertIn("padding-top: 365px", vhs_css)
+        self.assertIn("padding-top: 240px", vhs_css)
+        self.assertIn("padding-top: 410px", vhs_css)
         self.assertNotIn('html[data-participant-theme="standard"] .quick-quiz-short-answer-field', vhs_css)
         self.assertNotIn('html[data-participant-theme="arcade"] .quick-quiz-short-answer-field', vhs_css)
 
@@ -224,8 +268,10 @@ class ParticipantOptionsMenuTests(unittest.TestCase):
 
         self.assertIn("data-participant-lobby", lobby)
         self.assertIn("function syncParticipantLobbyMetadata(state)", lobby)
-        self.assertIn("state.steps.find(step => Number(step.order) === currentIndex)", lobby)
-        self.assertIn("String(currentOrder + 1)", lobby)
+        self.assertIn("Object.prototype.hasOwnProperty.call(state, 'next_game_number')", lobby)
+        self.assertIn("latestNextGameNumber !== null && nextGameNumber < latestNextGameNumber", lobby)
+        self.assertIn("lobbyRoot.dataset.vhsNextGameNumber = String(nextGameNumber)", lobby)
+        self.assertIn("state.next_game_complete === true", lobby)
         self.assertIn("lobbyRoot.dataset.participantName = nickname", lobby)
         self.assertEqual(
             lobby.count("readyCheckInBtn.addEventListener('click', submitCheckIn)"),
@@ -336,7 +382,14 @@ class ParticipantOptionsMenuTests(unittest.TestCase):
         self.assertIn("function syncVhsScoreWidget(shell)", rendered)
         self.assertIn("roundCount <= 3 ? 1 : (roundCount <= 6 ? 2 : 3)", rendered)
         self.assertIn("function syncVhsEndscreen(shell)", rendered)
-        self.assertIn("setReversibleVhsText(heading, 'SPIEL BEENDET')", rendered)
+        self.assertIn(
+            "setReversibleVhsText(heading, card.dataset.vhsEndLabel || 'SPIEL BEENDET')",
+            rendered,
+        )
+        self.assertIn(
+            'data-vhs-end-label="SET BEENDET"',
+            read_text("templates/black_jack_quiz/play.html"),
+        )
         self.assertIn("setReversibleVhsText(label, 'PUNKTE')", rendered)
         self.assertIn("panel.classList.add('vhs-results-panel')", rendered)
         self.assertIn("function syncVhsLobby(shell)", rendered)
@@ -923,7 +976,7 @@ class ParticipantOptionsMenuTests(unittest.TestCase):
     def test_quick_quiz_single_choice_owns_visual_selection_and_real_deselection(self):
         content = read_text("templates/quiz/play.html")
         selection_start = content.index("setSelectedAnswerOption(option, key) {")
-        selection_end = content.index("startQuestionTimer(timeLimit)", selection_start)
+        selection_end = content.index("startQuestionTimer(timeLimit, endsAt = null, serverNow = null)", selection_start)
         selection = content[selection_start:selection_end]
 
         self.assertIn("const wasSelected = option.classList.contains('selected')", selection)
@@ -956,6 +1009,12 @@ class ParticipantOptionsMenuTests(unittest.TestCase):
         self.assertIn("--qa-participant-stage-width: 75%", rendered)
         self.assertIn("calc(100% - 260px - 1.5rem)", rendered)
         self.assertIn("calc(100% - 220px - 1.5rem)", rendered)
+        self.assertIn(
+            "body:is(.clue-rush-play-page, .who-that-play-page):has(",
+            rendered,
+        )
+        self.assertIn("justify-content: end !important", rendered)
+        self.assertIn("justify-content: start !important", rendered)
 
     def test_default_widget_keeps_admin_accessibility_bar(self):
         rendered = render_to_string("includes/accessibility_widget.html", {})
@@ -1280,7 +1339,12 @@ class ParticipantThemeButtonBrowserTests(unittest.TestCase):
             lambda route: route.fulfill(
                 status=200,
                 content_type="text/html; charset=utf-8",
-                body=f"<!doctype html><html><head></head><body>{fixture}{widget}</body></html>",
+                body=(
+                    "<!doctype html><html><head></head>"
+                    "<body data-vhs-progress-kind='question' "
+                    "data-vhs-progress-source='#currentQuestionNumber'>"
+                    f"{fixture}{widget}</body></html>"
+                ),
             ),
         )
         page = context.new_page()
@@ -1314,7 +1378,7 @@ class ParticipantThemeButtonBrowserTests(unittest.TestCase):
                 page.locator(".vhs-question-kicker").inner_text(),
                 "WELTRAUM QUIZ · SPIEL 4",
             )
-            self.assertEqual(page.locator(".vhs-theme-rec-text").inner_text(), "REC · FRAGE 01 / 05")
+            self.assertEqual(page.locator(".vhs-theme-rec-text").inner_text(), "REC · FRAGE 1")
             self.assertEqual(page.locator(".vhs-theme-participant").inner_text(), "LIVE · MIA MÜLLER")
             self.assertEqual(page.locator(".vhs-theme-time").inner_text(), "00:00:18")
             self.assertEqual(
@@ -1353,6 +1417,40 @@ class ParticipantThemeButtonBrowserTests(unittest.TestCase):
             self.assertEqual(
                 page.locator(".vhs-theme-timer").evaluate("el => el.style.getPropertyValue('--vhs-timer-progress')"),
                 "0.5",
+            )
+            page.locator("#currentQuestionNumber").evaluate("el => { el.textContent = '4/6'; }")
+            page.wait_for_function(
+                "document.querySelector('.vhs-theme-rec-text').textContent === 'REC · FRAGE 4/6'"
+            )
+            page.evaluate("document.body.dataset.vhsProgressKind = 'set'")
+            page.locator("#currentQuestionNumber").evaluate("el => { el.textContent = '3/6'; }")
+            page.wait_for_function(
+                "document.querySelector('.vhs-theme-rec-text').textContent === 'REC · SET 3/6'"
+            )
+            page.locator("#currentQuestionNumber").evaluate("el => { el.textContent = '0/6'; }")
+            page.wait_for_function(
+                "document.querySelector('.vhs-theme-rec-text').textContent === 'REC'"
+            )
+            page.locator("#currentQuestionNumber").evaluate("el => { el.textContent = '2/0'; }")
+            page.wait_for_function(
+                "document.querySelector('.vhs-theme-rec-text').textContent === 'REC'"
+            )
+            page.locator("#currentQuestionNumber").evaluate("el => { el.textContent = '5/4'; }")
+            page.wait_for_function(
+                "document.querySelector('.vhs-theme-rec-text').textContent === 'REC'"
+            )
+            page.locator("#currentQuestionNumber").evaluate("el => { el.textContent = '12/12'; }")
+            page.set_viewport_size({"width": 390, "height": 844})
+            page.wait_for_function(
+                "document.querySelector('.vhs-theme-rec-text').textContent === 'REC · SET 12/12'"
+            )
+            self.assertLessEqual(
+                page.locator(".vhs-theme-rec").evaluate("el => el.getBoundingClientRect().right"),
+                390,
+            )
+            self.assertEqual(
+                page.locator(".vhs-theme-participant").inner_text(),
+                "LIVE · MIA MÜLLER",
             )
             page.locator("#questionText").evaluate("el => { el.textContent = 'Äpfel'; }")
             page.wait_for_function("document.querySelector('.vhs-question-lead')?.textContent === 'ÄPFEL'")
@@ -1498,6 +1596,47 @@ class ParticipantThemeButtonBrowserTests(unittest.TestCase):
                 "Arial",
                 page.locator("#returnToLobbyBtn").evaluate("el => getComputedStyle(el).fontFamily"),
             )
+            lobby_button = page.locator("#returnToLobbyBtn")
+            page.mouse.move(0, 0)
+            initial_background = lobby_button.evaluate("el => getComputedStyle(el).backgroundColor")
+            lobby_button.hover()
+            page.wait_for_timeout(250)
+            self.assertNotEqual(
+                lobby_button.evaluate("el => getComputedStyle(el).backgroundColor"),
+                initial_background,
+            )
+            self.assertNotEqual(lobby_button.evaluate("el => getComputedStyle(el).transform"), "none")
+            self.assertEqual(lobby_button.evaluate("el => getComputedStyle(el).outlineStyle"), "solid")
+
+            page.mouse.move(0, 0)
+            page.evaluate("document.activeElement?.blur()")
+            page.keyboard.press("Tab")
+            self.assertEqual(page.evaluate("document.activeElement?.id"), "returnToLobbyBtn")
+            self.assertEqual(lobby_button.evaluate("el => getComputedStyle(el).outlineStyle"), "solid")
+
+            page.evaluate(
+                """
+                () => {
+                    window.__lobbyReturnActivationCount = 0;
+                    document.getElementById('returnToLobbyBtn').addEventListener('click', () => {
+                        window.__lobbyReturnActivationCount += 1;
+                    });
+                }
+                """
+            )
+            page.keyboard.press("Enter")
+            page.keyboard.press("Space")
+            self.assertEqual(page.evaluate("window.__lobbyReturnActivationCount"), 2)
+
+            box = lobby_button.bounding_box()
+            page.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+            page.mouse.down()
+            page.wait_for_timeout(250)
+            self.assertIn(
+                "inset",
+                lobby_button.evaluate("el => getComputedStyle(el).boxShadow"),
+            )
+            page.mouse.up()
             table_wrap = page.locator(".post-game-results-table-wrap")
             self.assertLessEqual(table_wrap.evaluate("el => el.scrollWidth"), table_wrap.evaluate("el => el.clientWidth"))
             for column_class in ("results-col-rank", "results-col-game-points", "results-col-factor", "results-col-overall"):
@@ -1534,7 +1673,9 @@ class ParticipantThemeButtonBrowserTests(unittest.TestCase):
             if score_toggle.get_attribute("aria-expanded") == "true":
                 score_toggle.click()
             page.mouse.move(0, 0)
-            page.wait_for_timeout(250)
+            page.wait_for_function(
+                "getComputedStyle(document.querySelector('.qa-score-widget__toggle')).boxShadow === 'none'"
+            )
             self.assertEqual(score_toggle.evaluate("el => getComputedStyle(el).outlineStyle"), "none")
             self.assertEqual(score_toggle.evaluate("el => getComputedStyle(el).boxShadow"), "none")
             score_toggle.hover()
@@ -1723,7 +1864,7 @@ class ParticipantThemeButtonBrowserTests(unittest.TestCase):
               <span class="session-game-number">Spiel 4</span>
               <span class="participant-name">Mia</span>
             </header>
-            <main class="quiz-main"><div class="container"><div class="row"><div class="assign-main-column">
+            <main class="quiz-main"><div class="container"><div class="assign-play-layout"><div class="assign-main-column">
               <div id="questionState" class="game-state"><div class="question-card">
                 <div class="question-content">
                   <div class="question-text" id="questionText">A2</div>
@@ -1836,6 +1977,23 @@ class ParticipantThemeButtonBrowserTests(unittest.TestCase):
                 for element in page.locator(".assign-target__dropzone").all()
             ]
             reference_box = source_boxes[0]
+            source_panel_box = page.locator(".assign-source-panel").bounding_box()
+            target_panel_box = page.locator(".assign-target-panel").bounding_box()
+            self.assertLess(source_panel_box["x"], target_panel_box["x"])
+            self.assertAlmostEqual(source_panel_box["y"], target_panel_box["y"], delta=0.5)
+            self.assertAlmostEqual(source_panel_box["width"], target_panel_box["width"], delta=0.5)
+            self.assertEqual(
+                page.locator(".assign-source-panel").evaluate("el => el.nextElementSibling.id"),
+                "dropZones",
+            )
+            self.assertEqual(
+                page.locator("#leftItemsList").evaluate("el => getComputedStyle(el).display"),
+                "grid",
+            )
+            self.assertEqual(
+                page.locator("#zonesList").evaluate("el => getComputedStyle(el).display"),
+                "grid",
+            )
             for box in source_boxes + label_boxes + slot_boxes:
                 self.assertAlmostEqual(box["width"], reference_box["width"], delta=0.5)
                 self.assertAlmostEqual(box["height"], 58, delta=0.5)
@@ -1968,6 +2126,7 @@ class ParticipantThemeButtonBrowserTests(unittest.TestCase):
             for viewport in (
                 {"width": 1440, "height": 1200},
                 {"width": 1280, "height": 1200},
+                {"width": 1280, "height": 720},
                 {"width": 1024, "height": 1300},
                 {"width": 820, "height": 1400},
                 {"width": 600, "height": 1500},
@@ -1981,6 +2140,26 @@ class ParticipantThemeButtonBrowserTests(unittest.TestCase):
                 self.assertFalse(overlaps(workspace_box, score_box), viewport)
                 self.assertAlmostEqual(workspace_box["x"], action_box["x"], delta=0.5)
                 self.assertAlmostEqual(workspace_box["width"], action_box["width"], delta=0.5)
+                responsive_source_box = page.locator(".assign-source-panel").bounding_box()
+                responsive_target_box = page.locator(".assign-target-panel").bounding_box()
+                if viewport["width"] > 900:
+                    self.assertLess(responsive_source_box["x"], responsive_target_box["x"], viewport)
+                    self.assertAlmostEqual(
+                        responsive_source_box["y"],
+                        responsive_target_box["y"],
+                        delta=0.5,
+                    )
+                else:
+                    self.assertAlmostEqual(
+                        responsive_source_box["x"],
+                        responsive_target_box["x"],
+                        delta=0.5,
+                    )
+                    self.assertGreaterEqual(
+                        responsive_target_box["y"],
+                        responsive_source_box["y"] + responsive_source_box["height"],
+                        viewport,
+                    )
                 if viewport["width"] > 560:
                     responsive_submit_box = page.locator('#logRoundBtn').bounding_box()
                     self.assertAlmostEqual(
@@ -3152,7 +3331,10 @@ class ParticipantThemeButtonBrowserTests(unittest.TestCase):
 
         quiz_content = read_text("templates/quiz/play.html")
         method_start = quiz_content.index("setSelectedAnswerOption(option, key) {")
-        method_end = quiz_content.index("startQuestionTimer(timeLimit)", method_start)
+        method_end = quiz_content.index(
+            "startQuestionTimer(timeLimit, endsAt = null, serverNow = null)",
+            method_start,
+        )
         selection_method = quiz_content[method_start:method_end].strip()
         widget = render_to_string(
             "includes/accessibility_widget.html",
@@ -3181,7 +3363,9 @@ class ParticipantThemeButtonBrowserTests(unittest.TestCase):
         try:
             page.goto("http://qa.test/participant")
             page.wait_for_selector("#answerA.qa-theme-button")
-            page.evaluate(f"window.quickQuizPlayer = {{ selectedAnswer: null, {selection_method} }}")
+            page.evaluate(
+                f"window.quickQuizPlayer = {{ selectedAnswer: null, syncPendingAnswer() {{}}, {selection_method} }}"
+            )
 
             page.evaluate("quickQuizPlayer.setSelectedAnswerOption(document.getElementById('answerA'), 'A')")
             self.assertEqual(page.locator(".answer-option.selected").count(), 1)
@@ -3239,7 +3423,9 @@ class ParticipantThemeButtonBrowserTests(unittest.TestCase):
 
             page.reload()
             page.wait_for_selector("#answerB.qa-theme-button")
-            page.evaluate(f"window.quickQuizPlayer = {{ selectedAnswer: null, {selection_method} }}")
+            page.evaluate(
+                f"window.quickQuizPlayer = {{ selectedAnswer: null, syncPendingAnswer() {{}}, {selection_method} }}"
+            )
             page.evaluate("quickQuizPlayer.setSelectedAnswerOption(document.getElementById('answerB'), 'B')")
             self.assertEqual(page.locator("html").get_attribute("data-participant-theme"), "arcade")
             self.assertEqual(page.locator("#participant-accent-color").input_value(), "#123456")
@@ -3323,7 +3509,32 @@ class ParticipantThemeButtonBrowserTests(unittest.TestCase):
                     </div><div class="performance-summary"><div id="performanceBadge">Better Luck Next Time!</div></div></div>
                   </div>
                 </div>
-                <aside class="score-box">Punkte</aside>
+                <aside class="who-that-status-box score-box">
+                  <h6 class="score-box__title">Punkte</h6>
+                  <div class="who-that-status-list score-box__list">
+                    <div class="who-that-status-row score-box__row is-played" data-max-points="1" data-points-earned="1">
+                      <div class="who-that-status-badge score-box__badge">1</div>
+                      <div class="who-that-status-main">
+                        <span class="who-that-status-answer-text">Ada Lovelace</span>
+                        <span class="who-that-status-result score-box__value"><span class="who-that-status-mark is-correct">OK</span></span>
+                      </div>
+                    </div>
+                    <div class="who-that-status-row score-box__row is-played" data-max-points="1" data-points-earned="0">
+                      <div class="who-that-status-badge score-box__badge">2</div>
+                      <div class="who-that-status-main">
+                        <span class="who-that-status-answer-text">Grace Hopper</span>
+                        <span class="who-that-status-result score-box__value"><span class="who-that-status-mark is-incorrect">X</span></span>
+                      </div>
+                    </div>
+                    <div class="who-that-status-row score-box__row is-upcoming" data-max-points="1" data-points-earned="">
+                      <div class="who-that-status-badge score-box__badge">3</div>
+                      <div class="who-that-status-main">
+                        <span class="who-that-status-answer-text score-box__empty">________________</span>
+                        <span class="who-that-status-result score-box__value"><span class="who-that-status-empty"></span></span>
+                      </div>
+                    </div>
+                  </div>
+                </aside>
               </div>
             </main>
           </div>
@@ -3349,6 +3560,23 @@ class ParticipantThemeButtonBrowserTests(unittest.TestCase):
                 "el => { el.value = 'vhs'; el.dispatchEvent(new Event('change', { bubbles: true })); }"
             )
             page.wait_for_selector(".vhs-theme-shell #questionState")
+            page.wait_for_function(
+                "document.querySelectorAll('.who-that-status-result .vhs-points-fraction').length === 3"
+            )
+            self.assertEqual(
+                page.locator(".who-that-status-result .vhs-points-fraction").all_inner_texts(),
+                ["1/1", "0/1", "_/1"],
+            )
+            self.assertEqual(
+                page.locator(".who-that-status-result .vhs-points-unit").all_inner_texts(),
+                ["P", "P", "P"],
+            )
+            self.assertEqual(page.locator(".who-that-status-mark").count(), 0)
+            self.assertEqual(page.locator(".who-that-status-empty").count(), 0)
+            self.assertEqual(
+                page.locator(".who-that-status-answer-text").first.evaluate("el => getComputedStyle(el).color"),
+                "rgb(216, 216, 209)",
+            )
             self.assertEqual(page.locator(".input-icon").evaluate("el => getComputedStyle(el).display"), "none")
             page.locator(".vhs-who-that-submit").hover()
             page.wait_for_timeout(220)
@@ -3381,6 +3609,9 @@ class ParticipantThemeButtonBrowserTests(unittest.TestCase):
             page.locator("#questionState").evaluate("el => el.classList.add('d-none')")
             page.locator("#answerSubmittedState").evaluate("el => el.classList.remove('d-none')")
             page.wait_for_function("document.querySelector('#answerSubmittedState h2').textContent === 'ANTWORT EINGELOGGT!'")
+            page.wait_for_function(
+                "document.querySelector('.who-that-submitted-waiting').textContent === 'Warte auf die nächste Runde...'"
+            )
             self.assertEqual(
                 page.locator(".who-that-submitted-waiting").inner_text(),
                 "Warte auf die nächste Runde...",
@@ -3400,6 +3631,8 @@ class ParticipantThemeButtonBrowserTests(unittest.TestCase):
             page.locator("#participant-theme-select").evaluate(
                 "el => { el.value = 'standard'; el.dispatchEvent(new Event('change', { bubbles: true })); }"
             )
+            self.assertEqual(page.locator(".who-that-status-mark").count(), 2)
+            self.assertEqual(page.locator(".who-that-status-empty").count(), 1)
             self.assertNotEqual(page.locator(".input-icon").evaluate("el => getComputedStyle(el).display"), "none")
             self.assertNotEqual(page.locator("#performanceBadge").evaluate("el => getComputedStyle(el).display"), "none")
             self.assertEqual(browser_errors, [])

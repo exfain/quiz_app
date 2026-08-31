@@ -19,8 +19,11 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<script src="{% static 'js/authoritative-game-state.js' %}"></script>
 </head>
-<body class="who-play-page">
+<body class="who-play-page"
+      data-vhs-progress-kind="set"
+      data-vhs-progress-source="#currentQuestionNumber">
     <div class="play-container">
         <!-- Header -->
         <header class="quiz-header">
@@ -65,20 +68,21 @@
                                 <div class="waiting-animation">
                                     <div class="qa-wait-loader" aria-hidden="true"></div>
                                 </div>
-                                <h2>Waiting for Next Question</h2>
-                                <p>Get ready for the next challenge!</p>
+                                <h2>Warte auf das n&auml;chste Set</h2>
+                                <p>Das n&auml;chste Set startet gleich.</p>
                             </div>
                         </div>
 
                         <!-- Question State -->
-                        <div id="questionState" class="game-state {% if not quiz.current_question %}d-none{% endif %}">
+                        <div id="questionState" class="game-state {% if not question_prompt_visible %}d-none{% endif %}">
                             <div class="question-card">
                                 <!-- Question Header -->
                                 <div class="question-header">
                                     <div class="question-number">
-                                        Question <span id="currentQuestionNumber">1</span>
+                                        Set <span id="currentQuestionNumber">1</span>
+                                        von <span id="totalSetCount">{{ total_sets|default:0 }}</span>
                                     </div>
-                                    <div class="question-timer">
+                                    <div class="question-timer{% if not question_answering_open %} d-none{% endif %}" id="questionTimerWrapper">
                                         <div class="timer-circle" id="playerTimerCircle">
                                             <span id="playerTimeLeft">60</span>
                                         </div>
@@ -101,7 +105,7 @@
                                     </div>
 
                                     <!-- Single Person Interface -->
-                                    <div class="people-interface" id="peopleInterface">
+                                    <div class="people-interface{% if not question_answering_open %} d-none{% endif %}" id="peopleInterface"{% if not question_answering_open %} inert{% endif %}>
                                         <div class="selection-instructions">
                                             <h4>Nur der aktuelle Name ist aktiv</h4>
                                             <p>Drücke <strong>„lügt“</strong>, wenn die gezeigte Person lügt. Sonst nicht drücken.</p>
@@ -129,6 +133,7 @@
                                                     id="accuseLiarBtn"
                                                     type="button"
                                                     aria-pressed="false"
+                                                    {% if not question_answering_open %}disabled{% endif %}
                                                 >lügt</button>
                                             </div>
                                         </div>
@@ -166,12 +171,12 @@
                                     </div>
                                 </div>
                                 <h2 class="who-set-ended-title">
-                                    <span class="who-set-ended-title__default">Frage #<span id="completedQuestionNumber">1</span> beendet.</span>
+                                    <span class="who-set-ended-title__default">Set #<span id="completedQuestionNumber">1</span> beendet.</span>
                                     <span class="who-set-ended-title__vhs">SET BEENDET</span>
                                 </h2>
                                 <p class="who-set-ended-waiting">
-                                    <span class="who-set-ended-waiting__default">Warte auf die n&auml;chste Frage...</span>
-                                    <span class="who-set-ended-waiting__vhs">Warte auf die n&auml;chste Runde...</span>
+                                    <span class="who-set-ended-waiting__default">Warte auf das n&auml;chste Set...</span>
+                                    <span class="who-set-ended-waiting__vhs">Warte auf das n&auml;chste Set...</span>
                                 </p>
                                 <div class="submitted-details who-set-summary">
                                     <div class="score-breakdown who-set-summary__metrics">
@@ -1284,7 +1289,6 @@
                     this.hubSession = '{{ hub_session }}';
                     this.websocket = null;
                     this.questionTimer = null;
-                    this.questionStartTime = null;
                     this.serverClockOffsetMs = 0;
                     this.selectedPeople = new Set();
                     this.hasAnswered = false;
@@ -1298,6 +1302,10 @@
                     this.currentQuestionStatement = '';
                     this.currentSetResult = null;
                     this.questionHasEnded = false;
+                    this.stateRevision = Number('{{ question_runtime.state_revision|default:"-1"|escapejs }}');
+                    this.questionPhase = '{{ question_runtime.question_phase|default:""|escapejs }}';
+                    this.questionVisibleAt = '{{ question_runtime.question_visible_at|default:""|escapejs }}';
+                    this.questionPresentationTimer = null;
                     
                     this.init();
                 }
@@ -1307,12 +1315,10 @@
                     this.bindEvents();
                     this.renderScoreHistory();
                     
-                    // Start timer if there's an active question
                     {% if quiz.current_question %}
                         const activeQuestion = this.loadCurrentQuestion();
                         if (activeQuestion) {
-                            this.showState('questionState');
-                            this.startQuestionTimer(activeQuestion);
+                            this.applyQuestionState(activeQuestion);
                         }
                     {% endif %}
                 }
@@ -1355,6 +1361,7 @@
 
                 handleWebSocketMessage(data) {
                     window.sessionGameStartIntro?.handleState(data);
+                    if (!this.acceptStateRevision(data)) return;
                     switch(data.type) {
                         case 'quiz_started':
                             this.onQuizStarted();
@@ -1371,12 +1378,23 @@
                         case 'question_started':
                             window.gameTutorial?.forceClose();
                             window.unitTutorialNotice?.setFromPayload(data);
-                            this.onQuestionStarted(data.question);
+                            this.onQuestionStarted({...data, ...(data.question || {})});
+                            break;
+
+                        case 'question_answering_opened':
+                            window.gameTutorial?.forceClose();
+                            window.unitTutorialNotice?.setFromPayload(data);
+                            this.onQuestionAnsweringOpened({...data, ...(data.question || {})});
                             break;
                             
                         case 'question_ended':
                             window.unitTutorialNotice?.hide();
                             this.onQuestionEnded();
+                            break;
+
+                        case 'set_revealed':
+                            window.unitTutorialNotice?.hide();
+                            this.onSetRevealed(data);
                             break;
                             
                         case 'quiz_ended':
@@ -1421,6 +1439,16 @@
                     return Number.isNaN(parsed) ? null : parsed;
                 }
 
+                acceptStateRevision(data) {
+                    const revision = Number(data?.state_revision);
+                    if (!Number.isFinite(revision)) return true;
+                    if (Number.isFinite(this.stateRevision) && revision < this.stateRevision) {
+                        return false;
+                    }
+                    this.stateRevision = revision;
+                    return true;
+                }
+
                 syncServerClock(serverNowValue) {
                     const serverNowMs = this.parseServerTimestamp(serverNowValue);
                     if (serverNowMs === null) return;
@@ -1428,7 +1456,7 @@
                 }
 
                 getSynchronizedNowMs() {
-                    return Date.now();
+                    return Date.now() + this.serverClockOffsetMs;
                 }
 
                 getQuestionTimerState(question) {
@@ -1495,22 +1523,92 @@
                 }
 
                 onQuestionStarted(question) {
+                    clearTimeout(this.questionPresentationTimer);
+                    clearInterval(this.questionTimer);
                     this.hasAnswered = false;
                     this.selectedPeople.clear();
-                    this.syncServerClock(question?.server_now);
-                    this.questionStartTime = this.parseServerTimestamp(question?.question_started_at) ?? this.getSynchronizedNowMs();
+                    this.applyQuestionLifecycle(question);
                     this.currentQuestionIsTutorial = !!question?.is_tutorial_round;
                     const currentEntry = this.currentQuestionIsTutorial ? null : this.moveQuestionToNextFreeScoreSlot(question?.id, question?.total_possible_points);
                     this.currentQuestionIndex = Number(currentEntry?.number || question?.question_number) || (this.currentQuestionIndex + 1) || 1;
+                    const currentSetNumber = document.getElementById('currentQuestionNumber');
+                    const totalSetCount = document.getElementById('totalSetCount');
+                    if (currentSetNumber) currentSetNumber.textContent = String(this.currentQuestionIndex);
+                    if (totalSetCount && Number(question?.total_sets) > 0) {
+                        totalSetCount.textContent = String(Number(question.total_sets));
+                    }
                     this.currentPersonPosition = Number(question?.current_person_index || 0) || 0;
                     this.questionHasEnded = false;
                     this.currentSetResult = null;
                     this.setSetResultReady(false);
                     
                     this.loadQuestion(question);
+                    this.setAnsweringInterface(false);
+                    this.scheduleQuestionPresentation(question);
+                    if (!this.currentQuestionIsTutorial) this.renderScoreHistory();
+                }
+
+                onQuestionAnsweringOpened(question) {
+                    clearTimeout(this.questionPresentationTimer);
+                    this.hasAnswered = false;
+                    this.applyQuestionLifecycle(question);
+                    this.loadQuestion(question);
+                    this.setAnsweringInterface(true);
                     this.showState('questionState');
                     this.startQuestionTimer(question);
-                    if (!this.currentQuestionIsTutorial) this.renderScoreHistory();
+                }
+
+                applyQuestionLifecycle(question) {
+                    if (question?.question_phase !== undefined && question?.question_phase !== null) {
+                        this.questionPhase = String(question.question_phase);
+                    }
+                    if (question?.question_visible_at !== undefined && question?.question_visible_at !== null) {
+                        this.questionVisibleAt = String(question.question_visible_at);
+                    }
+                    this.syncServerClock(question?.server_now);
+                }
+
+                scheduleQuestionPresentation(question) {
+                    const visibleAt = this.parseServerTimestamp(this.questionVisibleAt);
+                    const remaining = visibleAt === null
+                        ? 0
+                        : Math.max(0, visibleAt - this.getSynchronizedNowMs());
+                    const questionId = Number(question?.id) || null;
+                    if (remaining <= 0) {
+                        this.showState('questionState');
+                        return;
+                    }
+                    this.showState('waitingQuestionState');
+                    this.questionPresentationTimer = window.setTimeout(() => {
+                        if (
+                            this.activeQuestionId === questionId
+                            && this.questionPhase === 'prompt_visible'
+                        ) {
+                            this.showState('questionState');
+                        }
+                    }, remaining);
+                }
+
+                applyQuestionState(question) {
+                    this.applyQuestionLifecycle(question);
+                    if (this.questionPhase === 'answering_open') {
+                        this.setAnsweringInterface(true);
+                        this.showState('questionState');
+                        this.startQuestionTimer(question);
+                        return;
+                    }
+                    this.setAnsweringInterface(false);
+                    this.scheduleQuestionPresentation(question);
+                }
+
+                setAnsweringInterface(answeringOpen) {
+                    const timer = document.getElementById('questionTimerWrapper');
+                    const people = document.getElementById('peopleInterface');
+                    const accuseBtn = document.getElementById('accuseLiarBtn');
+                    timer?.classList.toggle('d-none', !answeringOpen);
+                    people?.classList.toggle('d-none', !answeringOpen);
+                    if (people) people.toggleAttribute('inert', !answeringOpen);
+                    if (accuseBtn) accuseBtn.disabled = !answeringOpen;
                 }
 
                 onQuestionEnded() {
@@ -1526,6 +1624,19 @@
                         return;
                     }
 
+                    this.showRevealState();
+                }
+
+                onSetRevealed(data) {
+                    clearInterval(this.questionTimer);
+                    this.questionHasEnded = true;
+                    this.hasAnswered = true;
+                    this.activeQuestionId = Number(data.question_id) || this.activeQuestionId;
+                    this.currentQuestionIndex = Number(data.question_number) || this.currentQuestionIndex;
+                    this.currentQuestionStatement = data.statement || this.currentQuestionStatement;
+                    this.currentSetResult = data;
+                    this.renderSetResult(data);
+                    this.syncAuthoritativeScoreHistory(data);
                     this.showRevealState();
                 }
 
@@ -1557,6 +1668,8 @@
                         question_started_at: {% if current_question_started_at %}'{{ current_question_started_at|date:"c" }}'{% else %}null{% endif %},
                         question_end_time: {% if current_question_end_time %}'{{ current_question_end_time|date:"c" }}'{% else %}null{% endif %},
                         server_now: {% if who_timer_server_now %}'{{ who_timer_server_now|date:"c" }}'{% else %}null{% endif %},
+                        question_phase: '{{ question_runtime.question_phase|default:""|escapejs }}',
+                        question_visible_at: '{{ question_runtime.question_visible_at|default:""|escapejs }}',
                         people: {{ current_question_people|safe }},
                         total_possible_points: {{ quiz.current_question.get_total_possible_points }}
                     };
@@ -1596,13 +1709,13 @@
                     progressDefaultEl.textContent = `Person ${this.currentPersonPosition + 1}/${this.peopleSequence.length}`;
                     progressVhsEl.textContent = `${this.currentPersonPosition + 1} von ${this.peopleSequence.length}`;
                     const isSelected = this.selectedPeople.has(current.id);
-                    accuseBtn.disabled = isSelected;
+                    accuseBtn.disabled = this.questionPhase !== 'answering_open' || isSelected;
                     accuseBtn.classList.toggle('is-selected', isSelected);
                     accuseBtn.setAttribute('aria-pressed', isSelected ? 'true' : 'false');
                 }
 
                 accuseCurrentPerson() {
-                    if (this.hasAnswered) return;
+                    if (this.hasAnswered || this.questionPhase !== 'answering_open') return;
                     const current = this.peopleSequence[this.currentPersonPosition];
                     if (!current) return;
                     this.selectedPeople.add(current.id);
@@ -1679,9 +1792,8 @@
                 }
 
                 submitAnswer() {
-                    if (this.hasAnswered) return;
+                    if (this.hasAnswered || this.questionPhase !== 'answering_open') return;
                     
-                    const timeTaken = Math.max(0, (this.getSynchronizedNowMs() - this.questionStartTime) / 1000);
                     const selectedLiars = Array.from(this.selectedPeople);
                     const completedQuestionNumber = document.getElementById('completedQuestionNumber');
                     if (completedQuestionNumber) {
@@ -1697,8 +1809,7 @@
                         participant_name: this.participantName,
                         hub_session: this.hubSession,
                         question_id: this.activeQuestionId,
-                        selected_liars: selectedLiars,
-                        time_taken: timeTaken
+                        selected_liars: selectedLiars
                     }));
                     
                     this.hasAnswered = true;
@@ -1720,7 +1831,10 @@
                     this.currentSetResult = data;
                     this.renderSetResult(data);
                     if (!data.is_tutorial_round) {
-                        this.pushScoreHistory(parseInt(data.points_earned || 0, 10) || 0);
+                        const scoreHistorySynced = this.syncAuthoritativeScoreHistory(data);
+                        if (!scoreHistorySynced) {
+                            this.pushScoreHistory(parseInt(data.points_earned || 0, 10) || 0);
+                        }
                     }
 
                     if (this.isVhsTheme()) {
@@ -1743,7 +1857,7 @@
 
                 showVhsSetEndedState() {
                     if (!this.currentSetResult) return;
-                    this.showState('answerSubmittedState');
+                    this.showRevealState();
                 }
 
                 renderSetResult(data) {
@@ -1873,6 +1987,26 @@
                         this.scoreHistory.push(nextEntry);
                     }
                     this.renderScoreHistory();
+                }
+
+                syncAuthoritativeScoreHistory(data) {
+                    if (!Array.isArray(data?.progress_history)) return false;
+
+                    this.scoreHistory = data.progress_history
+                        .map((entry) => {
+                            const questionNumber = Number(entry?.question_number);
+                            const points = Number(entry?.points);
+                            const maxPoints = Number(entry?.max_points);
+                            return {
+                                question_id: entry?.question_id,
+                                question_number: questionNumber,
+                                points: Number.isFinite(points) ? points : 0,
+                                max_points: Number.isFinite(maxPoints) ? maxPoints : 0,
+                            };
+                        })
+                        .filter((entry) => Number.isFinite(entry.question_number));
+                    this.renderScoreHistory();
+                    return true;
                 }
 
                 renderScoreHistory() {

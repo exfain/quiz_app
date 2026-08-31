@@ -1,4 +1,5 @@
 {% extends "admin_dashboard/base.html" %}
+{% load static %}
 
 {% block title %}Clue Rush Monitor - Admin{% endblock %}
 {% block page_title %}Clue Rush Monitor{% endblock %}
@@ -53,7 +54,7 @@
                                 <label class="form-check-label" for="playTutorialToggle">Tutorial spielen</label>
                             </div>
                             {% endif %}
-                            <button class="btn btn-success" id="startQuizBtn">
+                            <button class="btn btn-success" id="startQuizBtn" data-host-game-start>
                                 <i data-lucide="play"></i>
                                 {% if quiz.status == 'inactive' %}Spiel reaktivieren{% else %}Spiel starten{% endif %}
                             </button>
@@ -74,7 +75,7 @@
                         <i data-lucide="trophy"></i>
                         Leaderboard einblenden
                     </button>
-                    <button class="btn btn-outline-secondary" id="backToHubBtn">
+                    <button class="btn btn-outline-secondary" id="backToHubBtn" data-host-game-leave>
                         <i data-lucide="arrow-left"></i>
                         Back to Overview
                     </button>
@@ -133,7 +134,7 @@
                                         </div>
                                         <button type="button" class="btn btn-secondary send-question-btn" data-question-id="{{ question.id }}" {% if quiz.status != 'active' %}disabled title="Start the quiz to send questions"{% endif %}>
                                             <i data-lucide="send"></i>
-                                            Send Question
+                                            FRAGE SENDEN
                                         </button>
                                     </div>
                                 </div>
@@ -165,14 +166,18 @@
                                     <div class="d-flex align-items-center justify-content-between mb-2">
                                         <h6 class="mb-0">Clues</h6>
                                         <div class="btn-group">
-                                            <button class="btn btn-primary" id="sendClueBtn">
-                                                <i data-lucide="send"></i>
-                                                Send Next Clue
+                                            {% if question_runtime.question_phase == 'prompt_visible' %}
+                                            <button class="btn btn-primary" id="startCluesBtn" data-question-id="{{ quiz.current_question.id }}" disabled aria-disabled="true">
+                                                <i data-lucide="play"></i>
+                                                HINWEISE STARTEN
                                             </button>
+                                            {% endif %}
+                                            {% if question_runtime.question_phase == 'answering_open' %}
                                             <button class="btn btn-warning" id="endQuestionBtn">
                                                 <i data-lucide="skip-forward"></i>
                                                 End Question Early
                                             </button>
+                                            {% endif %}
                                         </div>
                                     </div>
                                     <ul class="list-group" id="clueList">
@@ -856,6 +861,7 @@
 
 {{ initial_live_responses|json_script:"initialClueRushResponsesData" }}
 
+<script src="{% static 'js/authoritative-game-state.js' %}"></script>
 <script>
 document.addEventListener('DOMContentLoaded', function() {
     // Save hub_session immediately for Back to Overview button
@@ -877,7 +883,21 @@ document.addEventListener('DOMContentLoaded', function() {
             this.currentClueTimeLeft = {{ current_clue_time_left|default:0 }};
             this.currentClueHasNext = {% if current_clue_has_next %}true{% else %}false{% endif %};
             this.quizTimerInterval = null;
+            this.questionPresentationTimer = null;
+            this.pendingPhaseAction = null;
+            this.pendingQuestionAction = null;
             this.liveResponseState = new Map();
+            this.pendingStartReload = false;
+            this.hubSession = new URLSearchParams(window.location.search).get('hub_session')
+                || window.__hubCode
+                || '';
+            this.runKey = '{{ quiz.started_at|date:"c"|escapejs }}' || 'not-started';
+            this.stateRevision = Number('{{ question_runtime.state_revision|default:"-1" }}');
+            this.gameId = '{{ question_runtime.game_id|default:""|escapejs }}';
+            this.questionPhase = '{{ question_runtime.question_phase|default:""|escapejs }}';
+            this.questionVisibleAt = '{{ question_runtime.question_visible_at|default:""|escapejs }}';
+            this.presentationServerNow = '{{ question_runtime.server_now|default:""|escapejs }}';
+            this.presentationServerReceivedAt = performance.now();
             this.initialLiveResponses = this.readJSONScript('initialClueRushResponsesData');
             this.init();
         }
@@ -894,7 +914,7 @@ document.addEventListener('DOMContentLoaded', function() {
         }
 
         getStorageKey() {
-            return `quiz_sent_${this.roomCode}`;
+            return `quiz_sent_${this.roomCode}_${this.hubSession || 'no-session'}_${this.runKey}`;
         }
         getSentSet() {
             try {
@@ -924,21 +944,11 @@ document.addEventListener('DOMContentLoaded', function() {
                 }
             });
 
-            // Send Next Clue button
-            var sendClueBtn = document.getElementById('sendClueBtn');
-            if (sendClueBtn) {
-                sendClueBtn.addEventListener('click', () => {
-                    if (!this.websocket || this.websocket.readyState !== WebSocket.OPEN) return;
-                    sendClueBtn.classList.add('loading');
-                    this.websocket.send(JSON.stringify({ type: 'admin_send_clue' }));
-                    setTimeout(()=>{ if (sendClueBtn) sendClueBtn.classList.remove('loading'); }, 400);
-                });
-            }
         }
         updateSendButtonAsSent(btn) {
             btn.disabled = false;
             btn.classList.remove('loading');
-            btn.innerHTML = '<i data-lucide="send"></i> Send Question';
+            btn.innerHTML = '<i data-lucide="send"></i> FRAGE SENDEN';
             btn.removeAttribute('title');
             // Add "already sent" hint next to button if not already there
             const wrapper = btn.closest('.d-flex');
@@ -959,7 +969,7 @@ document.addEventListener('DOMContentLoaded', function() {
             document.querySelectorAll('.send-question-btn').forEach(btn => {
                 btn.disabled = false;
                 btn.classList.remove('loading');
-                btn.innerHTML = '<i data-lucide="send"></i> Send Question';
+                btn.innerHTML = '<i data-lucide="send"></i> FRAGE SENDEN';
                 btn.removeAttribute('title');
             });
             try { lucide.createIcons(); } catch(_) {}
@@ -972,6 +982,7 @@ document.addEventListener('DOMContentLoaded', function() {
             this.applySentStates();
             this.initializeLiveResponseState();
             this.updateEndQuestionButtonLabel();
+            this.scheduleClueStartAvailability();
         }
         
         connectWebSocket() {
@@ -993,6 +1004,8 @@ document.addEventListener('DOMContentLoaded', function() {
             this.websocket.onclose = () => {
                 console.log('WebSocket disconnected');
                 this.updateConnectionStatus(false);
+                this.setStartPending(false);
+                this.clearPendingQuestionAction();
                 setTimeout(() => this.connectWebSocket(), 3000);
             };
             
@@ -1003,6 +1016,7 @@ document.addEventListener('DOMContentLoaded', function() {
         }
 
         handleWebSocketMessage(data) {
+            this.applyAuthoritativeMetadata(data);
             switch(data.type) {
                 case 'connection_established':
                     console.log('Connected:', data.message);
@@ -1026,6 +1040,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 case 'quiz_started':
                     console.log('Quiz started:', data.message);
                     this.isActive = true;
+                    this.runKey = data.started_at || data.starts_at || new Date().toISOString();
                     // Enable question send buttons if they were disabled before start
                     document.querySelectorAll('.send-question-btn').forEach(btn => {
                         btn.disabled = false;
@@ -1033,6 +1048,10 @@ document.addEventListener('DOMContentLoaded', function() {
                     });
                     // Re-apply sent state so already-sent questions remain blocked
                     this.applySentStates();
+                    if (this.pendingStartReload) {
+                        this.pendingStartReload = false;
+                        location.reload();
+                    }
                     break;
                     
                 case 'tutorial_start':
@@ -1048,10 +1067,19 @@ document.addEventListener('DOMContentLoaded', function() {
                     break;
 
                 case 'tutorial_question_missing':
+                    this.setStartPending(false);
                     window.showTutorialQuestionMissing?.(data);
+                    break;
+
+                case 'participants_not_in_lobby':
+                case 'active_game_conflict':
+                case 'error':
+                    this.setStartPending(false);
+                    alert(data.message || 'Das Spiel konnte nicht gestartet werden.');
                     break;
                     
                 case 'question_started':
+                    this.pendingQuestionAction = null;
                     window.unitTutorialNotice?.setFromPayload(data);
                     this.resetLiveResponseStateForQuestion();
                     console.log('Question started');
@@ -1059,6 +1087,19 @@ document.addEventListener('DOMContentLoaded', function() {
                         this.markQuestionSent(data.question.id);
                     }
                     location.reload();
+                    break;
+
+                case 'question_answering_opened':
+                    this.pendingPhaseAction = null;
+                    location.reload();
+                    break;
+
+                case 'action_rejected':
+                    this.pendingPhaseAction = null;
+                    this.clearPendingQuestionAction(data.question_id);
+                    this.applyAuthoritativeMetadata(data.snapshot || data);
+                    this.scheduleClueStartAvailability();
+                    alert(data.message || 'Die Aktion konnte nicht ausgefuehrt werden.');
                     break;
                     
                 case 'question_ended':
@@ -1214,6 +1255,11 @@ document.addEventListener('DOMContentLoaded', function() {
             document.getElementById('endQuestionBtn')?.addEventListener('click', () => {
                 this.endCurrentQuestion();
             });
+
+            document.getElementById('startCluesBtn')?.addEventListener('click', (event) => {
+                const button = event.currentTarget;
+                this.startClues(button.dataset.questionId, button);
+            });
         }
         
         startQuiz() {
@@ -1224,33 +1270,21 @@ document.addEventListener('DOMContentLoaded', function() {
                     window.showTutorialQuestionMissing?.();
                     return;
                 }
+                this.pendingStartReload = true;
+                this.setStartPending(true);
                 this.websocket.send(JSON.stringify({
                     type: 'admin_start_quiz',
                     show_tutorial: showTutorial,
                     play_tutorial: playTutorial
                 }));
-                // Notify hub so participants get navigated, then reload
-                try {
-                    const qs = new URLSearchParams(window.location.search);
-                    const hub = qs.get('hub_session') || window.__hubCode || (function(){ try { return sessionStorage.getItem("_hub_admin"); } catch(_) { return null; } })();
-                    if (hub) {
-                        const hubWs = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws/hub/' + hub + '/');
-                        hubWs.onopen = () => {
-                            hubWs.send(JSON.stringify({
-                                type: 'navigate_direct',
-                                game_key: 'clue_rush',
-                                room_code: '{{ quiz.room_code }}'
-                            }));
-                            setTimeout(() => { hubWs.close(); location.reload(); }, 150);
-                        };
-                        hubWs.onerror = () => location.reload();
-                    } else {
-                        location.reload();
-                    }
-                } catch(_) {
-                    location.reload();
-                }
             }
+        }
+
+        setStartPending(pending) {
+            const button = document.getElementById('startQuizBtn');
+            if (!button) return;
+            button.disabled = !!pending;
+            button.classList.toggle('loading', !!pending);
         }
         
         endQuiz() {
@@ -1299,9 +1333,17 @@ document.addEventListener('DOMContentLoaded', function() {
         }
         
         sendQuestion(questionId) {
-            if (this.websocket && this.websocket.readyState === WebSocket.OPEN) {
+            if (
+                !this.pendingQuestionAction
+                && this.websocket
+                && this.websocket.readyState === WebSocket.OPEN
+            ) {
                 const btn = document.querySelector(`[data-question-id="${questionId}"]`);
-                if (btn) btn.classList.add('loading');
+                if (btn) {
+                    btn.disabled = true;
+                    btn.classList.add('loading');
+                    btn.setAttribute('aria-busy', 'true');
+                }
 
                 // Read optional time override from the adjacent input
                 let customTime = null;
@@ -1315,9 +1357,15 @@ document.addEventListener('DOMContentLoaded', function() {
                     }
                 } catch(_) {}
 
+                const actionContext = this.hostActionContext(questionId);
+                this.pendingQuestionAction = {
+                    questionId: String(questionId),
+                    actionId: actionContext.client_action_id,
+                };
                 const payload = {
                     type: 'admin_send_question',
-                    question_id: questionId
+                    hub_session: this.hubSession,
+                    ...actionContext
                 };
                 if (customTime) {
                     payload.custom_time_limit = customTime;
@@ -1325,6 +1373,94 @@ document.addEventListener('DOMContentLoaded', function() {
 
                 this.websocket.send(JSON.stringify(payload));
             }
+        }
+
+        clearPendingQuestionAction(questionId = null) {
+            const pendingQuestionId = String(
+                questionId || this.pendingQuestionAction?.questionId || ''
+            );
+            this.pendingQuestionAction = null;
+            if (!pendingQuestionId) return;
+            const button = document.querySelector(
+                `.send-question-btn[data-question-id="${pendingQuestionId}"]`
+            );
+            if (!button) return;
+            button.disabled = false;
+            button.classList.remove('loading');
+            button.removeAttribute('aria-busy');
+        }
+
+        hostActionContext(questionId) {
+            return {
+                question_id: questionId,
+                game_id: this.gameId || null,
+                state_revision: this.stateRevision,
+                client_action_id: window.AuthoritativeGameState?.createActionId?.(),
+            };
+        }
+
+        applyAuthoritativeMetadata(payload = {}) {
+            const source = payload.snapshot && typeof payload.snapshot === 'object'
+                ? payload.snapshot
+                : payload;
+            const revision = Number(source.state_revision);
+            if (Number.isFinite(revision)) this.stateRevision = revision;
+            if (source.game_id) this.gameId = String(source.game_id);
+            if (source.question_phase !== undefined && source.question_phase !== null) {
+                this.questionPhase = String(source.question_phase);
+            }
+            if (source.question_visible_at !== undefined && source.question_visible_at !== null) {
+                this.questionVisibleAt = String(source.question_visible_at);
+            }
+            if (source.server_now) {
+                this.presentationServerNow = String(source.server_now);
+                this.presentationServerReceivedAt = performance.now();
+            }
+        }
+
+        remainingQuestionPresentationDelay() {
+            const visibleAt = Date.parse(this.questionVisibleAt || '');
+            const serverNow = Date.parse(this.presentationServerNow || '');
+            if (!Number.isFinite(visibleAt) || !Number.isFinite(serverNow)) return 0;
+            const estimatedServerNow = serverNow + (performance.now() - this.presentationServerReceivedAt);
+            return Math.max(0, visibleAt - estimatedServerNow);
+        }
+
+        scheduleClueStartAvailability() {
+            const button = document.getElementById('startCluesBtn');
+            if (!button) return;
+            clearTimeout(this.questionPresentationTimer);
+            const remaining = this.remainingQuestionPresentationDelay();
+            if (remaining <= 0) {
+                button.disabled = false;
+                button.setAttribute('aria-disabled', 'false');
+                return;
+            }
+            button.disabled = true;
+            button.setAttribute('aria-disabled', 'true');
+            this.questionPresentationTimer = setTimeout(() => {
+                button.disabled = false;
+                button.setAttribute('aria-disabled', 'false');
+            }, remaining);
+        }
+
+        startClues(questionId, button) {
+            if (
+                this.pendingPhaseAction
+                || !questionId
+                || this.remainingQuestionPresentationDelay() > 0
+                || !Number.isFinite(this.stateRevision)
+                || this.stateRevision < 0
+            ) return;
+            if (!this.websocket || this.websocket.readyState !== WebSocket.OPEN) return;
+            this.pendingPhaseAction = 'admin_start_clues';
+            button.disabled = true;
+            button.setAttribute('aria-busy', 'true');
+            this.websocket.send(JSON.stringify({
+                type: 'admin_start_clues',
+                hub_session: this.hubSession,
+                ...this.hostActionContext(questionId),
+            }));
         }
         
         endCurrentQuestion() {

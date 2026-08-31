@@ -3,9 +3,11 @@ from django.http import JsonResponse
 from django.views.decorators.http import require_http_methods, require_POST
 from django.views.decorators.csrf import csrf_exempt
 from django.utils import timezone
+from django.db import transaction
 from django.db.models import Avg, Count, Q
 import json
 from .models import Quiz, QuizQuestion, QuizParticipant, QuizAnswer, QuizSession
+from games_hub.authoritative_state import current_snapshot, validate_and_reserve_action
 from games_hub.unit_tutorial_runtime import (
     get_scorebox_excluded_tutorial_question_ids,
     get_unit_tutorial_state,
@@ -433,9 +435,12 @@ def quiz_play(request, room_code, participant_name):
             'question_scoreboard': question_scoreboard,
             'initial_progress_history': initial_progress_history,
             'current_question_id': current_question_id,
+            'current_question_number': current_question_number,
+            'total_question_count': len(question_scoreboard),
             'current_unit_is_tutorial': is_current_unit_tutorial_question('quiz', quiz.room_code, session_code, quiz.current_question_id),
             'score_total_correct': score_total_correct,
             'score_total_questions': score_total_questions,
+            'question_runtime': current_snapshot('quiz', quiz.room_code, session_code),
         }
         return render(request, 'quiz/play.html', context)
         
@@ -507,6 +512,12 @@ def quiz_result(request, room_code, participant_name):
             'fastest_answer': fastest_answer,
             'quiz_duration': quiz_duration,
             'quiz_duration_formatted': quiz_duration_formatted,
+            'result_question_count': len(
+                _get_ordered_quiz_questions(
+                    quiz,
+                    session_code=participant.hub_session_code,
+                )
+            ),
         }
         return render(request, 'quiz/result.html', context)
         
@@ -561,22 +572,63 @@ def submit_answer(request, room_code, participant_name):
             answer_text = question.serialize_short_answer_submission(answer_payload)
         else:
             answer_text = question.parse_short_answer_submission(answer_payload)[0]
-        time_taken = data.get('time_taken', 0)
-        
         if not answer_text:
             return JsonResponse({
                 'success': False,
                 'error': 'Answer cannot be empty.'
             })
-        
-        # Create answer
-        answer = QuizAnswer.objects.create(
-            quiz=quiz,
-            participant=participant,
-            question=quiz.current_question,
-            answer_text=answer_text,
-            time_taken=time_taken
+
+        decision = validate_and_reserve_action(
+            game_key='quiz',
+            room_code=room_code,
+            session_code=session_code,
+            participant_name=participant_name,
+            action_type='participant_submit_answer',
+            action=data,
         )
+        if not decision.accepted:
+            return JsonResponse({
+                'success': False,
+                'type': 'action_rejected',
+                'code': decision.code,
+                'error': decision.message,
+            }, status=409)
+
+        with transaction.atomic():
+            locked_quiz = Quiz.objects.select_for_update().get(pk=quiz.pk)
+            locked_session = QuizSession.objects.select_for_update().filter(quiz=locked_quiz).first()
+            received_at = timezone.now()
+            if (
+                locked_quiz.status != 'active'
+                or locked_quiz.current_question_id != question.id
+                or not locked_session
+                or not locked_session.is_question_active
+                or not locked_session.question_end_time
+                or received_at >= locked_session.question_end_time
+            ):
+                return JsonResponse({
+                    'success': False,
+                    'error': 'The answer deadline has expired.'
+                })
+            server_time_taken = (
+                max(0.0, (received_at - locked_quiz.question_start_time).total_seconds())
+                if locked_quiz.question_start_time
+                else 0.0
+            )
+            answer, created = QuizAnswer.objects.get_or_create(
+                quiz=locked_quiz,
+                participant=participant,
+                question=question,
+                defaults={
+                    'answer_text': answer_text,
+                    'time_taken': server_time_taken,
+                },
+            )
+            if not created:
+                return JsonResponse({
+                    'success': False,
+                    'error': 'You have already answered this question.'
+                })
         
         # Update participant's last activity
         participant.last_activity = timezone.now()

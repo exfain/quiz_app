@@ -1,79 +1,114 @@
+<script>
+(function primeVhsIntroTransitionGate() {
+  const params = new URLSearchParams(window.location.search);
+  if (params.get('game_start_intro') !== '1') return;
+  const endsAt = Date.parse(params.get('game_start_intro_ends_at') || '');
+  const receivedAt = Number(params.get('game_start_client_received_at'));
+  const serverNow = Date.parse(params.get('game_start_server_now') || '');
+  if (!Number.isFinite(endsAt) || !Number.isFinite(serverNow)) return;
+  const estimatedNow = serverNow + (
+    Number.isFinite(receivedAt) ? Math.max(0, Date.now() - receivedAt) : 0
+  );
+  const transitionDuration = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    ? 480
+    : 2800;
+  if (estimatedNow >= endsAt + transitionDuration) return;
+  document.documentElement.classList.add('is-session-game-intro-active');
+  if (estimatedNow >= endsAt) {
+    document.documentElement.classList.add('qa-vhs-transition--active');
+    document.documentElement.style.setProperty(
+      '--qa-vhs-transition-elapsed',
+      `${Math.max(0, estimatedNow - endsAt)}ms`
+    );
+  }
+  window.__qaVhsTransitionGateFallback = window.setTimeout(function () {
+    document.documentElement.classList.remove(
+      'is-session-game-intro-active',
+      'qa-vhs-transition--active'
+    );
+    document.documentElement.style.removeProperty('--qa-vhs-transition-elapsed');
+  }, 13000);
+}());
+</script>
 <section
   id="sessionGameStartIntro"
-  class="session-game-start-intro vhs-game-intro-screen"
-  data-vhs-game-intro
+  class="qa-vhs-intro"
+  data-qa-vhs-intro
   data-game-id=""
   data-game-number=""
-  data-game-name=""
-  data-participant-name="{{ participant.name|default:'' }}"
+  data-game-title=""
   hidden
   aria-live="polite"
   role="status"
 >
-  <div class="session-game-start-intro__frame">
-    <header class="vhs-game-intro-header vhs-game-intro-only" aria-hidden="true">
-      <span class="vhs-game-intro-app" data-vhs-intro-app></span>
-      <span class="vhs-game-intro-rec">
-        <span class="vhs-game-intro-rec__dot"></span>
-        REC · LIVE
-      </span>
-    </header>
-
-    <div class="session-game-start-intro__card vhs-game-intro-content">
-      <div class="vhs-game-intro-copy">
-        <div
-          class="session-game-start-intro__eyebrow vhs-game-intro-number"
-          id="sessionGameStartIntroNumber"
-          data-vhs-intro-number
-        >Spiel</div>
-
-        <div class="vhs-interference" data-vhs-interference>
-          <div class="vhs-interference__stack">
-            <h1
-              class="session-game-start-intro__title vhs-interference__layer vhs-interference__layer--main"
-              id="sessionGameStartIntroTitle"
-              data-vhs-intro-layer="main"
-            >Spiel startet</h1>
-            <span
-              class="vhs-interference__layer vhs-interference__layer--red"
-              data-vhs-intro-layer="red"
-              aria-hidden="true"
-            ></span>
-            <span
-              class="vhs-interference__layer vhs-interference__layer--green"
-              data-vhs-intro-layer="green"
-              aria-hidden="true"
-            ></span>
-            <span
-              class="vhs-interference__layer vhs-interference__layer--blue"
-              data-vhs-intro-layer="blue"
-              aria-hidden="true"
-            ></span>
-            <span
-              class="vhs-interference__layer vhs-interference__layer--glow"
-              data-vhs-intro-layer="glow"
-              aria-hidden="true"
-            ></span>
-          </div>
-
-          <div
-            class="vhs-interference__scanlines"
-            data-vhs-intro-scanlines
-            aria-hidden="true"
-          ></div>
-        </div>
-      </div>
-      <p class="session-game-start-intro__text">Gleich geht es los. Warte auf die erste Frage, Runde oder Aufgabe.</p>
+  <div class="qa-vhs-intro__content">
+    <div class="qa-vhs-intro__number">
+      <span
+        class="qa-vhs-intro__number-text"
+        id="sessionGameStartIntroNumber"
+        data-qa-vhs-intro-number
+        data-label=""
+      >Spiel</span>
     </div>
 
-    <footer class="vhs-game-intro-footer vhs-game-intro-only" aria-hidden="true">
-      <span id="sessionGameStartIntroParticipant">LIVE</span>
-    </footer>
+    <div class="qa-vhs-intro__interference" data-qa-vhs-intro-interference>
+      <div
+        class="qa-vhs-intro__title"
+        id="sessionGameStartIntroTitle"
+        data-qa-vhs-intro-title
+        role="heading"
+        aria-level="1"
+      >
+        <span
+          class="qa-vhs-intro__layer qa-vhs-intro__layer--red"
+          data-qa-vhs-intro-layer="red"
+          aria-hidden="true"
+        ></span>
+        <span
+          class="qa-vhs-intro__layer qa-vhs-intro__layer--green"
+          data-qa-vhs-intro-layer="green"
+          aria-hidden="true"
+        ></span>
+        <span
+          class="qa-vhs-intro__layer qa-vhs-intro__layer--blue"
+          data-qa-vhs-intro-layer="blue"
+          aria-hidden="true"
+        ></span>
+        <span
+          class="qa-vhs-intro__layer qa-vhs-intro__layer--white"
+          data-qa-vhs-intro-layer="white"
+          aria-hidden="true"
+        ></span>
+        <span
+          class="qa-vhs-intro__layer qa-vhs-intro__layer--blur"
+          data-qa-vhs-intro-layer="blur"
+          aria-hidden="true"
+        ></span>
+      </div>
+
+      <div
+        class="qa-vhs-intro__scanlines"
+        data-qa-vhs-intro-scanlines
+        aria-hidden="true"
+      >
+        <span class="qa-vhs-intro__scanline" aria-hidden="true"></span>
+        <span class="qa-vhs-intro__scanline" aria-hidden="true"></span>
+        <span class="qa-vhs-intro__scanline" aria-hidden="true"></span>
+        <span class="qa-vhs-intro__scanline" aria-hidden="true"></span>
+        <span class="qa-vhs-intro__scanline" aria-hidden="true"></span>
+        <span class="qa-vhs-intro__scanline" aria-hidden="true"></span>
+        <span class="qa-vhs-intro__scanline" aria-hidden="true"></span>
+        <span class="qa-vhs-intro__scanline" aria-hidden="true"></span>
+        <span class="qa-vhs-intro__scanline" aria-hidden="true"></span>
+        <span class="qa-vhs-intro__scanline" aria-hidden="true"></span>
+        <span class="qa-vhs-intro__scanline" aria-hidden="true"></span>
+      </div>
+    </div>
   </div>
 </section>
 
 <style>
-  .session-game-start-intro {
+  html:not([data-participant-theme="vhs"]) .qa-vhs-intro {
     position: fixed;
     inset: 0;
     z-index: 1750;
@@ -89,28 +124,11 @@
     transition: opacity .18s ease;
   }
 
-  .session-game-start-intro[hidden] {
-    display: none;
-  }
-
-  .session-game-start-intro__frame,
-  .vhs-game-intro-copy,
-  .vhs-interference,
-  .vhs-interference__stack {
-    display: contents;
-  }
-
-  .vhs-game-intro-only,
-  .vhs-interference__layer:not(.vhs-interference__layer--main),
-  .vhs-interference__scanlines {
-    display: none;
-  }
-
-  .session-game-start-intro.is-hiding {
+  html:not([data-participant-theme="vhs"]) .qa-vhs-intro.qa-vhs-intro--hiding {
     opacity: 0;
   }
 
-  .session-game-start-intro__card {
+  html:not([data-participant-theme="vhs"]) .qa-vhs-intro__content {
     width: min(92vw, 620px);
     border: 1px solid rgba(226, 232, 240, .22);
     border-radius: 28px;
@@ -121,7 +139,7 @@
     backdrop-filter: blur(14px);
   }
 
-  .session-game-start-intro__eyebrow {
+  html:not([data-participant-theme="vhs"]) .qa-vhs-intro__number {
     margin-bottom: .65rem;
     text-transform: uppercase;
     letter-spacing: .16em;
@@ -130,308 +148,474 @@
     color: #67e8f9;
   }
 
-  .session-game-start-intro__title {
+  html:not([data-participant-theme="vhs"]) .qa-vhs-intro__title {
+    display: grid;
     margin: 0;
     font-size: clamp(2rem, 8vw, 4.6rem);
     line-height: 1;
     font-weight: 900;
   }
 
-  .session-game-start-intro__text {
-    margin: 1rem auto 0;
-    max-width: 34rem;
-    color: #cbd5e1;
-    font-size: clamp(1rem, 2.6vw, 1.25rem);
+  html:not([data-participant-theme="vhs"]) .qa-vhs-intro__layer {
+    grid-area: 1 / 1;
+  }
+
+  html:not([data-participant-theme="vhs"]) .qa-vhs-intro__layer:not(.qa-vhs-intro__layer--white),
+  html:not([data-participant-theme="vhs"]) .qa-vhs-intro__scanlines {
+    display: none;
   }
 
   @media (prefers-reduced-motion: reduce) {
-    .session-game-start-intro {
+    html:not([data-participant-theme="vhs"]) .qa-vhs-intro {
       transition: none;
     }
+  }
+
+  html .qa-vhs-intro[hidden] {
+    display: none;
   }
 </style>
 
 <script>
-function initializeVhsGameIntro(options = {}) {
+function isQaVhsParticipantTheme() {
+  const activeTheme = String(
+    document.documentElement.dataset.participantTheme || ''
+  ).trim();
+  if (['standard', 'arcade', 'vhs'].includes(activeTheme)) {
+    return activeTheme === 'vhs';
+  }
+  try {
+    return window.localStorage.getItem('participant_interface_theme') === 'vhs';
+  } catch (_) {
+    return false;
+  }
+}
+
+function initializeQaVhsGameIntro(options = {}) {
   const root = options.root instanceof Element
     ? options.root
-    : document.querySelector('[data-vhs-game-intro]');
+    : document.querySelector('[data-qa-vhs-intro]');
 
   if (!root) return null;
 
   const rawGameNumber = options.gameNumber ?? root.dataset.gameNumber ?? '';
-  const rawGameName = options.gameName ?? root.dataset.gameName ?? '';
-  const rawGameId = options.gameId ?? root.dataset.gameId ?? `${rawGameNumber}:${rawGameName}`;
+  const rawGameTitle = options.gameTitle ?? options.gameName ?? root.dataset.gameTitle ?? '';
+  const rawGameId = options.gameId ?? root.dataset.gameId ?? `${rawGameNumber}:${rawGameTitle}`;
   const gameNumber = String(rawGameNumber).trim();
-  const gameName = String(rawGameName).trim().toLocaleUpperCase('de-DE');
+  const gameTitle = String(rawGameTitle).trim().toLocaleUpperCase('de-DE');
   const gameKey = String(rawGameId).trim();
+  const elapsedMs = Math.max(0, Number(options.elapsedMs) || 0);
 
-  if (!gameName) {
-    console.warn('[VHS intro] Kein Spielname für den Intro-Screen verfügbar.');
+  if (!gameTitle) return null;
+
+  const numberElement = root.querySelector('[data-qa-vhs-intro-number]');
+  const layerElements = root.querySelectorAll('[data-qa-vhs-intro-layer]');
+  const stackElement = root.querySelector('[data-qa-vhs-intro-title]');
+  const scanlineContainer = root.querySelector('[data-qa-vhs-intro-scanlines]');
+
+  if (!numberElement || layerElements.length !== 5 || !stackElement || !scanlineContainer) {
     return null;
   }
 
-  const numberElement = root.querySelector('[data-vhs-intro-number]');
-  const layerElements = root.querySelectorAll('[data-vhs-intro-layer]');
-  const scanlineContainer = root.querySelector('[data-vhs-intro-scanlines]');
-
-  if (!numberElement || layerElements.length !== 5 || !scanlineContainer) {
-    console.warn('[VHS intro] Die erwartete Intro-Struktur ist unvollständig.', {
-      numberElement,
-      layerCount: layerElements.length,
-      scanlineContainer,
-    });
-    return null;
-  }
-
-  numberElement.textContent = gameNumber ? `SPIEL ${gameNumber}` : 'SPIEL';
+  const numberLabel = gameNumber ? `SPIEL ${gameNumber}` : 'SPIEL';
+  numberElement.textContent = numberLabel;
+  numberElement.dataset.label = numberLabel;
   layerElements.forEach(element => {
-    element.textContent = gameName;
+    element.textContent = gameTitle;
   });
+  stackElement.setAttribute('aria-label', gameTitle);
 
-  const normalizedLength = gameName.replace(/\s+/g, ' ').length;
-  const interference = root.querySelector('[data-vhs-interference]');
+  const normalizedLength = gameTitle.replace(/\s+/g, ' ').length;
+  const interference = root.querySelector('[data-qa-vhs-intro-interference]');
   if (interference) {
-    interference.classList.remove('vhs-interference--long', 'vhs-interference--very-long');
+    interference.classList.remove(
+      'qa-vhs-intro__interference--long',
+      'qa-vhs-intro__interference--very-long'
+    );
     if (normalizedLength >= 23) {
-      interference.classList.add('vhs-interference--very-long');
+      interference.classList.add('qa-vhs-intro__interference--very-long');
     } else if (normalizedLength >= 13) {
-      interference.classList.add('vhs-interference--long');
+      interference.classList.add('qa-vhs-intro__interference--long');
     }
   }
 
-  if (scanlineContainer.querySelectorAll('.vhs-interference__scanline').length !== 10) {
-    scanlineContainer.replaceChildren();
-    const fragment = document.createDocumentFragment();
-    for (let index = 0; index < 10; index += 1) {
-      const scanline = document.createElement('span');
-      scanline.className = 'vhs-interference__scanline';
-      scanline.setAttribute('aria-hidden', 'true');
-      fragment.appendChild(scanline);
-    }
-    scanlineContainer.appendChild(fragment);
-  }
-
-  const previousGameKey = root.dataset.vhsIntroGameKey;
-  const mustRestart = previousGameKey !== gameKey || root.dataset.vhsIntroInitialized !== 'true';
-  root.dataset.vhsIntroGameKey = gameKey;
-  root.dataset.vhsIntroInitialized = 'true';
-
-  if (mustRestart) {
-    root.classList.remove('is-vhs-intro-playing');
-    void root.offsetWidth;
-    root.classList.add('is-vhs-intro-playing');
-  }
+  root.style.setProperty('--qa-vhs-intro-elapsed', `${elapsedMs}ms`);
+  root.dataset.qaVhsIntroGameKey = gameKey;
+  root.dataset.qaVhsIntroStateRevision = String(Number(options.stateRevision) || 0);
+  root.dataset.qaVhsIntroInitialized = 'true';
+  root.classList.remove('qa-vhs-intro--playing');
+  void root.offsetWidth;
+  root.classList.add('qa-vhs-intro--playing');
 
   return {
     root,
     gameKey,
     destroy() {
-      root.classList.remove('is-vhs-intro-playing');
-      delete root.dataset.vhsIntroInitialized;
-      delete root.dataset.vhsIntroGameKey;
+      root.classList.remove('qa-vhs-intro--playing');
+      root.style.removeProperty('--qa-vhs-intro-elapsed');
+      delete root.dataset.qaVhsIntroInitialized;
+      delete root.dataset.qaVhsIntroGameKey;
+      delete root.dataset.qaVhsIntroStateRevision;
     },
   };
 }
 
 (function () {
-  const INTRO_PREVIOUS_DURATION_MS = 5000;
-  const INTRO_DURATION_EXTENSION_MS = 3000;
-  const INTRO_DISPLAY_DURATION_MS = INTRO_PREVIOUS_DURATION_MS + INTRO_DURATION_EXTENSION_MS;
+  const VHS_TRANSITION_DURATION_MS = 2800;
+  const VHS_TRANSITION_REDUCED_DURATION_MS = 480;
+  const VHS_TRANSITION_FALLBACK_BUFFER_MS = 600;
   const params = new URLSearchParams(window.location.search);
-  const shouldShow = params.get('game_start_intro') === '1';
-  const gameNumber = params.get('game_start_order') || '';
-  const gameTitle = params.get('game_start_title') || 'Spiel startet';
+  const introOverlay = document.getElementById('sessionGameStartIntro');
+  const initialReceivedAt = Number(params.get('game_start_client_received_at'));
+  let introState = {
+    introActive: params.get('game_start_intro') === '1',
+    gameNumber: params.get('game_start_order') || '',
+    gameTitle: params.get('game_start_title') || '',
+    gameKey: params.get('game_start_key') || '',
+    roomCode: params.get('game_start_room') || '',
+    gameInstanceId: params.get('game_start_instance') || '',
+    introStartedAt: params.get('game_start_intro_started_at') || '',
+    introEndsAt: params.get('game_start_intro_ends_at') || '',
+    serverNow: params.get('game_start_server_now') || '',
+    stateRevision: Number(params.get('game_start_state_revision')),
+  };
+  let clockServerNowMs = Date.parse(introState.serverNow);
+  let clockPerformanceMs = performance.now();
+  if (Number.isFinite(initialReceivedAt) && Number.isFinite(clockServerNowMs)) {
+    clockServerNowMs += Math.max(0, Date.now() - initialReceivedAt);
+  }
+  let highestIntroRevision = Number.isInteger(introState.stateRevision)
+    ? introState.stateRevision
+    : 0;
+  let hideTimer = null;
+  let transitionTimer = null;
+  let transitionFallbackTimer = null;
+  let transitionActive = false;
+  let visible = false;
+  let introCompleted = false;
+  let vhsIntroController = null;
+
   const storageKey = [
     'session-game-start-intro',
-    window.location.pathname,
     params.get('hub_session') || '',
-    params.get('game_start_room') || '',
-    params.get('game_start_nonce') || '',
+    introState.gameInstanceId,
+    introState.introStartedAt,
   ].join(':');
-  let hideTimer = null;
-  let visible = false;
-  let cancelled = false;
-  let vhsIntroController = null;
-  const introOverlay = document.getElementById('sessionGameStartIntro');
-  const introOriginalParent = introOverlay?.parentNode || null;
-  const introOriginalNextSibling = introOverlay?.nextSibling || null;
 
-  function mountVhsIntro(overlay) {
-    if (document.documentElement.dataset.participantTheme !== 'vhs') return;
-    const shell = document.querySelector('.vhs-theme-shell');
-    if (shell && overlay.parentNode !== shell) shell.appendChild(overlay);
-  }
-
-  function restoreIntroMount(overlay) {
-    if (!overlay || !introOriginalParent || overlay.parentNode === introOriginalParent) return;
-    if (introOriginalNextSibling?.parentNode === introOriginalParent) {
-      introOriginalParent.insertBefore(overlay, introOriginalNextSibling);
-    } else {
-      introOriginalParent.appendChild(overlay);
+  function readIntroRecord() {
+    try {
+      const record = JSON.parse(sessionStorage.getItem(storageKey) || 'null');
+      return record && typeof record === 'object' ? record : null;
+    } catch (_) {
+      return null;
     }
   }
 
-  function getAppName() {
-    const explicitName = document.querySelector('[data-app-name]')?.textContent?.trim();
-    if (explicitName) return explicitName;
-    const titleMatch = document.title.match(/-\s*([^-]+)$/);
-    return titleMatch?.[1]?.replace(/\s+Admin$/i, '').trim() || 'QuizMaster';
+  function markIntroCompleted() {
+    try {
+      sessionStorage.setItem(storageKey, JSON.stringify({
+        completedAt: new Date().toISOString(),
+        stateRevision: highestIntroRevision,
+      }));
+    } catch (_) {}
   }
 
-  function setIntroChrome(overlay) {
-    const appElement = overlay.querySelector('[data-vhs-intro-app]');
-    const participantElement = document.getElementById('sessionGameStartIntroParticipant');
-    const normalizedParticipant = String(overlay?.dataset.participantName || '').trim();
-    appElement.textContent = getAppName();
-    participantElement.textContent = normalizedParticipant ? `LIVE · ${normalizedParticipant}` : 'LIVE';
+  function estimatedServerNowMs() {
+    if (!Number.isFinite(clockServerNowMs)) return NaN;
+    return clockServerNowMs + Math.max(0, performance.now() - clockPerformanceMs);
   }
 
-  function setDefaultIntroText() {
-    const numberEl = document.getElementById('sessionGameStartIntroNumber');
-    const titleEl = document.getElementById('sessionGameStartIntroTitle');
-    const normalizedTitle = String(gameTitle || '').trim() || 'Spiel startet';
-    numberEl.textContent = gameNumber ? `Spiel ${gameNumber}` : 'Spiel';
-    titleEl.textContent = normalizedTitle;
+  function syncServerClock(serverNow) {
+    const parsedServerNow = Date.parse(serverNow || '');
+    if (!Number.isFinite(parsedServerNow)) return false;
+    clockServerNowMs = parsedServerNow;
+    clockPerformanceMs = performance.now();
+    return true;
   }
 
-  function clearVhsIntroState(overlay) {
-    document.documentElement.classList.remove('is-session-game-intro-active');
-    vhsIntroController?.destroy();
-    vhsIntroController = null;
-    if (overlay) overlay.classList.remove('is-vhs-intro-playing');
+  function hasValidIntroTimeline(state) {
+    const startedAt = Date.parse(state.introStartedAt || '');
+    const endsAt = Date.parse(state.introEndsAt || '');
+    return Boolean(
+      state.gameNumber
+      && state.gameTitle
+      && state.gameInstanceId
+      && Number.isFinite(startedAt)
+      && Number.isFinite(endsAt)
+      && endsAt > startedAt
+      && Number.isInteger(state.stateRevision)
+      && state.stateRevision >= 1
+      && Number.isFinite(estimatedServerNowMs())
+    );
   }
 
   function removeIntroParams() {
-    if (!shouldShow) return;
     const cleanParams = new URLSearchParams(window.location.search);
     [
       'game_start_intro',
+      'game_start_key',
+      'game_start_room',
+      'game_start_instance',
       'game_start_order',
       'game_start_title',
-      'game_start_room',
-      'game_start_key',
-      'game_start_nonce',
+      'game_start_intro_started_at',
+      'game_start_intro_ends_at',
+      'game_start_server_now',
+      'game_start_state_revision',
+      'game_start_client_received_at',
     ].forEach(key => cleanParams.delete(key));
     const query = cleanParams.toString();
     const cleanUrl = `${window.location.pathname}${query ? `?${query}` : ''}${window.location.hash}`;
     window.history.replaceState(window.history.state, document.title, cleanUrl);
   }
 
-  function elementIsVisible(element) {
-    if (!element || element.hidden || element.classList.contains('d-none')) return false;
-    const style = window.getComputedStyle(element);
-    if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
-    const rect = element.getBoundingClientRect();
-    return rect.width > 0 && rect.height > 0;
+  function clearVhsIntroState() {
+    document.documentElement.classList.remove(
+      'is-session-game-intro-active',
+      'qa-vhs-transition--active'
+    );
+    document.documentElement.style.removeProperty('--qa-vhs-transition-elapsed');
+    document.querySelectorAll('.vhs-theme-shell[data-qa-vhs-transition-inert]').forEach(shell => {
+      if (shell.dataset.qaVhsTransitionInert === 'remove') {
+        shell.removeAttribute('inert');
+      }
+      delete shell.dataset.qaVhsTransitionInert;
+    });
+    introOverlay?.classList.remove('qa-vhs-intro--transitioning');
+    introOverlay?.removeAttribute('aria-hidden');
+    if (window.__qaVhsTransitionGateFallback) {
+      window.clearTimeout(window.__qaVhsTransitionGateFallback);
+      window.__qaVhsTransitionGateFallback = null;
+    }
+    vhsIntroController?.destroy();
+    vhsIntroController = null;
   }
 
-  function hasActiveGameplayDom() {
-    const activeSelectors = [
-      '#questionState:not(.d-none)',
-      '#questionArea:not(.d-none)',
-      '#answerArea:not(.d-none)',
-      '#revealArea:not(.d-none)',
-      '#roundResultState:not(.d-none)',
-      '#finalOrderState:not(.d-none)',
-      '#solutionState:not(.d-none)',
-      '#correctAnswerState:not(.d-none)',
-      '#buzzButton:not(:disabled)',
-    ];
-    return activeSelectors.some(selector => elementIsVisible(document.querySelector(selector)));
-  }
-
-  function hide() {
-    cancelled = true;
-    const overlay = document.getElementById('sessionGameStartIntro');
-    clearVhsIntroState(overlay);
-    if (!overlay || !visible) return;
-    visible = false;
+  function completeSequence() {
+    if (introCompleted) return;
+    introCompleted = true;
+    transitionActive = false;
+    markIntroCompleted();
+    removeIntroParams();
     if (hideTimer) window.clearTimeout(hideTimer);
+    if (transitionTimer) window.clearTimeout(transitionTimer);
+    if (transitionFallbackTimer) window.clearTimeout(transitionFallbackTimer);
     hideTimer = null;
-    overlay.classList.add('is-hiding');
+    transitionTimer = null;
+    transitionFallbackTimer = null;
+    if (!introOverlay || !visible) {
+      clearVhsIntroState();
+      return;
+    }
+    visible = false;
+    if (document.documentElement.dataset.participantTheme === 'vhs') {
+      introOverlay.hidden = true;
+      clearVhsIntroState();
+      return;
+    }
+    clearVhsIntroState();
+    introOverlay.classList.add('qa-vhs-intro--hiding');
     window.setTimeout(() => {
-      overlay.hidden = true;
-      overlay.classList.remove('is-hiding');
-      restoreIntroMount(overlay);
+      introOverlay.hidden = true;
+      introOverlay.classList.remove('qa-vhs-intro--hiding');
     }, window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : 180);
   }
 
-  function isActivePayload(payload) {
-    if (!payload || typeof payload !== 'object') return false;
-    const type = payload.type || payload.event_type || '';
-    const activeTypes = new Set([
-      'question_started',
-      'round_started',
-      'set_started',
-      'round_advanced',
-      'round_checked',
-      'question_ended',
-      'show_solution',
-      'buzz_accepted',
-      'buzzer_opened',
-    ]);
-    if (activeTypes.has(type)) return true;
-
-    const phase = payload.phase || payload.question_state || payload.round_state || '';
-    if (['active', 'revealed', 'round_active', 'review', 'set_completed', 'question_active'].includes(phase)) {
-      return true;
+  function startVhsTransition(elapsedMs = 0) {
+    if (!introOverlay || introCompleted) return;
+    const transitionDuration = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+      ? VHS_TRANSITION_REDUCED_DURATION_MS
+      : VHS_TRANSITION_DURATION_MS;
+    const normalizedElapsed = Math.max(
+      0,
+      Math.min(transitionDuration, Number(elapsedMs) || 0)
+    );
+    if (
+      document.documentElement.dataset.participantTheme !== 'vhs'
+      || normalizedElapsed >= transitionDuration
+    ) {
+      completeSequence();
+      return;
     }
 
-    if (payload.question || payload.current_question || payload.active_question) return true;
-    if (payload.can_buzz || payload.round?.current_buzz_participant) return true;
-    if (type === 'buzzer_state' && Number(payload.round?.number || 0) > 0) return true;
-    if (type === 'host_points_state' && Number(payload.round?.number || 0) > 1) return true;
-    if (payload.participant_state?.can_answer) return true;
-    return false;
-  }
+    if (hideTimer) window.clearTimeout(hideTimer);
+    if (transitionTimer) window.clearTimeout(transitionTimer);
+    if (transitionFallbackTimer) window.clearTimeout(transitionFallbackTimer);
+    hideTimer = null;
+    transitionActive = true;
+    visible = true;
+    introOverlay.hidden = false;
+    introOverlay.setAttribute('aria-hidden', 'true');
+    introOverlay.classList.add('qa-vhs-intro--transitioning');
+    document.querySelectorAll('.vhs-theme-shell').forEach(shell => {
+      if (!shell.hasAttribute('data-qa-vhs-transition-inert')) {
+        shell.dataset.qaVhsTransitionInert = shell.hasAttribute('inert') ? 'preserve' : 'remove';
+      }
+      shell.setAttribute('inert', '');
+    });
+    document.documentElement.style.setProperty(
+      '--qa-vhs-transition-elapsed',
+      `${normalizedElapsed}ms`
+    );
+    document.documentElement.classList.add(
+      'is-session-game-intro-active',
+      'qa-vhs-transition--active'
+    );
 
-  function handleState(payload) {
-    if (isActivePayload(payload)) hide();
+    const remainingMs = transitionDuration - normalizedElapsed;
+    transitionTimer = window.setTimeout(completeSequence, remainingMs);
+    transitionFallbackTimer = window.setTimeout(
+      completeSequence,
+      remainingMs + VHS_TRANSITION_FALLBACK_BUFFER_MS
+    );
   }
 
   function show() {
-    const overlay = document.getElementById('sessionGameStartIntro');
-    if (!overlay || cancelled || hasActiveGameplayDom()) return;
-    mountVhsIntro(overlay);
-    setIntroChrome(overlay);
-    overlay.dataset.gameId = [params.get('game_start_key'), params.get('game_start_room')]
-      .filter(Boolean)
-      .join(':') || storageKey;
-    overlay.dataset.gameNumber = gameNumber;
-    overlay.dataset.gameName = gameTitle;
-    if (document.documentElement.dataset.participantTheme === 'vhs') {
-      vhsIntroController = initializeVhsGameIntro({
-        root: overlay,
-        gameId: overlay.dataset.gameId,
-        gameNumber,
-        gameName: gameTitle,
+    if (!introOverlay || introCompleted || !hasValidIntroTimeline(introState)) return;
+    const startedAt = Date.parse(introState.introStartedAt);
+    const endsAt = Date.parse(introState.introEndsAt);
+    const serverNow = estimatedServerNowMs();
+    if (serverNow >= endsAt) {
+      startVhsTransition(serverNow - endsAt);
+      return;
+    }
+    const remainingMs = endsAt - serverNow;
+
+    const elapsedMs = Math.max(0, Math.min(endsAt - startedAt, serverNow - startedAt));
+    introOverlay.dataset.gameId = introState.gameInstanceId;
+    introOverlay.dataset.gameNumber = introState.gameNumber;
+    introOverlay.dataset.gameTitle = introState.gameTitle;
+    introOverlay.hidden = false;
+    introOverlay.removeAttribute('aria-hidden');
+    introOverlay.classList.remove('qa-vhs-intro--transitioning');
+    introOverlay.classList.remove('qa-vhs-intro--hiding');
+    document.documentElement.classList.add('is-session-game-intro-active');
+    visible = true;
+
+    if (isQaVhsParticipantTheme()) {
+      vhsIntroController?.destroy();
+      vhsIntroController = initializeQaVhsGameIntro({
+        root: introOverlay,
+        gameId: introState.gameInstanceId,
+        gameNumber: introState.gameNumber,
+        gameTitle: introState.gameTitle,
+        introStartedAt: introState.introStartedAt,
+        introEndsAt: introState.introEndsAt,
+        serverNow: introState.serverNow,
+        stateRevision: introState.stateRevision,
+        introActive: introState.introActive,
+        elapsedMs,
       });
     } else {
-      setDefaultIntroText();
+      const numberElement = introOverlay.querySelector('[data-qa-vhs-intro-number]');
+      const mainLayer = introOverlay.querySelector('[data-qa-vhs-intro-layer="white"]');
+      numberElement.textContent = `Spiel ${introState.gameNumber}`;
+      mainLayer.textContent = introState.gameTitle;
     }
-    document.documentElement.classList.add('is-session-game-intro-active');
-    overlay.hidden = false;
-    overlay.classList.remove('is-hiding');
-    visible = true;
-    try { sessionStorage.setItem(storageKey, 'shown'); } catch (_) {}
-    hideTimer = window.setTimeout(hide, INTRO_DISPLAY_DURATION_MS);
+
+    if (hideTimer) window.clearTimeout(hideTimer);
+    hideTimer = window.setTimeout(
+      document.documentElement.dataset.participantTheme === 'vhs'
+        ? () => startVhsTransition(0)
+        : completeSequence,
+      remainingMs
+    );
+  }
+
+  function normalizeIntroState(payload) {
+    if (!payload || typeof payload !== 'object') return null;
+    const source = payload.intro && typeof payload.intro === 'object'
+      ? payload.intro
+      : payload;
+    const hasIntroField = [
+      'intro_active',
+      'intro_started_at',
+      'intro_ends_at',
+      'introActive',
+      'introStartedAt',
+      'introEndsAt',
+    ].some(key => Object.prototype.hasOwnProperty.call(source, key));
+    if (!hasIntroField) return null;
+    return {
+      introActive: source.intro_active ?? source.introActive ?? false,
+      gameNumber: String(source.game_number ?? source.gameNumber ?? introState.gameNumber ?? ''),
+      gameTitle: String(source.game_title ?? source.gameTitle ?? introState.gameTitle ?? ''),
+      gameKey: String(source.game_key ?? source.gameKey ?? introState.gameKey ?? ''),
+      roomCode: String(source.room_code ?? source.roomCode ?? introState.roomCode ?? ''),
+      gameInstanceId: String(
+        source.game_instance_id
+        ?? source.gameInstanceId
+        ?? introState.gameInstanceId
+        ?? ''
+      ),
+      introStartedAt: source.intro_started_at
+        ?? source.introStartedAt
+        ?? introState.introStartedAt
+        ?? '',
+      introEndsAt: source.intro_ends_at
+        ?? source.introEndsAt
+        ?? introState.introEndsAt
+        ?? '',
+      serverNow: source.server_now ?? source.serverNow ?? introState.serverNow ?? '',
+      stateRevision: Number(source.state_revision ?? source.stateRevision),
+    };
+  }
+
+  function handleState(payload) {
+    const nextState = normalizeIntroState(payload);
+    if (!nextState) return false;
+    if (
+      introState.gameInstanceId
+      && nextState.gameInstanceId
+      && nextState.gameInstanceId !== introState.gameInstanceId
+    ) {
+      return false;
+    }
+    if (!Number.isInteger(nextState.stateRevision) || nextState.stateRevision < highestIntroRevision) {
+      return false;
+    }
+    if (introCompleted && nextState.stateRevision <= highestIntroRevision) {
+      return false;
+    }
+
+    highestIntroRevision = nextState.stateRevision;
+    introState = nextState;
+    syncServerClock(nextState.serverNow);
+    const endsAt = Date.parse(nextState.introEndsAt || '');
+    if (!Number.isFinite(endsAt)) {
+      completeSequence();
+      return true;
+    }
+    if (estimatedServerNowMs() >= endsAt) {
+      startVhsTransition(estimatedServerNowMs() - endsAt);
+      return true;
+    }
+    show();
+    return true;
   }
 
   window.sessionGameStartIntro = {
-    hide,
+    hide: completeSequence,
     handleState,
+    getState() {
+      return {...introState, transitionActive};
+    },
   };
 
-  removeIntroParams();
-  if (!shouldShow) return;
-
-  let alreadyShown = false;
-  try { alreadyShown = sessionStorage.getItem(storageKey) === 'shown'; } catch (_) {}
-  if (alreadyShown) return;
+  if (!hasValidIntroTimeline(introState)) {
+    clearVhsIntroState();
+    removeIntroParams();
+    return;
+  }
+  if (readIntroRecord()?.completedAt) {
+    introCompleted = true;
+    clearVhsIntroState();
+    removeIntroParams();
+    return;
+  }
 
   if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', show, { once: true });
+    document.addEventListener('DOMContentLoaded', show, {once: true});
   } else {
     show();
   }

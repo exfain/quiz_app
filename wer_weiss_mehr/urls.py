@@ -11,6 +11,7 @@ urlpatterns = [
     path('start-set/<str:room_code>/', views.start_game_set, name='start_game_set'),
     path('skip-tutorial-set/<str:room_code>/', views.skip_tutorial_set_view, name='skip_tutorial_set'),
     path('end-round/<str:room_code>/', views.end_round, name='end_round'),
+    path('open-round/<str:room_code>/', views.open_round, name='open_round'),
     path('next-round/<str:room_code>/', views.next_round, name='next_round'),
     path('finish-set/<str:room_code>/', views.finish_current_set, name='finish_current_set'),
     path('clear-set/<str:room_code>/', views.clear_set_selection, name='clear_set_selection'),

@@ -1,9 +1,11 @@
+{% load static %}
 <!DOCTYPE html>
-<html>
+<html lang="de">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Lobby · {{ session_name }}</title>
+    <link rel="stylesheet" href="{% static 'css/session_join_qr.css' %}">
     <style>
       body { 
         font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji"; 
@@ -33,17 +35,22 @@
         border-radius: 8px; 
         box-sizing: border-box;
       }
-      .error { 
-        color: #dc2626; 
+      .nickname-status {
+        margin-top: 0.35rem;
         font-size: .875rem;
-        margin-top: 0.25rem;
-        min-height: 1.25rem;
       }
-      .success { 
+      .nickname-status[hidden] {
+        display: none;
+      }
+      .nickname-status--error {
+        color: #dc2626;
+      }
+      .nickname-status--available {
         color: #16a34a; 
-        font-size: .875rem;
-        margin-top: 0.25rem;
-        min-height: 1.25rem;
+      }
+      .nickname-status--checking,
+      .nickname-status--rejoin {
+        color: #6b7280;
       }
       #joinBtn {
         background: linear-gradient(135deg, #3b82f6, #2563eb);
@@ -200,6 +207,7 @@
       .lb-table th.lb-score, .lb-table th.lb-games { text-align: center; }
       .lb-empty { padding: .8rem 0; color: var(--muted); font-size: .85rem; }
     </style>
+    <script src="{% static 'js/authoritative-game-state.js' %}"></script>
   </head>
   <body>
     <div
@@ -219,13 +227,13 @@
             <input 
               id="nickname" 
               maxlength="30" 
-              placeholder="Your nickname" 
+              placeholder="Name eingeben"
               autocomplete="off"
               spellcheck="false"
             />
-            <div id="nicknameStatus" class="error"></div>
+            <div id="nicknameStatus" class="nickname-status" role="status" aria-live="polite" hidden></div>
           </div>
-          <button id="joinBtn" disabled>Join</button>
+          <button id="joinBtn" class="vhs-lobby-ready-button" type="button" disabled>Beitreten</button>
         </div>
         <div id="statusMessage" class="status-message" style="display: none;"></div>
       </div>
@@ -266,7 +274,9 @@
           </div>
         </div>
       </div>
-      <div class="share" data-participant-lobby-share style="text-align:center; margin-top:2rem; padding-bottom:1rem;"><span data-participant-lobby-share-label>Share link:</span> <code data-participant-lobby-share-value>{{ request.scheme }}://{{ request.get_host }}/hub/lobby/{{ session_code }}/</code></div>
+      <div class="share" data-participant-lobby-share style="text-align:center; margin-top:2rem; padding-bottom:1rem;">
+        {% include 'includes/_session_join_qr.html' with join_url=join_url join_qr_variant='participant' only %}
+      </div>
     </div>
 
     <div class="readiness-overlay" id="readinessOverlay" aria-hidden="true">
@@ -281,9 +291,12 @@
       const code = '{{ session_code }}';
       const ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws/hub/' + code + '/');
       window.hubLobbySocket = ws;
-      const takenNicknames = new Set();
-      let lobbyNicknames = [];
       let nicknameCheckTimeout = null;
+      let latestNicknameRequestId = 0;
+      let nicknameAvailability = 'idle';
+      let autoJoinRequested = false;
+      let joinInFlight = false;
+      let activeGameNavigationKey = '';
       let currentNickname = '';
       let sessionEndedReceived = false;
       const initialNextGameNumber = Number(
@@ -300,7 +313,7 @@
         const lobbyRoot = document.querySelector('[data-participant-lobby]');
         if (!lobbyRoot) return;
 
-        const nickname = currentNickname || nicknameInput.value.trim();
+        const nickname = currentNickname;
         if (nickname) lobbyRoot.dataset.participantName = nickname;
         else delete lobbyRoot.dataset.participantName;
 
@@ -338,20 +351,37 @@
       const readinessMessage = document.getElementById('readinessMessage');
       const readinessReadyBtn = document.getElementById('readinessReadyBtn');
 
-      // Populate known participants from server-side context
-      const dbParticipants = {{ participants|safe }};
-      (dbParticipants || []).forEach(p => {
-        takenNicknames.add(p.nickname.toLowerCase());
-        lobbyNicknames.push(p.nickname);
-      });
-      // Initialize
+      const rejoinStorageKey = `hub_lobby_rejoin:${code}`;
+
+      function readRejoinCredential() {
+        try {
+          const value = JSON.parse(localStorage.getItem(rejoinStorageKey) || 'null');
+          if (value && typeof value.nickname === 'string' && typeof value.token === 'string') {
+            return value;
+          }
+        } catch (_) {}
+        return null;
+      }
+
+      function rejoinTokenFor(nickname) {
+        const credential = readRejoinCredential();
+        if (!credential || credential.nickname.toLowerCase() !== nickname.toLowerCase()) return '';
+        return credential.token;
+      }
+
+      function storeRejoinCredential(nickname, token) {
+        if (!nickname || !token) return;
+        try {
+          localStorage.setItem(rejoinStorageKey, JSON.stringify({ nickname, token }));
+        } catch (_) {}
+      }
 
       function renderCheckInState(payload) {
         if (!payload || !payload.check_in) return;
         const checkIn = payload.check_in;
         const counts = payload.counts || {};
         const participants = payload.participants || [];
-        const currentName = (currentNickname || nicknameInput.value.trim() || '').toLowerCase();
+        const currentName = (currentNickname || '').toLowerCase();
         const me = participants.find(p => (p.nickname || '').toLowerCase() === currentName);
         const labels = {
           not_started: 'Der Check-in wurde noch nicht gestartet.',
@@ -384,7 +414,7 @@
       }
 
       function submitCheckIn() {
-        const nickname = currentNickname || nicknameInput.value.trim();
+        const nickname = currentNickname;
         if (!nickname) return;
         readyCheckInBtn.disabled = true;
         fetch(`/hub/api/session/${code}/check-in/participant/`, {
@@ -393,7 +423,10 @@
             'Content-Type': 'application/json',
             'X-CSRFToken': '{{ csrf_token }}',
           },
-          body: JSON.stringify({ nickname }),
+          body: JSON.stringify({
+            nickname,
+            rejoin_token: rejoinTokenFor(nickname),
+          }),
         })
           .then(r => r.json().then(payload => ({ ok: r.ok, payload })))
           .then(({ ok, payload }) => {
@@ -414,7 +447,7 @@
         if (!payload || !payload.readiness_check) return;
         const check = payload.readiness_check || {};
         const participants = payload.readiness_participants || [];
-        const nickname = currentNickname || nicknameInput.value.trim();
+        const nickname = currentNickname;
         const me = participants.find(p => (p.nickname || '').toLowerCase() === nickname.toLowerCase());
         const shouldShow = !!check.active && !!nickname && !!me && !me.ready;
         readinessOverlay?.classList.toggle('is-visible', shouldShow);
@@ -427,7 +460,7 @@
       }
 
       function submitReadiness() {
-        const nickname = currentNickname || nicknameInput.value.trim();
+        const nickname = currentNickname;
         if (!nickname) return;
         readinessReadyBtn.disabled = true;
         ws.send(JSON.stringify({ type: 'participant_ready', nickname }));
@@ -445,19 +478,17 @@
         ws.send(JSON.stringify({ type: 'get_state' }));
         fetchCheckInState();
 
-        // If nickname is provided via query, prefill and auto-join
+        // Restore only a token-bound participant identity. A nickname in the URL
+        // remains a candidate and is always checked by the server.
         try {
           const qp = new URLSearchParams(window.location.search);
-          const nick = qp.get('nickname');
+          const credential = readRejoinCredential();
+          const nick = qp.get('nickname') || credential?.nickname || '';
           if (nick) {
             nicknameInput.value = nick;
-            updateNicknameStatus();
-            // slight delay to allow takenNicknames render
-            setTimeout(() => {
-              if (!joinBtn.disabled) {
-                joinBtn.click();
-              }
-            }, 300);
+            scheduleNicknameCheck({ autoJoin: true, delay: 0 });
+          } else {
+            renderNicknameStatus('', 'idle');
           }
         } catch(_) {}
       };
@@ -473,7 +504,13 @@
         
         // Handle redirection to active game if available
         if (data.type === 'lobby_join_success') {
-          currentNickname = nicknameInput.value.trim();
+          joinInFlight = false;
+          const joinedNickname = (data.nickname || nicknameInput.value).trim();
+          nicknameInput.value = joinedNickname;
+          currentNickname = joinedNickname;
+          storeRejoinCredential(joinedNickname, data.rejoin_token);
+          renderNicknameStatus('', 'idle');
+          joinCard.style.display = 'none';
           syncParticipantLobbyMetadata();
 
           // Check for active game and redirect if needed
@@ -486,7 +523,7 @@
             // Check if there's an active game from the server-side context
             const activeGameKey = data.game_key;
             const activeRoomCode = data.room_code;
-            const nickname = nicknameInput.value.trim();
+            const nickname = currentNickname;
 
             if (activeGameKey && activeRoomCode && nickname) {
               const routes = {
@@ -508,6 +545,7 @@
               const code = '{{ session_code }}';
               const joinRoute = new URL(routes[activeGameKey]?.join, window.location.origin);
               const playRoute = new URL(`${routes[activeGameKey]?.play}${activeRoomCode}/${encodeURIComponent(nickname)}/?hub_session=${code}`, window.location.origin);
+              appendGameStartIntroParams(playRoute, data.step || {});
               
               // Prepare join payload
               const csrfToken = "{{ csrf_token }}"; // or get dynamically if rendered server-side
@@ -551,6 +589,43 @@
           return;
         }
 
+        if (data.type === 'nickname_status') {
+          const requestId = Number(data.request_id);
+          const visibleNickname = nicknameInput.value.trim();
+          if (
+            requestId !== latestNicknameRequestId
+            || !visibleNickname
+            || (data.nickname || '').toLowerCase() !== visibleNickname.toLowerCase()
+          ) {
+            return;
+          }
+
+          nicknameAvailability = data.status;
+          if (data.status === 'available') {
+            renderNicknameStatus('Verfügbar', 'available');
+          } else if (data.status === 'rejoin') {
+            nicknameInput.value = data.nickname;
+            renderNicknameStatus(
+              `Willkommen zurück! Als „${data.nickname}“ fortfahren?`,
+              'rejoin'
+            );
+          } else if (data.status === 'taken') {
+            renderNicknameStatus('Dieser Name ist bereits vergeben.', 'error');
+          } else {
+            renderNicknameStatus(data.message || 'Der Name ist ungültig.', 'error');
+          }
+          syncJoinButtonState();
+
+          if (
+            autoJoinRequested
+            && (nicknameAvailability === 'available' || nicknameAvailability === 'rejoin')
+          ) {
+            autoJoinRequested = false;
+            submitJoin();
+          }
+          return;
+        }
+
         if (data.type === 'vote_update') {
           refreshVotes();
           return;
@@ -568,18 +643,17 @@
         }
 
         if (data.type === 'state') {
-          // Update known participants
-          lobbyNicknames = [];
-          (data.participants || []).forEach(p => {
-            takenNicknames.add(p.nickname.toLowerCase());
-            lobbyNicknames.push(p.nickname);
-          });
           // Update available games for voting
           currentSteps = data.steps || [];
           syncParticipantLobbyMetadata(data);
           refreshVotes();
-          updateNicknameStatus();
-          maybeHideJoin();
+          if (
+            !currentNickname
+            && nicknameAvailability === 'available'
+            && nicknameInput.value.trim().length >= 3
+          ) {
+            scheduleNicknameCheck({ delay: 0 });
+          }
           // Sync scoreboard visibility from session state
           if (typeof data.scoreboard_visible === 'boolean') {
             setScoreboardVisible(data.scoreboard_visible);
@@ -599,10 +673,10 @@
 
         if (data.type === 'join_success') {
           // Successfully joined
-          showStatus('Successfully joined the lobby!', 'success');
+          showStatus('Lobby erfolgreich beigetreten.', 'success');
           nicknameInput.disabled = true;
           joinBtn.disabled = true;
-          joinBtn.textContent = 'Joined';
+          joinBtn.textContent = 'Beigetreten';
           currentNickname = nicknameInput.value.trim();
           syncParticipantLobbyMetadata();
           const titleEl = document.getElementById('lobbyTitle');
@@ -611,8 +685,24 @@
         }
 
         if (data.type === 'join_error') {
-          showStatus(data.message || 'Failed to join', 'error');
-          joinBtn.disabled = false;
+          joinInFlight = false;
+          currentNickname = '';
+          nicknameInput.disabled = false;
+          if (data.code === 'nickname_taken') {
+            nicknameAvailability = 'taken';
+            renderNicknameStatus('Dieser Name ist bereits vergeben.', 'error');
+          } else if (data.code === 'name_too_short') {
+            nicknameAvailability = 'invalid';
+            renderNicknameStatus('Der Name ist zu kurz.', 'error');
+          } else {
+            nicknameAvailability = 'invalid';
+            renderNicknameStatus(
+              data.message || 'Der Beitritt ist derzeit nicht möglich.',
+              'error'
+            );
+          }
+          syncJoinButtonState();
+          return;
         }
 
         if (data.type === 'navigate' && data.step) {
@@ -634,7 +724,15 @@
           };
           
           if (step.room_code && routes[step.game_key]) {
-            const nickname = currentNickname || nicknameInput.value.trim();
+            const navigationKey = [
+              step.game_key,
+              step.room_code,
+              step.intro?.game_instance_id || step.game_instance_id || '',
+            ].join(':');
+            if (activeGameNavigationKey === navigationKey) return;
+            activeGameNavigationKey = navigationKey;
+
+            const nickname = currentNickname;
             const joinUrl = new URL(routes[step.game_key].join, window.location.origin);
             const playUrl = new URL(`${routes[step.game_key].play}${step.room_code}/${encodeURIComponent(nickname)}/`, window.location.origin);
             playUrl.searchParams.set('hub_session', code);
@@ -669,6 +767,7 @@
                   console.log('Join successful, redirecting to play URL');
                   window.location.href = playUrl.toString();
                 } else if (step.game_key === 'who') {
+                  activeGameNavigationKey = '';
                   console.error('Who join failed; keeping participant in the hub lobby.', data.error);
                   showStatus(data.error || 'Teilnahme am aktuellen Spiel konnte nicht bestaetigt werden.', 'error');
                 } else {
@@ -677,6 +776,7 @@
                 }
               })
               .catch(error => {
+                activeGameNavigationKey = '';
                 console.error('Error joining game:', error);
                 if (step.game_key === 'who') {
                   showStatus('Teilnahme am aktuellen Spiel konnte nicht bestaetigt werden.', 'error');
@@ -685,6 +785,7 @@
                 window.location.href = playUrl.toString();
               });
             } catch (error) {
+              activeGameNavigationKey = '';
               console.error('Error joining game:', error);
               if (step.game_key === 'who') {
                 showStatus('Teilnahme am aktuellen Spiel konnte nicht bestaetigt werden.', 'error');
@@ -717,112 +818,107 @@
       };
       // Input validation
       nicknameInput.addEventListener('input', () => {
-        // Clean and validate nickname
-        let nickname = nicknameInput.value.trim();
-        nicknameInput.value = nickname;
-        
-        // Clear any existing timeout
-        if (nicknameCheckTimeout) {
-          clearTimeout(nicknameCheckTimeout);
-        }
-        
-        // Only check if we have enough characters
-        if (nickname.length >= 2) {
-          nicknameCheckTimeout = setTimeout(() => {
-            updateNicknameStatus();
-          }, 300); // Debounce 300ms
-        } else {
-          updateNicknameStatus();
-        }
+        autoJoinRequested = false;
+        scheduleNicknameCheck();
       });
 
       // Join button click handler
-      joinBtn.addEventListener('click', () => {
-        const nickname = nicknameInput.value.trim();
-        if (!isValidNickname(nickname)) return;
-        
-        showStatus('Please Wait...', 'info');
-        
-        ws.send(JSON.stringify({ 
-          type: 'join', 
-          nickname: nickname 
-        }));
-        
-        joinBtn.disabled = true;
-        nicknameInput.disabled = true;
-
-        // Update URL with nickname
-        const url = new URL(window.location.href);
-        url.searchParams.set('nickname', encodeURIComponent(nickname));
-        window.history.pushState({}, '', url);
-        //window.location.href = url.toString();
-        
+      joinBtn.addEventListener('click', submitJoin);
+      nicknameInput.addEventListener('keydown', (event) => {
+        if (event.key !== 'Enter') return;
+        event.preventDefault();
+        if (!joinBtn.disabled) submitJoin();
       });
 
 
 
-      function cameFromGame() {
-        try {
-          const ref = document.referrer || '';
-          if (/\/play\//.test(ref)) return true;
-          const qp = new URLSearchParams(window.location.search);
-          if (qp.get('return') === '1' || qp.get('back') === '1' || qp.get('from') === 'game') return true;
-        } catch(_) {}
-        return false;
+      function renderNicknameStatus(message, state) {
+        nicknameStatus.textContent = message;
+        nicknameStatus.hidden = !message;
+        nicknameStatus.className = state && state !== 'idle'
+          ? `nickname-status nickname-status--${state}`
+          : 'nickname-status';
       }
 
-      function maybeHideJoin() {
-        if (!joinCard) return;
-        const nick = nicknameInput.value.trim();
-        const alreadyIn = nick && takenNicknames.has(nick.toLowerCase());
-        if (cameFromGame() || alreadyIn) {
-          joinCard.style.display = 'none';
-          if (nick) {
-            currentNickname = nick;
-            syncParticipantLobbyMetadata();
-            const titleEl = document.getElementById('lobbyTitle');
-            if (titleEl) titleEl.textContent = '{{ session_name }} (' + nick + ')';
-          }
-        }
+      function syncJoinButtonState() {
+        const canJoin = (
+          !joinInFlight
+          && (nicknameAvailability === 'available' || nicknameAvailability === 'rejoin')
+        );
+        joinBtn.disabled = !canJoin;
+        joinBtn.textContent = nicknameAvailability === 'rejoin' ? 'Fortfahren' : 'Beitreten';
       }
-      function updateNicknameStatus() {
+
+      function scheduleNicknameCheck({ autoJoin = false, delay = 300 } = {}) {
         const nickname = nicknameInput.value.trim();
-        const isValid = isValidNickname(nickname);
-        
+        autoJoinRequested = autoJoinRequested || autoJoin;
+        latestNicknameRequestId += 1;
+        if (nicknameCheckTimeout) {
+          clearTimeout(nicknameCheckTimeout);
+          nicknameCheckTimeout = null;
+        }
+
         if (nickname.length === 0) {
-          nicknameStatus.textContent = 'Enter a nickname';
-          nicknameStatus.className = 'error';
-          joinBtn.disabled = true;
-          joinBtn.textContent = 'Join';
+          autoJoinRequested = false;
+          nicknameAvailability = 'idle';
+          renderNicknameStatus('', 'idle');
+          syncJoinButtonState();
           return;
         }
 
-        if (nickname.length < 2) {
-          nicknameStatus.textContent = 'Nickname too short (min 2 characters)';
-          nicknameStatus.className = 'error';
-          joinBtn.disabled = true;
-          joinBtn.textContent = 'Join';
-          return;
-        }
-        
-        if (takenNicknames.has(nickname.toLowerCase())) {
-          nicknameStatus.textContent = '↩ Welcome back! Continue as "' + nickname + '"?';
-          nicknameStatus.className = 'success';
-          joinBtn.disabled = false;
-          joinBtn.textContent = 'Continue';
+        if (nickname.length < 3) {
+          autoJoinRequested = false;
+          nicknameAvailability = 'invalid';
+          renderNicknameStatus('Der Name ist zu kurz.', 'error');
+          syncJoinButtonState();
           return;
         }
 
-        // Valid nickname
-        nicknameStatus.textContent = '✓ Available';
-        nicknameStatus.className = 'success';
-        joinBtn.disabled = false;
-        joinBtn.textContent = 'Join';
+        nicknameAvailability = 'checking';
+        renderNicknameStatus('Verfügbarkeit wird geprüft.', 'checking');
+        syncJoinButtonState();
+        const requestId = latestNicknameRequestId;
+        nicknameCheckTimeout = setTimeout(() => {
+          nicknameCheckTimeout = null;
+          if (ws.readyState !== WebSocket.OPEN) {
+            nicknameAvailability = 'invalid';
+            renderNicknameStatus('Verbindung wird hergestellt.', 'checking');
+            syncJoinButtonState();
+            return;
+          }
+          ws.send(JSON.stringify({
+            type: 'check_nickname',
+            request_id: requestId,
+            candidate_name: nickname,
+            rejoin_token: rejoinTokenFor(nickname),
+          }));
+        }, delay);
       }
 
-      function isValidNickname(nickname) {
-        // A taken nickname is valid too (rejoin scenario)
-        return nickname.length >= 2;
+      function submitJoin() {
+        const nickname = nicknameInput.value.trim();
+        if (
+          joinBtn.disabled
+          || joinInFlight
+          || nickname.length < 3
+          || !['available', 'rejoin'].includes(nicknameAvailability)
+          || ws.readyState !== WebSocket.OPEN
+        ) {
+          return;
+        }
+
+        joinInFlight = true;
+        renderNicknameStatus('Beitritt wird geprüft.', 'checking');
+        syncJoinButtonState();
+        ws.send(JSON.stringify({
+          type: 'join',
+          nickname,
+          rejoin_token: rejoinTokenFor(nickname),
+        }));
+
+        const url = new URL(window.location.href);
+        url.searchParams.set('nickname', nickname);
+        window.history.pushState({}, '', url);
       }
 
       function showStatus(message, type = 'info') {
@@ -860,8 +956,8 @@
           </div>
         `;
       }
-      // Initial hide check
-      maybeHideJoin();
+      renderNicknameStatus('', 'idle');
+      syncJoinButtonState();
 
       // Voting
       const voteSection = document.getElementById('voteSection');
@@ -893,16 +989,40 @@
         const matchedOrder = Number(matchedStep?.order);
         const stepOrder = Number(step.order);
         const rawOrder = Number.isInteger(matchedOrder) && matchedOrder >= 0 ? matchedOrder : stepOrder;
-        const displayOrder = Number.isInteger(rawOrder) && rawOrder >= 0 ? String(rawOrder + 1) : '';
-        const fallbackName = gameNames[step.game_key] || 'Spiel';
-        const displayName = step.title || matchedStep?.title || matchedStep?.display_name || fallbackName;
+        const intro = step.intro || matchedStep?.intro || null;
+        const displayOrder = String(intro?.game_number || (
+          Number.isInteger(rawOrder) && rawOrder >= 0 ? rawOrder + 1 : ''
+        ));
+        const displayName = String(intro?.game_title || '').trim();
+        const startedAt = Date.parse(intro?.intro_started_at || '');
+        const endsAt = Date.parse(intro?.intro_ends_at || '');
+        const serverNow = Date.parse(intro?.server_now || '');
+        const stateRevision = Number(intro?.state_revision);
 
+        if (
+          intro?.intro_active !== true
+          || !displayOrder
+          || !displayName
+          || !Number.isFinite(startedAt)
+          || !Number.isFinite(endsAt)
+          || !Number.isFinite(serverNow)
+          || !Number.isInteger(stateRevision)
+          || stateRevision < 1
+        ) {
+          return false;
+        }
         playUrl.searchParams.set('game_start_intro', '1');
-        playUrl.searchParams.set('game_start_key', step.game_key || '');
-        playUrl.searchParams.set('game_start_room', step.room_code || '');
-        playUrl.searchParams.set('game_start_nonce', String(Date.now()));
-        if (displayOrder) playUrl.searchParams.set('game_start_order', displayOrder);
+        playUrl.searchParams.set('game_start_key', intro.game_key || step.game_key || '');
+        playUrl.searchParams.set('game_start_room', step.room_code || matchedStep?.room_code || '');
+        playUrl.searchParams.set('game_start_instance', intro.game_instance_id || '');
+        playUrl.searchParams.set('game_start_order', displayOrder);
         playUrl.searchParams.set('game_start_title', displayName);
+        playUrl.searchParams.set('game_start_intro_started_at', intro.intro_started_at);
+        playUrl.searchParams.set('game_start_intro_ends_at', intro.intro_ends_at);
+        playUrl.searchParams.set('game_start_server_now', intro.server_now);
+        playUrl.searchParams.set('game_start_state_revision', String(stateRevision));
+        playUrl.searchParams.set('game_start_client_received_at', String(Date.now()));
+        return true;
       }
 
       function hideVoting() {
@@ -953,7 +1073,7 @@
       }
 
       function castVote(stepOrder) {
-        const nickname = currentNickname || nicknameInput.value.trim();
+        const nickname = currentNickname;
         if (!nickname) return;
         myVotedOrder = stepOrder;
         if (ws.readyState === WebSocket.OPEN) {
@@ -964,7 +1084,7 @@
       }
 
       function refreshVotes() {
-        const nickname = currentNickname || nicknameInput.value.trim();
+        const nickname = currentNickname;
         const suffix = nickname ? `?nickname=${encodeURIComponent(nickname)}` : '';
         fetch(`/hub/api/session/${code}/votes/${suffix}`)
           .then(r => r.json())
@@ -1062,7 +1182,7 @@
 
       function fetchLeaderboard() {
         if (!scoreboardVisible) return;
-        const participantName = (currentNickname || nicknameInput.value.trim()).trim();
+        const participantName = currentNickname.trim();
         if (!participantName) {
           showLeaderboardEmpty('Dein Ranglistenplatz ist noch nicht verfügbar.');
           return;

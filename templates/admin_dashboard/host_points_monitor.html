@@ -1,4 +1,5 @@
 {% extends "admin_dashboard/base.html" %}
+{% load static %}
 
 {% block title %}Host-Punktevergabe Monitor{% endblock %}
 {% block page_title %}Host-Punktevergabe Monitor{% endblock %}
@@ -24,7 +25,7 @@
                 <div class="card-body">
                     <p class="text-muted small mb-3">Das Spiel findet außerhalb der App statt. Der Host vergibt hier nur Punkte.</p>
                     <div class="d-flex flex-wrap gap-2 mb-3">
-                        <button class="btn btn-primary {% if game.status == 'active' or game.status == 'completed' %}d-none{% endif %}" id="startQuizBtn">Spiel starten</button>
+                        <button class="btn btn-primary {% if game.status == 'active' or game.status == 'completed' %}d-none{% endif %}" id="startQuizBtn" data-host-game-start>Spiel starten</button>
                         <button class="btn btn-outline-primary d-none" id="nextRoundBtn">Nächste Runde</button>
                         <button class="btn btn-outline-danger" id="endGameBtn" {% if game.status != 'active' %}disabled{% endif %}>Spiel beenden</button>
                     </div>
@@ -83,9 +84,9 @@
             <div class="card border-0 shadow-sm mt-3">
                 <div class="card-body d-flex flex-wrap gap-2">
                     {% if hub_session %}
-                    <a class="btn btn-outline-secondary btn-sm" href="/hub/monitor/{{ hub_session }}/">Zur Session-Übersicht</a>
+                    <a class="btn btn-outline-secondary btn-sm" id="backToHubBtn" data-host-game-leave href="/hub/monitor/{{ hub_session }}/">Zur Session-Übersicht</a>
                     {% else %}
-                    <a class="btn btn-outline-secondary btn-sm" href="{% url 'admin_dashboard:sessions_overview' %}">Zur Session-Übersicht</a>
+                    <a class="btn btn-outline-secondary btn-sm" id="backToHubBtn" data-host-game-leave href="{% url 'admin_dashboard:sessions_overview' %}">Zur Session-Übersicht</a>
                     {% endif %}
                 </div>
             </div>
@@ -93,14 +94,46 @@
     </div>
 </div>
 
+<script src="{% static 'js/authoritative-game-state.js' %}"></script>
+<script src="{% static 'js/host-game-runtime.js' %}"></script>
 <script>
 const ROOM_CODE = '{{ game.room_code|escapejs }}';
 const HUB_SESSION = '{{ hub_session|escapejs }}';
-let socket = null;
+let currentState = null;
+const guardedAdminActions = new Set([
+    'admin_start_game',
+    'admin_adjust_score',
+    'admin_next_round',
+    'admin_end_game',
+    'admin_set_inactive',
+]);
+const hostRuntime = window.HostGameRuntime.create({
+    messageBase: {hub_session: HUB_SESSION},
+    stateRequest: {type: 'get_state'},
+    render: applyState,
+    onError: error => alert(error.message || 'Fehler'),
+});
+
+function actionButton(payload) {
+    if (payload.type === 'admin_adjust_score') {
+        return document.querySelector(
+            `.score-btn[data-id="${payload.participant_id}"][data-delta="${payload.delta}"]`
+        );
+    }
+    const ids = {
+        admin_start_game: 'startQuizBtn',
+        admin_next_round: 'nextRoundBtn',
+        admin_end_game: 'endGameBtn',
+    };
+    return document.getElementById(ids[payload.type]);
+}
 
 function send(payload) {
-    if (!socket || socket.readyState !== WebSocket.OPEN) return;
-    socket.send(JSON.stringify({ hub_session: HUB_SESSION, ...payload }));
+    if (guardedAdminActions.has(payload.type)) {
+        hostRuntime.sendAction(payload, {button: actionButton(payload)});
+        return;
+    }
+    hostRuntime.send(payload);
 }
 
 function escapeHtml(value) {
@@ -110,6 +143,11 @@ function escapeHtml(value) {
 }
 
 function renderState(data) {
+    hostRuntime.acceptSnapshot(data, {source: 'websocket'});
+}
+
+function applyState(data) {
+    currentState = data;
     const game = data.game || {};
     const round = data.round || {};
     const participants = data.participants || [];
@@ -151,6 +189,7 @@ function renderState(data) {
     if (game.status === 'completed') {
         window.hostEndState?.apply({ message: 'Host-Punktevergabe beendet.', event: data });
     }
+    window.hostGameLeaveGuard?.stateChanged();
 }
 
 function renderControls(gameStatus) {
@@ -164,18 +203,29 @@ function renderControls(gameStatus) {
 
 function connect() {
     const scheme = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    socket = new WebSocket(`${scheme}//${window.location.host}/ws/host-points/${ROOM_CODE}/`);
-    socket.onopen = () => send({ type: 'get_state' });
-    socket.onmessage = event => {
-        const data = JSON.parse(event.data);
+    hostRuntime.connectSocket({
+        url: `${scheme}//${window.location.host}/ws/host-points/${ROOM_CODE}/`,
+        reconnectDelay: 2000,
+        onMessage: data => {
         if (data.type === 'host_points_state') renderState(data);
         if (data.type === 'tutorial_start') updateTutorialProgress(0, data.total || 0, false, data.participants || []);
         if (data.type === 'tutorial_progress') updateTutorialProgress(data.completed, data.total, data.all_done, data.participants || []);
-        if (data.type === 'participants_not_in_lobby') alert(data.message || 'Teilnehmer sind noch im Spiel.');
-        if (data.type === 'active_game_conflict') alert(data.message || 'Ein anderes Spiel ist aktiv.');
-        if (data.type === 'error') alert(data.message || 'Fehler');
-    };
-    socket.onclose = () => setTimeout(connect, 2000);
+        if (data.type === 'participants_not_in_lobby') {
+            hostRuntime.rejectAction(data, {silent: true, refresh: false});
+            if (!window.hostGameStartGuard?.showLobbyReturn(data, document.getElementById('startQuizBtn'))) {
+                alert(data.message || 'Teilnehmer sind noch im Spiel.');
+            }
+        }
+        if (data.type === 'active_game_conflict') {
+            hostRuntime.rejectAction(data, {silent: true, refresh: false});
+            if (!window.hostGameStartGuard?.showActiveGameConflict(data, document.getElementById('startQuizBtn'))) {
+                alert(data.message || 'Ein anderes Spiel ist aktiv.');
+            }
+        }
+        if (data.type === 'action_rejected') hostRuntime.rejectAction(data);
+        if (data.type === 'error') hostRuntime.rejectAction(data);
+        },
+    });
 }
 
 function updateTutorialProgress(completed, total, allDone, participants) {
@@ -193,6 +243,23 @@ document.getElementById('nextRoundBtn').addEventListener('click', () => send({ t
 document.getElementById('endGameBtn').addEventListener('click', () => {
     if (confirm('Host-Punktevergabe beenden?')) send({ type: 'admin_end_game' });
 });
+window.adminGameMonitor = {
+    get websocket() {
+        return hostRuntime.socket;
+    },
+    get isActive() {
+        return currentState?.game?.status === 'active';
+    },
+    get isUnfinished() {
+        return currentState?.game?.status === 'active';
+    },
+    endQuiz() {
+        send({ type: 'admin_end_game' });
+    },
+    setInactive() {
+        send({ type: 'admin_set_inactive' });
+    },
+};
 
 connect();
 </script>

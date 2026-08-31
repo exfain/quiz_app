@@ -1,4 +1,5 @@
 {% extends "admin_dashboard/base.html" %}
+{% load static %}
 
 {% block title %}Who is Lying Monitor - QuizMaster Admin{% endblock %}
 
@@ -54,7 +55,7 @@
                                 <label class="form-check-label" for="playTutorialToggle">Tutorial spielen</label>
                             </div>
                             {% endif %}
-                            <button class="btn btn-success" id="startQuizBtn">
+                            <button class="btn btn-success" id="startQuizBtn" data-host-game-start>
                                 <i data-lucide="play"></i>
                                 {% if quiz.status == 'inactive' %}Spiel reaktivieren{% else %}Spiel starten{% endif %}
                             </button>
@@ -75,7 +76,7 @@
                         <i data-lucide="trophy"></i>
                         Leaderboard einblenden
                     </button>
-                    <button class="btn btn-outline-secondary" id="backToHubBtn">
+                    <button class="btn btn-outline-secondary" id="backToHubBtn" data-host-game-leave>
                         <i data-lucide="arrow-left"></i>
                         Back to Overview
                     </button>
@@ -92,18 +93,18 @@
                 <div class="card-header d-flex justify-content-between align-items-center">
                     <h5 class="card-title mb-0">
                         <i data-lucide="users"></i>
-                        Question Control
+                        Set Control
                     </h5>
                     <button type="button" class="btn btn-sm btn-outline-secondary" data-bs-toggle="modal" data-bs-target="#questionBankModal">
                         <i data-lucide="database" style="width:14px;height:14px;"></i>
-                        Question Bank
+                        Set Bank
                     </button>
                 </div>
                 <div class="card-body">
                     {% if not quiz.current_question %}
                         <!-- Question Selection -->
                         <div id="questionSelection">
-                            <h6 class="mb-3">Select Next Question</h6>
+                            <h6 class="mb-3">Select Next Set</h6>
                             <div class="question-list" id="availableQuestions">
                                 {% for question in available_questions %}
                                 <div class="question-item" data-question-id="{{ question.id }}">
@@ -148,7 +149,7 @@
                                         </div>
                                         <button type="button" class="btn btn-secondary send-question-btn" data-question-id="{{ question.id }}" {% if quiz.status != 'active' %}disabled title="Start the quiz to send questions"{% endif %}>
                                             <i data-lucide="send"></i>
-                                            Send Question
+                                            Send Set
                                         </button>
                                     </div>
                                 </div>
@@ -157,11 +158,11 @@
                             {% if not available_questions %}
                                 <div class="empty-state">
                                     <i data-lucide="inbox"></i>
-                                    <h4>No Questions Available</h4>
-                                    <p>Add some "Who is Lying?" questions to get started!</p>
+                                    <h4>No Sets Available</h4>
+                                    <p>Add some "Who is Lying?" sets to get started!</p>
                                     <a href="{% url 'admin_dashboard:who_management' %}" class="btn btn-primary">
                                         <i data-lucide="plus"></i>
-                                        Add Questions
+                                        Add Sets
                                     </a>
                                 </div>
                             {% endif %}
@@ -170,8 +171,8 @@
                         <!-- Active Question Display -->
                         <div id="activeQuestion">
                             <div class="active-question-header">
-                                <h6>Current Question</h6>
-                                    <div class="question-timer">
+                                <h6>Current Set {{ quiz_session.current_question_number }}/{{ total_sets }}</h6>
+                                    <div class="question-timer{% if not question_answering_open %} d-none{% endif %}" id="questionTimerWrapper">
                                         <div class="timer-circle" id="questionTimerCircle">
                                         <span id="questionTimeLeft">{{ current_question_time_left|default:0 }}</span>
                                         </div>
@@ -188,7 +189,7 @@
                             >
                                 <div class="statement-text">{{ quiz.current_question.statement }}</div>
                                 {% if current_question_people %}
-                                <div class="current-person-banner">
+                                <div class="current-person-banner{% if not question_answering_open %} d-none{% endif %}" id="currentPersonBanner">
                                     <div class="current-person-label">Current name</div>
                                     <div class="current-person-meta">
                                         <span class="current-person-name" id="currentPersonName">{{ current_person_name }}</span>
@@ -218,13 +219,20 @@
                                 
                                 <div class="question-actions">
                                     <div class="d-flex align-items-center gap-2">
-                                        <input type="number" min="3" step="1" class="form-control form-control-sm" id="timePerPersonInput" value="{{ current_question_time_per_person|default:quiz.current_question.time_limit }}" style="max-width:120px;" disabled title="Während einer laufenden Frage gesperrt">
-                                        <button class="btn btn-outline-secondary btn-sm" id="updateTimePerPersonBtn" disabled title="Während einer laufenden Frage gesperrt">Zeit/Name setzen</button>
+                                        <input type="number" min="3" step="1" class="form-control form-control-sm" id="timePerPersonInput" value="{{ current_question_time_per_person|default:quiz.current_question.time_limit }}" style="max-width:120px;" disabled title="Während eines laufenden Sets gesperrt">
+                                        <button class="btn btn-outline-secondary btn-sm" id="updateTimePerPersonBtn" disabled title="Während eines laufenden Sets gesperrt">Zeit/Name setzen</button>
                                     </div>
+                                    {% if question_runtime.question_phase == 'prompt_visible' or question_runtime.question_phase == 'content_visible' %}
+                                    <button class="btn btn-primary" id="startSetBtn" data-question-id="{{ quiz.current_question.id }}" disabled aria-disabled="true">
+                                        <i data-lucide="play"></i>
+                                        SET STARTEN
+                                    </button>
+                                    {% elif question_answering_open %}
                                     <button class="btn btn-warning" id="endQuestionBtn">
                                         <i data-lucide="skip-forward"></i>
-                                        End Question Early
+                                        End Set Early
                                     </button>
+                                    {% endif %}
                                 </div>
                             </div>
                         </div>
@@ -245,7 +253,7 @@
                     <div id="liveResponses" class="live-responses">
                         <div class="no-responses">
                             <i data-lucide="user-search"></i>
-                            <p>No responses yet. Send a question to see participant answers in real-time!</p>
+                            <p>No responses yet. Send a set to see participant answers in real-time!</p>
                         </div>
                     </div>
                 </div>
@@ -312,7 +320,7 @@
                     </div>
                     <div id="tutAllDoneBadge" class="alert alert-success py-2 text-center mb-0" style="display:none;">
                         <i data-lucide="check-circle"></i>
-                        All ready! You can send the first question.
+                        All ready! You can send the first set.
                     </div>
                 </div>
             </div>
@@ -928,6 +936,7 @@
 }
 </style>
 
+<script src="{% static 'js/authoritative-game-state.js' %}"></script>
 <script>
 document.addEventListener('DOMContentLoaded', function() {
     // Save hub_session immediately for Back to Overview button
@@ -951,6 +960,13 @@ document.addEventListener('DOMContentLoaded', function() {
             this.currentPersonIndex = parseInt(document.querySelector('#activeQuestion .current-question-content')?.dataset.currentPersonIndex || '0', 10) || 0;
             this.serverClockOffsetMs = 0;
             this.questionTimeoutTriggered = false;
+            this.questionPhase = '{{ question_runtime.question_phase|default:""|escapejs }}';
+            this.questionVisibleAt = '{{ question_runtime.question_visible_at|default:""|escapejs }}';
+            this.stateRevision = Number('{{ question_runtime.state_revision|default:"-1"|escapejs }}');
+            this.gameId = '{{ question_runtime.game_id|default:""|escapejs }}';
+            this.presentationServerNow = '{{ question_runtime.server_now|default:""|escapejs }}';
+            this.presentationServerReceivedAt = performance.now();
+            this.pendingPhaseAction = null;
             this.quizStartTime = {% if quiz.started_at %}new Date('{{ quiz.started_at|date:"c" }}'){% else %}null{% endif %};
             this.liveResponseState = new Map();
             this.init();
@@ -990,7 +1006,7 @@ document.addEventListener('DOMContentLoaded', function() {
         updateSendButtonAsSent(btn) {
             btn.disabled = false;
             btn.classList.remove('loading');
-            btn.innerHTML = '<i data-lucide="send"></i> Send Question';
+            btn.innerHTML = '<i data-lucide="send"></i> Send Set';
             btn.removeAttribute('title');
             // Add "already sent" hint next to button if not already there
             const wrapper = btn.closest('.d-flex');
@@ -1011,7 +1027,7 @@ document.addEventListener('DOMContentLoaded', function() {
             document.querySelectorAll('.send-question-btn').forEach(btn => {
                 btn.disabled = false;
                 btn.classList.remove('loading');
-                btn.innerHTML = '<i data-lucide="send"></i> Send Question';
+                btn.innerHTML = '<i data-lucide="send"></i> Send Set';
                 btn.removeAttribute('title');
             });
             try { lucide.createIcons(); } catch(_) {}
@@ -1023,6 +1039,7 @@ document.addEventListener('DOMContentLoaded', function() {
             this.startQuizTimer();
             this.applySentStates();
             this.initializeLiveResponseState();
+            this.scheduleSetStartAvailability();
         }
         
         connectWebSocket() {
@@ -1055,6 +1072,7 @@ document.addEventListener('DOMContentLoaded', function() {
         }
 
         handleWebSocketMessage(data) {
+            this.applyAuthoritativeMetadata(data);
             switch(data.type) {
                 case 'connection_established':
                     console.log('Connected:', data.message);
@@ -1071,17 +1089,9 @@ document.addEventListener('DOMContentLoaded', function() {
                     
                 case 'quiz_started':
                     console.log('Quiz started:', data.message);
-                    this.isActive = true;
-                    this.quizStartTime = new Date(data.timestamp);
-                    //this.updateQuizTimer();
-                    this.updateQuizStatus('active');
-                    // Enable question send buttons if they were disabled before start
-                    document.querySelectorAll('.send-question-btn').forEach(btn => {
-                        btn.disabled = false;
-                        btn.removeAttribute('title');
-                    });
-                    // Re-apply sent state so already-sent questions remain blocked
-                    this.applySentStates();
+                    // Re-render from the persisted game state only after the
+                    // server confirmed that the start transaction completed.
+                    location.reload();
                     break;
                     
                 case 'tutorial_start':
@@ -1108,6 +1118,16 @@ document.addEventListener('DOMContentLoaded', function() {
                         this.markQuestionSent(data.question.id);
                     }
                     location.reload(); // Refresh to show active question
+                    break;
+
+                case 'question_answering_opened':
+                    this.pendingPhaseAction = null;
+                    location.reload();
+                    break;
+
+                case 'action_rejected':
+                    this.pendingPhaseAction = null;
+                    this.scheduleSetStartAvailability();
                     break;
                     
                 case 'question_ended':
@@ -1140,6 +1160,41 @@ document.addEventListener('DOMContentLoaded', function() {
                     
                 default:
                     console.log('Unknown message type:', data.type);
+            }
+        }
+
+        applyAuthoritativeMetadata(data = {}) {
+            const source = data.snapshot && typeof data.snapshot === 'object' ? data.snapshot : data;
+            const revision = Number(source.state_revision);
+            if (Number.isFinite(revision) && revision >= this.stateRevision) this.stateRevision = revision;
+            if (source.game_id) this.gameId = String(source.game_id);
+            if (source.question_phase !== undefined && source.question_phase !== null) {
+                this.questionPhase = String(source.question_phase);
+            }
+            if (source.question_visible_at !== undefined && source.question_visible_at !== null) {
+                this.questionVisibleAt = String(source.question_visible_at);
+            }
+            if (source.server_now) {
+                this.presentationServerNow = String(source.server_now);
+                this.presentationServerReceivedAt = performance.now();
+                this.syncServerClock(source.server_now);
+            }
+        }
+
+        remainingQuestionPresentationDelay() {
+            const visibleAt = this.parseServerTimestamp(this.questionVisibleAt);
+            if (visibleAt === null) return 0;
+            return Math.max(0, visibleAt - this.getSynchronizedNowMs());
+        }
+
+        scheduleSetStartAvailability() {
+            const button = document.getElementById('startSetBtn');
+            if (!button) return;
+            const remaining = this.remainingQuestionPresentationDelay();
+            button.disabled = remaining > 0 || !!this.pendingPhaseAction;
+            button.setAttribute('aria-disabled', button.disabled ? 'true' : 'false');
+            if (remaining > 0) {
+                window.setTimeout(() => this.scheduleSetStartAvailability(), remaining + 25);
             }
         }
         
@@ -1214,12 +1269,12 @@ document.addEventListener('DOMContentLoaded', function() {
                 btn.addEventListener('click', (e) => {
                     const questionId = e.target.closest('button').dataset.questionId;
                     if (!this.isActive) {
-                        alert('Start the quiz before sending questions.');
+                        alert('Start the quiz before sending sets.');
                         return;
                     }
                     // Ask for confirmation if question was already sent
                     if (this.isQuestionSent(questionId)) {
-                        if (!confirm('This question has already been sent. Do you want to send it again?')) {
+                        if (!confirm('This set has already been sent. Do you want to send it again?')) {
                             return;
                         }
                     }
@@ -1230,6 +1285,10 @@ document.addEventListener('DOMContentLoaded', function() {
             // End Question button
             document.getElementById('endQuestionBtn')?.addEventListener('click', () => {
                 this.endCurrentQuestion();
+            });
+
+            document.getElementById('startSetBtn')?.addEventListener('click', (event) => {
+                this.startSet(event.currentTarget);
             });
 
             document.getElementById('updateTimePerPersonBtn')?.addEventListener('click', () => {
@@ -1274,22 +1333,8 @@ document.addEventListener('DOMContentLoaded', function() {
         
         startQuiz() {
             if (this.websocket && this.websocket.readyState === WebSocket.OPEN) {
-                // Also notify hub directly (in case backend mirror is unavailable)
-                try {
-                    const qs = new URLSearchParams(window.location.search);
-                    const hub = qs.get('hub_session') || window.__hubCode || (function(){ try { return sessionStorage.getItem("_hub_admin"); } catch(_) { return null; } })();
-                    if (hub) {
-                        const hubWs = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws/hub/' + hub + '/');
-                        hubWs.onopen = () => {
-                            hubWs.send(JSON.stringify({
-                                type: 'navigate_direct',
-                                game_key: 'who',
-                                room_code: '{{ quiz.room_code }}'
-                            }));
-                            setTimeout(() => hubWs.close(), 100);
-                        };
-                    }
-                } catch(_) {}
+                const qs = new URLSearchParams(window.location.search);
+                const hub = qs.get('hub_session') || window.__hubCode || (function(){ try { return sessionStorage.getItem("_hub_admin"); } catch(_) { return null; } })();
                 const showTutorial = document.getElementById('showTutorialToggle')?.checked ?? false;
                 const playTutorial = document.getElementById('playTutorialToggle')?.checked ?? false;
                 if (playTutorial && !{{ quiz.tutorial_question_id|yesno:"true,false" }}) {
@@ -1299,10 +1344,9 @@ document.addEventListener('DOMContentLoaded', function() {
                 this.websocket.send(JSON.stringify({
                     type: 'admin_start_quiz',
                     show_tutorial: showTutorial,
-                    play_tutorial: playTutorial
+                    play_tutorial: playTutorial,
+                    hub_session: hub
                 }));
-                //reload page
-                location.reload();
             }
         }
         
@@ -1369,7 +1413,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
                 const payload = {
                     type: 'admin_send_question',
-                    question_id: questionId
+                    ...this.hostActionContext(questionId),
                 };
                 if (customTime) {
                     payload.custom_time_limit = customTime;
@@ -1379,6 +1423,34 @@ document.addEventListener('DOMContentLoaded', function() {
 
                 this.websocket.send(JSON.stringify(payload));
             }
+        }
+
+        hostActionContext(questionId) {
+            return {
+                question_id: questionId,
+                game_id: this.gameId || null,
+                state_revision: this.stateRevision,
+                client_action_id: window.AuthoritativeGameState?.createActionId?.(),
+            };
+        }
+
+        startSet(button) {
+            const questionId = button?.dataset.questionId;
+            if (
+                this.pendingPhaseAction
+                || !questionId
+                || this.remainingQuestionPresentationDelay() > 0
+                || !Number.isFinite(this.stateRevision)
+                || this.stateRevision < 0
+            ) return;
+            if (!this.websocket || this.websocket.readyState !== WebSocket.OPEN) return;
+            this.pendingPhaseAction = 'admin_open_answering';
+            button.disabled = true;
+            button.setAttribute('aria-busy', 'true');
+            this.websocket.send(JSON.stringify({
+                type: 'admin_open_answering',
+                ...this.hostActionContext(questionId),
+            }));
         }
         
         endCurrentQuestion() {
@@ -1402,7 +1474,7 @@ document.addEventListener('DOMContentLoaded', function() {
         }
 
         getSynchronizedNowMs() {
-            return Date.now();
+            return Date.now() + this.serverClockOffsetMs;
         }
 
         getQuestionTimerState() {
@@ -1731,7 +1803,7 @@ document.addEventListener('DOMContentLoaded', function() {
     window.adminGameMonitor = monitor;
     
     // Start question timer if there's an active question
-    {% if quiz.current_question %}
+    {% if quiz.current_question and question_answering_open %}
         monitor.startQuestionTimer();
     {% endif %}
 });

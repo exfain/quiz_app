@@ -1,4 +1,6 @@
 import json
+import uuid
+from datetime import timedelta
 from pathlib import Path
 from unittest.mock import patch
 
@@ -10,7 +12,16 @@ from django.test import Client, SimpleTestCase, TestCase, TransactionTestCase
 from django.urls import reverse
 from django.utils import timezone
 
-from games_hub.models import HubGameStep, HubSession
+from games_hub.authoritative_state import (
+    current_snapshot,
+    finish_question_flow,
+    question_content_is_visible,
+    reset_question_flow,
+    reveal_question_content,
+    validate_and_reserve_action,
+)
+from games_hub.models import GameRuntimeState, HubGameStep, HubSession
+from games_hub.spectator import _serialize_who_that
 from .models import (
     WhoThatAnswer,
     WhoThatParticipant,
@@ -22,6 +33,400 @@ from .consumers import WhoThatConsumer
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+class WhoThatAutomaticQuestionStartTests(TransactionTestCase):
+    reset_sequences = True
+
+    def setUp(self):
+        self.host = User.objects.create_user(
+            username='who-that-phase-host',
+            password='pw123456',
+            is_staff=True,
+        )
+        self.hub = HubSession.objects.create(
+            code='WTPHASE',
+            name='Who That phases',
+            is_active=True,
+        )
+        self.question = WhoThatQuestion.objects.create(
+            question_text='Who is this person?',
+            image=SimpleUploadedFile(
+                'phase-person.jpg',
+                b'phase-image',
+                content_type='image/jpeg',
+            ),
+            correct_answer='Ada Lovelace',
+            category='Science',
+            hint_text='First programmer',
+            time_limit=30,
+            created_by=self.host,
+        )
+        self.quiz = WhoThatQuiz.objects.create(
+            creator=self.host,
+            status='active',
+            started_at=timezone.now(),
+        )
+        self.quiz.selected_questions.add(self.question)
+        self.quiz_session = WhoThatSession.objects.create(quiz=self.quiz)
+        HubGameStep.objects.create(
+            session=self.hub,
+            order=1,
+            game_key='who_that',
+            room_code=self.quiz.room_code,
+        )
+        self.participant = WhoThatParticipant.objects.create(
+            quiz=self.quiz,
+            name='Alice',
+            hub_session_code=self.hub.code,
+        )
+        self.consumer = WhoThatConsumer()
+        self.consumer.room_code = self.quiz.room_code
+        self.configured = reset_question_flow(
+            game_key='who_that',
+            room_code=self.quiz.room_code,
+            session_code=self.hub.code,
+            mode=GameRuntimeState.QUESTION_FLOW_MANUAL_THREE_PHASE,
+        )
+
+    def action(self, snapshot, action_type, *, action_id=None):
+        return {
+            'type': action_type,
+            'question_id': self.question.id,
+            'game_id': str(self.quiz.id),
+            'state_revision': snapshot['state_revision'],
+            'client_action_id': action_id or str(uuid.uuid4()),
+        }
+
+    def present(self, *, at=None, action_id=None):
+        return async_to_sync(self.consumer.present_who_that_question)(
+            self.quiz.id,
+            self.question.id,
+            self.hub.code,
+            self.action(
+                self.configured,
+                'admin_send_question',
+                action_id=action_id,
+            ),
+            self.question.time_limit,
+            at,
+        )
+
+    def test_send_schedules_automatic_answering_after_presentation_delay(self):
+        presented_at = timezone.now()
+        decision = self.present(at=presented_at)
+        starts_at = presented_at + timedelta(seconds=1)
+        deadline = starts_at + timedelta(seconds=self.question.time_limit)
+
+        self.assertTrue(decision.accepted)
+        self.assertEqual(decision.snapshot['question_phase'], 'answering_open')
+        self.assertEqual(
+            decision.snapshot['question_visible_at'],
+            starts_at.isoformat(),
+        )
+        self.assertEqual(decision.snapshot['answering_started_at'], starts_at.isoformat())
+        self.assertEqual(decision.snapshot['answering_deadline_at'], deadline.isoformat())
+        self.assertFalse(decision.snapshot['answering_allowed'])
+        self.quiz.refresh_from_db()
+        self.quiz_session.refresh_from_db()
+        self.assertEqual(self.quiz.current_question_id, self.question.id)
+        self.assertEqual(self.quiz.question_start_time, starts_at)
+        self.assertTrue(self.quiz_session.is_question_active)
+        self.assertEqual(self.quiz_session.question_end_time, deadline)
+        self.assertFalse(question_content_is_visible(
+            decision.snapshot,
+            at=presented_at + timedelta(milliseconds=999),
+        ))
+        self.assertTrue(question_content_is_visible(
+            decision.snapshot,
+            at=presented_at + timedelta(seconds=1),
+        ))
+
+        reveal = reveal_question_content(
+            game_key='who_that',
+            room_code=self.quiz.room_code,
+            session_code=self.hub.code,
+            action=self.action(decision.snapshot, 'reveal_question_content'),
+            at=presented_at + timedelta(seconds=1),
+        )
+        self.assertFalse(reveal.accepted)
+        self.assertEqual(reveal.code, 'invalid_phase')
+
+    def test_duplicate_send_does_not_move_automatic_deadline(self):
+        presented_at = timezone.now()
+        action_id = str(uuid.uuid4())
+        first = self.present(at=presented_at, action_id=action_id)
+        duplicate = self.present(
+            at=presented_at + timedelta(seconds=5),
+            action_id=action_id,
+        )
+
+        self.assertTrue(first.accepted)
+        self.assertTrue(duplicate.accepted)
+        self.assertTrue(duplicate.duplicate)
+        self.assertEqual(
+            duplicate.snapshot['answering_deadline_at'],
+            first.snapshot['answering_deadline_at'],
+        )
+
+    def test_pending_and_submit_are_rejected_until_automatic_start(self):
+        presented_at = timezone.now()
+        presented = self.present(at=presented_at)
+
+        participant_action = {
+            'question_id': self.question.id,
+            'game_id': str(self.quiz.id),
+            'state_revision': presented.snapshot['state_revision'],
+            'client_action_id': str(uuid.uuid4()),
+        }
+        with patch(
+            'games_hub.authoritative_state.timezone.now',
+            return_value=presented_at + timedelta(milliseconds=999),
+        ):
+            guarded_before = validate_and_reserve_action(
+                game_key='who_that',
+                room_code=self.quiz.room_code,
+                session_code=self.hub.code,
+                participant_name=self.participant.name,
+                action_type='participant_submit_answer',
+                action=participant_action,
+            )
+        self.assertFalse(guarded_before.accepted)
+        self.assertEqual(guarded_before.code, 'invalid_phase')
+
+        pending_before = async_to_sync(self.consumer.save_pending_answer)(
+            self.participant.name,
+            self.hub.code,
+            'Ada',
+            self.question.id,
+        )
+        answer_before = async_to_sync(self.consumer.save_participant_answer)(
+            self.participant.name,
+            self.hub.code,
+            'Ada Lovelace',
+            0,
+            self.question.id,
+        )
+        self.assertFalse(pending_before)
+        self.assertIsNone(answer_before)
+        self.assertFalse(WhoThatAnswer.objects.exists())
+
+        with patch(
+            'who_is_that.consumers.timezone.now',
+            return_value=presented_at + timedelta(seconds=1),
+        ):
+            pending_after = async_to_sync(self.consumer.save_pending_answer)(
+                self.participant.name,
+                self.hub.code,
+                'Ada',
+                self.question.id,
+            )
+            answer_after = async_to_sync(self.consumer.save_participant_answer)(
+                self.participant.name,
+                self.hub.code,
+                'Ada Lovelace',
+                0,
+                self.question.id,
+            )
+        with patch(
+            'games_hub.authoritative_state.timezone.now',
+            return_value=presented_at + timedelta(seconds=1),
+        ):
+            guarded_after = validate_and_reserve_action(
+                game_key='who_that',
+                room_code=self.quiz.room_code,
+                session_code=self.hub.code,
+                participant_name=self.participant.name,
+                action_type='participant_update_pending_answer',
+                action={
+                    **participant_action,
+                    'client_action_id': str(uuid.uuid4()),
+                },
+            )
+        self.assertTrue(guarded_after.accepted)
+        self.assertTrue(pending_after)
+        self.assertIsNotNone(answer_after)
+        self.assertEqual(WhoThatAnswer.objects.count(), 1)
+
+    def test_phase_safe_snapshots_and_templates_do_not_expose_prepared_image(self):
+        presented_at = timezone.now()
+        presented = self.present(at=presented_at)
+        state = async_to_sync(self.consumer.get_current_question_state)(self.hub.code)
+        self.assertFalse(state['content_visible'])
+        self.assertNotIn('image_url', state['question'])
+        self.assertNotIn('category', state['question'])
+        self.assertNotIn('hint_text', state['question'])
+
+        client = Client()
+        response = client.get(
+            f"{reverse('who_is_that:play', args=[self.quiz.room_code, self.participant.name])}?hub_session={self.hub.code}"
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.context['question_content_visible'])
+        self.assertFalse(response.context['question_answering_open'])
+
+        host_client = Client()
+        host_client.force_login(self.host)
+        monitor = host_client.get(
+            f"{reverse('admin_dashboard:who_that_monitor', args=[self.quiz.room_code])}?hub_session={self.hub.code}"
+        )
+        self.assertNotContains(monitor, 'FRAGE FREIGEBEN')
+        self.assertNotContains(monitor, 'BILD ANZEIGEN')
+        self.assertNotContains(monitor, 'id="openAnsweringBtn"', html=False)
+
+        with patch(
+            'games_hub.authoritative_state.timezone.now',
+            return_value=presented_at + timedelta(seconds=1),
+        ):
+            response = client.get(
+                f"{reverse('who_is_that:play', args=[self.quiz.room_code, self.participant.name])}?hub_session={self.hub.code}"
+            )
+        self.assertTrue(response.context['question_content_visible'])
+        self.assertTrue(response.context['question_answering_open'])
+
+    def test_host_status_marks_only_an_ended_question_as_ended(self):
+        ended_badge = (
+            '<span class="badge bg-secondary" id="questionEndedStatus">'
+            'Question ended</span>'
+        )
+        presented_at = timezone.now()
+        presented = self.present(at=presented_at)
+        host_client = Client()
+        host_client.force_login(self.host)
+        monitor_url = (
+            f"{reverse('admin_dashboard:who_that_monitor', args=[self.quiz.room_code])}"
+            f"?hub_session={self.hub.code}"
+        )
+
+        during_delay = host_client.get(monitor_url)
+        self.assertTrue(during_delay.context['is_display_question_active'])
+        self.assertFalse(during_delay.context['question_answering_open'])
+        self.assertNotContains(during_delay, ended_badge, html=False)
+
+        with patch(
+            'games_hub.authoritative_state.timezone.now',
+            return_value=presented_at + timedelta(seconds=1),
+        ):
+            answering = host_client.get(monitor_url)
+        self.assertEqual(answering.context['question_phase'], 'answering_open')
+        self.assertTrue(answering.context['question_answering_open'])
+        self.assertNotContains(answering, ended_badge, html=False)
+
+        self.quiz_session.end_current_question()
+        finished = finish_question_flow(
+            game_key='who_that',
+            room_code=self.quiz.room_code,
+            session_code=self.hub.code,
+            question_id=self.question.id,
+        )
+        review = host_client.get(
+            f"{monitor_url}&review_question={self.question.id}"
+        )
+        self.assertFalse(review.context['is_display_question_active'])
+        self.assertContains(review, ended_badge, html=False)
+
+        second = WhoThatQuestion.objects.create(
+            question_text='Who is the next person?',
+            image=SimpleUploadedFile(
+                'phase-person-two.jpg',
+                b'phase-image-two',
+                content_type='image/jpeg',
+            ),
+            correct_answer='Grace Hopper',
+            time_limit=30,
+            created_by=self.host,
+        )
+        next_question = async_to_sync(self.consumer.present_who_that_question)(
+            self.quiz.id,
+            second.id,
+            self.hub.code,
+            {
+                'type': 'admin_send_question',
+                'question_id': second.id,
+                'game_id': str(self.quiz.id),
+                'state_revision': finished['state_revision'],
+                'client_action_id': str(uuid.uuid4()),
+            },
+            second.time_limit,
+            timezone.now(),
+        )
+        self.assertTrue(next_question.accepted)
+        next_monitor = host_client.get(monitor_url)
+        self.assertTrue(next_monitor.context['is_display_question_active'])
+        self.assertNotContains(next_monitor, ended_badge, html=False)
+
+    def test_spectator_releases_content_and_timer_at_automatic_start(self):
+        presented_at = timezone.now()
+        presented = self.present(at=presented_at)
+        self.quiz.refresh_from_db()
+        self.quiz_session.refresh_from_db()
+
+        prepared = _serialize_who_that(self.quiz, self.hub)
+        self.assertIsNone(prepared['question'])
+        self.assertFalse(prepared['timer']['active'])
+
+        visible_at = presented_at + timedelta(seconds=1)
+        with patch(
+            'games_hub.authoritative_state.timezone.now',
+            return_value=visible_at,
+        ):
+            answering = _serialize_who_that(self.quiz, self.hub)
+        self.assertEqual(answering['question_phase'], 'answering_open')
+        self.assertEqual(answering['question']['id'], self.question.id)
+        self.assertTrue(answering['question']['image_url'])
+        self.assertTrue(answering['timer']['active'])
+        self.assertNotIn('correct_answer', answering['question'])
+        self.assertNotIn('explanation', answering['question'])
+
+    def test_second_question_resets_pending_answer_and_deadline(self):
+        first_presented_at = timezone.now() - timedelta(seconds=2)
+        first = self.present(at=first_presented_at)
+        self.assertTrue(async_to_sync(self.consumer.save_pending_answer)(
+            self.participant.name,
+            self.hub.code,
+            'First pending',
+            self.question.id,
+        ))
+
+        self.quiz_session.end_current_question()
+        finished = finish_question_flow(
+            game_key='who_that',
+            room_code=self.quiz.room_code,
+            session_code=self.hub.code,
+            question_id=self.question.id,
+        )
+        second = WhoThatQuestion.objects.create(
+            question_text='Second person',
+            image=SimpleUploadedFile('second.jpg', b'second', content_type='image/jpeg'),
+            correct_answer='Grace Hopper',
+            time_limit=20,
+            created_by=self.host,
+        )
+        second_presented_at = timezone.now()
+        decision = async_to_sync(self.consumer.present_who_that_question)(
+            self.quiz.id,
+            second.id,
+            self.hub.code,
+            {
+                'question_id': second.id,
+                'game_id': str(self.quiz.id),
+                'state_revision': finished['state_revision'],
+                'client_action_id': str(uuid.uuid4()),
+            },
+            second.time_limit,
+            second_presented_at,
+        )
+
+        self.assertTrue(decision.accepted)
+        self.quiz.refresh_from_db()
+        self.quiz_session.refresh_from_db()
+        self.assertEqual(self.quiz.current_question_id, second.id)
+        self.assertEqual(self.quiz_session.pending_answers, {})
+        self.assertTrue(self.quiz_session.is_question_active)
+        self.assertEqual(
+            self.quiz_session.question_end_time,
+            second_presented_at + timedelta(seconds=21),
+        )
 
 
 class FakeChannelLayer:
@@ -367,6 +772,13 @@ class WhoThatVhsLayoutTests(SimpleTestCase):
         self.assertIn("#answerSubmittedState .who-that-submitted-answer-value", vhs_css)
         self.assertIn("#correctAnswerState .vhs-reveal-correct-value", vhs_css)
         self.assertIn(
+            ".qa-score-widget .who-that-status-answer-text",
+            vhs_css,
+        )
+        self.assertIn("color: var(--vhs-answer-text) !important;", vhs_css)
+        self.assertIn("who-that-status-result score-box__value", template)
+        self.assertIn("row.dataset.pointsEarned = hasResult ? String(earnedPoints) : '';", template)
+        self.assertIn(
             "#correctAnswerState :is(.vhs-reveal-vs, .vhs-reveal-duplicate, #performanceBadge)",
             vhs_css,
         )
@@ -695,6 +1107,11 @@ class WhoThatQuestionStatusBoxTests(TestCase):
         self.assertContains(response, 'id="whoThatQuestionStatusTotal"', html=False)
         self.assertContains(response, 'who-that-status-answer-text')
         self.assertContains(response, 'score-box__row')
+        self.assertContains(response, 'data-max-points="1"', count=3, html=False)
+        self.assertContains(response, 'data-points-earned="1"', count=1, html=False)
+        self.assertContains(response, 'data-points-earned="0"', count=1, html=False)
+        self.assertContains(response, 'data-points-earned=""', count=1, html=False)
+        self.assertContains(response, 'who-that-status-result score-box__value', html=False)
 
     def test_play_view_keeps_answer_fallback_for_legacy_quiz_without_selected_questions(self):
         host = User.objects.create_user(

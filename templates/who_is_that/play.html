@@ -19,8 +19,11 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<script src="{% static 'js/authoritative-game-state.js' %}"></script>
 </head>
-<body class="who-that-play-page">
+<body class="who-that-play-page"
+      data-vhs-progress-kind="question"
+      data-vhs-progress-source="#currentQuestionNumber">
     <div class="play-container">
         <!-- Header -->
         <header class="quiz-header">
@@ -56,21 +59,21 @@
                         <div class="who-that-play-layout">
                             <div class="who-that-main-column">
                         <!-- Waiting State -->
-                        <div id="waitingQuizState" class="game-state {% if quiz.status != 'waiting' %}d-none{% endif %}">
+                        <div id="waitingQuizState" class="game-state {% if quiz.status != 'waiting' and question_content_visible %}d-none{% endif %}">
                             <div class="waiting-card">
                                 {% include 'includes/_participant_start_waiting.html' with waiting_game_title=quiz.title %}
                             </div>
                         </div>
 
                         <!-- Question State -->
-                        <div id="questionState" class="game-state {% if not quiz.current_question %}d-none{% endif %}">
+                        <div id="questionState" class="game-state {% if not question_content_visible %}d-none{% endif %}">
                             <div class="question-card">
                                 <!-- Question Header -->
                                 <div class="question-header">
                                     <div class="question-number">
                                         Question <span id="currentQuestionNumber">1</span>
                                     </div>
-                                        <div class="question-timer">
+                                        <div class="question-timer{% if not question_answering_open %} d-none{% endif %}" id="questionTimerWrapper">
                                             <div class="timer-circle" id="playerTimerCircle">
                                             <span id="playerTimeLeft">{{ current_question_time_left|default_if_none:30 }}</span>
                                             </div>
@@ -80,7 +83,7 @@
                                 <!-- Question Content -->
                                 <div class="question-content">
                                     <div class="question-text" id="questionText">
-                                        {% if quiz.current_question %}
+                                        {% if question_content_visible %}
                                             {% if quiz.current_question.question_text != "Who is this person?" %}
                                                 {{ quiz.current_question.question_text }}
                                             {% endif %}
@@ -90,7 +93,7 @@
                                     <div class="who-that-interaction-stack">
                                         <!-- Photo Display -->
                                         <div class="photo-display" id="photoDisplay">
-                                            {% if quiz.current_question and quiz.current_question.image %}
+                                            {% if question_content_visible and quiz.current_question.image %}
                                                 <img src="{{ quiz.current_question.image.url }}" alt="Question image" class="question-photo" id="questionPhoto">
                                             {% else %}
                                                 <div class="no-photo-placeholder">
@@ -126,7 +129,8 @@
                                                            id="nameInput"
                                                            placeholder="Type the person's name..."
                                                            autocomplete="off"
-                                                           spellcheck="false">
+                                                           spellcheck="false"
+                                                           {% if not question_answering_open or current_participant_answer %}disabled{% endif %}>
                                                     <div class="input-icon">
                                                         <i data-lucide="user"></i>
                                                     </div>
@@ -146,7 +150,7 @@
                         <!-- Answer Submitted State -->
                         <div id="answerSubmittedState" class="game-state d-none">
                             <div class="submitted-card">
-                                    <div class="question-timer submitted-timer">
+                                    <div class="question-timer submitted-timer{% if not question_answering_open %} d-none{% endif %}" id="submittedTimerWrapper">
                                         <div class="timer-circle" id="playerTimerCircleSubmitted">
                                         <span id="playerTimeLeftSubmitted">{{ current_question_time_left|default_if_none:30 }}</span>
                                         </div>
@@ -159,7 +163,7 @@
                                 <h2>Answer Submitted!</h2>
                                 <p class="who-that-submitted-waiting">Waiting for the other participants before the answer is revealed.</p>
                                 <div class="photo-display reveal-photo-display" id="submittedPhotoDisplay">
-                                    {% if quiz.current_question and quiz.current_question.image %}
+                                    {% if question_content_visible and quiz.current_question.image %}
                                         <img src="{{ quiz.current_question.image.url }}" alt="Submitted question image" class="question-photo">
                                     {% else %}
                                         <div class="no-photo-placeholder">
@@ -271,7 +275,7 @@
                                 <h6 class="mb-2 score-box__title">Punkte</h6>
                                 <div id="whoThatQuestionStatusList" class="who-that-status-list score-box__list">
                                     {% for question in question_status_board %}
-                                        <div class="who-that-status-row score-box__row {% if question.is_current %}is-current{% elif question.result %}is-played{% else %}is-upcoming{% endif %}" data-question-number="{{ question.number }}" {% if question.id %}data-question-id="{{ question.id }}"{% endif %}>
+                                        <div class="who-that-status-row score-box__row {% if question.is_current %}is-current{% elif question.result %}is-played{% else %}is-upcoming{% endif %}" data-question-number="{{ question.number }}" data-max-points="{{ question.max_points }}" data-points-earned="{% if question.result %}{{ question.earned_points }}{% endif %}" {% if question.id %}data-question-id="{{ question.id }}"{% endif %}>
                                             <div class="who-that-status-badge score-box__badge">{{ question.number }}</div>
                                             <div class="who-that-status-main">
                                                 {% if question.result %}
@@ -279,17 +283,19 @@
                                                 {% else %}
                                                     <span class="who-that-status-answer-text who-that-status-empty-label score-box__empty">________________</span>
                                                 {% endif %}
-                                                {% if question.result == 'correct' %}
-                                                    <span class="who-that-status-mark is-correct" aria-label="Korrekt">
-                                                        <i data-lucide="check"></i>
-                                                    </span>
-                                                {% elif question.result == 'incorrect' %}
-                                                    <span class="who-that-status-mark is-incorrect" aria-label="Falsch">
-                                                        <i data-lucide="x"></i>
-                                                    </span>
-                                                {% else %}
-                                                    <span class="who-that-status-empty" aria-hidden="true"></span>
-                                                {% endif %}
+                                                <span class="who-that-status-result score-box__value">
+                                                    {% if question.result == 'correct' %}
+                                                        <span class="who-that-status-mark is-correct" aria-label="Korrekt">
+                                                            <i data-lucide="check"></i>
+                                                        </span>
+                                                    {% elif question.result == 'incorrect' %}
+                                                        <span class="who-that-status-mark is-incorrect" aria-label="Falsch">
+                                                            <i data-lucide="x"></i>
+                                                        </span>
+                                                    {% else %}
+                                                        <span class="who-that-status-empty" aria-hidden="true"></span>
+                                                    {% endif %}
+                                                </span>
                                             </div>
                                         </div>
                                     {% empty %}
@@ -1316,9 +1322,15 @@
                     this.hubSession = '{{ hub_session }}';
                     this.websocket = null;
                     this.questionTimer = null;
-                    this.questionStartTime = null;
+                    this.questionPresentationTimer = null;
                     this.questionEndTime = null;
-                    this.currentQuestionId = null;
+                    this.currentQuestionId = Number('{{ question_runtime.current_question_id|default_if_none:""|escapejs }}') || null;
+                    this.questionPhase = '{{ question_runtime.question_phase|default:""|escapejs }}';
+                    this.answeringAllowed = {% if question_answering_open %}true{% else %}false{% endif %};
+                    this.questionVisibleAt = '{{ question_runtime.question_visible_at|default:""|escapejs }}';
+                    this.presentationServerNow = '{{ question_runtime.server_now|default:""|escapejs }}';
+                    this.presentationServerReceivedAt = performance.now();
+                    this.stateRevision = Number('{{ question_runtime.state_revision|default:0 }}') || 0;
                     this.initialSubmittedState = {% if current_participant_answer %}{
                         question_id: {{ current_participant_answer.question_id }},
                         user_answer: '{{ current_participant_answer.user_answer|escapejs }}',
@@ -1348,10 +1360,10 @@
                     this.bindEvents();
                     this.renderQuestionStatusBoard();
                     
-                    // Start timer if there's an active question
-                    {% if quiz.current_question %}
+                    {% if question_content_visible %}
                         this.loadCurrentQuestion();
-                        this.startQuestionTimer({{ current_question_time_left|default_if_none:quiz.current_question.time_limit }}, {% if current_question_end_time %}'{{ current_question_end_time|date:"c" }}'{% else %}null{% endif %});
+                    {% elif quiz.current_question %}
+                        this.schedulePreparedQuestionRefresh();
                     {% endif %}
                 }
 
@@ -1409,9 +1421,14 @@
                         case 'question_started':
                             window.gameTutorial?.forceClose();
                             window.unitTutorialNotice?.setFromPayload(data);
-                            this.onQuestionStarted(data.question);
+                            this.onQuestionStarted({...data.question, ...data});
                             break;
-                            
+
+                        case 'question_prepared':
+                            window.gameTutorial?.forceClose();
+                            this.onQuestionPrepared(data);
+                            break;
+
                         case 'question_ended':
                             window.unitTutorialNotice?.hide();
                             this.onQuestionEnded(data);
@@ -1457,7 +1474,9 @@
                     const nameInput = document.getElementById('nameInput');
                     nameInput.addEventListener('input', () => {
                         const hasValue = nameInput.value.trim() !== '';
-                        document.getElementById('submitAnswerBtn').disabled = !hasValue || this.hasAnswered;
+                        document.getElementById('submitAnswerBtn').disabled = (
+                            !hasValue || this.hasAnswered || !this.answeringAllowed
+                        );
                         this.schedulePendingAnswerSync(nameInput.value);
                     });
 
@@ -1473,7 +1492,73 @@
                     this.showState('waitingQuizState');
                 }
 
+                applyQuestionMetadata(data = {}) {
+                    const source = data.snapshot && typeof data.snapshot === 'object'
+                        ? data.snapshot
+                        : data;
+                    const incomingRevision = Number(source.state_revision);
+                    if (Number.isFinite(incomingRevision) && incomingRevision < this.stateRevision) {
+                        return false;
+                    }
+                    if (Number.isFinite(incomingRevision)) this.stateRevision = incomingRevision;
+                    if (source.question_phase !== undefined && source.question_phase !== null) {
+                        this.questionPhase = String(source.question_phase);
+                    }
+                    if (source.answering_allowed !== undefined && source.answering_allowed !== null) {
+                        this.answeringAllowed = Boolean(source.answering_allowed);
+                    }
+                    if (source.question_visible_at !== undefined && source.question_visible_at !== null) {
+                        this.questionVisibleAt = String(source.question_visible_at);
+                    }
+                    if (source.server_now) {
+                        this.presentationServerNow = String(source.server_now);
+                        this.presentationServerReceivedAt = performance.now();
+                    }
+                    return true;
+                }
+
+                onQuestionPrepared(data) {
+                    if (!this.applyQuestionMetadata(data)) return;
+                    clearInterval(this.questionTimer);
+                    clearTimeout(this.questionPresentationTimer);
+                    this.currentQuestionId = Number(data.question?.id || data.current_question_id || 0) || null;
+                    this.questionEndTime = null;
+                    this.hasAnswered = false;
+                    this.lastSubmittedAnswer = '';
+                    this.lastAnswerEvaluation = null;
+                    this.lastSyncedPendingAnswer = '';
+                    const nameInput = document.getElementById('nameInput');
+                    nameInput.value = '';
+                    nameInput.disabled = true;
+                    document.getElementById('submitAnswerBtn').disabled = true;
+                    this.setTimerVisible(false);
+                    this.showState('waitingQuizState');
+                    this.schedulePreparedQuestionRefresh();
+                }
+
+                schedulePreparedQuestionRefresh() {
+                    clearTimeout(this.questionPresentationTimer);
+                    const visibleAt = Date.parse(this.questionVisibleAt || '');
+                    const serverNow = Date.parse(this.presentationServerNow || '');
+                    if (!Number.isFinite(visibleAt)) return;
+                    const estimatedNow = Number.isFinite(serverNow)
+                        ? serverNow + (performance.now() - this.presentationServerReceivedAt)
+                        : Date.now();
+                    const remaining = Math.max(0, visibleAt - estimatedNow);
+                    this.questionPresentationTimer = setTimeout(() => {
+                        if (this.websocket?.readyState === WebSocket.OPEN) {
+                            this.websocket.send(JSON.stringify({
+                                type: 'snapshot_request',
+                                participant_name: this.participantName,
+                                hub_session: this.hubSession,
+                            }));
+                        }
+                    }, remaining + 15);
+                }
+
                 onQuestionStarted(question) {
+                    if (!this.applyQuestionMetadata(question)) return;
+                    clearTimeout(this.questionPresentationTimer);
                     const submittedState = this.getSubmittedStateForQuestion(question.id);
                     this.hasAnswered = false;
                     this.currentQuestionIsTutorial = !!question?.is_tutorial_round;
@@ -1481,21 +1566,32 @@
                     this.currentQuestionNumber = Number.isNaN(nextQuestionNumber) || nextQuestionNumber <= 0
                         ? this.currentQuestionNumber + 1
                         : nextQuestionNumber;
-                    this.questionEndTime = question.question_end_time ? new Date(question.question_end_time).getTime() : null;
-                    this.questionStartTime = this.questionEndTime
-                        ? this.questionEndTime - ((question.time_left || question.time_limit || 30) * 1000)
-                        : Date.now();
+                    this.questionEndTime = question.ends_at || question.question_end_time || null;
                     
-                    this.loadQuestion(question, submittedState);
+                    const answeringOpen = (
+                        this.questionPhase === 'answering_open'
+                        && this.answeringAllowed
+                    );
+                    this.loadQuestion(question, submittedState, answeringOpen);
                     if (this.currentQuestionIsTutorial) {
                         this.currentQuestionId = null;
                     } else {
                         this.markQuestionAsCurrent(this.currentQuestionNumber, question.id);
                     }
-                    this.startQuestionTimer(question.time_left || question.time_limit || 30, question.question_end_time || null);
+                    if (answeringOpen) {
+                        this.setTimerVisible(true);
+                        this.startQuestionTimer(
+                            question.time_left || question.remaining_answer_time || question.time_limit || 30,
+                            this.questionEndTime,
+                            question.server_now || null
+                        );
+                    } else {
+                        clearInterval(this.questionTimer);
+                        this.setTimerVisible(false);
+                    }
                     this.showState(submittedState ? 'answerSubmittedState' : 'questionState');
                     
-                    if (!submittedState) {
+                    if (!submittedState && answeringOpen) {
                         // Focus on input
                         setTimeout(() => {
                             document.getElementById('nameInput').focus();
@@ -1505,6 +1601,9 @@
 
                 onQuestionEnded(data) {
                     clearInterval(this.questionTimer);
+                    clearTimeout(this.questionPresentationTimer);
+                    this.questionPhase = '';
+                    this.answeringAllowed = false;
                     this.questionEndTime = null;
                     const endedQuestionNumber = this.currentQuestionNumber;
                     const endedQuestionPoints = this.currentQuestionPoints;
@@ -1557,7 +1656,7 @@
                 }
 
                 loadCurrentQuestion() {
-                    {% if quiz.current_question %}
+                    {% if question_content_visible %}
                     const question = {
                         id: {{ quiz.current_question.id }},
                         question_number: {{ current_question_number|default:0 }},
@@ -1565,24 +1664,41 @@
                         image_url: '{{ quiz.current_question.image.url|default:"" }}',
                         points: 1,
                         time_limit: {{ quiz.current_question.time_limit }},
-                        time_left: {{ current_question_time_left|default_if_none:quiz.current_question.time_limit }},
+                        time_left: {{ question_runtime.remaining_answer_time|default_if_none:quiz.current_question.time_limit }},
                         question_end_time: {% if current_question_end_time %}'{{ current_question_end_time|date:"c" }}'{% else %}null{% endif %},
+                        question_phase: '{{ question_runtime.question_phase|default:""|escapejs }}',
+                        question_visible_at: '{{ question_runtime.question_visible_at|default:""|escapejs }}',
+                        answering_started_at: '{{ question_runtime.answering_started_at|default:""|escapejs }}',
+                        answering_deadline_at: '{{ question_runtime.answering_deadline_at|default:""|escapejs }}',
+                        answering_allowed: {% if question_answering_open %}true{% else %}false{% endif %},
+                        state_revision: {{ question_runtime.state_revision|default:0 }},
+                        server_now: '{{ question_runtime.server_now|default:""|escapejs }}',
                         hint_text: {% if quiz.current_question.hint_text %}'{{ quiz.current_question.hint_text|escapejs }}'{% else %}null{% endif %},
                         category: {% if quiz.current_question.category %}'{{ quiz.current_question.category|escapejs }}'{% else %}null{% endif %}
                     };
                     const submittedState = this.getSubmittedStateForQuestion(question.id);
-                    this.questionEndTime = question.question_end_time ? new Date(question.question_end_time).getTime() : null;
-                    this.questionStartTime = this.questionEndTime
-                        ? this.questionEndTime - ((question.time_left || question.time_limit || 30) * 1000)
-                        : Date.now();
-                    this.loadQuestion(question, submittedState);
+                    this.applyQuestionMetadata(question);
+                    this.questionEndTime = question.answering_deadline_at || question.question_end_time || null;
+                    const answeringOpen = (
+                        this.questionPhase === 'answering_open'
+                        && this.answeringAllowed
+                    );
+                    this.loadQuestion(question, submittedState, answeringOpen);
+                    this.setTimerVisible(answeringOpen);
+                    if (answeringOpen) {
+                        this.startQuestionTimer(
+                            question.time_left || question.time_limit,
+                            this.questionEndTime,
+                            question.server_now || null
+                        );
+                    }
                     if (submittedState) {
                         this.showState('answerSubmittedState');
                     }
                     {% endif %}
                 }
 
-                loadQuestion(question, submittedState = null) {
+                loadQuestion(question, submittedState = null, interactive = false) {
                     this.currentQuestionIsTutorial = !!question?.is_tutorial_round;
                     this.currentQuestionId = this.currentQuestionIsTutorial ? null : question.id;
                     this.currentQuestionPoints = Number(question.points || 0) || 0;
@@ -1654,7 +1770,7 @@
                     // Reset input
                     const nameInput = document.getElementById('nameInput');
                     nameInput.value = submittedState?.user_answer || '';
-                    nameInput.disabled = !!submittedState;
+                    nameInput.disabled = !!submittedState || !interactive;
                     this.lastSubmittedAnswer = submittedState?.user_answer || '';
                     this.lastAnswerEvaluation = submittedState ? {
                         is_correct: Boolean(submittedState.is_correct),
@@ -1666,7 +1782,7 @@
                     
                     // Reset submit button
                     const submitBtn = document.getElementById('submitAnswerBtn');
-                    submitBtn.disabled = !!submittedState;
+                    submitBtn.disabled = true;
                     submitBtn.classList.remove('loading');
                     if (!submittedState) {
                         this.hasAnswered = false;
@@ -1676,25 +1792,33 @@
                     }
                 }
 
-                startQuestionTimer(timeLimit, questionEndTime = null) {
-                    let timeLeft = questionEndTime
-                        ? Math.max(0, Math.ceil((new Date(questionEndTime).getTime() - Date.now()) / 1000))
-                        : timeLimit;
+                setTimerVisible(visible) {
+                    document.getElementById('questionTimerWrapper')?.classList.toggle('d-none', !visible);
+                    document.getElementById('submittedTimerWrapper')?.classList.toggle('d-none', !visible);
+                }
+
+                startQuestionTimer(timeLimit, questionEndTime = null, serverNow = null) {
+                    clearInterval(this.questionTimer);
                     const timerElement = document.getElementById('playerTimeLeft');
                     const circleElement = document.getElementById('playerTimerCircle');
                     const submittedTimerElement = document.getElementById('playerTimeLeftSubmitted');
                     const submittedCircleElement = document.getElementById('playerTimerCircleSubmitted');
-                    
-                    // Initialize both timers
-                    timerElement.textContent = timeLeft;
-                    circleElement.className = 'timer-circle';
-                    if (submittedTimerElement && submittedCircleElement) {
-                        submittedTimerElement.textContent = timeLeft;
-                        submittedCircleElement.className = 'timer-circle';
-                    }
-                    
-                    this.questionTimer = setInterval(() => {
-                        timeLeft--;
+
+                    const timerContext = {
+                        game_key: 'who_is_that',
+                        game_id: this.roomCode,
+                        session_id: this.hubSession,
+                        current_question_id: this.currentQuestionId,
+                        ends_at: questionEndTime,
+                        server_now: serverNow
+                    };
+                    const fallbackDeadline = performance.now() + (Math.max(0, Number(timeLimit || 0)) * 1000);
+                    let expired = false;
+                    const renderTimer = () => {
+                        const remainingMilliseconds = questionEndTime && window.AuthoritativeGameState
+                            ? window.AuthoritativeGameState.remainingMilliseconds(timerContext)
+                            : Math.max(0, fallbackDeadline - performance.now());
+                        const timeLeft = Math.max(0, Math.ceil(remainingMilliseconds / 1000));
                         timerElement.textContent = timeLeft;
                         if (submittedTimerElement) {
                             submittedTimerElement.textContent = timeLeft;
@@ -1712,20 +1836,24 @@
                             submittedCircleElement.className = 'timer-circle';
                         }
                         
-                        if (timeLeft <= 0) {
+                        if (timeLeft <= 0 && !expired) {
+                            expired = true;
                             clearInterval(this.questionTimer);
                             this.onTimeUp();
                         }
-                    }, 1000);
+                    };
+
+                    renderTimer();
+                    if (!expired) {
+                        this.questionTimer = setInterval(renderTimer, 250);
+                    }
                 }
 
                 submitAnswer() {
                     const nameInput = document.getElementById('nameInput');
                     const userAnswer = nameInput.value.trim();
                     
-                    if (!userAnswer || this.hasAnswered) return;
-                    
-                    const timeTaken = (Date.now() - this.questionStartTime) / 1000;
+                    if (!userAnswer || this.hasAnswered || !this.answeringAllowed) return;
                     
                     // Disable interface
                     nameInput.disabled = true;
@@ -1739,8 +1867,7 @@
                         participant_name: this.participantName,
                         hub_session: this.hubSession,
                         question_id: this.currentQuestionId,
-                        user_answer: userAnswer,
-                        time_taken: timeTaken
+                        user_answer: userAnswer
                     }));
                     
                     this.hasAnswered = true;
@@ -1853,7 +1980,7 @@
                 }
 
                 onTimeUp() {
-                    if (this.hasAnswered) return;
+                    if (this.hasAnswered || !this.answeringAllowed) return;
                     
                     const nameInput = document.getElementById('nameInput');
                     const submitBtn = document.getElementById('submitAnswerBtn');
@@ -1866,12 +1993,22 @@
                 }
 
                 schedulePendingAnswerSync(rawValue) {
-                    if (this.hasAnswered || !this.currentQuestionId) return;
+                    if (
+                        this.hasAnswered
+                        || !this.currentQuestionId
+                        || !this.answeringAllowed
+                    ) return;
                     this.syncPendingAnswer(rawValue);
                 }
 
                 syncPendingAnswer(rawValue) {
-                    if (!this.websocket || this.websocket.readyState !== WebSocket.OPEN || this.hasAnswered || !this.currentQuestionId) {
+                    if (
+                        !this.websocket
+                        || this.websocket.readyState !== WebSocket.OPEN
+                        || this.hasAnswered
+                        || !this.currentQuestionId
+                        || !this.answeringAllowed
+                    ) {
                         return;
                     }
                     const userAnswer = (rawValue || '').trim();
@@ -2120,8 +2257,17 @@
                     this.questionStatusBoard.forEach((question) => {
                         const row = document.createElement('div');
                         const rowState = question?.is_current ? 'is-current' : question?.result ? 'is-played' : 'is-upcoming';
+                        const hasResult = Boolean(question?.result);
+                        const parsedMaxPoints = Number(question?.max_points);
+                        const maxPoints = Number.isFinite(parsedMaxPoints) && parsedMaxPoints > 0 ? parsedMaxPoints : 1;
+                        const parsedEarnedPoints = Number(question?.earned_points);
+                        const earnedPoints = Number.isFinite(parsedEarnedPoints)
+                            ? parsedEarnedPoints
+                            : (question?.result === 'correct' ? 1 : 0);
                         row.className = `who-that-status-row score-box__row ${rowState}`;
                         row.dataset.questionNumber = String(question?.number || '');
+                        row.dataset.maxPoints = String(maxPoints);
+                        row.dataset.pointsEarned = hasResult ? String(earnedPoints) : '';
                         if (question?.id !== undefined && question?.id !== null) {
                             row.dataset.questionId = String(question.id);
                         }
@@ -2140,7 +2286,7 @@
                             <div class="who-that-status-badge score-box__badge">${question?.number || ''}</div>
                             <div class="who-that-status-main">
                                 ${answerMarkup}
-                                ${resultMarkup}
+                                <span class="who-that-status-result score-box__value">${resultMarkup}</span>
                             </div>
                         `;
                         list.appendChild(row);

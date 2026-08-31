@@ -1,4 +1,5 @@
 {% extends "admin_dashboard/base.html" %}
+{% load static %}
 
 {% block title %}Wer weiß mehr? Monitor{% endblock %}
 {% block page_title %}Wer weiß mehr? Monitor{% endblock %}
@@ -29,12 +30,12 @@
                     <label class="form-check-label" for="playTutorialToggle">Tutorial spielen</label>
                 </div>
             {% endif %}
-            <button class="btn btn-success {% if quiz.status != 'waiting' and quiz.status != 'inactive' %}d-none{% endif %}" id="startQuizBtn">
+            <button class="btn btn-success {% if quiz.status != 'waiting' and quiz.status != 'inactive' %}d-none{% endif %}" id="startQuizBtn" data-host-game-start>
                 {% if quiz.status == 'inactive' %}Spiel reaktivieren{% else %}Spiel starten{% endif %}
             </button>
             <button class="btn btn-outline-warning {% if quiz.status != 'active' %}d-none{% endif %}" id="setInactiveBtn">Aktives Spiel auf inaktiv setzen</button>
             <button class="btn btn-warning {% if quiz.status != 'active' %}d-none{% endif %}" id="endQuizBtn">Spiel beenden</button>
-            <a class="btn btn-outline-secondary" id="backToHubBtn" href="{% if hub_session %}/hub/monitor/{{ hub_session }}/{% else %}{% url 'admin_dashboard:home' %}{% endif %}">Zurück</a>
+            <a class="btn btn-outline-secondary" id="backToHubBtn" data-host-game-leave href="{% if hub_session %}/hub/monitor/{{ hub_session }}/{% else %}{% url 'admin_dashboard:home' %}{% endif %}">Zurück</a>
         </div>
     </div>
 
@@ -95,27 +96,35 @@
 .status-dot.active { background:#198754; }
 </style>
 
+<script src="{% static 'js/authoritative-game-state.js' %}"></script>
+<script src="{% static 'js/host-game-runtime.js' %}"></script>
 <script>
 const ROOM_CODE = '{{ quiz.room_code }}';
 const HUB_SESSION = '{{ hub_session|escapejs }}';
 const CSRF_TOKEN = '{{ csrf_token }}';
 const END_ROUND_URL = '{% url "admin_dashboard:end_wer_weiss_mehr_round" quiz.room_code %}';
+const OPEN_ROUND_URL = '{% url "admin_dashboard:open_wer_weiss_mehr_round" quiz.room_code %}';
 const NEXT_ROUND_URL = '{% url "admin_dashboard:next_wer_weiss_mehr_round" quiz.room_code %}';
 const FINISH_SET_URL = '{% url "admin_dashboard:finish_wer_weiss_mehr_set" quiz.room_code %}';
 const CLEAR_SET_URL = '{% url "admin_dashboard:clear_wer_weiss_mehr_set" quiz.room_code %}';
 const SKIP_TUTORIAL_SET_URL = '{% url "wer_weiss_mehr:skip_tutorial_set" quiz.room_code %}';
 const APPLY_CORRECTION_URL = '{% url "admin_dashboard:apply_wer_weiss_mehr_correction" quiz.room_code %}';
-let ws = null;
 let state = null;
 let timerInterval = null;
 let autoEndSentForRound = null;
-let pendingWsMessages = [];
 let hubWs = null;
 let hubReconnectTimer = null;
 let hostSessionEnded = false;
 let liveResponsePollTimer = null;
 const correctionDrafts = new Map();
 let correctionDraftContext = null;
+let openRoundAvailabilityTimer = null;
+const hostRuntime = window.HostGameRuntime.create({
+    messageBase: {hub_session_code: HUB_SESSION},
+    stateRequest: {type: 'get_state'},
+    render: applyState,
+    onError: error => alert(error.message || 'Aktion fehlgeschlagen.'),
+});
 
 function socketUrl() {
     const scheme = window.location.protocol === 'https:' ? 'wss' : 'ws';
@@ -126,27 +135,36 @@ function hubSocketUrl() {
     return `${scheme}://${window.location.host}/ws/hub/${HUB_SESSION}/`;
 }
 function connectSocket() {
-    ws = new WebSocket(socketUrl());
-    ws.onopen = () => {
-        flushPendingWsMessages();
-        fetchState();
-    };
-    ws.onmessage = event => {
-        const data = JSON.parse(event.data);
+    hostRuntime.connectSocket({
+        url: socketUrl,
+        reconnectDelay: 1500,
+        onMessage: data => {
         if (data.type === 'state') renderState(data);
         if (['state_updated', 'quiz_started', 'quiz_ended'].includes(data.type)) fetchState();
         if (data.type === 'tutorial_start') updateTutorialProgress(0, 0, false, data.participants || []);
         if (data.type === 'tutorial_progress') updateTutorialProgress(data.completed, data.total, data.all_done, data.participants || []);
         if (data.type === 'tutorial_ack_warning') handleTutorialAckWarning(data);
-        if (data.type === 'tutorial_question_missing') window.showTutorialQuestionMissing?.(data);
-        if (data.type === 'participants_not_in_lobby') alert(data.message || 'Noch nicht alle Teilnehmer sind in der Lobby.');
-        if (data.type === 'active_game_conflict') alert(data.message || 'Ein anderes Spiel ist noch aktiv.');
-        if (data.type === 'error') {
-            alert(data.message || 'Aktion fehlgeschlagen.');
-            fetchState();
+        if (data.type === 'tutorial_question_missing') {
+            hostRuntime.rejectAction(data, {silent: true, refresh: false});
+            window.showTutorialQuestionMissing?.(data);
         }
-    };
-    ws.onclose = () => setTimeout(connectSocket, 1500);
+        if (data.type === 'participants_not_in_lobby') {
+            hostRuntime.rejectAction(data, {silent: true, refresh: false});
+            if (!window.hostGameStartGuard?.showLobbyReturn(data, document.getElementById('startQuizBtn'))) {
+                alert(data.message || 'Noch nicht alle Teilnehmer sind in der Lobby.');
+            }
+        }
+        if (data.type === 'active_game_conflict') {
+            hostRuntime.rejectAction(data, {silent: true, refresh: false});
+            if (!window.hostGameStartGuard?.showActiveGameConflict(data, document.getElementById('startQuizBtn'))) {
+                alert(data.message || 'Ein anderes Spiel ist noch aktiv.');
+            }
+        }
+        if (data.type === 'error') {
+            hostRuntime.rejectAction(data);
+        }
+        },
+    });
 }
 function connectHubSocket() {
     if (!HUB_SESSION || hostSessionEnded || (hubWs && [WebSocket.OPEN, WebSocket.CONNECTING].includes(hubWs.readyState))) return;
@@ -176,20 +194,13 @@ function connectHubSocket() {
     };
 }
 function sendWs(payload) {
-    const message = {hub_session_code: HUB_SESSION, ...payload};
-    if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify(message));
-        return true;
-    }
-    pendingWsMessages.push(message);
-    if (!ws || ws.readyState === WebSocket.CLOSED) connectSocket();
-    return false;
+    return hostRuntime.sendAction(payload);
 }
-function flushPendingWsMessages() {
-    if (!ws || ws.readyState !== WebSocket.OPEN) return;
-    const messages = pendingWsMessages;
-    pendingWsMessages = [];
-    messages.forEach(message => ws.send(JSON.stringify(message)));
+function estimatedServerNow() {
+    return hostRuntime.serverNow();
+}
+function questionActionContext(questionId = state?.current_question_id) {
+    return hostRuntime.actionContext({question_id: questionId ?? null});
 }
 function updateTutorialProgress(completed, total, allDone, participants = []) {
     const card = document.getElementById('tutorialProgressCard');
@@ -224,6 +235,7 @@ function updateTutorialProgress(completed, total, allDone, participants = []) {
 }
 function handleTutorialAckWarning(data) {
     const originalMessage = data.original_message || {};
+    hostRuntime.rejectAction(data, {silent: true, refresh: false});
     window.showTutorialAckWarning?.(data, () => {
         sendWs({
             ...originalMessage,
@@ -234,11 +246,20 @@ function handleTutorialAckWarning(data) {
 function fetchState() {
     const params = new URLSearchParams();
     if (HUB_SESSION) params.set('hub_session', HUB_SESSION);
-    fetch(`/wer-weiss-mehr/state/${ROOM_CODE}/?${params}`)
-        .then(response => parseJsonResponse(response, 'State konnte nicht geladen werden.'))
-        .then(({payload}) => renderState(payload))
-        .catch(() => {
-            document.getElementById('questionList').innerHTML = '<div class="text-danger">State konnte nicht geladen werden.</div>';
+    return hostRuntime.fetchSnapshot(
+        `/wer-weiss-mehr/state/${ROOM_CODE}/?${params}`,
+        {credentials: 'same-origin'},
+        {
+            key: 'wer-weiss-mehr-state',
+            source: 'http',
+            fallbackMessage: 'State konnte nicht geladen werden.',
+            parse: response => parseJsonResponse(response, 'State konnte nicht geladen werden.'),
+        },
+    ).catch(error => {
+            if (!state) {
+                document.getElementById('questionList').innerHTML = '<div class="text-danger">State konnte nicht geladen werden.</div>';
+            }
+            console.error('State konnte nicht geladen werden.', error);
         });
 }
 async function parseJsonResponse(response, fallbackMessage) {
@@ -265,15 +286,19 @@ async function parseJsonResponse(response, fallbackMessage) {
         : 'Pruefe Server-Log, CSRF und URL.';
     throw new Error(`${fallbackMessage} Der Server hat keine JSON-Antwort geliefert (HTTP ${response.status}). ${hint}`);
 }
+function handleHostRequestError(error, fallbackMessage) {
+    hostRuntime.reportError(error, fallbackMessage);
+    fetchState();
+}
 function startQuiz() {
     const startBtn = document.getElementById('startQuizBtn');
-    if (startBtn) startBtn.disabled = true;
+    let startGuardHandled = false;
     const playTutorial = document.getElementById('playTutorialToggle')?.checked ?? false;
     if (playTutorial && !{{ quiz.tutorial_question_id|yesno:"true,false" }}) {
-        if (startBtn) startBtn.disabled = false;
         window.showTutorialQuestionMissing?.();
         return;
     }
+    if (!hostRuntime.beginAction('start-quiz', [startBtn])) return;
     fetch(`/wer-weiss-mehr/start/${ROOM_CODE}/`, {
         method: 'POST',
         headers: {
@@ -293,21 +318,25 @@ function startQuiz() {
                 window.showTutorialQuestionMissing?.(payload);
                 return;
             }
+            if (!response.ok && payload.participants_not_in_lobby) {
+                startGuardHandled = window.hostGameStartGuard?.showLobbyReturn(payload, startBtn) || false;
+                if (startGuardHandled) return;
+            }
             if (!response.ok || !payload.success) {
                 throw new Error(payload.error || payload.message || 'Das Spiel konnte nicht gestartet werden.');
             }
             renderState(payload);
         })
-        .catch(error => {
-            alert(error.message || 'Das Spiel konnte nicht gestartet werden.');
-            fetchState();
-        })
+        .catch(error => handleHostRequestError(error, 'Das Spiel konnte nicht gestartet werden.'))
         .finally(() => {
-            if (startBtn && state?.game_status !== 'active') startBtn.disabled = false;
+            hostRuntime.completeAction('start-quiz');
+            if (!startGuardHandled && startBtn && state?.game_status !== 'active') startBtn.disabled = false;
+            if (startGuardHandled && startBtn) startBtn.disabled = true;
         });
 }
 function startSet(questionId, timeLimitSeconds, forceTutorialContinue = false) {
     const buttons = document.querySelectorAll('.start-set-btn');
+    if (!hostRuntime.beginAction('start-set', buttons)) return;
     buttons.forEach(btn => btn.disabled = true);
     fetch(`/wer-weiss-mehr/start-set/${ROOM_CODE}/`, {
         method: 'POST',
@@ -320,6 +349,7 @@ function startSet(questionId, timeLimitSeconds, forceTutorialContinue = false) {
             question_id: questionId,
             time_limit_seconds: timeLimitSeconds,
             force_tutorial_continue: forceTutorialContinue,
+            ...questionActionContext(questionId),
         }),
         credentials: 'same-origin',
     })
@@ -336,16 +366,15 @@ function startSet(questionId, timeLimitSeconds, forceTutorialContinue = false) {
             }
             renderState(payload);
         })
-        .catch(error => {
-            alert(error.message || 'Das Set konnte nicht gestartet werden.');
-            fetchState();
-        })
+        .catch(error => handleHostRequestError(error, 'Das Set konnte nicht gestartet werden.'))
         .finally(() => {
+            hostRuntime.completeAction('start-set');
             buttons.forEach(btn => btn.disabled = state?.game_status !== 'active');
         });
 }
 function endRound() {
     const endBtn = document.getElementById('endRoundBtn');
+    if (!hostRuntime.beginAction('end-round', [endBtn])) return;
     if (endBtn) endBtn.disabled = true;
     fetch(END_ROUND_URL, {
         method: 'POST',
@@ -353,7 +382,10 @@ function endRound() {
             'Content-Type': 'application/json',
             'X-CSRFToken': CSRF_TOKEN,
         },
-        body: JSON.stringify({hub_session: HUB_SESSION}),
+        body: JSON.stringify({
+            hub_session: HUB_SESSION,
+            ...questionActionContext(),
+        }),
         credentials: 'same-origin',
     })
         .then(response => parseJsonResponse(response, 'Die Runde konnte nicht beendet werden.'))
@@ -363,16 +395,15 @@ function endRound() {
             }
             renderState(payload);
         })
-        .catch(error => {
-            alert(error.message || 'Die Runde konnte nicht beendet werden.');
-            fetchState();
-        })
+        .catch(error => handleHostRequestError(error, 'Die Runde konnte nicht beendet werden.'))
         .finally(() => {
+            hostRuntime.completeAction('end-round');
             if (endBtn && state?.phase === 'round_active') endBtn.disabled = false;
         });
 }
 function nextRound() {
     const nextBtn = document.getElementById('nextRoundBtn');
+    if (!hostRuntime.beginAction('next-round', [nextBtn])) return;
     if (nextBtn) nextBtn.disabled = true;
     fetch(NEXT_ROUND_URL, {
         method: 'POST',
@@ -380,7 +411,10 @@ function nextRound() {
             'Content-Type': 'application/json',
             'X-CSRFToken': CSRF_TOKEN,
         },
-        body: JSON.stringify({hub_session: HUB_SESSION}),
+        body: JSON.stringify({
+            hub_session: HUB_SESSION,
+            ...questionActionContext(),
+        }),
         credentials: 'same-origin',
     })
         .then(response => parseJsonResponse(response, 'Die naechste Runde konnte nicht gestartet werden.'))
@@ -390,16 +424,43 @@ function nextRound() {
             }
             renderState(payload);
         })
-        .catch(error => {
-            alert(error.message || 'Die naechste Runde konnte nicht gestartet werden.');
-            fetchState();
-        })
+        .catch(error => handleHostRequestError(error, 'Die naechste Runde konnte nicht gestartet werden.'))
         .finally(() => {
+            hostRuntime.completeAction('next-round');
             if (nextBtn && state?.phase === 'review' && state?.can_start_next_round) nextBtn.disabled = false;
+        });
+}
+function openRound() {
+    const openBtn = document.getElementById('openRoundBtn');
+    if (!hostRuntime.beginAction('open-round', [openBtn])) return;
+    if (openBtn) openBtn.disabled = true;
+    fetch(OPEN_ROUND_URL, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-CSRFToken': CSRF_TOKEN,
+        },
+        body: JSON.stringify({
+            hub_session: HUB_SESSION,
+            ...questionActionContext(),
+        }),
+        credentials: 'same-origin',
+    })
+        .then(response => parseJsonResponse(response, 'Die Runde konnte nicht freigegeben werden.'))
+        .then(({response, payload}) => {
+            if (!response.ok || !payload.success) {
+                throw new Error(payload.error || payload.message || 'Die Runde konnte nicht freigegeben werden.');
+            }
+            renderState(payload);
+        })
+        .catch(error => handleHostRequestError(error, 'Die Runde konnte nicht freigegeben werden.'))
+        .finally(() => {
+            hostRuntime.completeAction('open-round');
         });
 }
 function finishSet() {
     const finishBtn = document.getElementById('finishSetBtn');
+    if (!hostRuntime.beginAction('finish-set', [finishBtn])) return;
     if (finishBtn) finishBtn.disabled = true;
     fetch(FINISH_SET_URL, {
         method: 'POST',
@@ -417,16 +478,15 @@ function finishSet() {
             }
             renderState(payload);
         })
-        .catch(error => {
-            alert(error.message || 'Das Set konnte nicht beendet werden.');
-            fetchState();
-        })
+        .catch(error => handleHostRequestError(error, 'Das Set konnte nicht beendet werden.'))
         .finally(() => {
+            hostRuntime.completeAction('finish-set');
             if (finishBtn && state?.phase !== 'set_completed' && state?.game_status === 'active') finishBtn.disabled = false;
         });
 }
 function clearSetSelection() {
     const clearBtn = document.getElementById('clearSetBtn');
+    if (!hostRuntime.beginAction('clear-set', [clearBtn])) return;
     if (clearBtn) clearBtn.disabled = true;
     fetch(CLEAR_SET_URL, {
         method: 'POST',
@@ -444,16 +504,15 @@ function clearSetSelection() {
             }
             renderState(payload);
         })
-        .catch(error => {
-            alert(error.message || 'Die Setauswahl konnte nicht geladen werden.');
-            fetchState();
-        })
+        .catch(error => handleHostRequestError(error, 'Die Setauswahl konnte nicht geladen werden.'))
         .finally(() => {
+            hostRuntime.completeAction('clear-set');
             if (clearBtn && state?.phase === 'set_completed') clearBtn.disabled = false;
         });
 }
 function skipTutorialSet() {
     const skipBtn = document.getElementById('skipTutorialSetBtn');
+    if (!hostRuntime.beginAction('skip-tutorial-set', [skipBtn])) return;
     if (skipBtn) skipBtn.disabled = true;
     fetch(SKIP_TUTORIAL_SET_URL, {
         method: 'POST',
@@ -471,11 +530,9 @@ function skipTutorialSet() {
             }
             renderState(payload);
         })
-        .catch(error => {
-            alert(error.message || 'Das Tutorialset konnte nicht übersprungen werden.');
-            fetchState();
-        })
+        .catch(error => handleHostRequestError(error, 'Das Tutorialset konnte nicht übersprungen werden.'))
         .finally(() => {
+            hostRuntime.completeAction('skip-tutorial-set');
             if (skipBtn && state?.game_status === 'active') skipBtn.disabled = false;
         });
 }
@@ -485,6 +542,8 @@ function applyCorrection(responseId, targetAnswerId) {
         return;
     }
     const button = document.querySelector(`.correction-btn[data-response-id="${responseId}"]`);
+    const actionKey = `apply-correction-${responseId}`;
+    if (!hostRuntime.beginAction(actionKey, [button])) return;
     if (button) button.disabled = true;
     fetch(APPLY_CORRECTION_URL, {
         method: 'POST',
@@ -507,16 +566,15 @@ function applyCorrection(responseId, targetAnswerId) {
             correctionDrafts.delete(responseId);
             renderState(payload);
         })
-        .catch(error => {
-            alert(error.message || 'Die Korrektur konnte nicht uebernommen werden.');
-            fetchState();
-        })
+        .catch(error => handleHostRequestError(error, 'Die Korrektur konnte nicht uebernommen werden.'))
         .finally(() => {
+            hostRuntime.completeAction(actionKey);
             if (button) button.disabled = false;
         });
 }
 function endQuiz() {
     const endBtn = document.getElementById('endQuizBtn');
+    if (!hostRuntime.beginAction('end-quiz', [endBtn])) return;
     if (endBtn) endBtn.disabled = true;
     fetch(`/wer-weiss-mehr/end/${ROOM_CODE}/`, {
         method: 'POST',
@@ -534,15 +592,17 @@ function endQuiz() {
             }
             renderState(payload);
         })
-        .catch(error => {
-            alert(error.message || 'Das Spiel konnte nicht beendet werden.');
-            fetchState();
-        })
+        .catch(error => handleHostRequestError(error, 'Das Spiel konnte nicht beendet werden.'))
         .finally(() => {
+            hostRuntime.completeAction('end-quiz');
             if (endBtn && state?.game_status === 'active') endBtn.disabled = false;
         });
 }
 function renderState(nextState) {
+    hostRuntime.acceptSnapshot(nextState, {source: 'application'});
+}
+
+function applyState(nextState) {
     state = nextState;
     window.unitTutorialNotice?.setFromPayload(nextState);
     document.getElementById('statusBadge').textContent = nextState.game_status;
@@ -557,6 +617,7 @@ function renderState(nextState) {
     if (['completed', 'cancelled'].includes(nextState.game_status)) {
         window.hostEndState?.apply({ message: 'Spiel beendet.', event: nextState });
     }
+    window.hostGameLeaveGuard?.stateChanged();
 }
 function renderControls(s) {
     const status = s.game_status;
@@ -618,6 +679,7 @@ function renderQuestionArea(s) {
             </div>
             <div class="${s.game_status === 'active' ? 'btn-group' : 'text-end'}">
                 ${s.game_status === 'active' ? `
+                ${s.question_phase === 'prompt_visible' ? '<button class="btn btn-success" id="openRoundBtn" disabled aria-disabled="true">FRAGE FREIGEBEN</button>' : ''}
                 ${s.phase === 'round_active' ? '<button class="btn btn-warning" id="endRoundBtn">Runde beenden</button>' : ''}
                 ${s.phase === 'review' && s.can_start_next_round ? '<button class="btn btn-success" id="nextRoundBtn">Nächste Runde</button>' : ''}
                 ${s.phase === 'set_completed' ? '<button class="btn btn-primary" id="clearSetBtn">Zur Setauswahl</button>' : ''}
@@ -629,10 +691,32 @@ function renderQuestionArea(s) {
             ${s.question.tiles.map(tile => `<div class="wwm-tile ${tile.revealed ? 'revealed' : 'host-hidden'}" title="${tile.revealed ? 'Für Teilnehmer aufgedeckt' : 'Für Teilnehmer noch verdeckt'}">${escapeHtml(tile.text || '?')}</div>`).join('')}
         </div>
     `;
+    document.getElementById('openRoundBtn')?.addEventListener('click', openRound);
     document.getElementById('endRoundBtn')?.addEventListener('click', endRound);
     document.getElementById('nextRoundBtn')?.addEventListener('click', nextRound);
     document.getElementById('clearSetBtn')?.addEventListener('click', clearSetSelection);
     document.getElementById('finishSetBtn')?.addEventListener('click', finishSet);
+    scheduleOpenRoundAvailability(s);
+}
+function scheduleOpenRoundAvailability(s) {
+    if (openRoundAvailabilityTimer) clearTimeout(openRoundAvailabilityTimer);
+    openRoundAvailabilityTimer = null;
+    const button = document.getElementById('openRoundBtn');
+    if (!button || s.question_phase !== 'prompt_visible') return;
+    const readyAt = Date.parse(s.field_reveal_ready_at || '');
+    const remaining = Number.isFinite(readyAt) ? Math.max(0, readyAt - estimatedServerNow()) : Infinity;
+    if (remaining <= 0) {
+        button.disabled = false;
+        button.setAttribute('aria-disabled', 'false');
+        return;
+    }
+    if (Number.isFinite(remaining)) {
+        openRoundAvailabilityTimer = setTimeout(() => {
+            if (state?.question_phase !== 'prompt_visible') return;
+            button.disabled = false;
+            button.setAttribute('aria-disabled', 'false');
+        }, remaining);
+    }
 }
 function ensureResponseTable(responsesBox) {
     let tbody = responsesBox.querySelector('[data-response-rows]');
@@ -758,11 +842,12 @@ function startHostTimer(s) {
         box.textContent = '';
         return;
     }
+    const timerContext = `${s.current_set_id || ''}:${s.current_round || 0}:${s.timer.ends_at}`;
     function tick() {
-        const remaining = Math.max(0, Math.ceil((new Date(s.timer.ends_at).getTime() - Date.now()) / 1000));
+        const remaining = Math.ceil(hostRuntime.remainingMilliseconds(s) / 1000);
         box.textContent = `${remaining}s`;
-        if (remaining <= 0 && autoEndSentForRound !== s.current_round) {
-            autoEndSentForRound = s.current_round;
+        if (remaining <= 0 && autoEndSentForRound !== timerContext) {
+            autoEndSentForRound = timerContext;
             endRound();
         }
     }
@@ -783,6 +868,9 @@ document.getElementById('setInactiveBtn')?.addEventListener('click', () => sendW
 document.getElementById('endQuizBtn')?.addEventListener('click', endQuiz);
 window.adminGameMonitor = {
     get isActive() {
+        return state?.game_status === 'active';
+    },
+    get isUnfinished() {
         return state?.game_status === 'active';
     },
     endQuiz() {

@@ -4,8 +4,11 @@ from channels.generic.websocket import AsyncWebsocketConsumer
 from channels.db import database_sync_to_async
 from django.utils import timezone
 from django.core.cache import cache
+from .authoritative_consumer import AuthoritativeGameConsumerMixin
+from .lobby_join import check_nickname_availability, join_lobby_participant
 from .models import HubSession, HubParticipant, HubGameStep
 from .active_game_guard import is_game_routable_for_hub_auto_redirect, resolve_session_game_activation
+from .game_intro import get_game_step, serialize_game_step, start_game_intro
 from .check_in import (
     complete_session_check_in,
     get_check_in_state,
@@ -38,7 +41,9 @@ from .voting import get_voting_state, submit_session_vote
 logger = logging.getLogger(__name__)
 
 
-class HubConsumer(AsyncWebsocketConsumer):
+class HubConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
+    authoritative_scope_kind = 'lobby'
+
     async def connect(self):
         self.session_code = self.scope['url_route']['kwargs']['session_code']
         self.group_name = f"hub_{self.session_code}"
@@ -79,6 +84,8 @@ class HubConsumer(AsyncWebsocketConsumer):
         msg_type = data.get('type')
         if msg_type == 'join':
             await self.handle_join(data)
+        elif msg_type == 'check_nickname':
+            await self.handle_check_nickname(data)
         elif msg_type == 'start_session':
             await self.handle_start_session()
         elif msg_type == 'next_step':
@@ -120,23 +127,61 @@ class HubConsumer(AsyncWebsocketConsumer):
 
     async def handle_join(self, data):
         nickname = data.get('nickname')
-        participant = await self.get_or_create_participant(nickname)
-        if not participant:
-            await self.send_json({'type': 'error', 'message': 'Unable to join'})
+        result = await database_sync_to_async(join_lobby_participant)(
+            self.session_code,
+            nickname,
+            data.get('rejoin_token') or '',
+        )
+        if not result.get('success'):
+            self.hub_participant_id = None
+            self.hub_participant_name = None
+            self._authoritative_participant = None
+            await self.send_json({
+                'type': 'join_error',
+                'code': result.get('code', 'join_failed'),
+                'message': result.get('message', 'Der Beitritt ist derzeit nicht möglich.'),
+            })
             return
-        self.hub_participant_id = participant
+        nickname = result['nickname']
+        self.hub_participant_id = result['participant_id']
         self.hub_participant_name = nickname
+        self._authoritative_participant = nickname
         
         # Determine if there's an active game to redirect the participant
         game_key, room_code = await self.get_active_game_for_session()
+        active_step = (
+            await self.get_game_step_for_room(game_key, room_code)
+            if game_key and room_code
+            else None
+        )
         
         # Notify the joining client immediately
-        payload = {'type': 'lobby_join_success','game_key': game_key, 'room_code': room_code, 'nickname': nickname}
+        payload = {
+            'type': 'lobby_join_success',
+            'game_key': game_key,
+            'room_code': room_code,
+            'nickname': nickname,
+            'rejoined': result['rejoined'],
+            'rejoin_token': result['rejoin_token'],
+            'step': active_step,
+        }
         await self.send_json(payload)
         
         # Notify others and send updated state
         await self.channel_layer.group_send(self.group_name, {'type': 'lobby_update'})
         await self.send_state()
+
+    async def handle_check_nickname(self, data):
+        result = await database_sync_to_async(check_nickname_availability)(
+            self.session_code,
+            data.get('candidate_name'),
+            data.get('rejoin_token') or '',
+        )
+        await self.send_json({
+            'type': 'nickname_status',
+            'request_id': data.get('request_id'),
+            **result,
+        })
 
     async def handle_start_session(self):
         await self.start_session_db()
@@ -191,13 +236,16 @@ class HubConsumer(AsyncWebsocketConsumer):
             await self.send_json(payload)
             return
 
-        step = {
-            'index': -1,
-            'order': -1,
-            'game_key': game_key,
-            'room_code': room_code,
-            'title': ''
-        }
+        step = await self.start_game_intro_for_room(game_key, room_code)
+        if not step:
+            step = {
+                'index': -1,
+                'order': -1,
+                'game_key': game_key,
+                'room_code': room_code,
+                'title': '',
+                'intro': {'intro_active': False},
+            }
         await self.channel_layer.group_send(self.group_name, {'type': 'navigate', 'step': step})
 
     async def send_state(self):
@@ -252,13 +300,19 @@ class HubConsumer(AsyncWebsocketConsumer):
 
         # When a game starts, redirect all lobby participants to the play page
         if etype == 'quiz_started' and ev.get('game_key') and ev.get('room_code'):
-            step = {
-                'index': -1,
-                'order': -1,
-                'game_key': ev.get('game_key'),
-                'room_code': ev.get('room_code'),
-                'title': ev.get('title', ''),
-            }
+            step = await self.start_game_intro_for_room(
+                ev.get('game_key'),
+                ev.get('room_code'),
+            )
+            if not step:
+                step = {
+                    'index': -1,
+                    'order': -1,
+                    'game_key': ev.get('game_key'),
+                    'room_code': ev.get('room_code'),
+                    'title': ev.get('title', ''),
+                    'intro': {'intro_active': False},
+                }
             await self.channel_layer.group_send(self.group_name, {'type': 'navigate', 'step': step})
 
         # If a game signals it ended, auto-advance or end session
@@ -310,18 +364,6 @@ class HubConsumer(AsyncWebsocketConsumer):
         await self.close(code=1000)
 
     # db helpers
-    @database_sync_to_async
-    def get_or_create_participant(self, nickname):
-        try:
-            session = HubSession.objects.get(code=self.session_code)
-        except HubSession.DoesNotExist:
-            return None
-        participant, _ = HubParticipant.objects.get_or_create(session=session, nickname=nickname)
-        participant.is_active = True
-        participant.last_seen = timezone.now()
-        participant.save()
-        return participant.id
-
     @database_sync_to_async
     def start_session_db(self):
         try:
@@ -416,7 +458,7 @@ class HubConsumer(AsyncWebsocketConsumer):
             pass
 
     async def handle_vote(self, data):
-        nickname = data.get('nickname', '').strip()
+        nickname = self.hub_participant_name
         step_order = data.get('step_order')
         if not nickname or step_order is None:
             return
@@ -528,7 +570,13 @@ class HubConsumer(AsyncWebsocketConsumer):
         await self._broadcast_check_in_result(result, 'check_in_started')
 
     async def handle_participant_check_in(self, data):
-        nickname = data.get('nickname') or data.get('participant_name')
+        nickname = self.hub_participant_name
+        if not nickname:
+            await self.send_json({
+                'type': 'check_in_error',
+                'error': 'Die Teilnahme wurde noch nicht bestätigt.',
+            })
+            return
         result = await self.participant_check_in_db(nickname)
         await self._broadcast_check_in_result(result, 'participant_checked_in')
 
@@ -574,7 +622,13 @@ class HubConsumer(AsyncWebsocketConsumer):
         await self._broadcast_readiness_result(result, 'readiness_started')
 
     async def handle_participant_ready(self, data):
-        nickname = data.get('nickname') or data.get('participant_name')
+        nickname = self.hub_participant_name
+        if not nickname:
+            await self.send_json({
+                'type': 'readiness_error',
+                'error': 'Die Teilnahme wurde noch nicht bestätigt.',
+            })
+            return
         result = await self.participant_ready_db(nickname)
         await self._broadcast_readiness_result(result, 'readiness_participant_ready')
 
@@ -586,13 +640,21 @@ class HubConsumer(AsyncWebsocketConsumer):
     def get_current_step(self):
         try:
             session = HubSession.objects.get(code=self.session_code)
-            steps = list(session.steps.values('order', 'game_key', 'room_code', 'title'))
+            steps = list(session.steps.order_by('order', 'pk'))
             if not steps:
                 return None
             idx = max(0, min(session.current_step_index, len(steps) - 1))
-            return {'index': idx, **steps[idx]}
+            return serialize_game_step(steps[idx])
         except HubSession.DoesNotExist:
             return None
+
+    @database_sync_to_async
+    def start_game_intro_for_room(self, game_key, room_code):
+        return start_game_intro(self.session_code, game_key, room_code)
+
+    @database_sync_to_async
+    def get_game_step_for_room(self, game_key, room_code):
+        return get_game_step(self.session_code, game_key, room_code)
 
     @database_sync_to_async
     def activate_game_for_session(self, game_key, room_code):
@@ -658,7 +720,11 @@ class HubConsumer(AsyncWebsocketConsumer):
         try:
             session = HubSession.objects.get(code=self.session_code)
             participants = list(session.participants.values('nickname'))
-            steps = list(session.steps.values('order', 'game_key', 'room_code', 'title'))
+            server_now = timezone.now()
+            steps = [
+                serialize_game_step(step, server_now=server_now)
+                for step in session.steps.order_by('order', 'pk')
+            ]
             next_game_number = session.get_next_game_number()
             check_in_state = get_check_in_state(session)
             voting_state = get_voting_state(session)

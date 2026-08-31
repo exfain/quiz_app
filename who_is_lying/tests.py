@@ -1,4 +1,5 @@
 import json
+import uuid
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -8,14 +9,23 @@ from django.contrib.auth.models import User
 from django.test import TestCase, TransactionTestCase
 from django.urls import reverse
 from django.utils import timezone
+from django.utils.dateparse import parse_datetime
 
 from games_hub.active_game_guard import resolve_session_game_activation
+from games_hub.authoritative_state import (
+    QUESTION_PRESENTATION_DELAY_MS,
+    current_snapshot,
+    finish_question_flow,
+    get_question_flow_capabilities,
+    present_question,
+    reset_question_flow,
+)
 from games_hub.consumers import HubConsumer
 from games_hub.lobby_return_flow import (
     get_session_lobby_presence,
     mark_single_participant_inactive_for_lobby_return,
 )
-from games_hub.models import HubGameStep, HubParticipant, HubSession
+from games_hub.models import GameRuntimeState, HubGameStep, HubParticipant, HubSession
 
 from .consumers import WhoConsumer
 from .models import WhoAnswer, WhoParticipant, WhoQuestion, WhoQuiz, WhoSession
@@ -97,7 +107,7 @@ class WhoLyingScoringTests(TestCase):
         self.assertEqual(answer.points_earned, -1)
         self.assertEqual(participant.total_score, -1)
 
-    def test_session_send_question_uses_total_duration_for_all_people(self):
+    def test_session_starts_people_timeline_only_when_answering_opens(self):
         quiz = WhoQuiz.objects.create(
             title='Who Session',
             room_code='7612',
@@ -106,14 +116,27 @@ class WhoLyingScoringTests(TestCase):
         )
         session = WhoSession.objects.create(quiz=quiz)
 
-        before = timezone.now()
         session.send_question(self.question, time_per_person=12)
         session.refresh_from_db()
-        duration = (session.question_end_time - before).total_seconds()
 
-        self.assertTrue(session.is_question_active)
+        self.assertFalse(session.is_question_active)
+        self.assertIsNone(session.question_end_time)
+        self.assertIsNone(session.quiz.question_start_time)
         self.assertEqual(session.current_question_number, 1)
         self.assertEqual(session.total_questions_sent, 1)
+
+        started_at = timezone.now()
+        session.open_answering(
+            self.question,
+            started_at=started_at,
+            answer_duration_seconds=36,
+        )
+        session.refresh_from_db()
+        session.quiz.refresh_from_db()
+        duration = (session.question_end_time - started_at).total_seconds()
+
+        self.assertTrue(session.is_question_active)
+        self.assertEqual(session.quiz.question_start_time, started_at)
         self.assertAlmostEqual(duration, 36, delta=1)
 
 
@@ -131,7 +154,323 @@ class WhoLyingConsumerTests(TransactionTestCase):
         consumer.send = fake_send
         return consumer, sent_messages
 
-    def test_admin_send_question_sets_total_set_duration_but_broadcasts_per_person_time(self):
+    def reset_manual_flow(self, quiz, hub_session=None):
+        return reset_question_flow(
+            game_key='who',
+            room_code=quiz.room_code,
+            session_code=hub_session,
+            mode=GameRuntimeState.QUESTION_FLOW_MANUAL_THREE_PHASE,
+        )
+
+    def phase_action(self, quiz, question, hub_session=None):
+        snapshot = current_snapshot('who', quiz.room_code, hub_session)
+        return {
+            'question_id': question.id,
+            'game_id': snapshot['game_id'],
+            'state_revision': snapshot['state_revision'],
+            'client_action_id': str(uuid.uuid4()),
+        }
+
+    def test_who_phase_path_skips_content_visible(self):
+        capabilities = get_question_flow_capabilities('who')
+
+        self.assertTrue(capabilities.uses_prompt_phase)
+        self.assertFalse(capabilities.uses_content_phase)
+        self.assertEqual(
+            capabilities.initial_phase,
+            GameRuntimeState.QUESTION_PHASE_PROMPT_VISIBLE,
+        )
+
+    def test_admin_start_uses_requested_hub_session_for_activation_and_broadcast(self):
+        user = User.objects.create_user(username='who-explicit-hub-start')
+        quiz = WhoQuiz.objects.create(
+            title='Who Explicit Hub',
+            room_code='WHS1',
+            creator=user,
+            status='waiting',
+        )
+        requested_session = HubSession.objects.create(
+            code='WHOHUB1',
+            name='Requested Who session',
+            started_at=timezone.now(),
+            check_in_status=HubSession.CHECK_IN_COMPLETED,
+            check_in_completed_at=timezone.now(),
+            locked_participant_count=2,
+        )
+        newer_session = HubSession.objects.create(
+            code='WHOHUB2',
+            name='Newer unrelated session',
+            started_at=timezone.now(),
+            check_in_status=HubSession.CHECK_IN_COMPLETED,
+            check_in_completed_at=timezone.now(),
+            locked_participant_count=1,
+        )
+        for session, nickname in (
+            (requested_session, 'Ada'),
+            (newer_session, 'Bea'),
+        ):
+            HubParticipant.objects.create(
+                session=session,
+                nickname=nickname,
+                scoring_eligible=True,
+                checked_in_at=timezone.now(),
+            )
+            HubGameStep.objects.create(
+                session=session,
+                order=0,
+                game_key='who',
+                room_code=quiz.room_code,
+                title=quiz.title,
+            )
+        HubParticipant.objects.create(
+            session=requested_session,
+            nickname='Cara',
+            scoring_eligible=True,
+            checked_in_at=timezone.now(),
+        )
+
+        preflight = resolve_session_game_activation(
+            requested_session.code,
+            'who',
+            quiz.room_code,
+            check_only=True,
+        )
+        quiz.refresh_from_db()
+        self.assertTrue(preflight['success'])
+        self.assertEqual(quiz.status, 'waiting')
+
+        consumer, sent_messages = self.make_consumer(quiz)
+        async_to_sync(consumer.handle_admin_start_quiz)({
+            'hub_session': requested_session.code,
+        })
+
+        quiz.refresh_from_db()
+        self.assertEqual(quiz.status, 'active')
+        hub_groups = [
+            group
+            for group, message in consumer.channel_layer.group_messages
+            if message.get('type') == 'hub_event'
+        ]
+        self.assertEqual(hub_groups, [f'hub_{requested_session.code}'])
+        self.assertNotIn(f'hub_{newer_session.code}', hub_groups)
+        self.assertTrue(WhoParticipant.objects.filter(
+            quiz=quiz,
+            name='Ada',
+            hub_session_code=requested_session.code,
+        ).exists())
+        self.assertTrue(WhoParticipant.objects.filter(
+            quiz=quiz,
+            name='Cara',
+            hub_session_code=requested_session.code,
+        ).exists())
+        self.assertFalse(WhoParticipant.objects.filter(
+            quiz=quiz,
+            name='Bea',
+            hub_session_code=newer_session.code,
+        ).exists())
+
+    def test_admin_start_restarts_waiting_game_with_started_at_from_previous_session(self):
+        user = User.objects.create_user(username='who-reused-start')
+        previous_started_at = timezone.now() - timezone.timedelta(hours=1)
+        quiz = WhoQuiz.objects.create(
+            title='Who Reused Start',
+            room_code='WHS6',
+            creator=user,
+            status='waiting',
+            started_at=previous_started_at,
+        )
+        hub_session = HubSession.objects.create(
+            code='WHOHUB6',
+            name='Who reused session',
+            is_active=True,
+            started_at=timezone.now(),
+            check_in_status=HubSession.CHECK_IN_COMPLETED,
+            check_in_completed_at=timezone.now(),
+            locked_participant_count=1,
+        )
+        participant = HubParticipant.objects.create(
+            session=hub_session,
+            nickname='Ada',
+            scoring_eligible=True,
+            checked_in_at=timezone.now(),
+        )
+        HubGameStep.objects.create(
+            session=hub_session,
+            order=0,
+            game_key='who',
+            room_code=quiz.room_code,
+            title=quiz.title,
+        )
+        consumer, _sent_messages = self.make_consumer(quiz)
+
+        async_to_sync(consumer.handle_admin_start_quiz)({
+            'hub_session': hub_session.code,
+        })
+
+        quiz.refresh_from_db()
+        self.assertEqual(quiz.status, 'active')
+        self.assertGreater(quiz.started_at, previous_started_at)
+        self.assertGreaterEqual(quiz.started_at, hub_session.started_at)
+        self.assertTrue(WhoParticipant.objects.filter(
+            quiz=quiz,
+            name=participant.nickname,
+            hub_session_code=hub_session.code,
+        ).exists())
+        hub_started_events = [
+            message
+            for group, message in consumer.channel_layer.group_messages
+            if group == f'hub_{hub_session.code}'
+            and message.get('type') == 'hub_event'
+            and message.get('event', {}).get('type') == 'quiz_started'
+        ]
+        self.assertEqual(len(hub_started_events), 1)
+
+    def test_admin_start_is_idempotent(self):
+        user = User.objects.create_user(username='who-idempotent-start')
+        quiz = WhoQuiz.objects.create(
+            title='Who Idempotent Start',
+            room_code='WHS4',
+            creator=user,
+            status='waiting',
+        )
+        hub_session = HubSession.objects.create(
+            code='WHOHUB4',
+            name='Who idempotent session',
+            started_at=timezone.now(),
+            check_in_status=HubSession.CHECK_IN_COMPLETED,
+            check_in_completed_at=timezone.now(),
+            locked_participant_count=1,
+        )
+        HubParticipant.objects.create(
+            session=hub_session,
+            nickname='Ada',
+            scoring_eligible=True,
+            checked_in_at=timezone.now(),
+        )
+        HubGameStep.objects.create(
+            session=hub_session,
+            order=0,
+            game_key='who',
+            room_code=quiz.room_code,
+            title=quiz.title,
+        )
+        consumer, sent_messages = self.make_consumer(quiz)
+
+        async_to_sync(consumer.handle_admin_start_quiz)({
+            'hub_session': hub_session.code,
+        })
+        quiz.refresh_from_db()
+        started_at = quiz.started_at
+        participant = WhoParticipant.objects.get(
+            quiz=quiz,
+            name='Ada',
+            hub_session_code=hub_session.code,
+        )
+        participant.is_active = True
+        participant.save(update_fields=['is_active'])
+
+        async_to_sync(consumer.handle_admin_start_quiz)({
+            'hub_session': hub_session.code,
+        })
+        quiz.refresh_from_db()
+
+        self.assertEqual(quiz.started_at, started_at)
+        quiz_started_events = [
+            message
+            for _, message in consumer.channel_layer.group_messages
+            if message.get('type') == 'quiz_started'
+        ]
+        hub_started_events = [
+            message
+            for _, message in consumer.channel_layer.group_messages
+            if message.get('type') == 'hub_event'
+            and message.get('event', {}).get('type') == 'quiz_started'
+        ]
+        self.assertEqual(len(quiz_started_events), 1)
+        self.assertEqual(len(hub_started_events), 1)
+        self.assertEqual(sent_messages[-1]['type'], 'quiz_started')
+        self.assertIn('already started', sent_messages[-1]['message'])
+
+    def test_admin_start_rejects_hub_session_not_linked_to_who_game(self):
+        user = User.objects.create_user(username='who-invalid-hub-start')
+        quiz = WhoQuiz.objects.create(
+            title='Who Invalid Hub',
+            room_code='WHS2',
+            creator=user,
+            status='waiting',
+        )
+        unrelated_session = HubSession.objects.create(
+            code='WHOHUB3',
+            name='Unrelated session',
+        )
+        consumer, sent_messages = self.make_consumer(quiz)
+
+        async_to_sync(consumer.handle_admin_start_quiz)({
+            'hub_session': unrelated_session.code,
+        })
+
+        quiz.refresh_from_db()
+        self.assertEqual(quiz.status, 'waiting')
+        self.assertEqual(sent_messages[-1]['type'], 'error')
+        self.assertFalse(consumer.channel_layer.group_messages)
+
+    def test_lobby_guard_failure_leaves_start_retryable(self):
+        user = User.objects.create_user(username='who-start-retry')
+        quiz = WhoQuiz.objects.create(
+            title='Who Retry Start',
+            room_code='WHS5',
+            creator=user,
+            status='waiting',
+        )
+        hub_session = HubSession.objects.create(
+            code='WHOHUB5',
+            name='Who retry session',
+            started_at=timezone.now(),
+            check_in_status=HubSession.CHECK_IN_COMPLETED,
+            check_in_completed_at=timezone.now(),
+            locked_participant_count=1,
+        )
+        HubParticipant.objects.create(
+            session=hub_session,
+            nickname='Ada',
+            scoring_eligible=True,
+            checked_in_at=timezone.now(),
+        )
+        HubGameStep.objects.create(
+            session=hub_session,
+            order=0,
+            game_key='who',
+            room_code=quiz.room_code,
+            title=quiz.title,
+        )
+        stale_participant = WhoParticipant.objects.create(
+            quiz=quiz,
+            name='Ada',
+            hub_session_code=hub_session.code,
+            is_active=True,
+        )
+        consumer, sent_messages = self.make_consumer(quiz)
+
+        async_to_sync(consumer.handle_admin_start_quiz)({
+            'hub_session': hub_session.code,
+        })
+
+        quiz.refresh_from_db()
+        self.assertEqual(quiz.status, 'waiting')
+        self.assertIsNone(quiz.started_at)
+        self.assertEqual(sent_messages[-1]['type'], 'participants_not_in_lobby')
+
+        stale_participant.is_active = False
+        stale_participant.save(update_fields=['is_active'])
+        async_to_sync(consumer.handle_admin_start_quiz)({
+            'hub_session': hub_session.code,
+        })
+
+        quiz.refresh_from_db()
+        self.assertEqual(quiz.status, 'active')
+        self.assertIsNotNone(quiz.started_at)
+
+    def test_admin_send_question_prepares_set_and_open_starts_total_duration(self):
         user = User.objects.create_user(username='who-consumer')
         question = WhoQuestion.objects.create(
             statement='Wer würde lügen?',
@@ -151,30 +490,234 @@ class WhoLyingConsumerTests(TransactionTestCase):
             status='active',
         )
         WhoSession.objects.create(quiz=quiz)
-        consumer, _ = self.make_consumer(quiz)
+        consumer, sent_messages = self.make_consumer(quiz)
+        self.reset_manual_flow(quiz)
 
-        before = timezone.now()
-        async_to_sync(consumer.handle_admin_send_question)({
+        send_action = {
             'question_id': question.id,
             'custom_time_limit': 15,
-        })
+            **self.phase_action(quiz, question),
+        }
+        async_to_sync(consumer.handle_admin_send_question)(send_action)
 
         quiz.refresh_from_db()
         quiz.session.refresh_from_db()
-        duration = (quiz.session.question_end_time - before).total_seconds()
         self.assertEqual(quiz.current_question_id, question.id)
-        self.assertAlmostEqual(duration, 45, delta=1)
-        self.assertEqual(
-            consumer.channel_layer.group_messages[-1][1]['question']['time_limit'],
-            15,
-        )
+        self.assertFalse(quiz.session.is_question_active)
+        self.assertIsNone(quiz.question_start_time)
+        self.assertIsNone(quiz.session.question_end_time)
         payload = consumer.channel_layer.group_messages[-1][1]['question']
+        self.assertEqual(payload['time_limit'], 15)
         self.assertEqual(payload['time_per_person'], 15)
+        self.assertEqual(payload['people'], [])
         self.assertEqual(payload['current_person_index'], 0)
-        self.assertTrue(14 <= payload['current_person_time_left'] <= 15)
-        self.assertIsNotNone(payload['question_started_at'])
-        self.assertIsNotNone(payload['question_end_time'])
+        self.assertEqual(payload['current_person_time_left'], 15)
+        self.assertIsNone(payload['question_started_at'])
+        self.assertIsNone(payload['question_end_time'])
         self.assertIsNotNone(payload['server_now'])
+        self.assertEqual(payload['question_phase'], 'prompt_visible')
+
+        early_action = self.phase_action(quiz, question)
+        async_to_sync(consumer.handle_admin_open_answering)(early_action)
+        self.assertEqual(sent_messages[-1]['type'], 'action_rejected')
+        self.assertEqual(sent_messages[-1]['code'], 'question_not_visible')
+
+        prompt_snapshot = current_snapshot('who', quiz.room_code)
+        presented_at = parse_datetime(prompt_snapshot['question_presented_at'])
+        visible_at = parse_datetime(prompt_snapshot['question_visible_at'])
+        self.assertEqual(
+            visible_at,
+            presented_at + timezone.timedelta(milliseconds=QUESTION_PRESENTATION_DELAY_MS),
+        )
+        open_action = self.phase_action(quiz, question)
+        decision = async_to_sync(consumer.open_who_answering)(
+            quiz.id,
+            question.id,
+            None,
+            open_action,
+            at=visible_at,
+        )
+        self.assertTrue(decision.accepted)
+
+        quiz.refresh_from_db()
+        quiz.session.refresh_from_db()
+        duration = (quiz.session.question_end_time - quiz.question_start_time).total_seconds()
+        self.assertTrue(quiz.session.is_question_active)
+        self.assertAlmostEqual(duration, 45, delta=0.01)
+        open_payload = async_to_sync(consumer.get_current_question_data)()
+        self.assertEqual(open_payload['question_phase'], 'answering_open')
+        self.assertEqual(len(open_payload['people']), 3)
+        self.assertEqual(open_payload['current_person_index'], 0)
+        self.assertTrue(14 <= open_payload['current_person_time_left'] <= 15)
+        self.assertIsNotNone(open_payload['question_started_at'])
+        self.assertIsNotNone(open_payload['question_end_time'])
+
+        original_deadline = quiz.session.question_end_time
+        duplicate = async_to_sync(consumer.open_who_answering)(
+            quiz.id,
+            question.id,
+            None,
+            open_action,
+            at=visible_at + timezone.timedelta(seconds=5),
+        )
+        quiz.session.refresh_from_db()
+        self.assertTrue(duplicate.accepted)
+        self.assertTrue(duplicate.duplicate)
+        self.assertEqual(quiz.session.question_end_time, original_deadline)
+
+    def test_participant_answer_is_blocked_before_set_start_and_allowed_afterward(self):
+        user = User.objects.create_user(username='who-phase-answer-guard')
+        question = WhoQuestion.objects.create(
+            statement='Wer luegt in diesem Set?',
+            points=10,
+            time_limit=12,
+            people=[
+                {'name': 'Alice', 'is_lying': False},
+                {'name': 'Bob', 'is_lying': True},
+            ],
+            created_by=user,
+        )
+        quiz = WhoQuiz.objects.create(
+            title='Who guarded set',
+            room_code='WHG1',
+            creator=user,
+            status='active',
+        )
+        participant = WhoParticipant.objects.create(
+            quiz=quiz,
+            name='Ada',
+            hub_session_code='WHO_GUARD',
+        )
+        WhoSession.objects.create(quiz=quiz)
+        consumer, _ = self.make_consumer(quiz)
+        self.reset_manual_flow(quiz)
+
+        presented_at = timezone.now() - timezone.timedelta(seconds=2)
+        present_decision = async_to_sync(consumer.present_who_question)(
+            quiz.id,
+            question.id,
+            None,
+            self.phase_action(quiz, question),
+            12,
+            at=presented_at,
+        )
+        self.assertTrue(present_decision.accepted)
+        randomized = question.get_randomized_people(room_code=quiz.room_code)
+        liar_position = next(
+            person['id']
+            for person in randomized['people']
+            if question.people[person['original_index']]['is_lying']
+        )
+
+        blocked = async_to_sync(consumer.save_participant_answer)(
+            participant.name,
+            participant.hub_session_code,
+            [liar_position],
+            0,
+            question.id,
+        )
+        self.assertIsNone(blocked)
+        self.assertFalse(WhoAnswer.objects.filter(participant=participant).exists())
+
+        open_decision = async_to_sync(consumer.open_who_answering)(
+            quiz.id,
+            question.id,
+            None,
+            self.phase_action(quiz, question),
+            at=presented_at + timezone.timedelta(
+                milliseconds=QUESTION_PRESENTATION_DELAY_MS,
+            ),
+        )
+        self.assertTrue(open_decision.accepted)
+        accepted = async_to_sync(consumer.save_participant_answer)(
+            participant.name,
+            participant.hub_session_code,
+            [liar_position],
+            0,
+            question.id,
+        )
+        self.assertIsNotNone(accepted)
+        self.assertTrue(
+            WhoAnswer.objects.filter(
+                participant=participant,
+                question=question,
+            ).exists()
+        )
+
+    def test_rejoin_reconstructs_prompt_and_later_person_from_server_time(self):
+        user = User.objects.create_user(username='who-phase-rejoin')
+        question = WhoQuestion.objects.create(
+            statement='Serverzeit bestimmt die Person.',
+            points=10,
+            time_limit=15,
+            people=[
+                {'name': 'Alice', 'is_lying': False},
+                {'name': 'Bob', 'is_lying': True},
+                {'name': 'Cara', 'is_lying': False},
+            ],
+            created_by=user,
+        )
+        quiz = WhoQuiz.objects.create(
+            title='Who reconnect set',
+            room_code='WHR1',
+            creator=user,
+            status='active',
+        )
+        participant = WhoParticipant.objects.create(
+            quiz=quiz,
+            name='Ada',
+            hub_session_code='WHO_REJOIN',
+        )
+        WhoSession.objects.create(quiz=quiz)
+        consumer, sent_messages = self.make_consumer(quiz)
+        self.reset_manual_flow(quiz)
+
+        presented_at = timezone.now() - timezone.timedelta(seconds=17)
+        present_decision = async_to_sync(consumer.present_who_question)(
+            quiz.id,
+            question.id,
+            participant.hub_session_code,
+            self.phase_action(quiz, question, participant.hub_session_code),
+            15,
+            at=presented_at,
+        )
+        self.assertTrue(present_decision.accepted)
+        async_to_sync(consumer.handle_participant_join)({
+            'participant_name': participant.name,
+            'hub_session': participant.hub_session_code,
+        })
+        prompt_payload = next(
+            message for message in sent_messages
+            if message['type'] == 'question_started'
+        )
+        self.assertEqual(prompt_payload['question_phase'], 'prompt_visible')
+        self.assertEqual(prompt_payload['question']['people'], [])
+        self.assertIsNone(prompt_payload['question']['question_started_at'])
+        self.assertIsNone(prompt_payload['question']['question_end_time'])
+
+        sent_messages.clear()
+        open_decision = async_to_sync(consumer.open_who_answering)(
+            quiz.id,
+            question.id,
+            participant.hub_session_code,
+            self.phase_action(quiz, question, participant.hub_session_code),
+            at=presented_at + timezone.timedelta(seconds=1),
+        )
+        self.assertTrue(open_decision.accepted)
+        async_to_sync(consumer.handle_participant_join)({
+            'participant_name': participant.name,
+            'hub_session': participant.hub_session_code,
+        })
+        answering_payload = next(
+            message for message in sent_messages
+            if message['type'] == 'question_answering_opened'
+        )
+        self.assertEqual(answering_payload['question_phase'], 'answering_open')
+        self.assertEqual(len(answering_payload['question']['people']), 3)
+        self.assertEqual(answering_payload['question']['current_person_index'], 1)
+        self.assertTrue(
+            13 <= answering_payload['question']['current_person_time_left'] <= 14
+        )
 
     def test_save_participant_answer_returns_person_results_for_reveal(self):
         user = User.objects.create_user(username='who-reveal-consumer')
@@ -195,6 +738,12 @@ class WhoLyingConsumerTests(TransactionTestCase):
             creator=user,
             status='active',
             current_question=question,
+            question_start_time=timezone.now(),
+        )
+        WhoSession.objects.create(
+            quiz=quiz,
+            is_question_active=True,
+            question_end_time=timezone.now() + timezone.timedelta(seconds=60),
         )
         WhoParticipant.objects.create(
             quiz=quiz,
@@ -210,7 +759,7 @@ class WhoLyingConsumerTests(TransactionTestCase):
         )
 
         result = async_to_sync(consumer.save_participant_answer)(
-            'Ada', 'HUB1', [liar_displayed['id']], 2.5
+            'Ada', 'HUB1', [liar_displayed['id']], 2.5, question.id
         )
 
         self.assertIn('person_results', result)
@@ -248,6 +797,12 @@ class WhoLyingConsumerTests(TransactionTestCase):
             creator=user,
             status='active',
             current_question=question,
+            question_start_time=timezone.now(),
+        )
+        WhoSession.objects.create(
+            quiz=quiz,
+            is_question_active=True,
+            question_end_time=timezone.now() + timezone.timedelta(seconds=60),
         )
         WhoParticipant.objects.create(
             quiz=quiz,
@@ -267,10 +822,23 @@ class WhoLyingConsumerTests(TransactionTestCase):
             'hub_session': 'HUB3',
             'selected_liars': [liar_displayed['id']],
             'time_taken': 1.8,
+            'question_id': question.id,
         })
 
         payload = next(message for message in sent_messages if message['type'] == 'answer_submitted')
         self.assertEqual(len(payload['person_results']), len(question.people))
+        self.assertEqual(payload['question_id'], question.id)
+        self.assertEqual(payload['question_number'], 1)
+        self.assertEqual(payload['max_points'], question.get_total_possible_points())
+        self.assertEqual(
+            payload['progress_history'],
+            [{
+                'question_id': question.id,
+                'question_number': 1,
+                'points': payload['points_earned'],
+                'max_points': question.get_total_possible_points(),
+            }],
+        )
         liar_result = next(entry for entry in payload['person_results'] if entry['name'] == liar_displayed['name'])
         self.assertTrue(liar_result['is_lying'])
         self.assertTrue(liar_result['was_correct'])
@@ -331,6 +899,7 @@ class WhoLyingConsumerTests(TransactionTestCase):
 
         payload = next(message for message in sent_messages if message['type'] == 'question_started')
         self.assertEqual(payload['question']['question_number'], 2)
+        self.assertEqual(payload['question']['total_sets'], 2)
         self.assertEqual(payload['question']['time_per_person'], 25)
         self.assertEqual(payload['question']['current_person_index'], 1)
         self.assertTrue(18 <= payload['question']['current_person_time_left'] <= 19)
@@ -380,16 +949,278 @@ class WhoLyingConsumerTests(TransactionTestCase):
         quiz.selected_questions.set([first_question, second_question, third_question])
         WhoSession.objects.create(quiz=quiz)
         consumer, _ = self.make_consumer(quiz)
+        self.reset_manual_flow(quiz)
 
-        async_to_sync(consumer.handle_admin_send_question)({'question_id': first_question.id})
-        async_to_sync(consumer.handle_admin_send_question)({'question_id': third_question.id})
+        async_to_sync(consumer.handle_admin_send_question)(
+            self.phase_action(quiz, first_question)
+        )
+        first_snapshot = current_snapshot('who', quiz.room_code)
+        first_visible_at = parse_datetime(first_snapshot['question_visible_at'])
+        async_to_sync(consumer.open_who_answering)(
+            quiz.id,
+            first_question.id,
+            None,
+            self.phase_action(quiz, first_question),
+            at=first_visible_at,
+        )
+        finish_question_flow(
+            game_key='who',
+            room_code=quiz.room_code,
+            session_code=None,
+            question_id=first_question.id,
+        )
+        WhoSession.objects.get(quiz=quiz).end_current_question()
 
-        first_payload = consumer.channel_layer.group_messages[0][1]
-        second_payload = consumer.channel_layer.group_messages[1][1]
+        async_to_sync(consumer.handle_admin_send_question)(
+            self.phase_action(quiz, third_question)
+        )
+
+        question_payloads = [
+            message
+            for _group, message in consumer.channel_layer.group_messages
+            if message.get('type') == 'question_started'
+        ]
+        self.assertEqual(len(question_payloads), 2)
+        first_payload, second_payload = question_payloads
         self.assertEqual(first_payload['question']['question_number'], 1)
         self.assertEqual(second_payload['question']['question_number'], 2)
+        self.assertEqual(second_payload['question']['people'], [])
+        self.assertEqual(second_payload['question_phase'], 'prompt_visible')
+        quiz.session.refresh_from_db()
+        self.assertEqual(quiz.session.current_question_number, 2)
+        self.assertFalse(quiz.session.is_question_active)
+        self.assertIsNone(quiz.session.question_end_time)
 
-    def test_auto_submit_after_host_end_still_scores_recently_ended_question(self):
+        second_snapshot = current_snapshot('who', quiz.room_code)
+        second_visible_at = parse_datetime(second_snapshot['question_visible_at'])
+        second_open = async_to_sync(consumer.open_who_answering)(
+            quiz.id,
+            third_question.id,
+            None,
+            self.phase_action(quiz, third_question),
+            at=second_visible_at,
+        )
+        self.assertTrue(second_open.accepted)
+        quiz.refresh_from_db()
+        quiz.session.refresh_from_db()
+        self.assertTrue(quiz.session.is_question_active)
+        self.assertEqual(
+            (quiz.session.question_end_time - quiz.question_start_time).total_seconds(),
+            40,
+        )
+        second_open_payload = async_to_sync(consumer.get_current_question_data)()
+        self.assertEqual(second_open_payload['question_phase'], 'answering_open')
+        self.assertEqual(second_open_payload['current_person_index'], 0)
+        self.assertEqual(len(second_open_payload['people']), 2)
+
+    def test_rejoin_after_set_end_receives_persisted_reveal(self):
+        user = User.objects.create_user(username='who-rejoin-reveal')
+        question = WhoQuestion.objects.create(
+            statement='Wer luegt nach dem Rejoin?',
+            points=10,
+            time_limit=20,
+            people=[
+                {'name': 'Alice', 'is_lying': False},
+                {'name': 'Bob', 'is_lying': True},
+            ],
+            created_by=user,
+        )
+        quiz = WhoQuiz.objects.create(
+            title='Who Rejoin Reveal',
+            room_code='7624',
+            creator=user,
+            status='active',
+        )
+        participant = WhoParticipant.objects.create(
+            quiz=quiz,
+            name='Ada',
+            hub_session_code='HUB6',
+        )
+        WhoAnswer.objects.create(
+            quiz=quiz,
+            participant=participant,
+            question=question,
+            selected_liars=[1],
+            time_taken=2.0,
+        )
+        WhoSession.objects.create(
+            quiz=quiz,
+            current_question_number=1,
+            total_questions_sent=1,
+            recently_ended_question=question,
+            recently_ended_at=timezone.now() - timezone.timedelta(minutes=5),
+        )
+        consumer, sent_messages = self.make_consumer(quiz)
+
+        async_to_sync(consumer.handle_participant_join)({
+            'participant_name': participant.name,
+            'hub_session': participant.hub_session_code,
+        })
+
+        reveal = next(message for message in sent_messages if message['type'] == 'set_revealed')
+        self.assertEqual(reveal['phase'], 'revealed')
+        self.assertEqual(reveal['question_id'], question.id)
+        self.assertEqual(reveal['question_number'], 1)
+        self.assertEqual(reveal['statement'], question.statement)
+        self.assertTrue(reveal['answer_locked'])
+        self.assertEqual(
+            reveal['progress_history'],
+            [{
+                'question_id': question.id,
+                'question_number': 1,
+                'points': reveal['points_earned'],
+                'max_points': question.get_total_possible_points(),
+            }],
+        )
+        self.assertEqual(reveal['selected_liars_names'], ['Bob'])
+        self.assertEqual(len(reveal['person_results']), 2)
+
+    def test_answer_submitted_progress_history_preserves_zero_points(self):
+        user = User.objects.create_user(username='who-zero-score-payload')
+        question = WhoQuestion.objects.create(
+            statement='Wer luegt ohne Auswahl?',
+            points=10,
+            time_limit=20,
+            people=[
+                {'name': 'Alice', 'is_lying': False},
+                {'name': 'Bob', 'is_lying': True},
+            ],
+            created_by=user,
+        )
+        quiz = WhoQuiz.objects.create(
+            title='Who Zero Score',
+            room_code='7630',
+            creator=user,
+            status='active',
+            current_question=question,
+            question_start_time=timezone.now(),
+            question_order=[question.id],
+        )
+        quiz.selected_questions.add(question)
+        WhoSession.objects.create(
+            quiz=quiz,
+            current_question_number=1,
+            is_question_active=True,
+            question_end_time=timezone.now() + timezone.timedelta(seconds=60),
+        )
+        WhoParticipant.objects.create(
+            quiz=quiz,
+            name='Ada',
+            hub_session_code='HUB_ZERO',
+        )
+        consumer, sent_messages = self.make_consumer(quiz)
+
+        async_to_sync(consumer.handle_participant_submit_answer)({
+            'participant_name': 'Ada',
+            'hub_session': 'HUB_ZERO',
+            'selected_liars': [],
+            'question_id': question.id,
+        })
+
+        payload = next(message for message in sent_messages if message['type'] == 'answer_submitted')
+        self.assertEqual(payload['points_earned'], 0)
+        self.assertEqual(payload['progress_history'][0]['points'], 0)
+
+    def test_reveal_payload_contains_two_set_history_for_current_participant_only(self):
+        user = User.objects.create_user(username='who-two-set-score-payload')
+        first_question = WhoQuestion.objects.create(
+            statement='Wer luegt im ersten Set?',
+            points=10,
+            time_limit=20,
+            people=[
+                {'name': 'Alice', 'is_lying': False},
+                {'name': 'Bob', 'is_lying': True},
+            ],
+            created_by=user,
+        )
+        second_question = WhoQuestion.objects.create(
+            statement='Wer luegt im zweiten Set?',
+            points=10,
+            time_limit=20,
+            people=[
+                {'name': 'Cara', 'is_lying': False},
+                {'name': 'Dan', 'is_lying': True},
+            ],
+            created_by=user,
+        )
+        quiz = WhoQuiz.objects.create(
+            title='Who Two Set Scores',
+            room_code='7631',
+            creator=user,
+            status='active',
+            question_order=[first_question.id, second_question.id],
+        )
+        quiz.selected_questions.add(first_question, second_question)
+        ada = WhoParticipant.objects.create(
+            quiz=quiz,
+            name='Ada',
+            hub_session_code='HUB_TWO',
+        )
+        bea = WhoParticipant.objects.create(
+            quiz=quiz,
+            name='Bea',
+            hub_session_code='HUB_TWO',
+        )
+        WhoAnswer.objects.create(
+            quiz=quiz,
+            participant=ada,
+            question=first_question,
+            selected_liars=[1],
+            time_taken=2.0,
+        )
+        WhoAnswer.objects.create(
+            quiz=quiz,
+            participant=ada,
+            question=second_question,
+            selected_liars=[0],
+            time_taken=3.0,
+        )
+        WhoAnswer.objects.create(
+            quiz=quiz,
+            participant=bea,
+            question=first_question,
+            selected_liars=[],
+            time_taken=2.5,
+        )
+        WhoAnswer.objects.create(
+            quiz=quiz,
+            participant=bea,
+            question=second_question,
+            selected_liars=[1],
+            time_taken=3.5,
+        )
+        WhoSession.objects.create(
+            quiz=quiz,
+            current_question_number=2,
+            total_questions_sent=2,
+            recently_ended_question=second_question,
+            recently_ended_at=timezone.now(),
+        )
+        consumer, _ = self.make_consumer(quiz)
+
+        ada_reveal = async_to_sync(consumer.get_recent_participant_reveal)(
+            ada.name,
+            ada.hub_session_code,
+        )
+        bea_reveal = async_to_sync(consumer.get_recent_participant_reveal)(
+            bea.name,
+            bea.hub_session_code,
+        )
+
+        self.assertEqual(
+            [entry['points'] for entry in ada_reveal['progress_history']],
+            [1, -1],
+        )
+        self.assertEqual(
+            [entry['points'] for entry in bea_reveal['progress_history']],
+            [0, 1],
+        )
+        ada.refresh_from_db()
+        bea.refresh_from_db()
+        self.assertEqual(ada.total_score, 0)
+        self.assertEqual(bea.total_score, 1)
+
+    def test_submit_after_host_end_is_rejected_without_hidden_grace_period(self):
         user = User.objects.create_user(username='who-ended-submit')
         question = WhoQuestion.objects.create(
             statement='Wer luegt nach dem Host-Ende?',
@@ -431,6 +1262,9 @@ class WhoLyingConsumerTests(TransactionTestCase):
         )
 
         async_to_sync(consumer.handle_admin_end_question)({})
+        quiz.session.refresh_from_db()
+        self.assertEqual(quiz.session.recently_ended_question_id, question.id)
+        self.assertIsNotNone(quiz.session.recently_ended_at)
         async_to_sync(consumer.handle_participant_submit_answer)({
             'participant_name': participant.name,
             'hub_session': participant.hub_session_code,
@@ -439,15 +1273,20 @@ class WhoLyingConsumerTests(TransactionTestCase):
             'time_taken': 3.6,
         })
 
-        answer = WhoAnswer.objects.get(quiz=quiz, participant=participant, question=question)
+        self.assertFalse(
+            WhoAnswer.objects.filter(
+                quiz=quiz,
+                participant=participant,
+                question=question,
+            ).exists()
+        )
         participant.refresh_from_db()
         quiz.refresh_from_db()
 
         self.assertIsNone(quiz.current_question_id)
-        self.assertEqual(answer.points_earned, -1)
-        self.assertEqual(participant.total_score, -1)
-        payload = next(message for message in sent_messages if message['type'] == 'answer_submitted')
-        self.assertEqual(payload['points_earned'], -1)
+        self.assertEqual(participant.total_score, 0)
+        payload = next(message for message in sent_messages if message['type'] == 'answer_rejected')
+        self.assertEqual(payload['question_id'], question.id)
 
     def test_admin_set_time_per_person_is_blocked_during_running_question(self):
         user = User.objects.create_user(username='who-time-locked')
@@ -588,6 +1427,71 @@ class WhoLyingMonitorViewTests(TestCase):
         self.assertContains(response, 'data-server-now=')
         self.assertContains(response, 'getQuestionTimerState()')
         self.assertContains(response, "case 'time_per_person_updated':")
+        self.assertEqual(response.context['total_sets'], 1)
+        self.assertContains(response, 'Current Set 1/1')
+
+    def test_monitor_start_waits_for_authoritative_who_broadcast(self):
+        response = self.client.get(
+            reverse('admin_dashboard:who_monitor', args=[self.quiz.room_code]),
+            {'hub_session': 'WHOHUB1'},
+        )
+        markup = response.content.decode()
+        start_handler = markup.index('startQuiz() {')
+        end_handler = markup.index('endQuiz() {', start_handler)
+        source = markup[start_handler:end_handler]
+
+        self.assertIn('hub_session: hub', source)
+        self.assertNotIn("type: 'navigate_direct'", source)
+        self.assertNotIn('location.reload()', source)
+
+        event_handler_start = markup.index("case 'quiz_started':")
+        event_handler_end = markup.index("case 'tutorial_start':", event_handler_start)
+        event_handler = markup[event_handler_start:event_handler_end]
+        self.assertIn('location.reload()', event_handler)
+        self.assertNotIn('updateQuizStatus', event_handler)
+
+    def test_active_monitor_reload_renders_in_game_controls(self):
+        self.session.end_current_question()
+        response = self.client.get(
+            reverse('admin_dashboard:who_monitor', args=[self.quiz.room_code])
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertNotContains(response, 'id="startQuizBtn"')
+        self.assertContains(response, 'Send Set')
+        self.assertContains(response, 'class="btn btn-secondary send-question-btn"', html=False)
+
+    def test_prompt_phase_offers_only_set_start_without_person_timeline(self):
+        reset_snapshot = reset_question_flow(
+            game_key='who',
+            room_code=self.quiz.room_code,
+            session_code=None,
+            mode=GameRuntimeState.QUESTION_FLOW_MANUAL_THREE_PHASE,
+        )
+        decision = present_question(
+            game_key='who',
+            room_code=self.quiz.room_code,
+            session_code=None,
+            action={
+                'question_id': self.question.id,
+                'game_id': reset_snapshot['game_id'],
+                'state_revision': reset_snapshot['state_revision'],
+                'client_action_id': str(uuid.uuid4()),
+            },
+            answer_duration_seconds=self.question.get_total_duration_seconds(),
+        )
+        self.assertTrue(decision.accepted)
+
+        response = self.client.get(
+            reverse('admin_dashboard:who_monitor', args=[self.quiz.room_code])
+        )
+
+        self.assertFalse(response.context['question_answering_open'])
+        self.assertIsNone(response.context['current_person_name'])
+        self.assertContains(response, 'id="startSetBtn"')
+        self.assertContains(response, 'SET STARTEN')
+        self.assertNotContains(response, 'PERSONEN ANZEIGEN')
+        self.assertContains(response, 'class="question-timer d-none" id="questionTimerWrapper"')
 
     def test_monitor_does_not_render_non_negative_score_clamp(self):
         response = self.client.get(
@@ -627,7 +1531,7 @@ class WhoLyingMonitorViewTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, 'id="timePerPersonInput"')
         self.assertContains(response, 'id="updateTimePerPersonBtn"')
-        self.assertContains(response, 'Während einer laufenden Frage gesperrt')
+        self.assertContains(response, 'Während eines laufenden Sets gesperrt')
         self.assertContains(response, 'id="timePerPersonInput" value="18" style="max-width:120px;" disabled', html=False)
         self.assertContains(response, 'id="updateTimePerPersonBtn" disabled', html=False)
 
@@ -709,6 +1613,8 @@ class WhoLyingPlayViewTests(TestCase):
         self.assertContains(response, '.selection-instructions {')
         self.assertContains(response, 'display: none;')
         self.assertContains(response, 'question_id: this.activeQuestionId')
+        self.assertContains(response, 'acceptStateRevision(data)')
+        self.assertContains(response, 'revision < this.stateRevision')
         self.assertContains(response, 'lügt nicht')
         self.assertContains(response, 'gedrückt')
         self.assertContains(response, 'Set-Auflösung')
@@ -719,6 +1625,9 @@ class WhoLyingPlayViewTests(TestCase):
         self.assertContains(response, 'id="whoRevealCorrectValue"')
         self.assertContains(response, 'id="whoRevealGivenValue"')
         self.assertContains(response, 'id="whoRevealPromptValue"')
+        self.assertContains(response, 'id="totalSetCount"')
+        self.assertContains(response, "currentSetNumber.textContent = String(this.currentQuestionIndex)")
+        self.assertContains(response, "totalSetCount.textContent = String(Number(question.total_sets))")
         self.assertContains(response, "if (!this.currentSetResult || !this.questionHasEnded) return;")
         self.assertContains(response, "return value ? 'Stimmt' : 'Stimmt nicht';")
 
@@ -726,6 +1635,18 @@ class WhoLyingPlayViewTests(TestCase):
         self.assertEqual(markup.count('WhoPlayer.prototype.showRevealState = function()'), 1)
         self.assertEqual(markup.count('class="who-reveal-vhs"'), 1)
         self.assertNotIn('showLegacyRevealState', markup)
+        reveal_handler_start = markup.index('onSetRevealed(data) {')
+        reveal_handler_end = markup.index('onQuizEnded(data) {', reveal_handler_start)
+        self.assertIn(
+            'this.syncAuthoritativeScoreHistory(data);',
+            markup[reveal_handler_start:reveal_handler_end],
+        )
+        submitted_handler_start = markup.index('onAnswerSubmitted(data) {')
+        submitted_handler_end = markup.index('isVhsTheme() {', submitted_handler_start)
+        self.assertIn(
+            'this.syncAuthoritativeScoreHistory(data)',
+            markup[submitted_handler_start:submitted_handler_end],
+        )
 
         vhs_css = (Path(__file__).resolve().parent.parent / 'static' / 'themes' / 'vhs' / 'vhs.css').read_text(encoding='utf-8')
         self.assertIn('#setRevealState .who-reveal-default', vhs_css)
@@ -788,7 +1709,7 @@ class WhoLyingPlayViewTests(TestCase):
         self.assertContains(response, 'personSwitchTimer.style.setProperty(\'--who-person-progress\', progress)')
         self.assertContains(response, 'class="submitted-details who-set-summary"')
         self.assertContains(response, 'class="who-set-ended-title__vhs">SET BEENDET</span>')
-        self.assertContains(response, 'class="who-set-ended-waiting__vhs">Warte auf die n&auml;chste Runde...</span>')
+        self.assertContains(response, 'class="who-set-ended-waiting__vhs">Warte auf das n&auml;chste Set...</span>')
         self.assertContains(response, 'NICHT ERKANNTE L&Uuml;GNER')
         self.assertContains(response, 'FALSCHE BESCHULDIGUNGEN')
         self.assertContains(response, 'id="whoSetEvaluatingState"')
@@ -804,7 +1725,7 @@ class WhoLyingPlayViewTests(TestCase):
         self.assertEqual(markup.count('this.questionTimer = setInterval(renderTimerState, 250);'), 1)
         submitted_handler = markup.index('onAnswerSubmitted(data) {')
         render_call = markup.index('this.renderSetResult(data);', submitted_handler)
-        final_show = markup.index("this.showState('answerSubmittedState');", render_call)
+        final_show = markup.index('this.showRevealState();', render_call)
         render_start = markup.index('renderSetResult(data) {')
         result_ready = markup.index('this.setSetResultReady(true);', render_start)
         state_switch = markup.index('showState(stateId) {')
@@ -832,7 +1753,7 @@ class WhoLyingPlayViewTests(TestCase):
         self.assertIn("timerFill.style.transition = 'none';", accessibility)
         self.assertIn("timerFill.style.removeProperty('transition');", accessibility)
 
-    def test_vhs_set_end_is_not_overwritten_by_automatic_reveal(self):
+    def test_vhs_set_end_shows_the_authoritative_reveal(self):
         response = self.client.get(
             reverse('who_is_lying:play', args=[self.quiz.room_code, self.participant.name]),
             {'hub_session': self.participant.hub_session_code},
@@ -863,8 +1784,10 @@ class WhoLyingPlayViewTests(TestCase):
         set_ended_end = markup.index('renderSetResult(data) {', set_ended_start)
         set_ended_handler = markup[set_ended_start:set_ended_end]
         self.assertIn('if (!this.currentSetResult) return;', set_ended_handler)
-        self.assertIn("this.showState('answerSubmittedState');", set_ended_handler)
-        self.assertNotIn('showRevealState', set_ended_handler)
+        self.assertIn('this.showRevealState();', set_ended_handler)
+        self.assertNotIn("this.showState('answerSubmittedState');", set_ended_handler)
+        self.assertIn("case 'set_revealed':", markup)
+        self.assertIn('this.onSetRevealed(data);', markup)
 
         self.assertIn("this.showState('questionState');", markup)
         self.assertIn("this.showState('quizEndedState');", markup)
@@ -904,7 +1827,9 @@ class WhoLyingPlayViewTests(TestCase):
         self.assertContains(response, 'current_person_time_left')
         self.assertContains(response, 'server_now')
         self.assertContains(response, 'getQuestionTimerState(question)')
-        self.assertContains(response, 'this.startQuestionTimer(activeQuestion);')
+        self.assertContains(response, 'this.applyQuestionState(activeQuestion);')
+        self.assertContains(response, "if (this.questionPhase === 'answering_open')")
+        self.assertContains(response, 'this.startQuestionTimer(question);')
 
 
 class WhoLyingHubParticipantLifecycleTests(TransactionTestCase):
@@ -1410,6 +2335,8 @@ class WhoLyingScoreBoxViewTests(TestCase):
         self.assertContains(response, 'whoQuestionScoreboardData')
         self.assertContains(response, 'whoInitialProgressData')
         self.assertContains(response, 'whoCurrentQuestionNumber')
+        self.assertContains(response, 'syncAuthoritativeScoreHistory(data)')
+        self.assertContains(response, 'Array.isArray(data?.progress_history)')
         self.assertContains(response, 'const hasMaxPoints = isPlayed && maxPoints !== undefined && maxPoints !== null;')
 
     def test_play_view_uses_actual_send_order_for_out_of_order_current_round(self):

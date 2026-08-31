@@ -1,4 +1,5 @@
 {% extends "admin_dashboard/base.html" %}
+{% load static %}
 
 {% block title %}Wann war das? Monitor{% endblock %}
 {% block page_title %}Wann war das? Monitor{% endblock %}
@@ -26,8 +27,9 @@
                 </div>
                 <div class="card-body">
                     <div class="d-flex flex-wrap gap-2 mb-3">
-                        <button class="btn btn-primary {% if game.status == 'active' or game.status == 'completed' %}d-none{% endif %}" id="startGameBtn">Spiel starten</button>
-                        <button class="btn btn-success d-none" id="startQuestionBtn">Frage starten</button>
+                        <button class="btn btn-primary {% if game.status == 'active' or game.status == 'completed' %}d-none{% endif %}" id="startGameBtn" data-host-game-start>Spiel starten</button>
+                        <button class="btn btn-success d-none" id="startQuestionBtn">FRAGE SENDEN</button>
+                        <button class="btn btn-success d-none" id="openAnsweringBtn">FRAGE FREIGEBEN</button>
                         <button class="btn btn-warning d-none" id="endQuestionBtn">Frage beenden und Reveal anzeigen</button>
                     </div>
                     <div class="form-check form-switch mb-3">
@@ -106,10 +108,9 @@
             <div class="card border-0 shadow-sm mt-3">
                 <div class="card-body d-flex flex-wrap gap-2">
                     {% if hub_session %}
-                    <a class="btn btn-outline-primary btn-sm" href="/hub/lobby/{{ hub_session }}/">Zur Lobby</a>
-                    <a class="btn btn-outline-secondary btn-sm" href="/hub/monitor/{{ hub_session }}/">Zur Session-Übersicht</a>
+                    <a class="btn btn-outline-secondary btn-sm" id="backToHubBtn" data-host-game-leave href="/hub/monitor/{{ hub_session }}/">Zur Session-Übersicht</a>
                     {% else %}
-                    <a class="btn btn-outline-secondary btn-sm" href="{% url 'admin_dashboard:sessions_overview' %}">Zur Session-Übersicht</a>
+                    <a class="btn btn-outline-secondary btn-sm" id="backToHubBtn" data-host-game-leave href="{% url 'admin_dashboard:sessions_overview' %}">Zur Session-Übersicht</a>
                     {% endif %}
                 </div>
             </div>
@@ -117,14 +118,52 @@
     </div>
 </div>
 
+<script src="{% static 'js/authoritative-game-state.js' %}"></script>
+<script src="{% static 'js/host-game-runtime.js' %}"></script>
 <script>
 const ROOM_CODE = '{{ game.room_code|escapejs }}';
 const HUB_SESSION = '{{ hub_session|escapejs }}';
-let socket = null;
+let latestState = null;
+let pendingPhaseAction = null;
+let presentationDelayTimer = null;
+let timerDisplayInterval = null;
+let deadlineRefreshTimer = null;
+const guardedAdminActions = new Set([
+    'admin_start_game',
+    'admin_start_question',
+    'admin_open_answering',
+    'admin_end_question',
+    'admin_end_game',
+    'admin_set_inactive',
+]);
+const hostRuntime = window.HostGameRuntime.create({
+    messageBase: {hub_session: HUB_SESSION},
+    stateRequest: {type: 'get_state'},
+    render: applyState,
+    onPendingChange: (pending, keys) => {
+        pendingPhaseAction = pending ? Array.from(keys)[0] : null;
+        if (latestState) renderControls(latestState);
+    },
+    onError: error => alert(error.message || 'Fehler'),
+});
+
+function actionButton(type) {
+    const ids = {
+        admin_start_game: 'startGameBtn',
+        admin_start_question: 'startQuestionBtn',
+        admin_open_answering: 'openAnsweringBtn',
+        admin_end_question: 'endQuestionBtn',
+        admin_end_game: 'endGameBtn',
+    };
+    return document.getElementById(ids[type]);
+}
 
 function send(payload) {
-    if (!socket || socket.readyState !== WebSocket.OPEN) return;
-    socket.send(JSON.stringify({ hub_session: HUB_SESSION, ...payload }));
+    if (guardedAdminActions.has(payload.type)) {
+        hostRuntime.sendAction(payload, {button: actionButton(payload.type)});
+        return;
+    }
+    hostRuntime.send(payload);
 }
 
 function esc(value) {
@@ -138,6 +177,11 @@ function fmt(value) {
 }
 
 function renderState(data) {
+    hostRuntime.acceptSnapshot(data, {source: 'websocket'});
+}
+
+function applyState(data) {
+    latestState = data;
     const game = data.game || {};
     const question = data.question;
     const timer = data.timer || {};
@@ -145,13 +189,15 @@ function renderState(data) {
     document.getElementById('gameStatus').textContent = game.status || '-';
     document.getElementById('questionNumber').textContent = data.question_number || 0;
     document.getElementById('questionState').textContent = data.question_state || 'bereit';
-    document.getElementById('currentTolerance').textContent = timer.current_tolerance === undefined ? '-' : `±${fmt(timer.current_tolerance)}`;
-    document.getElementById('currentPoints').textContent = fmt(timer.current_points);
+    const currentTolerance = timer.current_tolerance ?? question?.start_tolerance;
+    const currentPoints = timer.current_points ?? question?.max_points;
+    document.getElementById('currentTolerance').textContent = currentTolerance === undefined ? '-' : `±${fmt(currentTolerance)}`;
+    document.getElementById('currentPoints').textContent = fmt(currentPoints);
     document.getElementById('participantCount').textContent = (data.participants || []).filter(p => p.official).length;
     document.getElementById('tutorialBadge').classList.toggle('d-none', !data.is_tutorial_round);
     document.getElementById('completedBanner').classList.toggle('d-none', game.status !== 'completed');
     document.getElementById('questionPreview').textContent = question ? `${question.question_text} | Antwort: ${question.formatted_correct_answer}` : 'Keine Frage aktiv.';
-    renderControls(game.status, data.question_state, !!question);
+    renderControls(latestState);
     if (game.status === 'completed') {
         window.hostEndState?.apply({ message: 'Spiel beendet.', event: data });
     }
@@ -170,27 +216,76 @@ function renderState(data) {
     `).join('') : '<tr><td colspan="6" class="text-center text-muted py-3">Noch keine Antworten</td></tr>';
 
     renderScorebox(data.scorebox || {});
+    startTimerDisplay(data);
+    window.hostGameLeaveGuard?.stateChanged();
 }
 
-function renderControls(gameStatus, questionState, hasQuestion) {
+function remainingPresentationDelay(state) {
+    const visibleAt = Date.parse(state?.question_visible_at || '');
+    if (!Number.isFinite(visibleAt)) return 0;
+    return Math.max(0, visibleAt - hostRuntime.serverNow());
+}
+
+function renderControls(state) {
+    window.clearTimeout(presentationDelayTimer);
+    presentationDelayTimer = null;
+    const gameStatus = state?.game?.status;
+    const questionState = state?.question_state;
+    const questionPhase = state?.question_phase;
+    const hasQuestion = Boolean(state?.current_question_id || state?.question);
     const gameActive = gameStatus === 'active';
-    const questionActive = gameActive && hasQuestion && questionState === 'active';
+    const questionPrepared = gameActive && questionPhase === 'prompt_visible';
+    const questionActive = gameActive && questionPhase === 'answering_open';
     const startGameBtn = document.getElementById('startGameBtn');
     const startQuestionBtn = document.getElementById('startQuestionBtn');
+    const openAnsweringBtn = document.getElementById('openAnsweringBtn');
     const endQuestionBtn = document.getElementById('endQuestionBtn');
     const questionSelect = document.getElementById('questionSelect');
+    const remainingDelay = questionPrepared ? remainingPresentationDelay(state) : 0;
+
+    if (!pendingPhaseAction) {
+        startQuestionBtn.removeAttribute('aria-busy');
+        openAnsweringBtn.removeAttribute('aria-busy');
+    }
 
     startGameBtn.classList.toggle('d-none', gameActive || gameStatus === 'completed');
-    startQuestionBtn.classList.toggle('d-none', !gameActive || questionActive);
-    startQuestionBtn.textContent = hasQuestion && questionState === 'revealed' ? 'Nächste Frage' : 'Frage starten';
-    startQuestionBtn.disabled = !gameActive || questionActive || !questionSelect.value;
+    startQuestionBtn.classList.toggle('d-none', !gameActive || questionPrepared || questionActive);
+    startQuestionBtn.textContent = hasQuestion && questionState === 'revealed' ? 'NÄCHSTE FRAGE SENDEN' : 'FRAGE SENDEN';
+    startQuestionBtn.disabled = !gameActive || questionPrepared || questionActive || !questionSelect.value || pendingPhaseAction !== null;
+    openAnsweringBtn.classList.toggle('d-none', !questionPrepared);
+    openAnsweringBtn.disabled = !questionPrepared || remainingDelay > 0 || pendingPhaseAction !== null;
+    openAnsweringBtn.dataset.questionId = state?.current_question_id || '';
     endQuestionBtn.classList.toggle('d-none', !questionActive);
     endQuestionBtn.disabled = !questionActive;
-    questionSelect.disabled = !gameActive || questionActive;
+    questionSelect.disabled = !gameActive || questionPrepared || questionActive;
     document.getElementById('endGameBtn').disabled = !gameActive;
     document.getElementById('playTutorialToggle').disabled = gameActive;
     const explanationToggle = document.getElementById('showTutorialToggle');
     if (explanationToggle) explanationToggle.disabled = gameActive;
+    if (questionPrepared && remainingDelay > 0) {
+        presentationDelayTimer = window.setTimeout(() => renderControls(latestState), remainingDelay + 10);
+    }
+}
+
+function sendQuestionPhaseAction(type, questionId, button, extra = {}) {
+    if (!questionId) return;
+    hostRuntime.sendAction({
+        type,
+        question_id: questionId,
+        ...extra,
+    }, {
+        button,
+        context: {question_id: questionId},
+    });
+}
+
+function sendSelectedQuestion(forceStart = false) {
+    sendQuestionPhaseAction(
+        'admin_start_question',
+        document.getElementById('questionSelect').value,
+        document.getElementById('startQuestionBtn'),
+        { force_start: forceStart },
+    );
 }
 
 function renderScorebox(scorebox) {
@@ -206,22 +301,76 @@ function renderScorebox(scorebox) {
     `).join('') : '<tr><td class="text-muted text-center py-3" colspan="2">Noch keine Teilnehmer</td></tr>';
 }
 
+function startTimerDisplay(state) {
+    window.clearInterval(timerDisplayInterval);
+    window.clearTimeout(deadlineRefreshTimer);
+    timerDisplayInterval = null;
+    deadlineRefreshTimer = null;
+    if (state?.question_phase !== 'answering_open' || !state.question) return;
+
+    const startedAt = Date.parse(state.answering_started_at || state.started_at || '');
+    const question = state.question;
+    if (!Number.isFinite(startedAt)) return;
+    const startTolerance = Number(question.start_tolerance || 0);
+    const toleranceIncrement = Number(question.tolerance_increment || 0);
+    const maxTolerance = Number(question.max_tolerance ?? startTolerance);
+    const secondsPerStep = Math.max(1, Number(question.seconds_per_step || 1));
+    const maxPoints = Number(question.max_points || 0);
+    const minPoints = Number(question.min_points || 0);
+    const maxSteps = maxTolerance > startTolerance && toleranceIncrement > 0
+        ? Math.ceil((maxTolerance - startTolerance) / toleranceIncrement)
+        : 0;
+
+    const tick = () => {
+        if (latestState?.question_phase !== 'answering_open') return;
+        const elapsedSeconds = Math.max(0, (hostRuntime.serverNow() - startedAt) / 1000);
+        const step = Math.floor(elapsedSeconds / secondsPerStep);
+        const tolerance = Math.min(startTolerance + step * toleranceIncrement, maxTolerance);
+        const currentStep = Math.min(Math.max(0, step), maxSteps);
+        const drop = maxSteps > 0
+            ? Math.ceil((maxPoints - minPoints) * (currentStep / maxSteps))
+            : 0;
+        document.getElementById('currentTolerance').textContent = `Â±${fmt(tolerance)}`;
+        document.getElementById('currentPoints').textContent = fmt(Math.max(minPoints, maxPoints - drop));
+    };
+    tick();
+    timerDisplayInterval = window.setInterval(tick, 250);
+    const remaining = hostRuntime.remainingMilliseconds(state);
+    if (remaining > 0) {
+        deadlineRefreshTimer = window.setTimeout(() => hostRuntime.requestState(), remaining + 50);
+    }
+}
+
 function connect() {
     const scheme = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    socket = new WebSocket(`${scheme}//${window.location.host}/ws/wann-war-das/${ROOM_CODE}/`);
-    socket.onopen = () => send({ type: 'get_state' });
-    socket.onmessage = event => {
-        const data = JSON.parse(event.data);
+    hostRuntime.connectSocket({
+        url: `${scheme}//${window.location.host}/ws/wann-war-das/${ROOM_CODE}/`,
+        reconnectDelay: 2000,
+        onMessage: data => {
         if (data.type === 'wann_war_das_state') renderState(data);
         if (data.type === 'tutorial_start') updateTutorialProgress(0, data.total || 0, false, data.participants || []);
         if (data.type === 'tutorial_progress') updateTutorialProgress(data.completed, data.total, data.all_done, data.participants || []);
         if (data.type === 'tutorial_ack_warning') {
-            window.showTutorialAckWarning?.(data, () => send({ type: 'admin_start_question', question_id: document.getElementById('questionSelect').value, force_start: true }), () => {});
+            hostRuntime.rejectAction(data, {silent: true, refresh: false});
+            window.showTutorialAckWarning?.(data, () => sendSelectedQuestion(true), () => renderControls(latestState));
         }
-        if (data.type === 'tutorial_question_missing') alert(data.message || 'Tutorialfrage fehlt.');
-        if (data.type === 'error') alert(data.message || 'Fehler');
-    };
-    socket.onclose = () => setTimeout(connect, 2000);
+        if (data.type === 'tutorial_question_missing') hostRuntime.rejectAction(data);
+        if (data.type === 'participants_not_in_lobby') {
+            hostRuntime.rejectAction(data, {silent: true, refresh: false});
+            if (!window.hostGameStartGuard?.showLobbyReturn(data, document.getElementById('startGameBtn'))) {
+                alert(data.message || 'Teilnehmer sind noch im Spiel.');
+            }
+        }
+        if (data.type === 'active_game_conflict') {
+            hostRuntime.rejectAction(data, {silent: true, refresh: false});
+            if (!window.hostGameStartGuard?.showActiveGameConflict(data, document.getElementById('startGameBtn'))) {
+                alert(data.message || 'Ein anderes Spiel ist aktiv.');
+            }
+        }
+        if (data.type === 'action_rejected') hostRuntime.rejectAction(data);
+        if (data.type === 'error') hostRuntime.rejectAction(data);
+        },
+    });
 }
 
 function updateTutorialProgress(completed, total, allDone, participants) {
@@ -236,15 +385,33 @@ document.getElementById('startGameBtn').addEventListener('click', () => send({
     show_tutorial: document.getElementById('showTutorialToggle')?.checked || false,
     play_tutorial: document.getElementById('playTutorialToggle')?.checked || false,
 }));
-document.getElementById('startQuestionBtn').addEventListener('click', () => send({
-    type: 'admin_start_question',
-    question_id: document.getElementById('questionSelect').value,
-}));
+document.getElementById('startQuestionBtn').addEventListener('click', () => sendSelectedQuestion());
+document.getElementById('openAnsweringBtn').addEventListener('click', event => sendQuestionPhaseAction(
+    'admin_open_answering',
+    event.currentTarget.dataset.questionId,
+    event.currentTarget,
+));
 document.getElementById('endQuestionBtn').addEventListener('click', () => send({ type: 'admin_end_question' }));
 document.getElementById('endGameBtn').addEventListener('click', () => {
     if (confirm('Spiel beenden?')) send({ type: 'admin_end_game' });
 });
-setInterval(() => send({ type: 'get_state' }), 1000);
+window.adminGameMonitor = {
+    get websocket() {
+        return hostRuntime.socket;
+    },
+    get isActive() {
+        return latestState?.game?.status === 'active';
+    },
+    get isUnfinished() {
+        return latestState?.game?.status === 'active';
+    },
+    endQuiz() {
+        send({ type: 'admin_end_game' });
+    },
+    setInactive() {
+        send({ type: 'admin_set_inactive' });
+    },
+};
 connect();
 </script>
 {% endblock %}

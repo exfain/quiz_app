@@ -13,6 +13,7 @@ from games_hub.check_in import (
     reset_session_check_in,
     start_session_check_in,
 )
+from games_hub.lobby_join import issue_rejoin_token
 from django.utils import timezone
 
 from games_hub.models import HubGameParticipantSnapshot, HubGameStep, HubParticipant, HubSession
@@ -28,6 +29,7 @@ class OverallScoringTests(TestCase):
             'code': 'SCORE1',
             'name': 'Score Session',
             'is_active': False,
+            'creator': self.user,
         }
         defaults.update(kwargs)
         return HubSession.objects.create(**defaults)
@@ -455,7 +457,12 @@ class OverallScoringTests(TestCase):
         self.assertEqual(response.status_code, 200)
         response = self.client.post(
             reverse('games_hub:participant_check_in_api', args=[session.code]),
-            data=json.dumps({'nickname': 'Alice'}),
+            data=json.dumps({
+                'nickname': 'Alice',
+                'rejoin_token': issue_rejoin_token(
+                    HubParticipant.objects.get(session=session, nickname='Alice')
+                ),
+            }),
             content_type='application/json',
         )
         self.assertEqual(response.status_code, 200)
@@ -501,7 +508,12 @@ class OverallScoringTests(TestCase):
 
         response = self.client.post(
             reverse('games_hub:participant_check_in_api', args=[session.code]),
-            data=json.dumps({'nickname': 'Alice'}),
+            data=json.dumps({
+                'nickname': 'Alice',
+                'rejoin_token': issue_rejoin_token(
+                    HubParticipant.objects.get(session=session, nickname='Alice')
+                ),
+            }),
             content_type='application/json',
         )
 
@@ -523,7 +535,12 @@ class OverallScoringTests(TestCase):
         self.client.post(reverse('games_hub:start_check_in', args=[session.code]))
         self.client.post(
             reverse('games_hub:participant_check_in_api', args=[session.code]),
-            data=json.dumps({'nickname': 'Alice'}),
+            data=json.dumps({
+                'nickname': 'Alice',
+                'rejoin_token': issue_rejoin_token(
+                    HubParticipant.objects.get(session=session, nickname='Alice')
+                ),
+            }),
             content_type='application/json',
         )
 
@@ -548,6 +565,8 @@ class OverallScoringTests(TestCase):
         self.assertEqual(by_name['Bob']['official_status'], 'not_official')
 
     def test_monitor_and_lobby_reload_render_check_in_controls(self):
+        self.user.is_staff = True
+        self.user.save(update_fields=['is_staff'])
         self.client.force_login(self.user)
         session = self._session(code='SCORE15', name='Reload Check-in')
 

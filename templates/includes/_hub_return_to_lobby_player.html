@@ -50,6 +50,9 @@
         let countdownBanner = null;
         let countdownText = null;
         let countdownButton = null;
+        let hubRecallSocket = null;
+        let hubRecallReconnectTimer = null;
+        let lobbyNavigationStarted = false;
 
         function ensureReturnButton() {
             const buttonId = config.buttonId || 'returnToLobbyBtn';
@@ -134,13 +137,17 @@
             } catch (_) {}
         }
 
-        function buildLobbyUrl() {
-            const hubCode = config.sessionCode
+        function resolveHubCode() {
+            return config.sessionCode
                 || (function() {
                     try { return localStorage.getItem('hub_session_code') || ''; } catch (_) { return ''; }
                 })()
                 || new URLSearchParams(window.location.search).get('hub_session')
                 || '';
+        }
+
+        function buildLobbyUrl() {
+            const hubCode = resolveHubCode();
 
             if (!hubCode) {
                 return null;
@@ -220,7 +227,16 @@
         }
 
         async function returnToLobby(options = {}) {
+            if (lobbyNavigationStarted) {
+                return;
+            }
+            lobbyNavigationStarted = true;
             clearRecallCountdown();
+
+            if (hubRecallReconnectTimer) {
+                clearTimeout(hubRecallReconnectTimer);
+                hubRecallReconnectTimer = null;
+            }
 
             const markInactive = options.markInactive !== false;
             if (markInactive) {
@@ -230,7 +246,53 @@
             const url = buildLobbyUrl();
             if (url) {
                 window.location.href = url.toString();
+                return;
             }
+            lobbyNavigationStarted = false;
+        }
+
+        function connectHubRecallSocket() {
+            const hubCode = resolveHubCode();
+            if (!hubCode || lobbyNavigationStarted) {
+                return null;
+            }
+            if (
+                hubRecallSocket
+                && (hubRecallSocket.readyState === WebSocket.OPEN
+                    || hubRecallSocket.readyState === WebSocket.CONNECTING)
+            ) {
+                return hubRecallSocket;
+            }
+
+            const wsScheme = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            hubRecallSocket = new WebSocket(
+                `${wsScheme}//${window.location.host}/ws/hub/${encodeURIComponent(hubCode)}/`
+            );
+            hubRecallSocket.onmessage = (event) => {
+                let payload;
+                try {
+                    payload = JSON.parse(event.data);
+                } catch (_) {
+                    return;
+                }
+
+                if (payload.type === 'lobby_return_countdown_started') {
+                    startRecallCountdown(payload);
+                } else if (payload.type === 'players_recalled_to_lobby') {
+                    returnToLobby({ markInactive: false });
+                }
+            };
+            hubRecallSocket.onclose = () => {
+                hubRecallSocket = null;
+                if (lobbyNavigationStarted || hubRecallReconnectTimer) {
+                    return;
+                }
+                hubRecallReconnectTimer = setTimeout(() => {
+                    hubRecallReconnectTimer = null;
+                    connectHubRecallSocket();
+                }, 2000);
+            };
+            return hubRecallSocket;
         }
 
         ensureReturnButton();
@@ -249,6 +311,7 @@
             startRecallCountdown,
             clearRecallCountdown,
             syncRecallCountdownState,
+            connectHubRecallSocket,
         };
     }
 </script>

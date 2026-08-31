@@ -861,6 +861,18 @@
     .who-that-play-layout.qa-participant-stage {
       --qa-participant-stage-width: calc(100% - 220px - 1.5rem);
     }
+
+    body:is(.clue-rush-play-page, .who-that-play-page):has(
+      > .qa-score-widget:is(.qa-score-widget--bottom-left, .qa-score-widget--top-left):not(.is-collapsed)
+    ) .qa-participant-stage {
+      justify-content: end !important;
+    }
+
+    body:is(.clue-rush-play-page, .who-that-play-page):has(
+      > .qa-score-widget:is(.qa-score-widget--bottom-right, .qa-score-widget--top-right):not(.is-collapsed)
+    ) .qa-participant-stage {
+      justify-content: start !important;
+    }
   }
 
   @media (min-width: 1200px) {
@@ -2422,7 +2434,6 @@ html[data-participant-theme="arcade"] .qa-arcade-wait-loader-10::before {
     }
 
     clearWaitLoaderVariantClasses(loader);
-
     if (activeTheme === ARCADE_THEME) {
       var arcadeVariant = arcadeLoaderVariants[Math.floor(Math.random() * arcadeLoaderVariants.length)];
       loader.classList.add('qa-arcade-wait-loader', arcadeVariant);
@@ -3124,6 +3135,36 @@ html[data-participant-theme="arcade"] .qa-arcade-wait-loader-10::before {
     shell.appendChild(footer);
   }
 
+  function getVhsProgressStatus() {
+    var kind = String(document.body.dataset.vhsProgressKind || '').trim().toLowerCase();
+    var sourceSelector = String(document.body.dataset.vhsProgressSource || '').trim();
+    if (!kind || !sourceSelector || ['question', 'set'].indexOf(kind) === -1) {
+      return null;
+    }
+
+    var source = document.querySelector(sourceSelector);
+    var attribute = String(document.body.dataset.vhsProgressAttribute || '').trim();
+    var rawValue = source
+      ? (attribute ? source.getAttribute(attribute) : source.textContent)
+      : '';
+    var numberMatches = String(rawValue || '').match(/\d+/g) || [];
+    var number = numberMatches.length ? Number.parseInt(numberMatches[0], 10) : 0;
+    var hasTotal = numberMatches.length > 1;
+    var total = hasTotal ? Number.parseInt(numberMatches[1], 10) : null;
+    var hasValidNumber = Number.isInteger(number) && number > 0;
+    var hasValidTotal = !hasTotal || (
+      Number.isInteger(total)
+      && total > 0
+      && hasValidNumber
+      && number <= total
+    );
+    return {
+      label: kind === 'set' ? 'SET' : 'FRAGE',
+      number: hasValidNumber && hasValidTotal ? number : null,
+      total: hasTotal && hasValidTotal ? total : null,
+    };
+  }
+
   function restoreVhsQuestions() {
     document.querySelectorAll('[data-vhs-full-question]').forEach(function (question) {
       question.textContent = question.dataset.vhsFullQuestion;
@@ -3499,34 +3540,16 @@ html[data-participant-theme="arcade"] .qa-arcade-wait-loader-10::before {
     syncVhsScoreWidget(shell);
     syncVhsLobby(shell);
 
-    var currentQuestion = getVisibleVhsElement('#currentQuestionNumber, [data-current-question-number]');
-    var currentQuestionText = currentQuestion
-      ? (currentQuestion.dataset.currentQuestionNumber || currentQuestion.textContent).trim()
-      : '';
-    var scoreRows = shell.querySelectorAll('.score-box__row').length;
-    var recText = shell.querySelector('.vhs-theme-rec-text');
-    if (recText) {
-      var currentNumber = parseInt(currentQuestionText, 10);
-      var blackjackSetState = shell.querySelector(
-        '[data-blackjack-current-set][data-blackjack-total-sets]'
-      );
-      var blackjackSetNumber = parseInt(
-        blackjackSetState && blackjackSetState.dataset.blackjackCurrentSet,
-        10
-      );
-      var blackjackSetCount = parseInt(
-        blackjackSetState && blackjackSetState.dataset.blackjackTotalSets,
-        10
-      );
-      var hasBlackjackSetProgress = document.body.classList.contains('blackjack-play-page')
-        && Number.isFinite(blackjackSetNumber)
-        && Number.isFinite(blackjackSetCount);
-      setVhsText(recText, hasBlackjackSetProgress
-        ? 'REC · SET ' + String(blackjackSetNumber).padStart(2, '0') + '/' + String(blackjackSetCount).padStart(2, '0')
-        : (Number.isFinite(currentNumber) && scoreRows > 0
-          ? 'REC · FRAGE ' + String(currentNumber).padStart(2, '0') + ' / ' + String(scoreRows).padStart(2, '0')
-          : 'REC · LIVE'));
-    }
+    var progressStatus = getVhsProgressStatus();
+    var progressText = progressStatus
+      ? (progressStatus.number
+        ? 'REC · ' + progressStatus.label + ' ' + progressStatus.number
+          + (progressStatus.total ? '/' + progressStatus.total : '')
+        : 'REC')
+      : 'REC · LIVE';
+    document.querySelectorAll('.vhs-theme-rec-text, .vhs-game-intro-rec-text').forEach(function (recText) {
+      setVhsText(recText, progressText);
+    });
 
     var participantName = shell.querySelector('.participant-name, [data-participant-name]');
     var participantNameText = participantName
@@ -3576,7 +3599,11 @@ html[data-participant-theme="arcade"] .qa-arcade-wait-loader-10::before {
     if (timer && timerValue !== null) {
       var questionKey = whoTimerMaximum !== null
         ? String(timerSource.dataset.vhsTimerKey || 'active')
-        : (currentQuestionText || String(timerSource.id || 'active'));
+        : (
+          progressStatus && progressStatus.number
+            ? progressStatus.label + '-' + progressStatus.number
+            : String(timerSource.id || 'active')
+        );
       var timerChanged = questionKey !== vhsTimerQuestionKey;
       if (whoTimerMaximum !== null) {
         vhsTimerQuestionKey = questionKey;

@@ -2,6 +2,17 @@ import math
 
 from django.db import transaction
 from django.utils import timezone
+from django.utils.dateparse import parse_datetime
+from games_hub.authoritative_state import (
+    QuestionPhaseDecision,
+    attach_snapshot_metadata,
+    current_snapshot,
+    finish_question_flow,
+    open_answering,
+    present_question,
+    reset_question_flow,
+)
+from games_hub.models import GameRuntimeState
 from games_hub.unit_tutorial_runtime import (
     finish_current_unit_tutorial,
     get_scorebox_excluded_tutorial_question_ids,
@@ -10,6 +21,10 @@ from games_hub.unit_tutorial_runtime import (
     is_unit_tutorial_question,
     start_unit_tutorial_if_needed,
 )
+
+
+WER_WEISS_MEHR_FIELD_REVEAL_STAGGER_MS = 120
+WER_WEISS_MEHR_FIELD_REVEAL_ANIMATION_MS = 180
 
 from .models import (
     WerWeissMehrAnswerOption,
@@ -78,7 +93,7 @@ def get_scoped_participants(quiz, hub_session_code=None, active_only=False):
     return participants.order_by('name')
 
 
-def start_set(quiz, question_id, hub_session_code=None, time_limit_seconds=None):
+def _resolve_set_question(quiz, question_id, hub_session_code=None):
     question = WerWeissMehrQuestion.objects.get(id=question_id, is_active=True)
     tutorial_state = get_unit_tutorial_state('wer_weiss_mehr', quiz.room_code, hub_session_code)
     tutorial_pending = bool(
@@ -101,9 +116,179 @@ def start_set(quiz, question_id, hub_session_code=None, time_limit_seconds=None)
         and not quiz.selected_questions.filter(id=question.id).exists()
     ):
         raise ValueError('Dieses Set gehoert nicht zu diesem Spiel.')
+    return question
+
+
+def start_set(quiz, question_id, hub_session_code=None, time_limit_seconds=None):
+    question = _resolve_set_question(quiz, question_id, hub_session_code)
     session, _ = WerWeissMehrSession.objects.get_or_create(quiz=quiz)
     participants = get_scoped_participants(quiz, hub_session_code=hub_session_code, active_only=True)
-    return session.start_set(question, participants_qs=participants, time_limit_seconds=time_limit_seconds)
+    result = session.start_set(
+        question,
+        participants_qs=participants,
+        time_limit_seconds=time_limit_seconds,
+    )
+    quiz.refresh_from_db()
+    return result
+
+
+def wer_weiss_mehr_reveal_ready_at(question_visible_at, *, round_number, field_count):
+    visible_at = question_visible_at
+    if isinstance(visible_at, str):
+        visible_at = parse_datetime(visible_at)
+    if not visible_at:
+        return None
+    if timezone.is_naive(visible_at):
+        visible_at = timezone.make_aware(visible_at, timezone.get_current_timezone())
+    animated_fields = int(field_count or 0) if int(round_number or 0) == 1 else 0
+    if animated_fields <= 0:
+        return visible_at
+    reveal_duration_ms = (
+        ((animated_fields - 1) * WER_WEISS_MEHR_FIELD_REVEAL_STAGGER_MS)
+        + WER_WEISS_MEHR_FIELD_REVEAL_ANIMATION_MS
+    )
+    return visible_at + timezone.timedelta(milliseconds=reveal_duration_ms)
+
+
+@transaction.atomic
+def present_set_round(
+    quiz,
+    question_id,
+    *,
+    hub_session_code=None,
+    time_limit_seconds=None,
+    action,
+    at=None,
+):
+    quiz = WerWeissMehrGame.objects.select_for_update().get(pk=quiz.pk)
+    question = _resolve_set_question(quiz, question_id, hub_session_code)
+    session, _ = WerWeissMehrSession.objects.select_for_update().get_or_create(quiz=quiz)
+    duration = int(time_limit_seconds or question.round_time_limit or 30)
+    decision = present_question(
+        game_key='wer_weiss_mehr',
+        room_code=quiz.room_code,
+        session_code=hub_session_code,
+        action=action,
+        answer_duration_seconds=duration,
+        at=at,
+    )
+    if decision.accepted and not decision.duplicate:
+        participants = get_scoped_participants(
+            quiz,
+            hub_session_code=hub_session_code,
+            active_only=True,
+        )
+        session.prepare_set(
+            question,
+            participants_qs=participants,
+            time_limit_seconds=duration,
+        )
+    return decision
+
+
+@transaction.atomic
+def present_next_round(quiz, *, hub_session_code=None, action, at=None):
+    quiz = (
+        WerWeissMehrGame.objects.select_for_update()
+        .select_related('current_question')
+        .get(pk=quiz.pk)
+    )
+    session = WerWeissMehrSession.objects.select_for_update().filter(quiz=quiz).first()
+    if not session or not quiz.current_question:
+        raise ValueError('Keine Runtime-Session gefunden.')
+    if session.phase != WerWeissMehrSession.PHASE_REVIEW:
+        raise ValueError('Aktuell ist keine Runde in der Review-Phase.')
+    if not _can_start_next_round(quiz, session, quiz.current_question):
+        raise ValueError('Keine weitere Runde moeglich. Bitte das Set beenden.')
+
+    decision = present_question(
+        game_key='wer_weiss_mehr',
+        room_code=quiz.room_code,
+        session_code=hub_session_code,
+        action=action,
+        answer_duration_seconds=session.time_limit_seconds,
+        at=at,
+    )
+    if decision.accepted and not decision.duplicate:
+        session.finalize_review(open_round=False)
+    return decision
+
+
+@transaction.atomic
+def open_prepared_round(quiz, *, hub_session_code=None, action, at=None):
+    quiz = (
+        WerWeissMehrGame.objects.select_for_update()
+        .select_related('current_question')
+        .get(pk=quiz.pk)
+    )
+    session = WerWeissMehrSession.objects.select_for_update().filter(quiz=quiz).first()
+    if not session or not quiz.current_question or session.current_round <= 0:
+        raise ValueError('Keine vorbereitete Runde vorhanden.')
+
+    snapshot = current_snapshot('wer_weiss_mehr', quiz.room_code, hub_session_code)
+    expected_round_id = str(session.current_round)
+    expected_set_id = str(quiz.current_question_id)
+    if str(action.get('round_id') or '') != expected_round_id:
+        return QuestionPhaseDecision(
+            False,
+            'stale_action',
+            'Die Aktion gehoert zu einer anderen Runde.',
+            state_revision=snapshot.get('state_revision'),
+            snapshot=snapshot,
+        )
+    if str(action.get('set_id') or '') != expected_set_id:
+        return QuestionPhaseDecision(
+            False,
+            'stale_action',
+            'Die Aktion gehoert zu einem anderen Set.',
+            state_revision=snapshot.get('state_revision'),
+            snapshot=snapshot,
+        )
+
+    transition_at = at or timezone.now()
+    reveal_ready_at = wer_weiss_mehr_reveal_ready_at(
+        snapshot.get('question_visible_at'),
+        round_number=session.current_round,
+        field_count=quiz.current_question.answers.count(),
+    )
+    if not reveal_ready_at or transition_at < reveal_ready_at:
+        return QuestionPhaseDecision(
+            False,
+            'content_reveal_incomplete',
+            'Die Antwortfelder sind noch nicht vollstaendig sichtbar.',
+            state_revision=snapshot.get('state_revision'),
+            snapshot=snapshot,
+        )
+
+    decision = open_answering(
+        game_key='wer_weiss_mehr',
+        room_code=quiz.room_code,
+        session_code=hub_session_code,
+        action=action,
+        answer_duration_seconds=session.time_limit_seconds,
+        at=transition_at,
+    )
+    if decision.accepted and not decision.duplicate:
+        started_at = parse_datetime(decision.snapshot.get('answering_started_at') or '')
+        round_state = session.open_prepared_round(started_at=started_at)
+        if not round_state:
+            raise ValueError('Die vorbereitete Runde konnte nicht freigegeben werden.')
+        expected_deadline = parse_datetime(decision.snapshot.get('answering_deadline_at') or '')
+        if expected_deadline and session.round_end_time != expected_deadline:
+            raise ValueError('Die Rundendeadline ist nicht konsistent.')
+    return decision
+
+
+def finish_round_question_flow(quiz, *, hub_session_code=None):
+    snapshot = current_snapshot('wer_weiss_mehr', quiz.room_code, hub_session_code)
+    if snapshot.get('question_phase') != GameRuntimeState.QUESTION_PHASE_ANSWERING_OPEN:
+        return snapshot
+    return finish_question_flow(
+        game_key='wer_weiss_mehr',
+        room_code=quiz.room_code,
+        session_code=hub_session_code,
+        question_id=quiz.current_question_id,
+    )
 
 
 def store_pending_input(quiz, participant, answer_text):
@@ -126,15 +311,27 @@ def store_pending_input(quiz, participant, answer_text):
     return pending
 
 
+@transaction.atomic
 def submit_answer(quiz, participant, answer_text):
-    quiz.refresh_from_db()
-    participant.refresh_from_db()
+    original_quiz = quiz
+    quiz = (
+        WerWeissMehrGame.objects.select_for_update()
+        .select_related('current_question')
+        .get(pk=quiz.pk)
+    )
+    participant = WerWeissMehrParticipant.objects.select_for_update().get(
+        pk=participant.pk,
+        quiz=quiz,
+    )
     if quiz.status != 'active':
         raise ValueError('Das Spiel ist nicht aktiv.')
-    session = getattr(quiz, 'session', None)
+    session = WerWeissMehrSession.objects.select_for_update().filter(quiz=quiz).first()
     question = quiz.current_question
     if not session or not question or session.phase != WerWeissMehrSession.PHASE_ROUND_ACTIVE:
         raise ValueError('Aktuell laeuft keine Runde.')
+    received_at = timezone.now()
+    if session.round_end_time and received_at >= session.round_end_time:
+        raise ValueError('Die Runde ist bereits beendet.')
     if not _participant_can_answer(quiz, participant, question):
         raise ValueError('Du kannst in diesem Set nicht mehr antworten.')
 
@@ -146,13 +343,30 @@ def submit_answer(quiz, participant, answer_text):
     if not round_state:
         raise ValueError('Rundenstatus fehlt.')
 
-    response, _ = WerWeissMehrRoundResponse.objects.update_or_create(
+    existing = WerWeissMehrRoundResponse.objects.filter(
         quiz=quiz,
         participant=participant,
         question=question,
         round_number=session.current_round,
-        defaults={'answer_text': answer_text or ''},
+    ).first()
+    if existing:
+        return existing
+    response, created = WerWeissMehrRoundResponse.objects.get_or_create(
+        quiz=quiz,
+        participant=participant,
+        question=question,
+        round_number=session.current_round,
+        defaults={
+            'answer_text': answer_text or '',
+            'time_taken': (
+                max(0.0, (received_at - session.round_start_time).total_seconds())
+                if session.round_start_time
+                else 0.0
+            ),
+        },
     )
+    if not created:
+        return response
     response.evaluate(revealed_before_round_ids=round_state.revealed_answer_ids_at_start)
     WerWeissMehrPendingInput.objects.filter(
         quiz=quiz,
@@ -160,6 +374,7 @@ def submit_answer(quiz, participant, answer_text):
         question=question,
         round_number=session.current_round,
     ).delete()
+    original_quiz.refresh_from_db()
     return response
 
 
@@ -224,6 +439,15 @@ def end_current_round(quiz):
     return session.end_current_round()
 
 
+@transaction.atomic
+def end_current_round_with_question_flow(quiz, *, hub_session_code=None):
+    round_state = end_current_round(quiz)
+    if round_state:
+        quiz.refresh_from_db()
+        finish_round_question_flow(quiz, hub_session_code=hub_session_code)
+    return round_state
+
+
 def next_round_or_finish(quiz):
     quiz.refresh_from_db()
     if quiz.status != 'active':
@@ -271,6 +495,22 @@ def finish_set(quiz):
     return session
 
 
+@transaction.atomic
+def finish_set_with_question_flow(quiz, *, hub_session_code=None):
+    result = finish_set(quiz)
+    quiz.refresh_from_db()
+    finish_round_question_flow(quiz, hub_session_code=hub_session_code)
+    remaining = current_snapshot('wer_weiss_mehr', quiz.room_code, hub_session_code)
+    if remaining.get('question_phase'):
+        reset_question_flow(
+            game_key='wer_weiss_mehr',
+            room_code=quiz.room_code,
+            session_code=hub_session_code,
+            mode=GameRuntimeState.QUESTION_FLOW_MANUAL_THREE_PHASE,
+        )
+    return result
+
+
 def clear_current_set(quiz):
     quiz.refresh_from_db()
     session = getattr(quiz, 'session', None)
@@ -286,6 +526,17 @@ def build_game_state(quiz, hub_session_code=None, participant_name=None):
     session, _ = WerWeissMehrSession.objects.get_or_create(quiz=quiz)
     has_incomplete_start = quiz.status == 'active' and quiz.started_at is None
     question = None if has_incomplete_start else quiz.current_question
+    current_set_number = None
+    if question:
+        ordered_questions = get_ordered_scored_questions(quiz, hub_session_code)
+        current_set_number = next(
+            (
+                index
+                for index, ordered_question in enumerate(ordered_questions, start=1)
+                if ordered_question.id == question.id
+            ),
+            None,
+        )
     is_participant_view = bool(participant_name)
     participant = None
     if participant_name:
@@ -337,7 +588,18 @@ def build_game_state(quiz, hub_session_code=None, participant_name=None):
             round_number=session.current_round,
         ).first()
 
-    return {
+    serialized_participants = [
+        _serialize_participant(item, current_states.get(item.id))
+        for item in participants
+    ]
+    scorebox = _serialize_scorebox(quiz, participants, hub_session_code=hub_session_code)
+    public_question = _serialize_question(
+        question,
+        session,
+        hub_session_code=hub_session_code,
+        include_hidden_text=False,
+    ) if question else None
+    state = {
         'success': True,
         'server_now': timezone.now().isoformat(),
         'game_status': 'waiting' if has_incomplete_start else quiz.status,
@@ -345,6 +607,8 @@ def build_game_state(quiz, hub_session_code=None, participant_name=None):
         'room_code': quiz.room_code,
         'title': quiz.title,
         'current_round': 0 if has_incomplete_start else session.current_round,
+        'current_set_number': current_set_number,
+        'current_set_id': str(question.id) if question else None,
         'timer': _idle_timer_payload(session) if has_incomplete_start else _timer_payload(session),
         'question': _serialize_question(
             question,
@@ -355,16 +619,74 @@ def build_game_state(quiz, hub_session_code=None, participant_name=None):
         'available_questions': []
         if is_participant_view
         else _serialize_available_questions(quiz, session, hub_session_code),
-        'participants': [_serialize_participant(p, current_states.get(p.id)) for p in participants],
+        'participants': serialized_participants,
         'responses': [] if is_participant_view else responses,
         'target_answers': []
         if is_participant_view
         else (_serialize_target_answers(question, session) if question else []),
         'can_start_next_round': _can_start_next_round(quiz, session, question),
-        'scorebox': _serialize_scorebox(quiz, participants, hub_session_code=hub_session_code),
+        'scorebox': scorebox,
         'participant_state': _serialize_own_state(quiz, participant, question, own_state, own_response, own_pending, session)
         if participant else None,
+        '_revision_state': {
+            'game_status': 'waiting' if has_incomplete_start else quiz.status,
+            'phase': WerWeissMehrSession.PHASE_IDLE if has_incomplete_start else session.phase,
+            'current_round': 0 if has_incomplete_start else session.current_round,
+            'question': public_question,
+            'participants': serialized_participants,
+            'responses': responses,
+            'scorebox': scorebox,
+        },
     }
+    state = attach_snapshot_metadata(
+        state,
+        game_key='wer_weiss_mehr',
+        room_code=quiz.room_code,
+        session_code=hub_session_code,
+    )
+    manual_flow = (
+        state.get('question_flow_mode')
+        == GameRuntimeState.QUESTION_FLOW_MANUAL_THREE_PHASE
+    )
+    visible_at = parse_datetime(state.get('question_visible_at') or '')
+    now = parse_datetime(state.get('server_now') or '') or timezone.now()
+    question_visible = bool(
+        question
+        and (
+            not manual_flow
+            or state.get('question_phase') != GameRuntimeState.QUESTION_PHASE_PROMPT_VISIBLE
+            or (visible_at and now >= visible_at)
+        )
+    )
+    animated_field_count = (
+        question.answers.count()
+        if (
+            question
+            and manual_flow
+            and state.get('question_phase') == GameRuntimeState.QUESTION_PHASE_PROMPT_VISIBLE
+            and session.current_round == 1
+        )
+        else 0
+    )
+    reveal_ready_at = wer_weiss_mehr_reveal_ready_at(
+        visible_at,
+        round_number=session.current_round,
+        field_count=animated_field_count,
+    )
+    state.update({
+        'question_visible': question_visible,
+        'field_reveal_stagger_ms': WER_WEISS_MEHR_FIELD_REVEAL_STAGGER_MS,
+        'field_reveal_animation_ms': WER_WEISS_MEHR_FIELD_REVEAL_ANIMATION_MS,
+        'field_reveal_count': animated_field_count,
+        'field_reveal_ready_at': reveal_ready_at.isoformat() if reveal_ready_at else None,
+    })
+    if (
+        state.get('participant_state')
+        and manual_flow
+        and state.get('question_phase') != GameRuntimeState.QUESTION_PHASE_ANSWERING_OPEN
+    ):
+        state['participant_state']['can_answer'] = False
+    return state
 
 
 def _participant_can_answer(quiz, participant, question):
@@ -476,6 +798,21 @@ def _serialize_question(question, session, hub_session_code=None, include_hidden
     answers = question.answers.order_by('sort_order', 'canonical_text', 'id')
     reveal_all = session.phase == WerWeissMehrSession.PHASE_SET_COMPLETED
     answer_count = answers.count()
+    hidden_presentation_index = 0
+    serialized_tiles = []
+    for index, answer in enumerate(answers, start=1):
+        revealed = answer.id in revealed_ids or reveal_all
+        presentation_index = None
+        if session.current_round == 1 and not revealed:
+            presentation_index = hidden_presentation_index
+            hidden_presentation_index += 1
+        serialized_tiles.append({
+            'id': answer.id,
+            'position': index,
+            'revealed': revealed,
+            'text': answer.canonical_text if include_hidden_text or revealed else '',
+            'presentation_index': presentation_index,
+        })
     return {
         'id': question.id,
         'question_text': question.question_text,
@@ -488,17 +825,7 @@ def _serialize_question(question, session, hub_session_code=None, include_hidden
         ),
         'answer_count': answer_count,
         'revealed_count': answer_count if reveal_all else len(revealed_ids),
-        'tiles': [
-            {
-                'id': answer.id,
-                'position': index,
-                'revealed': answer.id in revealed_ids or reveal_all,
-                'text': answer.canonical_text
-                if include_hidden_text or answer.id in revealed_ids or reveal_all
-                else '',
-            }
-            for index, answer in enumerate(answers, start=1)
-        ],
+        'tiles': serialized_tiles,
     }
 
 
@@ -575,6 +902,7 @@ def _serialize_response(response):
         'participant_name': response.participant.name,
         'round_number': response.round_number,
         'submitted_at': response.submitted_at.isoformat() if response.submitted_at else None,
+        'time_taken': response.time_taken,
         'answer_text': response.answer_text,
         'has_pending_input': False,
         'auto_status': auto_status,

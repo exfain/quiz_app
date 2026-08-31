@@ -5,6 +5,7 @@ from django.contrib.auth.models import User
 from django.db import models, transaction
 from django.db.models import Sum
 from django.utils import timezone
+from games_hub.authoritative_state import attach_snapshot_metadata
 
 from games_website.models import SyncBase
 
@@ -113,22 +114,43 @@ class HostPointsGame(SyncBase):
             qs = qs.filter(hub_session_code=session_code)
         return qs.order_by('name')
 
-    def start_quiz(self, session_code=None):
-        session_code = session_code or self.active_hub_session_code or ''
-        official_participants = self.ensure_snapshot_participants(session_code or None)
+    @transaction.atomic
+    def start_quiz(
+        self,
+        session_code=None,
+        *,
+        allow_reactivation=False,
+        expected_previous_started_at=None,
+        expected_previous_round=None,
+    ):
+        game = HostPointsGame.objects.select_for_update().get(pk=self.pk)
+        if (
+            game.status == 'active'
+            and game.started_at is not None
+            and game.current_round_number >= 1
+        ):
+            reactivation_context_matches = bool(
+                allow_reactivation
+                and game.started_at == expected_previous_started_at
+                and game.current_round_number == expected_previous_round
+            )
+            if not reactivation_context_matches:
+                return False
+        session_code = session_code or game.active_hub_session_code or ''
+        official_participants = game.ensure_snapshot_participants(session_code or None)
         if session_code:
             official_ids = [participant.id for participant in official_participants]
-            self.participants.exclude(hub_session_code=session_code).update(is_active=False)
-            self.participants.filter(hub_session_code=session_code).exclude(id__in=official_ids).update(is_active=False)
-            self.participants.filter(id__in=official_ids).update(total_score=0, is_active=True)
-            self.adjustments.filter(hub_session_code=session_code).delete()
-        self.status = 'active'
-        self.started_at = timezone.now()
-        self.ended_at = None
-        self.active_hub_session_code = session_code
-        self.current_round_number = 1
-        self.tutorial_active = False
-        self.save(update_fields=[
+            game.participants.exclude(hub_session_code=session_code).update(is_active=False)
+            game.participants.filter(hub_session_code=session_code).exclude(id__in=official_ids).update(is_active=False)
+            game.participants.filter(id__in=official_ids).update(total_score=0, is_active=True)
+            game.adjustments.filter(hub_session_code=session_code).delete()
+        game.status = 'active'
+        game.started_at = timezone.now()
+        game.ended_at = None
+        game.active_hub_session_code = session_code
+        game.current_round_number = 1
+        game.tutorial_active = False
+        game.save(update_fields=[
             'status',
             'started_at',
             'ended_at',
@@ -137,14 +159,19 @@ class HostPointsGame(SyncBase):
             'tutorial_active',
             'updated_at',
         ])
+        self.refresh_from_db()
+        return True
 
+    @transaction.atomic
     def end_quiz(self, status='completed'):
-        if self.status == status and self.ended_at:
+        game = HostPointsGame.objects.select_for_update().get(pk=self.pk)
+        if game.status == status and game.ended_at:
             return False
 
-        self.status = status
-        self.ended_at = timezone.now()
-        self.save(update_fields=['status', 'ended_at', 'updated_at'])
+        game.status = status
+        game.ended_at = timezone.now()
+        game.save(update_fields=['status', 'ended_at', 'updated_at'])
+        self.refresh_from_db()
         return True
 
     @transaction.atomic
@@ -179,10 +206,17 @@ class HostPointsGame(SyncBase):
         return True, participant
 
     @transaction.atomic
-    def next_round(self):
+    def next_round(self, expected_round=None):
         game = HostPointsGame.objects.select_for_update().get(pk=self.pk)
         if game.status != 'active':
             return False
+        if expected_round not in (None, ''):
+            try:
+                expected_round = int(expected_round)
+            except (TypeError, ValueError):
+                return False
+            if expected_round != game.current_round_number:
+                return False
         game.current_round_number = max(game.current_round_number or 0, 1) + 1
         game.save(update_fields=['current_round_number', 'updated_at'])
         return True
@@ -235,7 +269,7 @@ class HostPointsGame(SyncBase):
                 for number in range(1, visible_round_count + 1)
             ]
 
-        return {
+        state = {
             'game': {
                 'id': self.id,
                 'title': self.title,
@@ -252,6 +286,17 @@ class HostPointsGame(SyncBase):
                 'rows': participants,
             },
         }
+        state['_revision_state'] = {
+            'game': state['game'],
+            'round': state['round'],
+            'participants': state['participants'],
+        }
+        return attach_snapshot_metadata(
+            state,
+            game_key='host_points',
+            room_code=self.room_code,
+            session_code=session_code,
+        )
 
 
 class HostPointsParticipant(SyncBase):

@@ -3,9 +3,16 @@ from django.http import JsonResponse
 from django.views.decorators.http import require_http_methods, require_POST
 from django.views.decorators.csrf import csrf_exempt
 from django.utils import timezone
+from django.db import transaction
 from django.db.models import Avg, Count, Q
 import json
 from .models import WhoThatQuiz, WhoThatQuestion, WhoThatParticipant, WhoThatAnswer, WhoThatSession
+from games_hub.authoritative_state import (
+    current_snapshot,
+    question_content_is_visible,
+    validate_and_reserve_action,
+)
+from games_hub.models import GameRuntimeState
 from games_hub.unit_tutorial_runtime import get_scorebox_excluded_tutorial_question_ids, is_current_unit_tutorial_question
 
 
@@ -351,7 +358,31 @@ def who_that_play(request, room_code, participant_name):
         participant.last_activity = timezone.now()
         participant.save()
         
+        question_runtime = current_snapshot('who_that', room_code, session_code)
+        manual_flow = (
+            question_runtime.get('question_flow_mode')
+            == GameRuntimeState.QUESTION_FLOW_MANUAL_THREE_PHASE
+        )
+        content_visible = bool(
+            quiz.current_question
+            and (
+                question_content_is_visible(question_runtime)
+                if manual_flow
+                else True
+            )
+        )
+        answering_open = bool(
+            content_visible
+            and (
+                question_runtime.get('answering_allowed')
+                if manual_flow
+                else getattr(getattr(quiz, 'session', None), 'is_question_active', False)
+            )
+        )
         current_question_time_left, current_question_end_time = _get_current_question_time_context(quiz)
+        if not answering_open:
+            current_question_time_left = None
+            current_question_end_time = None
         context = {
             'quiz': quiz,
             'participant': participant,
@@ -359,6 +390,9 @@ def who_that_play(request, room_code, participant_name):
             'participant_count': quiz.get_participant_count(session_code),
             'current_question_time_left': current_question_time_left,
             'current_question_end_time': current_question_end_time,
+            'question_runtime': question_runtime,
+            'question_content_visible': content_visible,
+            'question_answering_open': answering_open,
             'current_unit_is_tutorial': is_current_unit_tutorial_question('who_that', quiz.room_code, session_code, quiz.current_question_id),
         }
         context['current_participant_answer'] = (
@@ -494,26 +528,69 @@ def submit_answer(request, room_code, participant_name):
         
         data = json.loads(request.body)
         user_answer = data.get('user_answer', '').strip()
-        time_taken = data.get('time_taken', 0)
-        
         if not user_answer:
             return JsonResponse({
                 'success': False,
                 'error': 'Please provide an answer before submitting.'
             })
         
-        # Create answer
-        answer = WhoThatAnswer.objects.create(
-            quiz=quiz,
-            participant=participant,
-            question=quiz.current_question,
-            user_answer=user_answer,
-            time_taken=time_taken
+        question = quiz.current_question
+        decision = validate_and_reserve_action(
+            game_key='who_that',
+            room_code=room_code,
+            session_code=session_code,
+            participant_name=participant_name,
+            action_type='participant_submit_answer',
+            action=data,
         )
+        if not decision.accepted:
+            return JsonResponse({
+                'success': False,
+                'type': 'action_rejected',
+                'code': decision.code,
+                'error': decision.message,
+            }, status=409)
+        with transaction.atomic():
+            locked_quiz = WhoThatQuiz.objects.select_for_update().get(pk=quiz.pk)
+            locked_session = WhoThatSession.objects.select_for_update().filter(quiz=locked_quiz).first()
+            received_at = timezone.now()
+            if (
+                locked_quiz.status != 'active'
+                or locked_quiz.current_question_id != question.id
+                or not locked_session
+                or not locked_session.is_question_active
+                or not locked_quiz.question_start_time
+                or received_at < locked_quiz.question_start_time
+                or not locked_session.question_end_time
+                or received_at >= locked_session.question_end_time
+            ):
+                return JsonResponse({
+                    'success': False,
+                    'error': 'The answer deadline has expired.'
+                })
+            server_time_taken = (
+                max(0.0, (received_at - locked_quiz.question_start_time).total_seconds())
+                if locked_quiz.question_start_time
+                else 0.0
+            )
+            answer, created = WhoThatAnswer.objects.get_or_create(
+                quiz=locked_quiz,
+                participant=participant,
+                question=question,
+                defaults={
+                    'user_answer': user_answer,
+                    'time_taken': server_time_taken,
+                },
+            )
+            if not created:
+                return JsonResponse({
+                    'success': False,
+                    'error': 'You have already answered this question.'
+                })
         
         # Record statistics in session
         if hasattr(quiz, 'session'):
-            quiz.session.record_answer(answer.is_correct, time_taken)
+            quiz.session.record_answer(answer.is_correct, answer.time_taken)
         
         # Update participant's last activity
         participant.last_activity = timezone.now()
@@ -564,8 +641,39 @@ def get_quiz_status(request, room_code, participant_name):
             'correct_answers': participant.correct_answers
         }
         
-        # Include current question if active
-        if quiz.current_question and quiz.status == 'active':
+        question_runtime = current_snapshot('who_that', room_code, session_code)
+        status_data.update({
+            key: question_runtime.get(key)
+            for key in (
+                'state_revision',
+                'server_now',
+                'game_id',
+                'question_phase',
+                'question_presented_at',
+                'question_visible_at',
+                'content_revealed_at',
+                'answering_started_at',
+                'answering_deadline_at',
+                'answering_allowed',
+                'timer_running',
+                'remaining_answer_time',
+            )
+        })
+
+        # Do not expose the prepared image or metadata before visibility.
+        manual_flow = (
+            question_runtime.get('question_flow_mode')
+            == GameRuntimeState.QUESTION_FLOW_MANUAL_THREE_PHASE
+        )
+        if (
+            quiz.current_question
+            and quiz.status == 'active'
+            and (
+                question_content_is_visible(question_runtime)
+                if manual_flow
+                else True
+            )
+        ):
             question = quiz.current_question
             current_question_time_left, current_question_end_time = _get_current_question_time_context(quiz)
             status_data['current_question'] = {
@@ -574,10 +682,38 @@ def get_quiz_status(request, room_code, participant_name):
                 'image_url': question.image.url if question.image else None,
                 'points': 1,
                 'time_limit': question.time_limit,
-                'time_left': current_question_time_left,
-                'question_end_time': current_question_end_time.isoformat() if current_question_end_time else None,
+                'time_left': (
+                    question_runtime.get('remaining_answer_time')
+                    if manual_flow
+                    else current_question_time_left
+                ),
+                'question_end_time': (
+                    question_runtime.get('answering_deadline_at')
+                    if manual_flow
+                    else (
+                        current_question_end_time.isoformat()
+                        if current_question_end_time else None
+                    )
+                ),
                 'hint_text': question.hint_text,
                 'category': question.category,
+                **{
+                    key: question_runtime.get(key)
+                    for key in (
+                        'state_revision',
+                        'server_now',
+                        'game_id',
+                        'question_phase',
+                        'question_presented_at',
+                        'question_visible_at',
+                        'content_revealed_at',
+                        'answering_started_at',
+                        'answering_deadline_at',
+                        'answering_allowed',
+                        'timer_running',
+                        'remaining_answer_time',
+                    )
+                },
             }
             
             # Check if user has already answered
