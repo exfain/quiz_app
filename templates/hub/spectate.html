@@ -64,6 +64,7 @@
 
     {% include 'includes/_session_game_start_intro.html' %}
 
+    <script src="{% static 'js/question-typewriter.js' %}"></script>
     <script>
     (() => {
         const root = document.getElementById('spectator-root');
@@ -90,6 +91,7 @@
         let socket = null;
         let pollTimer = null;
         let renderedStageMarkup = '';
+        let questionTypewriterCancel = null;
 
         function escapeHtml(value) {
             return String(value ?? '')
@@ -120,6 +122,10 @@
         function clearPresentationTimers() {
             presentationTimers.forEach(timer => window.clearTimeout(timer));
             presentationTimers = [];
+            if (questionTypewriterCancel) {
+                questionTypewriterCancel();
+                questionTypewriterCancel = null;
+            }
         }
 
         function schedulePresentation(whenMs, refresh = false) {
@@ -215,6 +221,36 @@
             `;
         }
 
+        function quickQuizQuestionMarkup(question) {
+            return `
+                <div class="spectator-question">
+                    <p class="spectator-question__text spectator-question__typewriter"
+                       data-quick-quiz-typewriter="${escapeHtml(question?.id || '')}"></p>
+                </div>
+            `;
+        }
+
+        function syncQuickQuizTypewriter(game) {
+            const element = stage.querySelector('[data-quick-quiz-typewriter]');
+            if (!element) return;
+            const question = game.question || {};
+            if (game.question_phase !== 'prompt_visible') {
+                element.textContent = question.text || '';
+                return;
+            }
+            questionTypewriterCancel = window.QuestionTypewriter?.start(element, {
+                text: question.text || '',
+                presentedAt: game.question_presented_at,
+                serverNow: game.server_now,
+                receivedAt: performance.now(),
+                millisecondsPerCharacter: game.question_reveal_ms_per_character,
+                onComplete: () => {
+                    questionTypewriterCancel = null;
+                },
+            }) || null;
+            if (!questionTypewriterCancel) element.textContent = question.text || '';
+        }
+
         function imageMarkup(url, alt) {
             return url
                 ? `<img class="spectator-media" src="${escapeHtml(url)}" alt="${escapeHtml(alt)}">`
@@ -273,7 +309,7 @@
                 ? visibleSequence(allOptions, game.content_revealed_at, game.answer_reveal_stagger_ms)
                 : allOptions;
             return gameMarkup(game, `
-                ${questionMarkup(q.text || '')}
+                ${quickQuizQuestionMarkup(q)}
                 ${options.length ? `<div class="spectator-grid spectator-grid--options">${options.map(option => optionMarkup(option, correctAnswer)).join('')}</div>` : ''}
                 ${reveal ? revealMarkup(q) : ''}
             `);
@@ -613,6 +649,7 @@
                 updateStage(renderer
                     ? renderer(game)
                     : waitingMarkup('Fuer diesen Spieltyp fehlen oeffentliche Spectator-Daten.', false));
+                if (game.game_key === 'quiz') syncQuickQuizTypewriter(game);
             }
             updateFooter(game);
         }

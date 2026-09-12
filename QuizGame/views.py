@@ -398,7 +398,13 @@ def quiz_play(request, room_code, participant_name):
             entry['question_number']: entry
             for entry in initial_progress_history
         }
-        current_question_id = quiz.current_question_id if quiz.current_question_id else None
+        question_runtime = current_snapshot('quiz', quiz.room_code, session_code)
+        current_question_id = quiz.current_question_id or None
+        if current_question_id is None and question_runtime.get('prepared_question_id'):
+            try:
+                current_question_id = int(question_runtime['prepared_question_id'])
+            except (TypeError, ValueError):
+                current_question_id = None
         current_question_number = next(
             (index for index, question in enumerate(ordered_questions, start=1) if question.id == current_question_id),
             None,
@@ -440,7 +446,7 @@ def quiz_play(request, room_code, participant_name):
             'current_unit_is_tutorial': is_current_unit_tutorial_question('quiz', quiz.room_code, session_code, quiz.current_question_id),
             'score_total_correct': score_total_correct,
             'score_total_questions': score_total_questions,
-            'question_runtime': current_snapshot('quiz', quiz.room_code, session_code),
+            'question_runtime': question_runtime,
         }
         return render(request, 'quiz/play.html', context)
         

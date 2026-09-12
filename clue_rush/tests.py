@@ -1835,6 +1835,16 @@ class ClueRushVhsParticipantSafeguardTests(SimpleTestCase):
         self.assertIn("badge.textContent = 'New';", template)
         self.assertNotIn('let timeLeft = duration;', template)
         self.assertNotIn('--clue-rush-next-progress', template)
+        self.assertIn('id="clueRushAnswerRegion"', template)
+        self.assertIn('id="clueRushSubmittedAnswer"', template)
+        self.assertEqual(template.count('id="playerCluesList"'), 1)
+        self.assertNotIn('id="playerCluesListSubmitted"', template)
+        self.assertNotIn("this.showState('answerSubmittedState');", template)
+        submitted_handler = template.split('onParticipantRehydrated(answer) {', 1)[1].split(
+            '\n                resetAnswerRegion() {',
+            1,
+        )[0]
+        self.assertNotIn('this.showState(', submitted_handler)
 
         clue_scope = (
             'html[data-participant-theme="vhs"] body.clue-rush-play-page '
@@ -1858,6 +1868,8 @@ class ClueRushVhsParticipantSafeguardTests(SimpleTestCase):
             css,
         )
         self.assertIn('width: min(100%, var(--clue-answer-width));', css)
+        self.assertIn('#questionState #clueRushAnswerRegion', css)
+        self.assertIn('#questionState .clue-rush-submitted-answer', css)
         self.assertIn(
             '--clue-rush-score-safe-area: clamp(270px, 27vw, 290px);',
             css,

@@ -99,13 +99,13 @@
                 <div class="card-body">
                     {% if not quiz.current_question %}
                         <!-- Question Selection -->
-                        <div id="questionSelection">
+                        <div id="questionSelection" data-host-question-selection>
                             <h6 class="mb-3">Select Next Question</h6>
                             <div class="question-list" id="availableQuestions">
                                 {% for question in available_questions %}
-                                <div class="question-item" data-question-id="{{ question.id }}" data-question-total-elements="{{ question.elements.count }}">
+                                <div class="question-item" data-question-id="{{ question.id }}" data-question-total-elements="{{ question.elements.count }}" data-host-question-item data-host-question-text="{{ question.question_text|escape }}">
                                     <div class="question-content">
-                                        <div class="question-text">{{ question.question_text|truncatechars:120 }}</div>
+                                        <div class="question-text" data-host-question-text-target>{{ question.question_text|truncatechars:120 }}</div>
                                         <div class="question-answers mt-1">
                                             {% for el in question.elements.all %}
                                                 <span class="answer-option answer-correct">{{ forloop.counter }}. {{ el.text }}</span>
@@ -139,9 +139,9 @@
                                             <small class="text-muted d-block mb-1">Zeit in Sek.</small>
                                             <input type="number" class="form-control form-control-sm question-time-input" placeholder="Time (s)" min="5" step="1" style="max-width: 120px;" value="{{ question.round_time_limit }}">
                                         </div>
-                                        <button type="button" class="btn btn-secondary send-question-btn" data-question-id="{{ question.id }}" data-question-total-elements="{{ question.elements.count }}" {% if quiz.status != 'active' %}disabled title="Start the quiz to send questions"{% endif %}>
-                                            <i data-lucide="send"></i>
-                                            Send Question
+                                        <button type="button" class="btn btn-secondary send-question-btn" data-question-id="{{ question.id }}" data-question-total-elements="{{ question.elements.count }}" data-host-question-select data-host-select-label="AUFGABE WÄHLEN" data-host-send-label="AUFGABE SENDEN" data-host-selection-noun="Aufgabe" {% if quiz.status != 'active' %}disabled title="Start the quiz to send questions"{% endif %}>
+                                            <i data-lucide="mouse-pointer-click"></i>
+                                            AUFGABE WÄHLEN
                                         </button>
                                     </div>
                                 </div>

@@ -14,6 +14,7 @@ from django.utils import timezone
 from Estimation.consumers import EstimationConsumer
 from Estimation.models import EstimationParticipant, EstimationQuiz
 from QuizGame.models import Quiz, QuizParticipant, QuizQuestion
+from black_jack_quiz.consumers import BlackJackConsumer
 from black_jack_quiz.models import BlackJackQuiz
 from buzzer.consumers import BuzzerConsumer
 from buzzer.models import BuzzerGame
@@ -24,6 +25,7 @@ from host_points.consumers import HostPointsConsumer
 from host_points.models import HostPointsGame
 from wann_war_das.consumers import WannWarDasConsumer
 from wann_war_das.models import WannWarDasGame
+from who_is_that.models import WhoThatParticipant, WhoThatQuiz
 
 
 class LobbyReturnFlowTests(TransactionTestCase):
@@ -114,7 +116,7 @@ class LobbyReturnFlowTests(TransactionTestCase):
         self.assertEqual(payload['participants_not_in_lobby'][0]['name'], 'Alice')
         self.assertEqual(payload['participants_not_in_lobby'][0]['games'][0]['game_key'], 'quiz')
 
-    def test_live_reconnect_blocks_start_but_disconnected_participant_does_not(self):
+    def test_active_game_assignment_blocks_start_independent_of_socket_presence(self):
         QuizParticipant.objects.create(
             quiz=self.quiz,
             name='Alice',
@@ -140,8 +142,73 @@ class LobbyReturnFlowTests(TransactionTestCase):
         disconnected = self.client.get(
             reverse('games_hub:session_lobby_presence_api', args=[self.session.code])
         ).json()
-        self.assertTrue(disconnected['all_in_lobby'])
-        self.assertEqual(disconnected['not_in_lobby_count'], 0)
+        self.assertFalse(disconnected['all_in_lobby'])
+        self.assertEqual(disconnected['participants_not_in_lobby'][0]['name'], 'Alice')
+
+    def test_who_that_waiting_player_blocks_blackjack_start(self):
+        who_that = WhoThatQuiz.objects.create(
+            creator=self.user,
+            title='Who Is That Waiting',
+            status='waiting',
+        )
+        blackjack = BlackJackQuiz.objects.create(
+            creator=self.user,
+            title='Blocked Black Jack',
+            status='waiting',
+        )
+        HubGameStep.objects.create(
+            session=self.session,
+            order=2,
+            game_key='who_that',
+            room_code=who_that.room_code,
+            title=who_that.title,
+        )
+        HubGameStep.objects.create(
+            session=self.session,
+            order=3,
+            game_key='blackjack',
+            room_code=blackjack.room_code,
+            title=blackjack.title,
+        )
+        WhoThatParticipant.objects.create(
+            quiz=who_that,
+            name='Bob',
+            hub_session_code=self.session.code,
+            is_active=True,
+        )
+        register_socket_connection(
+            channel_name='alice.lobby-only-socket',
+            session_code=self.session.code,
+            participant_name='Alice',
+            scope_kind='lobby',
+        )
+
+        presence = self.client.get(
+            reverse('games_hub:session_lobby_presence_api', args=[self.session.code])
+        ).json()
+
+        self.assertFalse(presence['all_in_lobby'])
+        self.assertEqual(presence['participants_not_in_lobby'], [{
+            'name': 'Bob',
+            'games': [{
+                'game_key': 'who_that',
+                'room_code': who_that.room_code,
+                'title': who_that.title,
+            }],
+        }])
+
+        consumer = BlackJackConsumer()
+        consumer.room_code = blackjack.room_code
+        consumer.room_group_name = f'blackjack_{blackjack.room_code}'
+        consumer.send = AsyncMock()
+        async_to_sync(consumer.handle_admin_start_quiz)({})
+
+        blackjack.refresh_from_db()
+        self.assertEqual(blackjack.status, 'waiting')
+        self.assertIsNone(blackjack.started_at)
+        payload = json.loads(consumer.send.await_args.kwargs['text_data'])
+        self.assertEqual(payload['type'], 'participants_not_in_lobby')
+        self.assertEqual(payload['participants_not_in_lobby'][0]['name'], 'Bob')
 
     def test_participant_return_to_lobby_marks_only_current_player_inactive(self):
         alice = QuizParticipant.objects.create(
@@ -200,6 +267,77 @@ class LobbyReturnFlowTests(TransactionTestCase):
         bob.refresh_from_db()
         self.assertFalse(alice.is_active)
         self.assertFalse(bob.is_active)
+
+        repeated_response = self.client.post(
+            reverse('games_hub:recall_session_participants_to_lobby', args=[self.session.code])
+        )
+        self.assertEqual(repeated_response.status_code, 200)
+        self.assertTrue(repeated_response.json()['all_in_lobby'])
+
+    def test_recall_keeps_existing_lobby_players_and_stale_socket_in_lobby(self):
+        alice = QuizParticipant.objects.create(
+            quiz=self.quiz,
+            name='Alice',
+            hub_session_code=self.session.code,
+            is_active=True,
+        )
+        register_socket_connection(
+            channel_name='alice.stale-game-socket',
+            session_code=self.session.code,
+            participant_name='Alice',
+            scope_kind='game',
+            game_key='quiz',
+            room_code=self.quiz.room_code,
+        )
+
+        response = self.client.post(
+            reverse('games_hub:recall_session_participants_to_lobby', args=[self.session.code])
+        )
+
+        alice.refresh_from_db()
+        payload = response.json()
+        self.assertFalse(alice.is_active)
+        self.assertTrue(payload['all_in_lobby'])
+        self.assertEqual(payload['participants_in_lobby'], [
+            {'name': 'Alice'},
+            {'name': 'Bob'},
+        ])
+
+        reloaded_presence = self.client.get(
+            reverse('games_hub:session_lobby_presence_api', args=[self.session.code])
+        ).json()
+        self.assertTrue(reloaded_presence['all_in_lobby'])
+
+    def test_new_game_can_start_after_recall(self):
+        old_participant = QuizParticipant.objects.create(
+            quiz=self.quiz,
+            name='Alice',
+            hub_session_code=self.session.code,
+            is_active=True,
+        )
+        response = self.client.post(
+            reverse('games_hub:recall_session_participants_to_lobby', args=[self.session.code])
+        )
+        self.assertTrue(response.json()['all_in_lobby'])
+        self.quiz.status = 'inactive'
+        self.quiz.save(update_fields=['status'])
+
+        consumer = EstimationConsumer()
+        consumer.room_code = self.estimation.room_code
+        consumer.room_group_name = f'estimation_{self.estimation.room_code}'
+        consumer.channel_layer = SimpleNamespace(group_send=AsyncMock())
+        consumer.send = AsyncMock()
+        async_to_sync(consumer.handle_admin_start_quiz)({})
+
+        old_participant.refresh_from_db()
+        self.estimation.refresh_from_db()
+        self.assertFalse(old_participant.is_active)
+        self.assertEqual(self.estimation.status, 'active')
+        self.assertFalse(any(
+            json.loads(call.kwargs['text_data']).get('type') == 'participants_not_in_lobby'
+            for call in consumer.send.await_args_list
+            if call.kwargs.get('text_data')
+        ))
 
     def test_consumer_start_is_blocked_when_players_are_not_in_lobby(self):
         QuizParticipant.objects.create(

@@ -173,7 +173,7 @@ class WerWeissMehrRuntimeTests(TestCase):
             templates_root / 'wer_weiss_mehr' / 'play.html'
         ).read_text(encoding='utf-8')
 
-        self.assertIn('FRAGE FREIGEBEN', host_source)
+        self.assertIn('ANTWORT FREIGEBEN', host_source)
         self.assertNotIn('ANTWORTTAFEL ANZEIGEN', host_source)
         self.assertNotIn('reveal_question_content', host_source)
         self.assertIn('field_reveal_ready_at', host_source)
@@ -194,8 +194,16 @@ class WerWeissMehrRuntimeTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertIn('class="tiles wwm-target-grid" role="list"', content)
+        self.assertIn('id="answerSlot" class="wwm-answer-slot"', content)
         self.assertIn('class="btn btn-primary btn-lg vhs-action-button wwm-submit-button"', content)
         self.assertIn('class="wwm-answer-controls"', content)
+        self.assertIn("answerSlot.classList.toggle(\n        'is-reserved'", template_source)
+        self.assertIn("answerSlot.getBoundingClientRect().height", template_source)
+        self.assertIn('tiles.dataset.layoutSignature === layoutSignature', template_source)
+        self.assertIn('delete tiles.dataset.layoutSignature;', template_source)
+        self.assertIn('.wwm-answer-slot.is-reserved .wwm-answer-area.d-none {', template_source)
+        self.assertIn('visibility: hidden;', template_source)
+        self.assertIn('pointer-events: none;', template_source)
         self.assertIn('function updateVhsTileLayout()', template_source)
         self.assertIn('Math.floor((availableHeight + rowGap) / (tileHeight + rowGap))', template_source)
         self.assertIn('Math.ceil(tileCount / maxColumns)', template_source)
@@ -217,6 +225,17 @@ class WerWeissMehrRuntimeTests(TestCase):
             'body.wer-weiss-mehr-play-page .vhs-theme-shell .wwm-answer-area .vhs-action-button',
             css,
         )
+        submit_rule = css.split(
+            'body.wer-weiss-mehr-play-page .vhs-theme-shell\n  .wwm-submit-button {',
+            1,
+        )[1].split('}', 1)[0]
+        self.assertNotIn('background:', submit_rule)
+        self.assertNotIn('color:', submit_rule)
+        timer_rule = css.split(
+            'body.wer-weiss-mehr-play-page .vhs-theme-shell .timer-box {',
+            1,
+        )[1].split('}', 1)[0]
+        self.assertIn('position: absolute !important;', timer_rule)
 
     def test_participant_tiles_keep_alphabetical_dom_order(self):
         self.game.start_quiz(hub_session_code='ABC')
@@ -1032,7 +1051,7 @@ class WerWeissMehrAdminIntegrationTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, 'Tutorialset – keine Wertung')
-        self.assertContains(response, 'Tutorialset starten')
+        self.assertContains(response, 'TUTORIALSET WÄHLEN')
         self.assertContains(response, 'Tutorialset überspringen')
         self.assertContains(response, 'SKIP_TUTORIAL_SET_URL')
 
@@ -1467,19 +1486,23 @@ class WerWeissMehrAdminIntegrationTests(TestCase):
         self.assertEqual(review_state['phase'], WerWeissMehrSession.PHASE_REVIEW)
         self.assertTrue(review_state['can_start_next_round'])
 
+        next_payload = {
+            'hub_session': session.code,
+            'client_action_id': str(uuid.uuid4()),
+        }
         response = self.client.post(
             reverse('admin_dashboard:next_wer_weiss_mehr_round', args=[game.room_code]),
-            data=json.dumps({'hub_session': session.code}),
+            data=json.dumps(next_payload),
             content_type='application/json',
         )
 
         self.assertEqual(response.status_code, 200)
         payload = response.json()
         self.assertTrue(payload['success'])
-        self.assertEqual(payload['phase'], WerWeissMehrSession.PHASE_IDLE)
-        self.assertEqual(payload['question_phase'], GameRuntimeState.QUESTION_PHASE_PROMPT_VISIBLE)
+        self.assertEqual(payload['phase'], WerWeissMehrSession.PHASE_ROUND_ACTIVE)
+        self.assertEqual(payload['question_phase'], GameRuntimeState.QUESTION_PHASE_ANSWERING_OPEN)
         self.assertEqual(payload['current_round'], 2)
-        self.assertIsNone(payload['timer']['ends_at'])
+        self.assertIsNotNone(payload['timer']['ends_at'])
         self.assertTrue(any(tile['id'] == bayern.id and tile['revealed'] for tile in payload['question']['tiles']))
         self.assertTrue(all(tile['presentation_index'] is None for tile in payload['question']['tiles']))
         self.assertFalse(any(item['answer_text'] == 'Bayern' for item in payload['responses']))
@@ -1489,15 +1512,31 @@ class WerWeissMehrAdminIntegrationTests(TestCase):
 
         lisa_state = build_game_state(game, hub_session_code=session.code, participant_name='Lisa')
         max_state = build_game_state(game, hub_session_code=session.code, participant_name='Max')
-        self.assertFalse(lisa_state['participant_state']['can_answer'])
-        self.assertFalse(max_state['participant_state']['can_answer'])
-
-        open_response = self._open_presented_round(game, session.code)
-        self.assertEqual(open_response.status_code, 200)
-        lisa_state = build_game_state(game, hub_session_code=session.code, participant_name='Lisa')
-        max_state = build_game_state(game, hub_session_code=session.code, participant_name='Max')
         self.assertTrue(lisa_state['participant_state']['can_answer'])
         self.assertFalse(max_state['participant_state']['can_answer'])
+
+        runtime_session = game.session
+        runtime_session.refresh_from_db()
+        first_deadline = runtime_session.round_end_time
+        self.assertIsNotNone(first_deadline)
+        reloaded = build_game_state(game, hub_session_code=session.code, participant_name='Lisa')
+        self.assertEqual(reloaded['phase'], WerWeissMehrSession.PHASE_ROUND_ACTIVE)
+        self.assertTrue(reloaded['participant_state']['can_answer'])
+        self.assertEqual(parse_datetime(reloaded['timer']['ends_at']), first_deadline)
+
+        duplicate = self.client.post(
+            reverse('admin_dashboard:next_wer_weiss_mehr_round', args=[game.room_code]),
+            data=json.dumps(next_payload),
+            content_type='application/json',
+        )
+        self.assertEqual(duplicate.status_code, 200)
+        runtime_session.refresh_from_db()
+        self.assertEqual(runtime_session.current_round, 2)
+        self.assertEqual(runtime_session.round_end_time, first_deadline)
+        self.assertEqual(
+            WerWeissMehrRound.objects.filter(quiz=game, round_number=2).count(),
+            1,
+        )
 
     def test_next_round_endpoint_rejects_when_no_next_round_possible(self):
         game = WerWeissMehrGame.objects.create(title='No Next Round', creator=self.user, status='waiting')
@@ -2217,10 +2256,10 @@ class WerWeissMehrAdminIntegrationTests(TestCase):
         )
         self.assertEqual(response.status_code, 200)
         round_two_payload = response.json()
-        self.assertEqual(round_two_payload['phase'], WerWeissMehrSession.PHASE_IDLE)
-        self.assertEqual(round_two_payload['question_phase'], GameRuntimeState.QUESTION_PHASE_PROMPT_VISIBLE)
+        self.assertEqual(round_two_payload['phase'], WerWeissMehrSession.PHASE_ROUND_ACTIVE)
+        self.assertEqual(round_two_payload['question_phase'], GameRuntimeState.QUESTION_PHASE_ANSWERING_OPEN)
         self.assertEqual(round_two_payload['current_round'], 2)
-        self.assertIsNone(round_two_payload['timer']['ends_at'])
+        self.assertIsNotNone(round_two_payload['timer']['ends_at'])
         self.assertTrue(any(
             tile['id'] == answers['Bayern'].id and tile['revealed']
             for tile in round_two_payload['question']['tiles']
@@ -2229,7 +2268,6 @@ class WerWeissMehrAdminIntegrationTests(TestCase):
             tile['presentation_index'] is None
             for tile in round_two_payload['question']['tiles']
         ))
-        self.assertEqual(self._open_presented_round(game, session.code).status_code, 200)
         game.refresh_from_db()
         self.assertTrue(build_game_state(game, hub_session_code=session.code, participant_name='Anna')['participant_state']['can_answer'])
         self.assertFalse(build_game_state(game, hub_session_code=session.code, participant_name='Ben')['participant_state']['can_answer'])
@@ -2511,7 +2549,9 @@ class WerWeissMehrQuestionPhaseBrowserTests(_BrowserTestBase):
         self.admin_page.wait_for_function('state !== null')
         self._stop_live_connections(self.admin_page)
         self.assertEqual(self.admin_page.get_by_text('ANTWORTTAFEL ANZEIGEN').count(), 0)
-        self.admin_page.locator('.start-set-btn').first.click()
+        start_button = self.admin_page.locator('.start-set-btn').first
+        start_button.click()
+        start_button.click()
         self.admin_page.wait_for_selector('#openRoundBtn')
         self.assertTrue(self.admin_page.locator('#openRoundBtn').is_disabled())
         runtime = GameRuntimeState.objects.get(
@@ -2523,6 +2563,8 @@ class WerWeissMehrQuestionPhaseBrowserTests(_BrowserTestBase):
         runtime.save(update_fields=['question_presented_at', 'updated_at'])
 
         pending_counts = []
+        tile_layouts = []
+        reserved_layouts = []
         for page in self.participant_pages:
             page.evaluate('fetchState()')
             page.wait_for_selector('.tile')
@@ -2541,6 +2583,32 @@ class WerWeissMehrQuestionPhaseBrowserTests(_BrowserTestBase):
             self.assertTrue(page.locator('#timerBox').evaluate(
                 "element => element.classList.contains('d-none')"
             ))
+            page.evaluate(
+                """() => Promise.all(
+                    [document.getElementById('questionText'), ...document.querySelectorAll('.tile')]
+                        .flatMap(element => element.getAnimations())
+                        .map(animation => animation.finished)
+                )"""
+            )
+            reserved_layouts.append(page.evaluate(
+                """() => {
+                    const slot = document.getElementById('answerSlot');
+                    const area = document.getElementById('answerArea');
+                    const tiles = document.getElementById('tiles');
+                    return {
+                        slotHeight: slot.getBoundingClientRect().height,
+                        areaHeight: area.getBoundingClientRect().height,
+                        areaDisplay: getComputedStyle(area).display,
+                        reserved: slot.classList.contains('is-reserved'),
+                        rows: getComputedStyle(tiles).getPropertyValue('--wwm-tile-rows'),
+                        columns: getComputedStyle(tiles).getPropertyValue('--wwm-tile-columns'),
+                        timerPosition: getComputedStyle(document.getElementById('timerBox')).position,
+                    };
+                }"""
+            ))
+            tile_layouts.append(page.locator('.tile').evaluate_all(
+                "elements => elements.map(element => { const box = element.getBoundingClientRect(); return [box.x, box.y]; })"
+            ))
         self.assertGreater(max(pending_counts), 0)
 
         self.admin_page.wait_for_function(
@@ -2550,7 +2618,11 @@ class WerWeissMehrQuestionPhaseBrowserTests(_BrowserTestBase):
         self.admin_page.locator('#openRoundBtn').click()
         self.admin_page.wait_for_function("state?.question_phase === 'answering_open'")
 
-        for page in self.participant_pages:
+        for page, expected_layout, reserved_layout in zip(
+            self.participant_pages,
+            tile_layouts,
+            reserved_layouts,
+        ):
             page.evaluate('fetchState()')
             page.wait_for_function(
                 "!document.getElementById('answerInput').disabled",
@@ -2560,6 +2632,30 @@ class WerWeissMehrQuestionPhaseBrowserTests(_BrowserTestBase):
             self.assertFalse(page.locator('#timerBox').evaluate(
                 "element => element.classList.contains('d-none')"
             ))
+            active_layout = page.locator('.tile').evaluate_all(
+                "elements => elements.map(element => { const box = element.getBoundingClientRect(); return [box.x, box.y]; })"
+            )
+            active_reserved_layout = page.evaluate(
+                """() => {
+                    const slot = document.getElementById('answerSlot');
+                    const area = document.getElementById('answerArea');
+                    const tiles = document.getElementById('tiles');
+                    return {
+                        slotHeight: slot.getBoundingClientRect().height,
+                        areaHeight: area.getBoundingClientRect().height,
+                        areaDisplay: getComputedStyle(area).display,
+                        reserved: slot.classList.contains('is-reserved'),
+                        rows: getComputedStyle(tiles).getPropertyValue('--wwm-tile-rows'),
+                        columns: getComputedStyle(tiles).getPropertyValue('--wwm-tile-columns'),
+                        timerPosition: getComputedStyle(document.getElementById('timerBox')).position,
+                    };
+                }"""
+            )
+            self.assertEqual(active_reserved_layout, reserved_layout)
+            self.assertEqual(len(active_layout), len(expected_layout))
+            for active_position, expected_position in zip(active_layout, expected_layout):
+                self.assertAlmostEqual(active_position[0], expected_position[0], delta=1)
+                self.assertAlmostEqual(active_position[1], expected_position[1], delta=1)
 
         typing_page = self.participant_pages[1]
         typing_page.reload()
@@ -2581,13 +2677,63 @@ class WerWeissMehrQuestionPhaseBrowserTests(_BrowserTestBase):
             ))
             self.assertEqual(typing_input.input_value(), expected_text)
 
-        self.participant_pages[0].locator('#answerInput').fill('Erde')
+        self.participant_pages[0].locator('#answerInput').evaluate(
+            "(element, value) => { element.value = value; }",
+            'Erde',
+        )
         self.participant_pages[0].locator('#submitBtn').click()
         self.participant_pages[0].wait_for_function(
-            "document.getElementById('answerInput').disabled",
+            "latestState?.participant_state?.has_submitted === true",
             timeout=10_000,
         )
+        self._stop_live_connections(self.participant_pages[0])
         self.assertFalse(self.participant_pages[1].locator('#answerInput').is_disabled())
+
+        typing_page.locator('#submitBtn').click()
+        typing_page.wait_for_function(
+            "latestState?.participant_state?.has_submitted === true",
+            timeout=10_000,
+        )
+        self._stop_live_connections(typing_page)
+        self.admin_page.locator('#endRoundBtn').click()
+        self.admin_page.wait_for_selector('#nextRoundBtn')
+        self.admin_page.locator('#nextRoundBtn').click()
+        self.admin_page.wait_for_function(
+            "state?.phase === 'round_active' && state?.current_round === 2"
+        )
+        self.assertEqual(self.admin_page.locator('#openRoundBtn').count(), 0)
+
+        for page in self.participant_pages:
+            page.evaluate('fetchState()')
+            page.wait_for_function(
+                "latestState?.current_round === 2 && !document.getElementById('answerInput').disabled",
+                timeout=10_000,
+            )
+        for page, answer in zip(self.participant_pages, ('Jupiter', 'Merkur')):
+            page.locator('#answerInput').evaluate(
+                "(element, value) => { element.value = value; }",
+                answer,
+            )
+            page.locator('#submitBtn').click()
+            page.wait_for_function(
+                "latestState?.participant_state?.has_submitted === true",
+                timeout=10_000,
+            )
+            self._stop_live_connections(page)
+
+        self.admin_page.locator('#endRoundBtn').click()
+        self.admin_page.wait_for_selector('#nextRoundBtn')
+        self.admin_page.locator('#nextRoundBtn').click()
+        self.admin_page.wait_for_function(
+            "state?.phase === 'round_active' && state?.current_round === 3"
+        )
+        self.assertEqual(self.admin_page.locator('#openRoundBtn').count(), 0)
+        for page in self.participant_pages:
+            page.evaluate('fetchState()')
+            page.wait_for_function(
+                "latestState?.current_round === 3 && !document.getElementById('answerInput').disabled",
+                timeout=10_000,
+            )
 
         for viewport in (
             {'width': 360, 'height': 800},

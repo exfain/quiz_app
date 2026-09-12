@@ -127,44 +127,22 @@
                                         <span id="clueRushNextTimeLeft" class="visually-hidden" aria-hidden="true">-</span>
                                     </div>
 
-                                    <!-- Answer Options -->
-                                    <div class="answer-options" id="answerOptions">
-                                        <!-- Options will be dynamically populated -->
-                                    </div>
+                                    <div id="clueRushAnswerRegion" class="clue-rush-answer-region">
+                                        <!-- Answer Options -->
+                                        <div class="answer-options" id="answerOptions">
+                                            <!-- Options will be dynamically populated -->
+                                        </div>
 
-                                    <!-- Submit Button -->
-                                    <button class="btn btn-primary btn-lg w-100 submit-answer vhs-action-button clue-rush-submit" id="submitAnswerBtn" disabled>
-                                        Einloggen
-                                    </button>
-                                </div>
-                            </div>
-                        </div>
+                                        <!-- Submit Button -->
+                                        <button class="btn btn-primary btn-lg w-100 submit-answer vhs-action-button clue-rush-submit" id="submitAnswerBtn" disabled>
+                                            Einloggen
+                                        </button>
 
-                        <!-- Answer Submitted State -->
-                        <div id="answerSubmittedState" class="game-state d-none">
-                            <div class="submitted-card">
-                                <div class="question-timer submitted-timer">
-                                    <div class="timer-circle" id="playerTimerCircleSubmitted">
-                                        <span id="playerTimeLeftSubmitted">30</span>
-                                    </div>
-                                </div>
-                                
-                                <div id="submittedCluesContainer" style="margin-top: 3rem !important;">
-                                    <ul class="list-group" id="playerCluesListSubmitted"></ul>
-                                </div>
-                                <div class="submitted-animation">
-                                    <div class="check-animation">
-                                        <i data-lucide="check-circle" class="check-icon"></i>
-                                    </div>
-                                </div>
-                                <h2>Answer Submitted!</h2>
-                                <p>Waiting for other participants and the next question...</p>
-                                <div class="submitted-details">
-                                    <div class="submitted-answer">
-                                        Your answer: <strong id="submittedAnswerText"></strong>
-                                    </div>
-                                    <div class="submitted-time">
-                                        Submitted in <strong id="submittedTime"></strong> seconds
+                                        <div id="clueRushSubmittedAnswer" class="clue-rush-submitted-answer d-none" role="status">
+                                            <strong>Antwort eingeloggt</strong>
+                                            <span>Deine Antwort: <b id="submittedAnswerText"></b></span>
+                                            <span>Nach <b id="submittedTime"></b> Sekunden</span>
+                                        </div>
                                     </div>
                                 </div>
                             </div>
@@ -630,62 +608,28 @@
             animation: spin 1s linear infinite;
         }
 
-        /* Answer Submitted State */
-        .submitted-card {
-            text-align: center;
-            padding: 3rem 2rem;
-            background: var(--bg-primary);
-            border-radius: var(--border-radius-xl);
-            box-shadow: var(--shadow-lg);
+        .clue-rush-answer-region {
             position: relative;
+            min-height: 126px;
         }
 
-        .submitted-timer {
+        .clue-rush-answer-region.is-submitted > :is(#answerOptions, #submitAnswerBtn) {
+            visibility: hidden;
+            pointer-events: none;
+        }
+
+        .clue-rush-submitted-answer {
             position: absolute;
-            top: 1.5rem;
-            right: 1.5rem;
-        }
-
-        .submitted-animation {
-            margin-bottom: 2rem;
-        }
-
-        .check-animation {
-            width: 120px;
-            height: 120px;
-            margin: 0 auto;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-        }
-
-        .check-icon {
-            width: 64px;
-            height: 64px;
-            color: var(--color-success);
-            animation: checkPop 0.6s ease-out;
-        }
-
-        @keyframes checkPop {
-            0% { transform: scale(0); }
-            50% { transform: scale(1.2); }
-            100% { transform: scale(1); }
-        }
-
-        .submitted-details {
+            inset: 0;
+            display: grid;
+            align-content: center;
+            gap: 0.5rem;
+            min-height: 126px;
             background-color: var(--bg-secondary);
             padding: 1.5rem;
             border-radius: var(--border-radius-lg);
-            margin-top: 2rem;
-        }
-
-        .submitted-answer, .submitted-time {
-            margin-bottom: 0.5rem;
+            text-align: center;
             color: var(--text-secondary);
-        }
-
-        .submitted-answer:last-child, .submitted-time:last-child {
-            margin-bottom: 0;
         }
 
         /* Correct Answer State */
@@ -1148,6 +1092,7 @@
                         this.hasAnswered = false;
                         this.selectedAnswer = null;
                         this.resetClues();
+                        this.resetAnswerRegion();
                     }
                     this.currentQuestionId = question?.id || null;
                     this.pendingQuestion = question;
@@ -1372,15 +1317,19 @@
                         submittedTime.textContent = seconds > 0 ? seconds.toFixed(1) : '-';
                     }
 
-                    this.showState('answerSubmittedState');
+                    document.getElementById('clueRushAnswerRegion')?.classList.add('is-submitted');
+                    document.getElementById('clueRushSubmittedAnswer')?.classList.remove('d-none');
+                }
+
+                resetAnswerRegion() {
+                    document.getElementById('clueRushAnswerRegion')?.classList.remove('is-submitted');
+                    document.getElementById('clueRushSubmittedAnswer')?.classList.add('d-none');
                 }
 
                 resetClues() {
                     try {
                         const list = document.getElementById('playerCluesList');
                         if (list) list.innerHTML = '';
-                        const listSubmitted = document.getElementById('playerCluesListSubmitted');
-                        if (listSubmitted) listSubmitted.innerHTML = '';
                     } catch (e) { console.error(e); }
                 }
 
@@ -1388,8 +1337,7 @@
                     try {
                         if (!clue) return;
                         const list = document.getElementById('playerCluesList');
-                        const listSubmitted = document.getElementById('playerCluesListSubmitted');
-                        if (!list && !listSubmitted) return;
+                        if (!list) return;
 
                         const createClueItem = () => {
                             const item = document.createElement('li');
@@ -1425,12 +1373,6 @@
                             );
                             if (!exists) list.appendChild(createClueItem());
                         }
-                        if (listSubmitted) {
-                            const exists = Array.from(listSubmitted.children).some(
-                                (item) => item.dataset.clueId === String(clue.id ?? clue.order ?? '')
-                            );
-                            if (!exists) listSubmitted.appendChild(createClueItem());
-                        }
                     } catch (e) { console.error(e); }
                 }
 
@@ -1457,21 +1399,17 @@
 
                 setClueTimerVisible(isVisible) {
                     const wrapMain = document.getElementById('playerTimerCircle')?.closest('.question-timer');
-                    const wrapSubmitted = document.getElementById('playerTimerCircleSubmitted')?.closest('.question-timer');
                     const vhsTimer = document.getElementById('clueRushNextClueTimer');
                     const display = isVisible ? '' : 'none';
                     if (wrapMain) wrapMain.style.display = display;
-                    if (wrapSubmitted) wrapSubmitted.style.display = display;
                     if (vhsTimer) {
                         vhsTimer.classList.toggle('is-visible', isVisible);
                         vhsTimer.setAttribute('aria-hidden', isVisible ? 'false' : 'true');
                     }
                     if (!isVisible) {
                         const t1 = document.getElementById('playerTimeLeft');
-                        const t2 = document.getElementById('playerTimeLeftSubmitted');
                         const vhsTime = document.getElementById('clueRushNextTimeLeft');
                         if (t1) t1.textContent = '-';
-                        if (t2) t2.textContent = '-';
                         if (vhsTime) vhsTime.textContent = '-';
                     }
                 }
@@ -1488,8 +1426,6 @@
                     }
                     const timerEl = document.getElementById('playerTimeLeft');
                     const circleEl = document.getElementById('playerTimerCircle');
-                    const timerElSubmitted = document.getElementById('playerTimeLeftSubmitted');
-                    const circleElSubmitted = document.getElementById('playerTimerCircleSubmitted');
                     const nextTimerEl = document.getElementById('clueRushNextTimeLeft');
                     const nextProgressEl = document.getElementById('clueRushNextClueProgress');
                     const totalTimerEl = document.getElementById('playerSetTimeLeft');
@@ -1506,7 +1442,6 @@
                         const totalTimeLeft = Math.max(Math.ceil((sequenceEndMs - nowMs) / 1000), 0);
                         const elements = [
                             { timer: timerEl, circle: circleEl },
-                            { timer: timerElSubmitted, circle: circleElSubmitted },
                         ];
                         elements.forEach(el => {
                             if (el.timer) el.timer.textContent = timeLeft;

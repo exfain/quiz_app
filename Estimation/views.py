@@ -349,9 +349,19 @@ def _build_estimation_initial_state(quiz, participant, session_code, current_que
     if quiz.status != 'active':
         return state
 
+    runtime = current_snapshot('estimation', quiz.room_code, session_code)
+    if not quiz.current_question and runtime.get('question_shell_prepared'):
+        state.update({
+            'phase': 'prepared',
+            'question_shell_prepared': True,
+            'state_revision': runtime.get('state_revision'),
+            'game_id': runtime.get('game_id'),
+            'server_now': runtime.get('server_now'),
+        })
+        return state
+
     if quiz.current_question:
         current_question = quiz.current_question
-        runtime = current_snapshot('estimation', quiz.room_code, session_code)
         question_payload = _serialize_estimation_question(
             quiz,
             current_question,

@@ -228,7 +228,12 @@ class HostPointsFlowTests(TransactionTestCase):
         self.assertEqual(self.game.current_round_number, 2)
         self.assertEqual(self.game.started_at, started_at)
         self.assertEqual(alice.total_score, 4)
-        self.assertEqual(self.game.adjustments.count(), 1)
+        self.assertEqual(self.game.adjustments.count(), 2)
+        self.assertTrue(self.game.adjustments.filter(
+            participant__name='Bob',
+            round_number=1,
+            points_delta=0,
+        ).exists())
         self.assertFalse(any(
             message.get('type') == 'participants_not_in_lobby'
             for message in sent_messages
@@ -359,6 +364,43 @@ class HostPointsFlowTests(TransactionTestCase):
         self.assertFalse(self.game.adjust_score(late_participant.id, 1)[0])
         self.assertFalse(self.game.adjust_score(spectator_participant.id, 1)[0])
 
+        self.assertTrue(self.game.next_round(expected_round=1))
+        self.assertFalse(self.game.adjustments.filter(
+            participant_id__in=[late_participant.id, spectator_participant.id],
+        ).exists())
+
+    def test_next_round_finalizes_missing_scores_without_changing_totals(self):
+        self.assertTrue(self.game.start_quiz(self.session.code))
+        alice = self.game.participants.get(name='Alice', hub_session_code=self.session.code)
+        bob = self.game.participants.get(name='Bob', hub_session_code=self.session.code)
+        self.assertTrue(self.game.adjust_score(alice.id, 3)[0])
+
+        self.assertTrue(self.game.next_round(expected_round=1))
+
+        alice.refresh_from_db()
+        bob.refresh_from_db()
+        self.assertEqual(alice.total_score, 3)
+        self.assertEqual(bob.total_score, 0)
+        self.assertEqual(
+            self.game.serialize_state(self.session.code, 'Alice')['round_scores'],
+            [
+                {'number': 1, 'points': 3},
+                {'number': 2, 'points': None},
+            ],
+        )
+        self.assertEqual(
+            self.game.serialize_state(self.session.code, 'Bob')['round_scores'],
+            [
+                {'number': 1, 'points': 0},
+                {'number': 2, 'points': None},
+            ],
+        )
+        self.assertEqual(self.game.adjustments.filter(
+            participant=bob,
+            round_number=1,
+            points_delta=0,
+        ).count(), 1)
+
     def test_player_view_hides_lobby_return_during_active_game_and_result_has_lobby_return(self):
         self.game.start_quiz(self.session.code)
         alice = self.game.participants.get(name='Alice', hub_session_code=self.session.code)
@@ -411,6 +453,7 @@ class HostPointsFlowTests(TransactionTestCase):
     def test_end_game_idempotent_and_actions_after_end_are_rejected(self):
         self.game.start_quiz(self.session.code)
         alice = self.game.participants.get(name='Alice', hub_session_code=self.session.code)
+        bob = self.game.participants.get(name='Bob', hub_session_code=self.session.code)
         self.assertTrue(self.game.adjust_score(alice.id, 3)[0])
         consumer, sent_messages = self.make_consumer()
 
@@ -430,6 +473,16 @@ class HostPointsFlowTests(TransactionTestCase):
         self.assertIn('nicht aktiv', adjust_message)
         self.assertFalse(next_round_success)
         self.assertEqual(alice.total_score, 3)
+        self.assertEqual(bob.total_score, 0)
+        self.assertEqual(
+            self.game.serialize_state(self.session.code, 'Bob')['round_scores'],
+            [{'number': 1, 'points': 0}],
+        )
+        self.assertEqual(self.game.adjustments.filter(
+            participant=bob,
+            round_number=1,
+            points_delta=0,
+        ).count(), 1)
 
     def test_stale_round_and_duplicate_host_action_are_rejected(self):
         self.assertTrue(self.game.start_quiz(self.session.code))

@@ -236,9 +236,11 @@ class SortingLadderStartBrowserFlowTests(_BrowserLiveServerTestCase):
     def _send_question(self, question, expected_question=None):
         expected_question = expected_question or question
         self._wait_host_socket()
-        self.host_page.locator(
+        send_button = self.host_page.locator(
             f'.send-question-btn[data-question-id="{question.id}"]'
-        ).click()
+        )
+        send_button.click()
+        send_button.click()
         self.host_page.wait_for_selector(
             f'#activeQuestion [class="question-text"]:has-text("{expected_question.question_text}")',
             timeout=self.TIMEOUT,

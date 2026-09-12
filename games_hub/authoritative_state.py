@@ -4,7 +4,7 @@ import hashlib
 import json
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import timedelta
 from typing import Any
 
@@ -80,9 +80,15 @@ def _question_visible_at(runtime: GameRuntimeState):
         or not runtime.question_presented_at
     ):
         return None
-    return runtime.question_presented_at + timedelta(
-        milliseconds=QUESTION_PRESENTATION_DELAY_MS
+    duration_ms = (runtime.public_snapshot or {}).get(
+        'question_presentation_duration_ms',
+        QUESTION_PRESENTATION_DELAY_MS,
     )
+    try:
+        duration_ms = max(0, int(duration_ms))
+    except (TypeError, ValueError):
+        duration_ms = QUESTION_PRESENTATION_DELAY_MS
+    return runtime.question_presented_at + timedelta(milliseconds=duration_ms)
 
 
 def question_content_is_visible(snapshot: dict, *, at=None) -> bool:
@@ -394,6 +400,7 @@ def _question_lifecycle_snapshot(
             0,
             int((ends_at - now).total_seconds() + 0.999),
         )
+    presentation = runtime.public_snapshot or {}
     return {
         'question_flow_mode': runtime.question_flow_mode,
         'question_phase': question_phase,
@@ -411,6 +418,12 @@ def _question_lifecycle_snapshot(
             answering_allowed and ends_at and ends_at > now
         ),
         'remaining_answer_time': remaining_answer_time,
+        'question_presentation_duration_ms': presentation.get(
+            'question_presentation_duration_ms'
+        ),
+        'question_reveal_ms_per_character': presentation.get(
+            'question_reveal_ms_per_character'
+        ),
     }
 
 
@@ -946,6 +959,10 @@ def reset_question_flow(
         snapshot.pop('question', None)
         snapshot.pop('answer_options', None)
         snapshot.pop('answer_duration_seconds', None)
+        snapshot.pop('question_presentation_duration_ms', None)
+        snapshot.pop('question_reveal_ms_per_character', None)
+        snapshot.pop('prepared_question_id', None)
+        snapshot.pop('question_shell_prepared', None)
         snapshot['revealed'] = False
         runtime.public_snapshot = snapshot
         runtime.public_snapshot = _runtime_snapshot_payload(runtime)
@@ -983,6 +1000,9 @@ def _transition_question_phase(
     action_type: str,
     action: dict,
     answer_duration_seconds: int | float | None = None,
+    uses_content_phase: bool | None = None,
+    question_presentation_duration_ms: int | None = None,
+    question_reveal_ms_per_character: int | None = None,
     at=None,
 ) -> QuestionPhaseDecision:
     action_id, action_revision = _question_phase_action_context(action)
@@ -996,6 +1016,11 @@ def _transition_question_phase(
         runtime = get_runtime_state(game_key, room_code, session_code)
         runtime = GameRuntimeState.objects.select_for_update().get(pk=runtime.pk)
         capabilities = get_question_flow_capabilities(runtime.game_key)
+        if uses_content_phase is not None:
+            capabilities = replace(
+                capabilities,
+                uses_content_phase=bool(uses_content_phase),
+            )
         participant_key = '__host_question_phase__'
         previous_action = ProcessedClientAction.objects.filter(
             runtime_state=runtime,
@@ -1147,6 +1172,18 @@ def _transition_question_phase(
             )
 
         transition_at = _aware_datetime(at) or timezone.now()
+        if action_type == 'present_question' and not idempotent:
+            runtime.public_snapshot = dict(runtime.public_snapshot or {})
+            if question_presentation_duration_ms is not None:
+                runtime.public_snapshot['question_presentation_duration_ms'] = max(
+                    0,
+                    int(question_presentation_duration_ms),
+                )
+            if question_reveal_ms_per_character is not None:
+                runtime.public_snapshot['question_reveal_ms_per_character'] = max(
+                    1,
+                    int(question_reveal_ms_per_character),
+                )
         if (
             action_type == 'reveal_question_content'
             and not idempotent
@@ -1336,6 +1373,10 @@ def finish_question_flow(
         snapshot.pop('question', None)
         snapshot.pop('answer_options', None)
         snapshot.pop('answer_duration_seconds', None)
+        snapshot.pop('question_presentation_duration_ms', None)
+        snapshot.pop('question_reveal_ms_per_character', None)
+        snapshot.pop('prepared_question_id', None)
+        snapshot.pop('question_shell_prepared', None)
         snapshot['revealed'] = False
         runtime.public_snapshot = snapshot
         runtime.public_snapshot = _runtime_snapshot_payload(runtime)

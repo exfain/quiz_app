@@ -1458,7 +1458,7 @@ class WhoLyingMonitorViewTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertNotContains(response, 'id="startQuizBtn"')
-        self.assertContains(response, 'Send Set')
+        self.assertContains(response, 'SET/FRAGE WÄHLEN')
         self.assertContains(response, 'class="btn btn-secondary send-question-btn"', html=False)
 
     def test_prompt_phase_offers_only_set_start_without_person_timeline(self):

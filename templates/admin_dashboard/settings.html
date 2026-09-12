@@ -1,0 +1,47 @@
+{% extends "admin_dashboard/base.html" %}
+
+{% block title %}Optionen - QuizMaster{% endblock %}
+{% block page_title %}Optionen{% endblock %}
+{% block page_subtitle %}Globale Darstellungseinstellungen{% endblock %}
+
+{% block content %}
+<div class="card shadow-sm">
+    <div class="card-body">
+        {% if messages %}
+            {% for message in messages %}
+                <div class="alert alert-success" role="status">{{ message }}</div>
+            {% endfor %}
+        {% endif %}
+        <form method="post" class="vstack gap-3">
+            {% csrf_token %}
+            <div>
+                <label class="form-label fw-semibold" for="questionRevealSpeed">
+                    Fragen-Einblendgeschwindigkeit
+                </label>
+                <input
+                    class="form-range"
+                    id="questionRevealSpeed"
+                    name="question_reveal_ms_per_character"
+                    type="range"
+                    min="35"
+                    max="180"
+                    step="5"
+                    value="{{ dashboard_settings.question_reveal_ms_per_character }}"
+                    aria-describedby="questionRevealSpeedHelp questionRevealSpeedValue"
+                    oninput="document.getElementById('questionRevealSpeedValue').textContent = this.value + ' ms pro Zeichen'"
+                >
+                <div class="d-flex justify-content-between gap-3">
+                    <small id="questionRevealSpeedHelp" class="text-muted">Schnell</small>
+                    <output id="questionRevealSpeedValue" for="questionRevealSpeed">
+                        {{ dashboard_settings.question_reveal_ms_per_character }} ms pro Zeichen
+                    </output>
+                    <small class="text-muted">Langsam</small>
+                </div>
+            </div>
+            <div>
+                <button class="btn btn-primary" type="submit">SPEICHERN</button>
+            </div>
+        </form>
+    </div>
+</div>
+{% endblock %}

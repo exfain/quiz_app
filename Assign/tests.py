@@ -29,6 +29,7 @@ from .runtime import (
     assign_reveal_ready_at,
     current_set_runtime,
     evaluate_and_advance,
+    round_status,
     start_set_runtime,
     store_round_selection,
 )
@@ -208,6 +209,7 @@ class CheckRoundAnswerTest(TransactionTestCase):
         self.assertEqual(state['current_question_id'], self.question.id)
         self.assertEqual(state['current_round_id'], 0)
         self.assertEqual(state['ends_at'], runtime.round_ends_at.isoformat())
+        self.assertFalse(any(payload['type'] == 'quiz_started' for payload in payloads))
         self.assertFalse(any(payload['type'] == 'question_started' for payload in payloads))
 
     def test_rejoin_completed_question_does_not_send_question_started(self):
@@ -687,6 +689,14 @@ class CheckRoundAnswerTest(TransactionTestCase):
         self.assertEqual(stored.left_item_index, chosen_left_index)
         self.assertEqual(stored.user_match, {'3': chosen_right_pos})
         runtime.refresh_from_db()
+        self.assertEqual(runtime.current_round_index, 0)
+        self.assertEqual(runtime.solved_matches, {})
+
+        async_to_sync(self.consumer.handle_admin_next_round)({
+            'expected_round': 0,
+            'expected_set': runtime.set_number,
+        })
+        runtime.refresh_from_db()
         self.assertEqual(runtime.solved_matches, {'3': 3})
         self.participant.refresh_from_db()
         self.assertIsNone(self.participant.eliminated_set_number)
@@ -714,6 +724,14 @@ class CheckRoundAnswerTest(TransactionTestCase):
         )
         self.assertEqual(stored.left_item_index, paris_left_index)
         self.assertEqual(stored.user_match, {'2': france_shuffled_pos})
+        runtime.refresh_from_db()
+        self.assertEqual(runtime.current_round_index, 0)
+        self.assertEqual(runtime.solved_matches, {})
+
+        async_to_sync(self.consumer.handle_admin_next_round)({
+            'expected_round': 0,
+            'expected_set': runtime.set_number,
+        })
         runtime.refresh_from_db()
         self.assertEqual(runtime.solved_matches, {'2': 1})
         self.participant.refresh_from_db()
@@ -1516,6 +1534,28 @@ class AssignManualQuestionPhaseTests(TransactionTestCase):
             )
         self.assertTrue(accepted.accepted)
 
+    def test_first_send_action_creates_and_broadcasts_the_set_once(self):
+        action = self.phase_action(
+            self.runtime_snapshot,
+            action_type='admin_send_question',
+        )
+
+        async_to_sync(self.consumer.handle_admin_send_question)(action)
+        async_to_sync(self.consumer.handle_admin_send_question)(action)
+
+        session = AssignSession.objects.get(quiz=self.quiz)
+        runtimes = AssignSetRuntime.objects.filter(
+            quiz=self.quiz,
+            question=self.question,
+            hub_session_code=self.participant.hub_session_code,
+        )
+        event_types = [event['type'] for _, event in self.consumer.channel_layer.sent]
+        self.assertEqual(session.current_question_number, 1)
+        self.assertEqual(session.total_questions_sent, 1)
+        self.assertEqual(runtimes.count(), 1)
+        self.assertEqual(event_types.count('question_started'), 1)
+        self.assertFalse(any(payload['type'] == 'action_rejected' for payload in self.sent_payloads))
+
     def test_duplicate_reveal_does_not_extend_deadline(self):
         presented_at = timezone.now()
         prompt = self.send_first_round(presented_at)
@@ -1657,6 +1697,77 @@ class AssignManualQuestionPhaseTests(TransactionTestCase):
         )
         self.assertEqual(runtime.solved_matches, {'0': 0})
 
+    def test_participant_round_log_never_advances_without_host_action(self):
+        second_participant = AssignParticipant.objects.create(
+            quiz=self.quiz,
+            name='Bea',
+            hub_session_code=self.participant.hub_session_code,
+        )
+        presented_at = timezone.now()
+        prompt = self.send_first_round(presented_at)
+        visible_at = presented_at + timezone.timedelta(
+            milliseconds=QUESTION_PRESENTATION_DELAY_MS
+        )
+        self.reveal_round(prompt, visible_at)
+        runtime = current_set_runtime(
+            self.quiz.room_code,
+            self.participant.hub_session_code,
+        )
+        opened_at = assign_reveal_ready_at(runtime, visible_at)
+        randomized = self.question.get_randomized_items(room_code=self.quiz.room_code)
+        correct_position = next(
+            position
+            for position, original in randomized['position_to_original'].items()
+            if original == 0
+        )
+
+        def log_round(participant):
+            self.consumer._authoritative_participant = participant.name
+            with patch('Assign.runtime.timezone.now', return_value=opened_at):
+                async_to_sync(self.consumer.handle_participant_log_round)({
+                    'question_id': self.question.id,
+                    'round_index': 0,
+                    'left_item_index': 0,
+                    'user_match': {'0': correct_position},
+                })
+
+        log_round(self.participant)
+        runtime.refresh_from_db()
+        self.assertEqual(runtime.current_round_index, 0)
+        self.assertEqual(runtime.evaluated_rounds, [])
+
+        log_round(second_participant)
+        runtime.refresh_from_db()
+        self.assertEqual(runtime.current_round_index, 0)
+        self.assertEqual(runtime.evaluated_rounds, [])
+        self.assertFalse(any(
+            event['type'] == 'round_advanced'
+            for _, event in self.consumer.channel_layer.sent
+        ))
+        statuses = round_status(
+            self.quiz.room_code,
+            self.participant.hub_session_code,
+            0,
+        )
+        self.assertEqual(len(statuses), 2)
+        self.assertTrue(all(status['logged'] for status in statuses))
+
+        log_round(second_participant)
+        runtime.refresh_from_db()
+        self.assertEqual(runtime.current_round_index, 0)
+
+        async_to_sync(self.consumer.handle_admin_next_round)({
+            'expected_round': 0,
+            'expected_set': runtime.set_number,
+        })
+        runtime.refresh_from_db()
+        self.assertEqual(runtime.current_round_index, 1)
+        self.assertEqual(runtime.evaluated_rounds, [0])
+        self.assertEqual(sum(
+            event['type'] == 'round_advanced'
+            for _, event in self.consumer.channel_layer.sent
+        ), 1)
+
     def test_three_internal_rounds_need_only_the_initial_reveal(self):
         snapshot = self.send_first_round(timezone.now())
 
@@ -1792,6 +1903,12 @@ class AssignManualQuestionPhaseTests(TransactionTestCase):
         )
         self.assertIn('ELEMENTE UND ZIELE ENTHÜLLEN', host_source)
         self.assertNotIn('RUNDE FREIGEBEN', host_source)
+        self.assertIn('this.pendingQuestionId = null;', host_source)
+        self.assertIn('this.sendSocketReady = false;', host_source)
+        self.assertIn('this.pendingQuestionId !== null) return;', host_source)
+        self.assertIn('this.websocket.readyState === WebSocket.OPEN', host_source)
+        self.assertIn('this.updateSendQuestionAvailability();', host_source)
+        self.assertIn('data-question-id="{{ question.id }}" disabled', host_source)
         self.assertEqual(ASSIGN_REVEAL_STAGGER_MS, 120)
         self.assertEqual(ASSIGN_REVEAL_ANIMATION_MS, 160)
 
@@ -2319,8 +2436,10 @@ class AssignReloadBrowserLiveFlowTests(_BrowserLiveServerTestCase):
             current_step_index=0,
             check_in_status=HubSession.CHECK_IN_COMPLETED,
             check_in_completed_at=timezone.now(),
-            locked_participant_count=1,
+            locked_participant_count=2,
         )
+        self.first_quiz.started_at = self.session.started_at
+        self.first_quiz.save(update_fields=['started_at', 'updated_at'])
         HubGameStep.objects.create(
             session=self.session,
             order=0,
@@ -2347,11 +2466,27 @@ class AssignReloadBrowserLiveFlowTests(_BrowserLiveServerTestCase):
             hub_session_code=self.session.code,
             is_active=True,
         )
+        second_hub_participant = HubParticipant.objects.create(
+            session=self.session,
+            nickname='Bob',
+            checked_in_at=timezone.now(),
+            scoring_eligible=True,
+        )
+        self.second_participant = AssignParticipant.objects.create(
+            quiz=self.first_quiz,
+            name='Bob',
+            hub_session_code=self.session.code,
+            is_active=True,
+        )
 
         self.host_context = self._browser.new_context()
         self.player_context = self._browser.new_context()
+        self.second_player_context = self._browser.new_context()
+        self.spectator_context = self._browser.new_context()
         install_browser_test_stubs(self.host_context)
         install_browser_test_stubs(self.player_context)
+        install_browser_test_stubs(self.second_player_context)
+        install_browser_test_stubs(self.spectator_context)
         rejoin_credential = json.dumps({
             'nickname': hub_participant.nickname,
             'token': issue_rejoin_token(hub_participant),
@@ -2362,23 +2497,49 @@ class AssignReloadBrowserLiveFlowTests(_BrowserLiveServerTestCase):
             f"{json.dumps(rejoin_credential)});"
             "localStorage.setItem('participant_interface_theme', 'vhs');"
         )
+        second_rejoin_credential = json.dumps({
+            'nickname': second_hub_participant.nickname,
+            'token': issue_rejoin_token(second_hub_participant),
+        })
+        self.second_player_context.add_init_script(
+            f"localStorage.setItem('hub_session_code', {json.dumps(self.session.code)});"
+            f"localStorage.setItem('hub_lobby_rejoin:{self.session.code}', "
+            f"{json.dumps(second_rejoin_credential)});"
+            "localStorage.setItem('participant_interface_theme', 'vhs');"
+        )
         self.host_page = self.host_context.new_page()
         self.player_page = self.player_context.new_page()
+        self.second_player_page = self.second_player_context.new_page()
+        self.spectator_page = self.spectator_context.new_page()
         self.browser_errors = []
-        self.websocket_urls = {'host': [], 'player': []}
+        self.websocket_urls = {'host': [], 'player': [], 'player_two': [], 'spectator': []}
         self.websocket_frames = {
             'host': {'sent': [], 'received': []},
             'player': {'sent': [], 'received': []},
+            'player_two': {'sent': [], 'received': []},
+            'spectator': {'sent': [], 'received': []},
         }
         self._instrument_page('host', self.host_page)
         self._instrument_page('player', self.player_page)
+        self._instrument_page('player_two', self.second_player_page)
+        self._instrument_page('spectator', self.spectator_page)
         self._admin_login()
 
     def tearDown(self):
-        for page in (getattr(self, 'host_page', None), getattr(self, 'player_page', None)):
+        for page in (
+            getattr(self, 'host_page', None),
+            getattr(self, 'player_page', None),
+            getattr(self, 'second_player_page', None),
+            getattr(self, 'spectator_page', None),
+        ):
             if page:
                 page.close()
-        for context in (getattr(self, 'host_context', None), getattr(self, 'player_context', None)):
+        for context in (
+            getattr(self, 'host_context', None),
+            getattr(self, 'player_context', None),
+            getattr(self, 'second_player_context', None),
+            getattr(self, 'spectator_context', None),
+        ):
             if context:
                 context.close()
 
@@ -2482,13 +2643,14 @@ class AssignReloadBrowserLiveFlowTests(_BrowserLiveServerTestCase):
                 return int(shuffled_position)
         self.fail(f'No shuffled target for question={question.id}, left={left_index}')
 
-    def _drag_and_log(self, question, left_index=0):
+    def _drag_and_log(self, question, left_index=0, page=None):
+        page = page or self.player_page
         target_index = self._correct_drop_target(question, left_index)
-        source = self.player_page.locator(f'.draggable-item[data-left-index="{left_index}"]')
-        target = self.player_page.locator(f'.drop-zone[data-right-index="{target_index}"]')
+        source = page.locator(f'.draggable-item[data-left-index="{left_index}"]')
+        target = page.locator(f'.drop-zone[data-right-index="{target_index}"]')
         source.drag_to(target)
-        self.player_page.wait_for_selector('#logRoundBtn:not(.d-none)', timeout=self.TIMEOUT)
-        self.player_page.click('#logRoundBtn')
+        page.wait_for_selector('#logRoundBtn:not(.d-none)', timeout=self.TIMEOUT)
+        page.click('#logRoundBtn')
 
     def _assert_vhs_workspace_layout(self):
         self.assertEqual(
@@ -2534,22 +2696,57 @@ class AssignReloadBrowserLiveFlowTests(_BrowserLiveServerTestCase):
         self.host_page.goto(self._monitor_url(self.first_quiz))
         self.host_page.wait_for_function('() => !!window.adminGameMonitor', timeout=self.TIMEOUT)
         self.player_page.goto(self._play_url(self.first_quiz))
+        self.second_player_page.goto(self._play_url(self.first_quiz, 'Bob'))
+        self.spectator_page.goto(
+            f'{self.live_server_url}'
+            f'{reverse("games_hub:spectate_session", args=[self.session.code])}'
+        )
         self.player_page.wait_for_selector('#questionState', state='attached', timeout=self.TIMEOUT)
+        self.second_player_page.wait_for_selector('#questionState', state='attached', timeout=self.TIMEOUT)
+        self.spectator_page.wait_for_selector(
+            '[data-spectator-game="assign"]',
+            timeout=self.LONG_TIMEOUT,
+        )
         self._wait_for_ws_url('host', f'/ws/assign/{self.first_quiz.room_code}/')
         self._wait_for_ws_url('player', f'/ws/assign/{self.first_quiz.room_code}/')
+        self._wait_for_ws_url('player_two', f'/ws/assign/{self.first_quiz.room_code}/')
         self._wait_for_ws_url('player', f'/ws/hub/{self.session.code}/')
 
-        self.host_page.click(
+        send_selector = (
             f'.send-question-btn[data-question-id="{self.completed_round_question.id}"]'
         )
+        self.host_page.click(send_selector)
+        self.host_page.click(send_selector)
         self._wait_for_frame('player', 'received', 'question_started')
+        send_actions = []
+        for raw_frame in self.websocket_frames['host']['sent']:
+            try:
+                payload = json.loads(raw_frame)
+            except (TypeError, json.JSONDecodeError):
+                continue
+            if payload.get('type') == 'admin_send_question':
+                send_actions.append(payload)
+        self.assertEqual(len(send_actions), 1)
+        self.assertTrue(send_actions[0].get('client_action_id'))
         self.player_page.wait_for_selector('#questionState:not(.d-none)', timeout=self.TIMEOUT)
         self.player_page.wait_for_selector('.draggable-item[draggable="true"]', timeout=self.TIMEOUT)
+        self.second_player_page.wait_for_selector(
+            '.draggable-item[draggable="true"]',
+            timeout=self.TIMEOUT,
+        )
         self._assert_vhs_workspace_layout()
         active_timer = int(self.player_page.locator('#playerTimeLeft').inner_text())
         self.assertGreater(active_timer, 0)
 
         self._drag_and_log(self.completed_round_question)
+        self._drag_and_log(self.completed_round_question, page=self.second_player_page)
+        self._wait_for_frame('player', 'received', 'round_logged')
+        self.player_page.wait_for_timeout(500)
+        self.assertNotIn(
+            'question_rounds_complete',
+            self._received_types_since('player', 0),
+        )
+        self.host_page.click('#endQuestionBtn')
         self._wait_for_frame('player', 'received', 'question_rounds_complete')
         self.first_quiz.session.refresh_from_db()
         self.assertFalse(self.first_quiz.session.is_question_active)
@@ -2624,20 +2821,42 @@ class AssignReloadBrowserLiveFlowTests(_BrowserLiveServerTestCase):
         self._wait_for_frame('player', 'received', 'question_ended', end_question_start)
 
         followup_start = len(self.websocket_frames['player']['received'])
-        self.host_page.click(f'.send-question-btn[data-question-id="{self.followup_question.id}"]')
+        send_selector = f'.send-question-btn[data-question-id="{self.followup_question.id}"]'
+        self.host_page.click(send_selector)
+        self.host_page.click(send_selector)
         self._wait_for_frame('player', 'received', 'question_started', followup_start)
         self.first_quiz.session.refresh_from_db()
         self.assertTrue(self.first_quiz.session.is_question_active)
         self.player_page.wait_for_selector('.draggable-item[draggable="true"]', timeout=self.TIMEOUT)
+        self.second_player_page.wait_for_selector(
+            '.draggable-item[draggable="true"]',
+            timeout=self.TIMEOUT,
+        )
         self._assert_vhs_workspace_layout()
         self.assertGreater(int(self.player_page.locator('#playerTimeLeft').inner_text()), 0)
 
         next_round_start = len(self.websocket_frames['player']['received'])
         self._drag_and_log(self.followup_question, left_index=0)
+        self._drag_and_log(
+            self.followup_question,
+            left_index=0,
+            page=self.second_player_page,
+        )
+        self._wait_for_frame('player', 'received', 'round_logged', next_round_start)
+        self.player_page.wait_for_timeout(500)
+        self.assertNotIn(
+            'round_advanced',
+            self._received_types_since('player', next_round_start),
+        )
+        self.host_page.click('#nextRoundBtn')
         self._wait_for_frame('player', 'received', 'round_advanced', next_round_start)
         self.first_quiz.session.refresh_from_db()
         self.assertTrue(self.first_quiz.session.is_question_active)
         self.player_page.wait_for_selector(
+            '.draggable-item[data-left-index="1"][draggable="true"]',
+            timeout=self.TIMEOUT,
+        )
+        self.second_player_page.wait_for_selector(
             '.draggable-item[data-left-index="1"][draggable="true"]',
             timeout=self.TIMEOUT,
         )
@@ -2648,8 +2867,24 @@ class AssignReloadBrowserLiveFlowTests(_BrowserLiveServerTestCase):
 
         third_round_start = len(self.websocket_frames['player']['received'])
         self._drag_and_log(self.followup_question, left_index=1)
+        self._drag_and_log(
+            self.followup_question,
+            left_index=1,
+            page=self.second_player_page,
+        )
+        self._wait_for_frame('player', 'received', 'round_logged', third_round_start)
+        self.player_page.wait_for_timeout(500)
+        self.assertNotIn(
+            'round_advanced',
+            self._received_types_since('player', third_round_start),
+        )
+        self.host_page.click('#nextRoundBtn')
         self._wait_for_frame('player', 'received', 'round_advanced', third_round_start)
         self.player_page.wait_for_selector(
+            '.draggable-item[data-left-index="2"][draggable="true"]',
+            timeout=self.TIMEOUT,
+        )
+        self.second_player_page.wait_for_selector(
             '.draggable-item[data-left-index="2"][draggable="true"]',
             timeout=self.TIMEOUT,
         )
@@ -2659,6 +2894,18 @@ class AssignReloadBrowserLiveFlowTests(_BrowserLiveServerTestCase):
 
         completed_start = len(self.websocket_frames['player']['received'])
         self._drag_and_log(self.followup_question, left_index=2)
+        self._drag_and_log(
+            self.followup_question,
+            left_index=2,
+            page=self.second_player_page,
+        )
+        self._wait_for_frame('player', 'received', 'round_logged', completed_start)
+        self.player_page.wait_for_timeout(500)
+        self.assertNotIn(
+            'question_rounds_complete',
+            self._received_types_since('player', completed_start),
+        )
+        self.host_page.click('#endQuestionBtn')
         self._wait_for_frame(
             'player', 'received', 'question_rounds_complete', completed_start
         )
@@ -2676,7 +2923,8 @@ class AssignReloadBrowserLiveFlowTests(_BrowserLiveServerTestCase):
         recall_frame_start = len(self.websocket_frames['player']['received'])
         self.host_page.click('#recallLobbyBtn')
         self.host_page.wait_for_function(
-            "() => document.querySelector('#lobbyReturnGuardNames')?.textContent.includes('Alice')",
+            "() => document.querySelector('#lobbyReturnGuardNames')?.textContent.includes('Alice')"
+            " && document.querySelector('#lobbyReturnGuardNames')?.textContent.includes('Bob')",
             timeout=self.TIMEOUT,
         )
         recall_primary = self.host_page.locator('#lobbyReturnGuardPrimaryBtn')
@@ -2687,12 +2935,24 @@ class AssignReloadBrowserLiveFlowTests(_BrowserLiveServerTestCase):
         recall_primary.dispatch_event('click')
         self._wait_for_frame('player', 'received', 'players_recalled_to_lobby', recall_frame_start)
         self.player_page.wait_for_url(f'**/hub/lobby/{self.session.code}/**', timeout=self.LONG_TIMEOUT)
+        self.second_player_page.wait_for_url(
+            f'**/hub/lobby/{self.session.code}/**',
+            timeout=self.LONG_TIMEOUT,
+        )
 
         self.host_page.goto(self._monitor_url(self.second_quiz))
         self.host_page.wait_for_selector('#startQuizBtn:not([disabled])', timeout=self.TIMEOUT)
         self.host_page.click('#startQuizBtn')
         self.player_page.wait_for_url(
             f'**/assign/play/{self.second_quiz.room_code}/Alice/**',
+            timeout=self.LONG_TIMEOUT,
+        )
+        self.second_player_page.wait_for_url(
+            f'**/assign/play/{self.second_quiz.room_code}/Bob/**',
+            timeout=self.LONG_TIMEOUT,
+        )
+        self.spectator_page.wait_for_selector(
+            '[data-spectator-game="assign"]',
             timeout=self.LONG_TIMEOUT,
         )
         self.player_page.reload()

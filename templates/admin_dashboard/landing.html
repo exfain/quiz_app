@@ -35,8 +35,8 @@
             <div class="landing-icon">
                 <i data-lucide="settings"></i>
             </div>
-            <div class="landing-label">Options</div>
-            <div class="landing-desc">Coming soon</div>
+            <a href="{% url 'admin_dashboard:settings' %}" class="landing-label">Options</a>
+            <div class="landing-desc">Presentation settings</div>
             <a href="{% url 'admin_dashboard:logout' %}" class="landing-logout-btn">
                 <i data-lucide="log-out" style="width:14px;height:14px;"></i>
                 Logout

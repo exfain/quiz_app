@@ -21,3 +21,8 @@ def multiple_choice_answering_starts_at(revealed_at, option_count):
         + QUIZ_ANSWER_REVEAL_PAUSE_MS
     )
     return revealed_at + timedelta(milliseconds=delay_ms)
+
+
+def question_typewriter_duration_ms(text, milliseconds_per_character):
+    """Return the deterministic Unicode code-point reveal duration."""
+    return len(str(text or '')) * max(1, int(milliseconds_per_character or 1))

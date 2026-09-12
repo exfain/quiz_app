@@ -156,6 +156,7 @@ class ClueRushQuestionRevisionBrowserTests(_BaseLiveServerTestCase):
             page.locator('.send-question-btn').first.get_attribute('data-question-id')
         )
         page.locator('.send-question-btn').first.click()
+        page.locator('.send-question-btn').first.click()
         page.wait_for_selector('#activeQuestion', timeout=self.TIMEOUT)
         self._wait_for_host_socket(page)
         page.wait_for_selector('#startCluesBtn:not([disabled])', timeout=self.TIMEOUT)
@@ -235,6 +236,7 @@ class ClueRushQuestionRevisionBrowserTests(_BaseLiveServerTestCase):
                 )
             )
             host_page.locator('.send-question-btn').nth(1).click()
+            host_page.locator('.send-question-btn').nth(1).click()
             host_page.wait_for_selector('#activeQuestion', timeout=self.TIMEOUT)
 
             game.refresh_from_db()
@@ -266,3 +268,140 @@ class ClueRushQuestionRevisionBrowserTests(_BaseLiveServerTestCase):
 
     def test_reactivated_stale_game_resets_runtime_and_sends_two_questions(self):
         self._run_session(4, stale_inactive=True)
+
+    def test_mobile_hint_layout_stays_mounted_after_answer_submit(self):
+        game, session, questions, participants = self._create_run(10)
+        participants.append(ClueRushParticipant.objects.create(
+            quiz=game,
+            name='Linus',
+            hub_session_code=session.code,
+        ))
+        for question in questions:
+            first_clue = question.clues.get()
+            first_clue.duration = 4
+            first_clue.save(update_fields=['duration'])
+            Clue.objects.create(
+                clue_question=question,
+                order=2,
+                clue_text=f'{first_clue.clue_text} follow-up',
+                duration=20,
+            )
+
+        host_context = self._browser.new_context()
+        player_contexts = [
+            self._browser.new_context(viewport={'width': width, 'height': 800})
+            for width in (360, 390, 430)
+        ]
+        install_browser_test_stubs(host_context)
+        for context in player_contexts:
+            install_browser_test_stubs(context)
+        host_page = host_context.new_page()
+        player_pages = [context.new_page() for context in player_contexts]
+        try:
+            self._login_host(host_page)
+            host_page.goto(
+                f"{self.live_server_url}"
+                f"{reverse('admin_dashboard:clue_rush_monitor', args=[game.room_code])}"
+                f"?hub_session={session.code}"
+            )
+            self._wait_for_host_socket(host_page)
+            for page, participant in zip(player_pages, participants):
+                page.goto(
+                    f"{self.live_server_url}"
+                    f"{reverse('clue_rush:play', args=[game.room_code, participant.name])}"
+                    f"?hub_session={session.code}"
+                )
+
+            host_page.locator('.send-question-btn').first.click()
+            host_page.locator('.send-question-btn').first.click()
+            host_page.wait_for_selector('#startCluesBtn:not([disabled])', timeout=self.TIMEOUT)
+            host_page.click('#startCluesBtn')
+
+            for width, player_page in zip((360, 390, 430), player_pages):
+                with self.subTest(width=width):
+                    player_page.wait_for_selector(
+                        '#playerCluesList .clue-rush-clue',
+                        timeout=self.TIMEOUT,
+                    )
+                    player_page.wait_for_selector(
+                        '#shortAnswerInput:not([disabled])',
+                        timeout=self.TIMEOUT,
+                    )
+
+                    before = player_page.evaluate(
+                        """() => {
+                            const list = document.getElementById('playerCluesList');
+                            const clue = list.querySelector('.clue-rush-clue');
+                            window.__clueRushHintList = list;
+                            const rect = clue.getBoundingClientRect();
+                            return {
+                                text: clue.textContent.trim(),
+                                x: rect.x,
+                                y: rect.y + window.scrollY,
+                                width: rect.width,
+                                height: rect.height,
+                            };
+                        }"""
+                    )
+                    submit_dispatched = player_page.evaluate(
+                        """() => {
+                            const input = document.getElementById('shortAnswerInput');
+                            const button = document.getElementById('submitAnswerBtn');
+                            input.value = 'Brazil';
+                            input.dispatchEvent(new Event('input', {bubbles: true}));
+                            if (button.disabled) return false;
+                            button.click();
+                            return true;
+                        }"""
+                    )
+                    self.assertTrue(submit_dispatched)
+                    player_page.wait_for_selector(
+                        '#clueRushSubmittedAnswer:not(.d-none)',
+                        timeout=self.TIMEOUT,
+                    )
+
+                    after = player_page.evaluate(
+                        """() => {
+                            const list = document.getElementById('playerCluesList');
+                            const clue = list.querySelector('.clue-rush-clue');
+                            const rect = clue.getBoundingClientRect();
+                            return {
+                                sameListNode: window.__clueRushHintList === list,
+                                questionVisible: !document.getElementById('questionState').classList.contains('d-none'),
+                                text: clue.textContent.trim(),
+                                x: rect.x,
+                                y: rect.y + window.scrollY,
+                                width: rect.width,
+                                height: rect.height,
+                            };
+                        }"""
+                    )
+
+                    self.assertTrue(after['sameListNode'])
+                    self.assertTrue(after['questionVisible'])
+                    self.assertEqual(after['text'], before['text'])
+                    for key in ('x', 'y', 'width', 'height'):
+                        self.assertAlmostEqual(
+                            after[key],
+                            before[key],
+                            delta=1.0,
+                            msg=f'{width}px {key}: {before} -> {after}',
+                        )
+
+                    if width == 360:
+                        player_page.wait_for_function(
+                            "() => document.querySelectorAll('#playerCluesList .clue-rush-clue').length === 2",
+                            timeout=self.TIMEOUT,
+                        )
+
+            self.assertEqual(
+                player_pages[0].locator('#playerCluesList .clue-rush-clue').count(),
+                2,
+            )
+        finally:
+            host_page.close()
+            for player_page in player_pages:
+                player_page.close()
+            host_context.close()
+            for player_context in player_contexts:
+                player_context.close()

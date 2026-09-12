@@ -103,13 +103,13 @@
                 <div class="card-body">
                     {% if not quiz.current_question %}
                         <!-- Question Selection -->
-                        <div id="questionSelection">
+                        <div id="questionSelection" data-host-question-selection>
                             <h6 class="mb-3">Select Next Question</h6>
                             <div class="question-list" id="availableQuestions">
                                 {% for question in available_questions %}
-                                <div class="question-item" data-question-id="{{ question.id }}">
+                                <div class="question-item" data-question-id="{{ question.id }}" data-host-question-item data-host-question-text="{{ question.question_text|escape }}">
                                     <div class="question-content">
-                                        <div class="question-text">{{ question.question_text|truncatechars:120 }}</div>
+                                        <div class="question-text" data-host-question-text-target>{{ question.question_text|truncatechars:120 }}</div>
                                         <div class="question-preview">
                                             <div class="items-preview">
                                                 <div class="left-preview">
@@ -141,9 +141,9 @@
                                             <small class="text-muted d-block mb-1">Zeit in Sek.</small>
                                             <input type="number" class="form-control form-control-sm question-time-input" placeholder="Time (s)" min="5" step="1" style="max-width: 120px;" value="{{ question.time_limit }}">
                                         </div>
-                                        <button type="button" class="btn btn-secondary send-question-btn" data-question-id="{{ question.id }}" {% if quiz.status != 'active' %}disabled title="Start the quiz to send questions"{% endif %}>
-                                            <i data-lucide="send"></i>
-                                            Send Question
+                                        <button type="button" class="btn btn-secondary send-question-btn" data-question-id="{{ question.id }}" data-host-question-select data-host-select-label="AUFGABE WÄHLEN" data-host-send-label="AUFGABE SENDEN" data-host-selection-noun="Aufgabe" disabled{% if quiz.status != 'active' %} title="Start the quiz to send questions"{% endif %}>
+                                            <i data-lucide="mouse-pointer-click"></i>
+                                            AUFGABE WÄHLEN
                                         </button>
                                     </div>
                                 </div>
@@ -905,6 +905,8 @@ document.addEventListener('DOMContentLoaded', function() {
             this.isLastRound = this.totalRoundsCurrentQ > 0 && this.currentRoundIndex >= this.totalRoundsCurrentQ - 1;
             this.currentPhaseLabel = 'Warte auf Antworten';
             this.pendingPhaseAction = null;
+            this.pendingQuestionId = null;
+            this.sendSocketReady = false;
             this.phaseAvailabilityTimer = null;
             this.stateRevision = Number('{{ question_runtime.state_revision|default:"-1" }}');
             this.gameId = '{{ question_runtime.game_id|default:""|escapejs }}';
@@ -950,7 +952,6 @@ document.addEventListener('DOMContentLoaded', function() {
             });
         }
         updateSendButtonAsSent(btn) {
-            btn.disabled = false;
             btn.classList.remove('loading');
             btn.innerHTML = '<i data-lucide="send"></i> Send Question';
             btn.removeAttribute('title');
@@ -965,18 +966,26 @@ document.addEventListener('DOMContentLoaded', function() {
             }
             try { lucide.createIcons(); } catch(_) {}
             this.initializeLiveResponseState();
+            this.updateSendQuestionAvailability();
+        }
+
+        updateSendQuestionAvailability() {
+            const enabled = this.isActive && this.sendSocketReady && this.pendingQuestionId === null;
+            document.querySelectorAll('.send-question-btn').forEach(btn => {
+                btn.disabled = !enabled;
+            });
         }
         
         // Reset all persisted and UI states for sent questions
         resetSentStates() {
             try { localStorage.removeItem(this.getStorageKey()); } catch(_) {}
             document.querySelectorAll('.send-question-btn').forEach(btn => {
-                btn.disabled = false;
                 btn.classList.remove('loading');
                 btn.innerHTML = '<i data-lucide="send"></i> Send Question';
                 btn.removeAttribute('title');
             });
             try { lucide.createIcons(); } catch(_) {}
+            this.updateSendQuestionAvailability();
         }
         
         init() {
@@ -984,6 +993,7 @@ document.addEventListener('DOMContentLoaded', function() {
             this.bindEvents();
             this.startQuizTimer();
             this.applySentStates();
+            this.updateSendQuestionAvailability();
             this.initializeLiveResponseState();
             this.updateMonitorPhase();
             this.scheduleAssignPhaseAvailability();
@@ -997,6 +1007,8 @@ document.addEventListener('DOMContentLoaded', function() {
             
             this.websocket.onopen = () => {
                 console.log('WebSocket connected');
+                this.sendSocketReady = true;
+                this.updateSendQuestionAvailability();
                 this.updateConnectionStatus(true);
             };
             
@@ -1007,6 +1019,9 @@ document.addEventListener('DOMContentLoaded', function() {
             
             this.websocket.onclose = () => {
                 console.log('WebSocket disconnected');
+                this.sendSocketReady = false;
+                this.pendingQuestionId = null;
+                this.updateSendQuestionAvailability();
                 this.updateConnectionStatus(false);
                 // Attempt to reconnect after 3 seconds
                 setTimeout(() => this.connectWebSocket(), 3000);
@@ -1060,6 +1075,7 @@ document.addEventListener('DOMContentLoaded', function() {
                     break;
                     
                 case 'question_started':
+                    this.pendingQuestionId = null;
                     window.unitTutorialNotice?.setFromPayload(data);
                     this.resetLiveResponseStateForQuestion();
                     console.log('Question started');
@@ -1080,6 +1096,7 @@ document.addEventListener('DOMContentLoaded', function() {
                     break;
 
                 case 'action_rejected':
+                    this.pendingQuestionId = null;
                     this.pendingPhaseAction = null;
                     location.reload();
                     break;
@@ -1378,7 +1395,10 @@ document.addEventListener('DOMContentLoaded', function() {
         }
         
         sendQuestion(questionId) {
+            if (this.pendingQuestionId !== null) return;
             if (this.websocket && this.websocket.readyState === WebSocket.OPEN) {
+                this.pendingQuestionId = String(questionId);
+                this.updateSendQuestionAvailability();
                 const btn = document.querySelector(`[data-question-id="${questionId}"]`);
                 if (btn) btn.classList.add('loading');
 
@@ -1402,7 +1422,13 @@ document.addEventListener('DOMContentLoaded', function() {
                     payload.custom_time_limit = customTime;
                 }
 
-                this.websocket.send(JSON.stringify(payload));
+                try {
+                    this.websocket.send(JSON.stringify(payload));
+                } catch (error) {
+                    this.pendingQuestionId = null;
+                    this.updateSendQuestionAvailability();
+                    throw error;
+                }
             }
         }
 

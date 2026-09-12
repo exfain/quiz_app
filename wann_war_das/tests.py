@@ -112,7 +112,7 @@ class WannWarDasStartFlowTests(TransactionTestCase):
         self.assertFalse(participant.is_active)
         self.assertContains(response, 'Spiel starten')
         self.assertContains(response, 'FRAGE SENDEN')
-        self.assertContains(response, 'FRAGE FREIGEBEN')
+        self.assertContains(response, 'ANTWORT FREIGEBEN')
         self.assertNotContains(response, 'ANTWORTBEREICH ANZEIGEN')
 
     def test_player_route_before_start_stays_in_waiting_state_without_blocking_start(self):

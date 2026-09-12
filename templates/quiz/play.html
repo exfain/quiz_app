@@ -101,7 +101,7 @@
                         </div>
 
                         <!-- Question State -->
-                        <div id="questionState" class="game-state {% if not quiz.current_question %}d-none{% endif %}">
+                        <div id="questionState" class="game-state {% if not quiz.current_question and not question_runtime.question_shell_prepared %}d-none{% endif %}">
                             <div class="question-card">
                                 <!-- Question Header -->
                                 <div class="question-header">
@@ -117,13 +117,9 @@
 
                                 <!-- Question Content -->
                                 <div class="question-content quick-quiz-layout">
-                                    <div class="question-text quick-quiz-question{% if question_runtime.question_phase == 'prompt_visible' %} is-presentation-pending{% endif %}" id="questionText"{% if question_runtime.question_phase == 'prompt_visible' %} aria-hidden="true"{% endif %}>
-                                        {% if quiz.current_question %}
-                                            {{ quiz.current_question.question_text }}
-                                        {% endif %}
-                                    </div>
+                                    <div class="question-text quick-quiz-question" id="questionText" aria-live="polite">{% if quiz.current_question and question_runtime.question_phase != 'prompt_visible' %}{{ quiz.current_question.question_text }}{% endif %}</div>
 
-                                    <div class="quick-quiz-response-area{% if question_runtime.question_phase == 'prompt_visible' %} d-none{% endif %}" id="quickQuizResponseArea"{% if question_runtime.question_phase == 'prompt_visible' %} hidden aria-hidden="true"{% endif %}>
+                                    <div class="quick-quiz-response-area{% if question_runtime.question_phase == 'prompt_visible' or question_runtime.question_shell_prepared %} d-none{% endif %}" id="quickQuizResponseArea"{% if question_runtime.question_phase == 'prompt_visible' or question_runtime.question_shell_prepared %} hidden aria-hidden="true"{% endif %}>
                                         <!-- Answer Options -->
                                         <div class="answer-options quick-quiz-answer-list" id="answerOptions">
                                             <!-- Options will be dynamically populated -->
@@ -816,26 +812,43 @@
             opacity: 0;
             visibility: hidden;
             transform: translateY(12px);
-            transition: opacity 220ms ease, transform 220ms ease;
         }
 
         .quick-quiz-answer-list .quick-quiz-phase-item.is-content-visible {
-            opacity: 1;
             visibility: visible;
-            transform: translateY(0);
+            animation: quick-quiz-answer-reveal var(--quick-quiz-answer-reveal-duration, 220ms) ease both;
+            animation-delay: calc(-1 * var(--quick-quiz-answer-reveal-elapsed, 0ms));
+        }
+
+        @keyframes quick-quiz-answer-reveal {
+            from {
+                opacity: 0;
+                transform: translateY(12px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
         }
 
         .quick-quiz-question {
             transition: opacity 180ms ease, transform 180ms ease;
+            white-space: pre-wrap;
         }
 
-        .quick-quiz-question.is-presentation-pending {
-            opacity: 0;
-            visibility: hidden;
-            transform: translateY(10px);
+        .quick-quiz-question .question-typewriter-cursor {
+            display: inline-block;
+            margin-left: 0.08em;
+            opacity: 0.8;
+            font: inherit;
+            line-height: inherit;
         }
 
-        .quick-quiz-answer-list.is-phase-locked .answer-option.disabled {
+        .quick-quiz-question .question-typewriter-cursor::after {
+            content: '|';
+        }
+
+        .quick-quiz-answer-list.is-phase-locked .answer-option.disabled.is-content-visible {
             opacity: 1;
             filter: none;
         }
@@ -843,7 +856,11 @@
         @media (prefers-reduced-motion: reduce) {
             .quick-quiz-answer-list .quick-quiz-phase-item {
                 transform: none;
-                transition: opacity 100ms linear;
+            }
+
+            .quick-quiz-answer-list .quick-quiz-phase-item.is-content-visible {
+                animation-duration: 100ms;
+                animation-timing-function: linear;
             }
 
             .quick-quiz-question {
@@ -1227,6 +1244,7 @@
     {% include 'includes/_hub_return_to_lobby_player.html' %}
     {% include 'includes/_game_tutorial_overlay.html' %}
     {% include 'includes/_session_game_start_intro.html' %}
+<script src="{% static 'js/question-typewriter.js' %}"></script>
 <script>
         document.addEventListener('DOMContentLoaded', function() {
             lucide.createIcons();
@@ -1259,6 +1277,7 @@
                     this.recentlyEndedQuestionId = null;
                     this.revealedQuestionId = null;
                     this.questionPhase = '{{ question_runtime.question_phase|default:""|escapejs }}';
+                    this.questionPrepared = {{ question_runtime.question_shell_prepared|yesno:"true,false" }};
                     
                     this.init();
                 }
@@ -1320,6 +1339,13 @@
                             this.onQuizStarted(data);
                             break;
 
+                        case 'question_prepared':
+                            this.onQuestionPrepared(data);
+                            break;
+
+                        case 'question_preparation_cleared':
+                            break;
+
                         case 'tutorial_start':
                             window.gameTutorial?.showFromPayload(data);
                             break;
@@ -1344,6 +1370,8 @@
                                     question_phase: data.question_phase || data.question.question_phase || null,
                                     question_presented_at: data.question_presented_at || data.question.question_presented_at || null,
                                     question_visible_at: data.question_visible_at || data.question.question_visible_at || null,
+                                    question_presentation_duration_ms: data.question_presentation_duration_ms || data.question.question_presentation_duration_ms || null,
+                                    question_reveal_ms_per_character: data.question_reveal_ms_per_character || data.question.question_reveal_ms_per_character || null,
                                     content_revealed_at: data.content_revealed_at || data.question.content_revealed_at || null,
                                     answering_started_at: data.answering_started_at || data.question.answering_started_at || null,
                                     answering_deadline_at: data.answering_deadline_at || data.question.answering_deadline_at || null,
@@ -1554,10 +1582,49 @@
                     if (this.currentQuestion || this.revealedQuestionId !== null) {
                         return;
                     }
+                    if (this.questionPrepared) {
+                        this.showState('questionState');
+                        return;
+                    }
                     this.showState('waitingQuizState');
                 }
 
+                onQuestionPrepared(data = {}) {
+                    this.questionPrepared = true;
+                    this.currentQuestion = null;
+                    this.questionPhase = '';
+                    this.hasAnswered = false;
+                    this.submissionPending = false;
+                    this.answerSubmissionConfirmed = false;
+                    this.recentlyEndedQuestionId = null;
+                    this.revealedQuestionId = null;
+                    this.clearAnswerRevealTimers();
+                    this.clearQuestionPresentationTimer();
+                    clearInterval(this.questionTimer);
+                    this.questionTimerGeneration += 1;
+                    this.setCurrentQuestion(data.question_id || null);
+                    const questionText = document.getElementById('questionText');
+                    const options = document.getElementById('answerOptions');
+                    const responseArea = document.getElementById('quickQuizResponseArea');
+                    const timerWrapper = document.getElementById('playerQuestionTimerWrapper');
+                    if (questionText) {
+                        questionText.textContent = '';
+                        questionText.classList.remove('is-presentation-pending');
+                        questionText.removeAttribute('aria-hidden');
+                    }
+                    if (options) options.innerHTML = '';
+                    if (responseArea) {
+                        responseArea.hidden = true;
+                        responseArea.classList.add('d-none');
+                        responseArea.setAttribute('aria-hidden', 'true');
+                    }
+                    timerWrapper?.classList.add('d-none');
+                    this.disableAnswerControls();
+                    this.showState('questionState');
+                }
+
                 onQuestionStarted(question, timeLimit) {
+                    this.questionPrepared = false;
                     const incomingTotal = Number(question?.total_questions);
                     if (Number.isInteger(incomingTotal) && incomingTotal > 0) {
                         this.totalQuestionCount = incomingTotal;
@@ -1629,7 +1696,11 @@
 
                 clearQuestionPresentationTimer() {
                     if (this.questionPresentationTimer !== null) {
-                        clearTimeout(this.questionPresentationTimer);
+                        if (typeof this.questionPresentationTimer === 'function') {
+                            this.questionPresentationTimer();
+                        } else {
+                            clearTimeout(this.questionPresentationTimer);
+                        }
                         this.questionPresentationTimer = null;
                     }
                 }
@@ -1667,12 +1738,9 @@
                 setQuestionPromptVisible(visible) {
                     const questionText = document.getElementById('questionText');
                     if (!questionText) return;
-                    questionText.classList.toggle('is-presentation-pending', !visible);
-                    if (visible) {
-                        questionText.removeAttribute('aria-hidden');
-                    } else {
-                        questionText.setAttribute('aria-hidden', 'true');
-                    }
+                    questionText.classList.remove('is-presentation-pending');
+                    questionText.removeAttribute('aria-hidden');
+                    if (!visible) questionText.textContent = '';
                 }
 
                 scheduleQuestionPresentation(question) {
@@ -1682,26 +1750,36 @@
                         questionInstanceKey
                         && this.visibleQuestionInstanceKey === questionInstanceKey
                     ) {
+                        document.getElementById('questionText').textContent = question.question_text || '';
                         this.setQuestionPromptVisible(true);
                         return;
                     }
-                    const remaining = this.remainingQuestionPresentationDelay(question);
-                    if (remaining <= 0) {
-                        this.visibleQuestionInstanceKey = questionInstanceKey;
-                        this.setQuestionPromptVisible(true);
-                        return;
-                    }
+                    const questionText = document.getElementById('questionText');
                     this.setQuestionPromptVisible(false);
-                    this.questionPresentationTimer = setTimeout(() => {
-                        this.questionPresentationTimer = null;
-                        if (
-                            this.questionPhase === 'prompt_visible'
-                            && this.getQuestionInstanceKey(this.currentQuestion) === questionInstanceKey
-                        ) {
-                            this.visibleQuestionInstanceKey = questionInstanceKey;
-                            this.setQuestionPromptVisible(true);
+                    this.questionPresentationTimer = window.QuestionTypewriter?.start(
+                        questionText,
+                        {
+                            text: question.question_text || '',
+                            presentedAt: question.question_presented_at,
+                            serverNow: question.server_now,
+                            receivedAt: question._server_received_monotonic,
+                            millisecondsPerCharacter: question.question_reveal_ms_per_character,
+                            stableFirstWord: true,
+                            onComplete: () => {
+                                this.questionPresentationTimer = null;
+                                if (
+                                    this.questionPhase === 'prompt_visible'
+                                    && this.getQuestionInstanceKey(this.currentQuestion) === questionInstanceKey
+                                ) {
+                                    this.visibleQuestionInstanceKey = questionInstanceKey;
+                                }
+                            },
                         }
-                    }, remaining);
+                    ) || null;
+                    if (!this.questionPresentationTimer) {
+                        questionText.textContent = question.question_text || '';
+                        this.visibleQuestionInstanceKey = questionInstanceKey;
+                    }
                 }
 
                 applyQuestionPhase(question, timeLimit, preserveExistingContent = false) {
@@ -1712,13 +1790,11 @@
                     const responseArea = document.getElementById('quickQuizResponseArea');
                     const timerWrapper = document.getElementById('playerQuestionTimerWrapper');
                     const optionsContainer = document.getElementById('answerOptions');
-                    if (phase === 'prompt_visible') {
-                        this.setQuestionPromptVisible(false);
-                    } else {
+                    if (phase !== 'prompt_visible') {
                         this.visibleQuestionInstanceKey = this.getQuestionInstanceKey(question);
+                        document.getElementById('questionText').textContent = question.question_text || '';
                         this.setQuestionPromptVisible(true);
                     }
-                    document.getElementById('questionText').textContent = question.question_text || '';
 
                     if (phase === 'prompt_visible') {
                         clearInterval(this.questionTimer);
@@ -1802,12 +1878,23 @@
                     const revealedAt = Date.parse(question.content_revealed_at || '');
                     const serverNow = this.estimatedQuestionServerNow(question);
                     const staggerMs = Math.max(0, Number(question.answer_reveal_stagger_ms) || 300);
+                    const animationMs = Math.max(0, Number(question.answer_reveal_animation_ms) || 220);
                     items.forEach((item, index) => {
-                        item.dataset.revealDelayMs = String(index * staggerMs);
+                        const revealOffset = index * staggerMs;
+                        item.dataset.revealDelayMs = String(revealOffset);
                         const elapsed = Number.isFinite(revealedAt) && Number.isFinite(serverNow)
                             ? serverNow - revealedAt
                             : 0;
-                        const delay = Math.max(0, (index * staggerMs) - elapsed);
+                        const optionElapsed = Math.max(0, elapsed - revealOffset);
+                        item.style.setProperty(
+                            '--quick-quiz-answer-reveal-duration',
+                            `${animationMs}ms`
+                        );
+                        item.style.setProperty(
+                            '--quick-quiz-answer-reveal-elapsed',
+                            `${Math.min(animationMs, optionElapsed)}ms`
+                        );
+                        const delay = Math.max(0, revealOffset - elapsed);
                         if (delay === 0) {
                             item.classList.add('is-content-visible');
                             return;
@@ -1922,6 +2009,8 @@
                         question_phase: '{{ question_runtime.question_phase|default:"answering_open"|escapejs }}',
                         question_presented_at: '{{ question_runtime.question_presented_at|default:""|escapejs }}',
                         question_visible_at: '{{ question_runtime.question_visible_at|default:""|escapejs }}',
+                        question_presentation_duration_ms: '{{ question_runtime.question_presentation_duration_ms|default:""|escapejs }}',
+                        question_reveal_ms_per_character: '{{ question_runtime.question_reveal_ms_per_character|default:""|escapejs }}',
                         content_revealed_at: '{{ question_runtime.content_revealed_at|default:""|escapejs }}',
                         _server_received_monotonic: performance.now()
                     };

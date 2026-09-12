@@ -767,11 +767,6 @@ class AssignConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
             'round_index': round_index,
         }))
         await self.broadcast_round_log_status_for_round(round_index)
-        if result.get('all_locked'):
-            await self.handle_admin_next_round({
-                'expected_round': round_index,
-                'expected_set': result.get('set_number'),
-            })
 
     async def handle_participant_submit_answer(self, data):
         """Speichert alle gesammelten Runden-Antworten als AssignAnswer in der DB."""
@@ -2253,11 +2248,6 @@ class AssignConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
             f"{status['participant_name']}::{status['participant_id']}"
             for status in statuses
         }
-
-    async def maybe_auto_advance_if_all_logged(self, round_index: int):
-        statuses = await self.get_round_status(round_index)
-        if statuses and all(status['logged'] for status in statuses):
-            await self.handle_admin_next_round({'expected_round': round_index})
 
     async def broadcast_round_log_status_for_round(self, round_index: int):
         statuses = await self.get_round_status(round_index)

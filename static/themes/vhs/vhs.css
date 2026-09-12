@@ -380,6 +380,37 @@ html[data-participant-theme="vhs"] body.estimation-play-page .vhs-theme-shell
 }
 
 html[data-participant-theme="vhs"] body.estimation-play-page .vhs-theme-shell
+  #questionState .question-text {
+  min-height: clamp(160px, 20vh, 200px);
+  opacity: 1;
+  transition: opacity 220ms ease;
+}
+
+html[data-participant-theme="vhs"] body.estimation-play-page .vhs-theme-shell
+  #questionState .question-text.is-presentation-pending {
+  opacity: 0;
+}
+
+html[data-participant-theme="vhs"] body.estimation-play-page .vhs-theme-shell
+  #questionState .vhs-question-kicker {
+  transform: translateY(0);
+  transition: transform 320ms cubic-bezier(0.22, 1, 0.36, 1);
+  will-change: transform;
+}
+
+html[data-participant-theme="vhs"] body.estimation-play-page .vhs-theme-shell
+  #questionState.is-question-prepared .vhs-question-kicker {
+  transform: translateY(16px);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html[data-participant-theme="vhs"] body.estimation-play-page .vhs-theme-shell
+    #questionState :is(.vhs-question-kicker, .question-text) {
+    transition-duration: 1ms;
+  }
+}
+
+html[data-participant-theme="vhs"] body.estimation-play-page .vhs-theme-shell
   #questionState .estimation-interaction-area .answer-interface,
 html[data-participant-theme="vhs"] body.estimation-play-page .vhs-theme-shell
   #questionState .estimation-interaction-area .answer-input-container {
@@ -925,6 +956,11 @@ html[data-participant-theme="vhs"] body.estimation-play-page .vhs-theme-shell
   color: var(--vhs-muted) !important;
   font-style: normal;
   overflow-wrap: anywhere;
+}
+
+html[data-participant-theme="vhs"] body.quiz-play-page .vhs-theme-shell
+  #questionState #questionText .vhs-question-body {
+  margin-top: 12px;
 }
 
 html[data-participant-theme="vhs"] body.quiz-play-page .vhs-theme-shell
@@ -8415,7 +8451,7 @@ html[data-participant-theme="vhs"] body.clue-rush-play-page .vhs-theme-shell
 }
 
 html[data-participant-theme="vhs"] body.clue-rush-play-page .vhs-theme-shell
-  :is(#playerCluesList, #playerCluesListSubmitted) {
+  #playerCluesList {
   display: grid;
   gap: var(--clue-card-gap);
   width: 100%;
@@ -8483,10 +8519,20 @@ html[data-participant-theme="vhs"] body.clue-rush-play-page .vhs-theme-shell
 }
 
 html[data-participant-theme="vhs"] body.clue-rush-play-page .vhs-theme-shell
-  #questionState #answerOptions {
+  #questionState #clueRushAnswerRegion {
   grid-row: 4;
   box-sizing: border-box;
   width: min(100%, var(--clue-answer-width));
+  min-width: 0;
+  min-height: 126px;
+  margin: 0;
+  position: relative;
+}
+
+html[data-participant-theme="vhs"] body.clue-rush-play-page .vhs-theme-shell
+  #questionState #answerOptions {
+  box-sizing: border-box;
+  width: 100%;
   min-width: 0;
   margin: 0;
 }
@@ -8524,11 +8570,31 @@ html[data-participant-theme="vhs"] body.clue-rush-play-page .vhs-theme-shell
     #submitAnswerBtn,
     .qa-theme-button-shell:has(> #submitAnswerBtn)
   ) {
-  grid-row: 5;
   box-sizing: border-box;
-  width: min(100%, var(--clue-answer-width));
+  width: 100%;
   min-width: 0;
   margin-top: 10px !important;
+}
+
+html[data-participant-theme="vhs"] body.clue-rush-play-page .vhs-theme-shell
+  #questionState .clue-rush-submitted-answer {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 126px;
+  padding: 16px;
+  border: 1px solid rgba(216, 216, 209, 0.42);
+  border-radius: 0;
+  background: rgba(40, 47, 44, 0.5);
+  color: var(--vhs-answer-text);
+  font-family: Georgia, "Times New Roman", serif;
+}
+
+html[data-participant-theme="vhs"] body.clue-rush-play-page .vhs-theme-shell
+  #questionState .clue-rush-submitted-answer strong {
+  color: var(--vhs-paper);
+  font-family: Arial, Helvetica, sans-serif;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
 }
 
 html[data-participant-theme="vhs"] body.clue-rush-play-page .vhs-theme-shell
@@ -8546,14 +8612,6 @@ html[data-participant-theme="vhs"] body.clue-rush-play-page .vhs-theme-shell
   opacity: 1;
   cursor: not-allowed;
   transform: none !important;
-}
-
-html[data-participant-theme="vhs"] body.clue-rush-play-page .vhs-theme-shell
-  #answerSubmittedState #submittedCluesContainer {
-  box-sizing: border-box;
-  width: min(100%, 680px);
-  min-width: 0;
-  margin-inline: auto;
 }
 
 html[data-participant-theme="vhs"] body.clue-rush-play-page
@@ -10248,8 +10306,6 @@ html[data-participant-theme="vhs"] body.wer-weiss-mehr-play-page .vhs-theme-shel
 html[data-participant-theme="vhs"] body.wer-weiss-mehr-play-page .vhs-theme-shell
   .wwm-submit-button {
   min-height: 50px;
-  background: var(--vhs-paper) !important;
-  color: var(--vhs-ink) !important;
 }
 
 html[data-participant-theme="vhs"] body.wer-weiss-mehr-play-page .vhs-theme-shell
@@ -10304,6 +10360,9 @@ html[data-participant-theme="vhs"] body.wer-weiss-mehr-play-page .vhs-theme-shel
 }
 
 html[data-participant-theme="vhs"] body.wer-weiss-mehr-play-page .vhs-theme-shell .timer-box {
+  position: absolute !important;
+  top: 24px;
+  right: 24px;
   border: 1px solid rgba(216, 216, 209, 0.5) !important;
   border-radius: 0 !important;
   background: rgba(40, 47, 44, 0.6) !important;

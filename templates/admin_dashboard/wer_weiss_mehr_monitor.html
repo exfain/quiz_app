@@ -48,7 +48,7 @@
                 </div>
                 <div class="card-body">
                     <div id="currentSet"></div>
-                    <div id="questionList"></div>
+                    <div id="questionList" data-host-question-selection></div>
                 </div>
             </div>
 
@@ -643,10 +643,10 @@ function renderQuestionArea(s) {
     if (!s.question) {
         current.innerHTML = `<div class="alert alert-secondary">Kein Set aktiv. Wähle ein Set aus der Liste.</div>`;
         list.innerHTML = (s.available_questions || []).map(q => `
-            <div class="border rounded-3 p-3 mb-2 d-flex justify-content-between align-items-center gap-3 ${q.is_tutorial_set ? 'border-warning bg-warning-subtle' : ''}">
+            <div class="border rounded-3 p-3 mb-2 d-flex justify-content-between align-items-center gap-3 ${q.is_tutorial_set ? 'border-warning bg-warning-subtle' : ''}" data-host-question-item data-host-question-text="${escapeHtml(q.question_text)}">
                 <div>
                     <div class="fw-bold">
-                        ${escapeHtml(q.question_text)}
+                        <span data-host-question-text-target>${escapeHtml(q.question_text)}</span>
                         ${q.is_tutorial_set ? '<span class="badge bg-warning text-dark ms-2">Tutorialset – keine Wertung</span>' : ''}
                         ${q.is_completed ? '<span class="badge bg-success ms-2">abgeschlossen</span>' : ''}
                     </div>
@@ -658,7 +658,7 @@ function renderQuestionArea(s) {
                 <div class="d-flex align-items-center gap-2">
                     <input type="number" class="form-control form-control-sm time-input" value="${q.round_time_limit}" min="5" style="width:90px" data-question-id="${q.id}" ${q.is_completed || q.is_start_disabled ? 'disabled' : ''}>
                     ${q.is_tutorial_set && !q.is_completed ? '<button class="btn btn-outline-secondary skip-tutorial-set-btn" id="skipTutorialSetBtn" type="button">Tutorialset überspringen</button>' : ''}
-                    <button class="btn ${q.is_tutorial_set ? 'btn-warning' : 'btn-primary'} start-set-btn" data-question-id="${q.id}" ${s.game_status !== 'active' || q.is_completed || q.is_start_disabled ? 'disabled' : ''}>${q.is_completed ? 'Beendet' : (q.is_tutorial_set ? 'Tutorialset starten' : 'Set starten')}</button>
+                    <button class="btn ${q.is_tutorial_set ? 'btn-warning' : 'btn-primary'} start-set-btn" data-question-id="${q.id}" data-host-question-select data-host-select-label="${q.is_tutorial_set ? 'TUTORIALSET WÄHLEN' : 'SET WÄHLEN'}" data-host-send-label="${q.is_tutorial_set ? 'TUTORIALSET SENDEN' : 'SET SENDEN'}" data-host-selection-noun="Set" ${s.game_status !== 'active' || q.is_completed || q.is_start_disabled ? 'disabled' : ''}>${q.is_completed ? 'Beendet' : (q.is_tutorial_set ? 'TUTORIALSET WÄHLEN' : 'SET WÄHLEN')}</button>
                 </div>
             </div>
         `).join('') || '<div class="text-muted">Keine Sets diesem Spiel zugeordnet.</div>';
@@ -679,7 +679,7 @@ function renderQuestionArea(s) {
             </div>
             <div class="${s.game_status === 'active' ? 'btn-group' : 'text-end'}">
                 ${s.game_status === 'active' ? `
-                ${s.question_phase === 'prompt_visible' ? '<button class="btn btn-success" id="openRoundBtn" disabled aria-disabled="true">FRAGE FREIGEBEN</button>' : ''}
+                ${s.question_phase === 'prompt_visible' ? '<button class="btn btn-success" id="openRoundBtn" disabled aria-disabled="true">ANTWORT FREIGEBEN</button>' : ''}
                 ${s.phase === 'round_active' ? '<button class="btn btn-warning" id="endRoundBtn">Runde beenden</button>' : ''}
                 ${s.phase === 'review' && s.can_start_next_round ? '<button class="btn btn-success" id="nextRoundBtn">Nächste Runde</button>' : ''}
                 ${s.phase === 'set_completed' ? '<button class="btn btn-primary" id="clearSetBtn">Zur Setauswahl</button>' : ''}

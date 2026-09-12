@@ -19,9 +19,9 @@
             </div>
 
             <div class="quiz-header-context">
-                <div class="quiz-context-item{% if not quiz.current_question %} d-none{% endif %}" id="questionProgress">
+                <div class="quiz-context-item{% if not host_active_question %} d-none{% endif %}" id="questionProgress">
                     <span>Frage</span>
-                    <strong><span id="currentQuestionNumber">{{ quiz_session.current_question_number }}</span> / <span id="totalQuestionCount">{{ available_questions|length }}</span></strong>
+                    <strong><span id="currentQuestionNumber">{% firstof prepared_question_number quiz_session.current_question_number %}</span> / <span id="totalQuestionCount">{{ available_questions|length }}</span></strong>
                 </div>
                 <div class="quiz-context-item question-timer{% if not question_runtime.answering_allowed %} d-none{% endif %}" id="questionTimerWrapper">
                     <span>Zeit verbleibend</span>
@@ -88,7 +88,7 @@
 
     {% include 'includes/_unit_tutorial_notice.html' %}
 
-    <div class="quiz-monitor-grid host-monitor-main">
+    <div class="quiz-monitor-grid host-monitor-main{% if not host_active_question %} d-none{% endif %}" id="questionDetailScreen">
         <main class="quiz-primary-column host-monitor-live-column">
             <section class="card question-panel host-monitor-current" aria-labelledby="questionPanelTitle">
                 <div class="card-header">
@@ -110,6 +110,27 @@
                                                 <span class="answer-option"><strong>{{ key }}</strong> {{ text }}</span>
                                             {% endfor %}
                                         {% elif quiz.current_question.question_type == 'true_false' %}
+                                            <span class="answer-option"><strong>True</strong></span>
+                                            <span class="answer-option"><strong>False</strong></span>
+                                        {% endif %}
+                                    </div>
+                                </div>
+                            </div>
+                        {% elif prepared_question %}
+                            <div id="preparedQuestion" data-question-id="{{ prepared_question.id }}">
+                                <div class="current-question-content">
+                                    <div class="current-question-number">Frage {{ prepared_question_number }}</div>
+                                    <div class="question-text">{{ prepared_question.question_text }}</div>
+                                    <div class="question-meta mt-2">
+                                        <span class="badge bg-secondary">{{ prepared_question.get_question_type_display }}</span>
+                                        <span class="badge bg-primary">{{ prepared_question.get_effective_max_points }} pts</span>
+                                    </div>
+                                    <div class="question-answers mt-2">
+                                        {% if prepared_question.question_type == 'multiple_choice' %}
+                                            {% for key, text in prepared_question.get_options %}
+                                                <span class="answer-option"><strong>{{ key }}</strong> {{ text }}</span>
+                                            {% endfor %}
+                                        {% elif prepared_question.question_type == 'true_false' %}
                                             <span class="answer-option"><strong>True</strong></span>
                                             <span class="answer-option"><strong>False</strong></span>
                                         {% endif %}
@@ -156,7 +177,11 @@
                     <div class="question-actions">
                         {% if quiz.current_question %}
                             {% if question_runtime.question_phase == 'prompt_visible' %}
+                                {% if quiz.current_question.get_effective_question_type == 'short_answer' %}
+                                <button type="button" class="btn btn-primary" id="openAnsweringBtn" data-question-id="{{ quiz.current_question.id }}" disabled aria-disabled="true">FRAGE FREIGEBEN</button>
+                                {% else %}
                                 <button type="button" class="btn btn-primary" id="revealQuestionContentBtn" data-question-id="{{ quiz.current_question.id }}" disabled aria-disabled="true">ANTWORTEN ANZEIGEN</button>
+                                {% endif %}
                             {% elif question_runtime.question_phase == 'content_visible' and quiz.current_question.question_type != 'multiple_choice' and quiz.current_question.question_type != 'true_false' %}
                                 <button type="button" class="btn btn-primary" id="openAnsweringBtn" data-question-id="{{ quiz.current_question.id }}">FRAGE FREIGEBEN</button>
                             {% else %}
@@ -168,6 +193,19 @@
                             <button class="btn btn-outline-secondary d-none" id="returnToQuestionOverviewBtn">
                                 <i data-lucide="arrow-left"></i>
                                 Back to Question Overview
+                            </button>
+                        {% elif prepared_question %}
+                            <div class="question-time-control mb-3">
+                                <label class="text-muted" for="preparedQuestionTime">Zeit in Sek.</label>
+                                <input id="preparedQuestionTime" type="number" class="form-control form-control-sm question-time-input" min="5" step="1" value="{{ prepared_question.time_limit }}">
+                            </div>
+                            <button type="button" class="btn btn-primary" id="sendPreparedQuestionBtn" data-question-id="{{ prepared_question.id }}">
+                                <i data-lucide="send"></i>
+                                FRAGE SENDEN
+                            </button>
+                            <button type="button" class="btn btn-outline-secondary" id="returnToQuestionOverviewBtn">
+                                <i data-lucide="arrow-left"></i>
+                                ZURUECK ZUR FRAGENUEBERSICHT
                             </button>
                         {% else %}
                             <p class="question-actions-empty mb-0">Aktionen fuer eine gesendete Frage erscheinen hier.</p>
@@ -240,7 +278,7 @@
         </aside>
     </div>
 
-    <section class="card quiz-question-list-card host-monitor-question-list" id="questionSelection" aria-labelledby="questionListTitle">
+    <section class="card quiz-question-list-card host-monitor-question-list{% if host_active_question %} d-none{% endif %}" id="questionSelection" aria-labelledby="questionListTitle">
         <div class="card-header d-flex justify-content-between align-items-center">
             <h2 class="card-title mb-0" id="questionListTitle">
                 <i data-lucide="list"></i>
@@ -251,13 +289,13 @@
                 Question Bank
             </button>
         </div>
-        <div class="card-body">
+        <div class="card-body" data-host-question-selection>
             <div class="question-list" id="availableQuestions">
                 {% for question in available_questions %}
-                <article class="question-item" data-question-id="{{ question.id }}">
+                <article class="question-item" data-question-id="{{ question.id }}" data-host-question-item data-host-question-text="{{ question.question_text|escape }}">
                     <div class="question-content">
                         <div class="question-index">Frage {{ forloop.counter }}</div>
-                        <div class="question-text">{{ question.question_text|truncatechars:120 }}</div>
+                        <div class="question-text" data-host-question-text-target>{{ question.question_text|truncatechars:120 }}</div>
                         {% if question.question_type == 'multiple_choice' %}
                         <div class="question-answers">
                             {% if question.option_a %}<span class="answer-option {% if question.correct_answer == 'A' %}answer-correct{% endif %}"><strong>A</strong> {{ question.option_a }}</span>{% endif %}
@@ -296,8 +334,8 @@
                             <input id="questionTime{{ question.id }}" type="number" class="form-control form-control-sm question-time-input" placeholder="Time (s)" min="5" step="1" value="{{ question.time_limit }}">
                         </div>
                         <button type="button" class="btn btn-secondary send-question-btn" data-question-id="{{ question.id }}" {% if quiz.status != 'active' %}disabled title="Start the quiz to send questions"{% endif %}>
-                            <i data-lucide="send"></i>
-                            FRAGE SENDEN
+                            <i data-lucide="mouse-pointer-click"></i>
+                            FRAGE WÄHLEN
                         </button>
                     </div>
                 </article>
@@ -1423,6 +1461,7 @@ document.addEventListener('DOMContentLoaded', function() {
             this.isActive = '{{ quiz.status }}' === 'active';
             this.liveResponseState = new Map();
             this.pendingQuestionId = null;
+            this.preparedQuestionId = '{{ prepared_question.id|default:""|escapejs }}';
             this.pendingPhaseAction = null;
             this.questionPresentationTimer = null;
             this.answeringStartTimer = null;
@@ -1483,7 +1522,7 @@ document.addEventListener('DOMContentLoaded', function() {
         updateSendButtonAsSent(btn) {
             btn.disabled = false;
             btn.classList.remove('loading');
-            btn.innerHTML = '<i data-lucide="send"></i> FRAGE SENDEN';
+            btn.innerHTML = '<i data-lucide="mouse-pointer-click"></i> FRAGE WÄHLEN';
             btn.removeAttribute('title');
             // Add "already sent" hint next to button if not already there
             const wrapper = btn.closest('.d-flex');
@@ -1504,7 +1543,7 @@ document.addEventListener('DOMContentLoaded', function() {
             document.querySelectorAll('.send-question-btn').forEach(btn => {
                 btn.disabled = false;
                 btn.classList.remove('loading');
-                btn.innerHTML = '<i data-lucide="send"></i> FRAGE SENDEN';
+                btn.innerHTML = '<i data-lucide="mouse-pointer-click"></i> FRAGE WÄHLEN';
                 btn.removeAttribute('title');
             });
             try { lucide.createIcons(); } catch(_) {}
@@ -1667,6 +1706,18 @@ document.addEventListener('DOMContentLoaded', function() {
                     this.pendingPhaseAction = null;
                     this.updateQuestionProgress(data, data.question || {});
                     this.renderActiveQuestion(data.question || {}, data.question_phase, data);
+                    break;
+
+                case 'question_prepared':
+                    this.clearHostError();
+                    this.preparedQuestionId = String(data.question_id || '');
+                    location.reload();
+                    break;
+
+                case 'question_preparation_cleared':
+                    this.clearHostError();
+                    this.preparedQuestionId = '';
+                    location.reload();
                     break;
 
                 case 'question_content_revealed':
@@ -1857,7 +1908,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 setTimeout(() => this._navigateToHub(), 800);
             });
             
-            // Send Question buttons
+            // Selecting a question persists a dedicated host detail screen.
             document.querySelectorAll('.send-question-btn').forEach(btn => {
                 btn.addEventListener('click', (e) => {
                     e.preventDefault();
@@ -1869,12 +1920,15 @@ document.addEventListener('DOMContentLoaded', function() {
                     }
                     // Ask for confirmation if question was already sent
                     if (this.isQuestionSent(questionId)) {
-                        if (!confirm('This question has already been sent. Do you want to send it again?')) {
+                        if (!confirm('This question has already been used. Do you want to select it again?')) {
                             return;
                         }
                     }
-                    this.sendQuestion(questionId);
+                    this.prepareQuestion(questionId, button);
                 });
+            });
+            document.getElementById('sendPreparedQuestionBtn')?.addEventListener('click', (event) => {
+                this.sendQuestion(event.currentTarget.dataset.questionId);
             });
             
             // End Question button
@@ -1938,14 +1992,39 @@ document.addEventListener('DOMContentLoaded', function() {
 
         resetPendingSendButton(questionId) {
             if (!questionId) return;
-            const btn = document.querySelector(`[data-question-id="${questionId}"]`);
+            const btn = document.getElementById('sendPreparedQuestionBtn')
+                || document.querySelector(`[data-question-id="${questionId}"]`);
             if (!btn) return;
             btn.disabled = false;
             btn.classList.remove('loading');
-            btn.innerHTML = '<i data-lucide="send"></i> FRAGE SENDEN';
+            btn.innerHTML = btn.id === 'sendPreparedQuestionBtn'
+                ? '<i data-lucide="send"></i> FRAGE SENDEN'
+                : '<i data-lucide="mouse-pointer-click"></i> FRAGE WÄHLEN';
             btn.removeAttribute('aria-busy');
             this.pendingQuestionId = null;
             try { lucide.createIcons(); } catch(_) {}
+        }
+
+        prepareQuestion(questionId, button) {
+            if (!questionId || !Number.isFinite(this.stateRevision) || this.stateRevision < 0) {
+                this.showHostError('Der autoritative Spielzustand ist noch nicht geladen.');
+                return;
+            }
+            button.disabled = true;
+            button.setAttribute('aria-busy', 'true');
+            const sent = this.sendJsonWhenReady({
+                type: 'admin_prepare_question',
+                hub_session: this.getHubSession(),
+                ...this.hostActionContext(questionId),
+            }, () => {
+                button.disabled = false;
+                button.removeAttribute('aria-busy');
+                this.showHostError('Die Verbindung zum Server ist nicht bereit.');
+            });
+            if (!sent) {
+                button.disabled = false;
+                button.removeAttribute('aria-busy');
+            }
         }
 
         renderActiveQuestion(question, phase = '', state = {}) {
@@ -1975,7 +2054,9 @@ document.addEventListener('DOMContentLoaded', function() {
             `).join('');
             let phaseAction = '';
             if (this.questionPhase === 'prompt_visible') {
-                phaseAction = `<button type="button" class="btn btn-primary" id="revealQuestionContentBtn" data-question-id="${question.id}" disabled aria-disabled="true">ANTWORTEN ANZEIGEN</button>`;
+                phaseAction = question.question_type === 'short_answer'
+                    ? `<button type="button" class="btn btn-primary" id="openAnsweringBtn" data-question-id="${question.id}" disabled aria-disabled="true">FRAGE FREIGEBEN</button>`
+                    : `<button type="button" class="btn btn-primary" id="revealQuestionContentBtn" data-question-id="${question.id}" disabled aria-disabled="true">ANTWORTEN ANZEIGEN</button>`;
             } else if (
                 this.questionPhase === 'content_visible'
                 && question.question_type !== 'multiple_choice'
@@ -2093,7 +2174,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 clearTimeout(this.questionPresentationTimer);
                 this.questionPresentationTimer = null;
             }
-            const button = document.getElementById('revealQuestionContentBtn');
+            const button = document.querySelector('#revealQuestionContentBtn, #openAnsweringBtn');
             if (!button || this.questionPhase !== 'prompt_visible') return;
             if (
                 this.questionVisibleAt
@@ -2253,7 +2334,8 @@ document.addEventListener('DOMContentLoaded', function() {
                 this.showHostError('Frage konnte nicht gestartet werden: Frage-ID fehlt.');
                 return;
             }
-            const btn = document.querySelector(`[data-question-id="${questionId}"]`);
+            const btn = document.getElementById('sendPreparedQuestionBtn')
+                || document.querySelector(`[data-question-id="${questionId}"]`);
             if (btn) {
                 btn.classList.add('loading');
                 btn.disabled = true;
@@ -2266,7 +2348,8 @@ document.addEventListener('DOMContentLoaded', function() {
             let customTime = null;
             try {
                 const item = btn?.closest('.question-item');
-                const input = item ? item.querySelector('.question-time-input') : null;
+                const input = document.getElementById('preparedQuestionTime')
+                    || (item ? item.querySelector('.question-time-input') : null);
                 if (input && input.value) {
                     const v = parseInt(input.value, 10);
                     if (!isNaN(v) && v > 0) customTime = v;
@@ -2364,6 +2447,14 @@ document.addEventListener('DOMContentLoaded', function() {
         }
 
         returnToQuestionOverview() {
+            if (this.preparedQuestionId && !this.questionPhase) {
+                this.sendJsonWhenReady({
+                    type: 'admin_clear_prepared_question',
+                    hub_session: this.getHubSession(),
+                    ...this.hostActionContext(this.preparedQuestionId),
+                }, () => this.showHostError('Die Verbindung zum Server ist nicht bereit.'));
+                return;
+            }
             location.reload();
         }
         

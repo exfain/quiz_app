@@ -153,6 +153,7 @@ class WhoLyingStartBrowserFlowTests(_BrowserLiveServerTestCase):
         send_button.wait_for(state='visible', timeout=self.TIMEOUT)
         self.host_page.wait_for_timeout(500)
         send_button.click()
+        send_button.click()
         self.host_page.wait_for_selector('#startSetBtn', timeout=self.TIMEOUT)
         self.host_page.wait_for_selector('#startSetBtn:not([disabled])', timeout=self.TIMEOUT)
         self.host_page.click('#startSetBtn')

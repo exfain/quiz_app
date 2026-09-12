@@ -282,6 +282,17 @@ html[data-participant-theme="vhs"] .spectator-shell .vhs-theme-header {
   text-wrap: balance;
 }
 
+.spectator-question__typewriter {
+  white-space: pre-wrap;
+}
+
+.spectator-question__typewriter.is-typewriting::after {
+  content: "|";
+  display: inline-block;
+  margin-left: 0.08em;
+  opacity: 0.8;
+}
+
 .spectator-question__meta {
   display: flex;
   flex-wrap: wrap;

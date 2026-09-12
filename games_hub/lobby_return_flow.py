@@ -8,7 +8,6 @@ from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
 from django.utils import timezone
 
-from .authoritative_state import connected_participant_ids
 from .models import HubGameStep, HubSession
 
 
@@ -125,13 +124,9 @@ def get_relevant_step_for_room(game_key: str, room_code: str) -> HubGameStep | N
 
 def get_session_lobby_presence(session_code: str) -> dict:
     session = HubSession.objects.prefetch_related('steps', 'participants').get(code=session_code)
-    participant_qs = session.participants.order_by('joined_at')
-    # Keep compatibility for sessions created before socket presence existed.
-    # Once a session has connection rows, only currently live browser
-    # participants take part in this real-time lobby readiness decision.
-    if session.socket_connections.exists():
-        participant_qs = participant_qs.filter(pk__in=connected_participant_ids(session))
-    participant_names = list(participant_qs.values_list('nickname', flat=True))
+    participant_names = list(
+        session.participants.order_by('joined_at').values_list('nickname', flat=True)
+    )
 
     active_game_map: dict[str, list[dict[str, str]]] = {}
     participant_model_map = get_game_participant_model_map()

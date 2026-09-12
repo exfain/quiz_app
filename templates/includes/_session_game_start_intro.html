@@ -442,6 +442,9 @@ function initializeQaVhsGameIntro(options = {}) {
     if (transitionTimer) window.clearTimeout(transitionTimer);
     if (transitionFallbackTimer) window.clearTimeout(transitionFallbackTimer);
     hideTimer = null;
+    const transitionWasActive = document.documentElement.classList.contains(
+      'qa-vhs-transition--active'
+    );
     transitionActive = true;
     visible = true;
     introOverlay.hidden = false;
@@ -457,6 +460,12 @@ function initializeQaVhsGameIntro(options = {}) {
       '--qa-vhs-transition-elapsed',
       `${normalizedElapsed}ms`
     );
+    if (transitionWasActive) {
+      // Recreate the CSS animations so a server-clock resync does not add the
+      // previous local animation runtime to the new authoritative elapsed time.
+      document.documentElement.classList.remove('qa-vhs-transition--active');
+      void document.documentElement.offsetWidth;
+    }
     document.documentElement.classList.add(
       'is-session-game-intro-active',
       'qa-vhs-transition--active'

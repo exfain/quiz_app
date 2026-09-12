@@ -122,6 +122,7 @@ class ParticipantFlowBrowserTest(_Base):
     FLOW_GAME_BY_TEST = {
         "test_quiz_participant_flow": "quiz",
         "test_estimation_participant_flow": "estimation",
+        "test_estimation_question_shell_stays_mounted_across_three_questions": "estimation",
         "test_assign_participant_flow": "assign",
         "test_where_participant_flow": "where",
         "test_who_participant_flow": "who",
@@ -613,6 +614,94 @@ class ParticipantFlowBrowserTest(_Base):
     def test_estimation_participant_flow(self):
         self._run_participant_flow("estimation")
 
+    def test_estimation_question_shell_stays_mounted_across_three_questions(self):
+        self._add_question_for_game("estimation")
+        self._add_question_for_game("estimation")
+
+        self.part_page.goto(f"{self.live_server_url}/hub/lobby/{self.session_code}/")
+        self.part_page.fill("#nickname", self.NICKNAME)
+        self.part_page.wait_for_selector("#joinBtn:not([disabled])", timeout=self.TIMEOUT)
+        self.part_page.click("#joinBtn")
+        self.part_page.wait_for_selector("#joinCard", state="hidden", timeout=self.TIMEOUT)
+
+        self._goto_admin(f"{self.live_server_url}/hub/monitor/{self.session_code}/")
+        self._wait_admin_hub_ws_open()
+        self.admin_page.click("#startSessionBtn")
+        self.admin_page.wait_for_selector("#startSessionBtn", state="detached", timeout=self.TIMEOUT)
+        self._complete_check_in_for_joined_participant()
+
+        room_code = self.game_data["estimation"]
+        monitor_url = (
+            f"{self.live_server_url}"
+            f"{reverse(GAME_MONITOR_URL_NAMES['estimation'], args=[room_code])}"
+            f"?hub_session={self.session_code}"
+        )
+        self._goto_admin(monitor_url)
+        self._start_game()
+        self.part_page.wait_for_url(
+            f"**{PARTICIPANT_PLAY_PREFIX['estimation']}{room_code}/**",
+            timeout=self.LONG,
+        )
+        self._wait_participant_game_interactive()
+
+        for question_number in range(1, 4):
+            self._wait_admin_game_ws_open()
+            self.admin_page.locator(".send-question-btn:not([disabled])").first.click()
+            self.admin_page.wait_for_selector(
+                "#sendPreparedQuestionBtn:not([disabled])", timeout=self.TIMEOUT
+            )
+            self.part_page.wait_for_selector("#questionState:not(.d-none)", timeout=self.TIMEOUT)
+            self.part_page.wait_for_function(
+                "() => document.querySelector('#questionText')?.textContent.trim() === ''",
+                timeout=self.TIMEOUT,
+            )
+            self.part_page.evaluate(
+                """() => {
+                    window.__estimationTransitionNodes = {
+                        shell: document.querySelector('.vhs-theme-shell'),
+                        state: document.querySelector('#questionState'),
+                        content: document.querySelector('#estimationQuestionContent'),
+                    };
+                }"""
+            )
+
+            self.admin_page.click("#sendPreparedQuestionBtn")
+            self._wait_for_reload(self.admin_page)
+            self.admin_page.wait_for_selector(
+                "#openAnsweringBtn:not([disabled])", timeout=self.TIMEOUT
+            )
+            self.part_page.wait_for_function(
+                """() => (
+                    document.querySelector('#questionState')?.classList.contains('is-question-presented')
+                    && document.querySelector('#questionText')?.textContent.trim().length > 0
+                )""",
+                timeout=self.TIMEOUT,
+            )
+            continuity = self.part_page.evaluate(
+                """() => ({
+                    sameShell: window.__estimationTransitionNodes.shell
+                        === document.querySelector('.vhs-theme-shell'),
+                    sameState: window.__estimationTransitionNodes.state
+                        === document.querySelector('#questionState'),
+                    sameContent: window.__estimationTransitionNodes.content
+                        === document.querySelector('#estimationQuestionContent'),
+                    waitingVisible: !document.querySelector('#waitingQuestionState').classList.contains('d-none'),
+                })"""
+            )
+            self.assertTrue(continuity["sameShell"], question_number)
+            self.assertTrue(continuity["sameState"], question_number)
+            self.assertTrue(continuity["sameContent"], question_number)
+            self.assertFalse(continuity["waitingVisible"], question_number)
+
+            self.admin_page.click("#openAnsweringBtn")
+            self.admin_page.wait_for_selector("#endQuestionBtn", timeout=self.TIMEOUT)
+            self._wait_admin_game_ws_open()
+            self.admin_page.click("#endQuestionBtn")
+            self._wait_for_reload(self.admin_page)
+            self.part_page.wait_for_selector(
+                "#correctAnswerState:not(.d-none)", timeout=self.TIMEOUT
+            )
+
     def test_assign_participant_flow(self):
         self._run_participant_flow("assign")
 
@@ -663,7 +752,75 @@ class ParticipantFlowBrowserTest(_Base):
         self.admin_page.wait_for_selector(
             ".send-question-btn:not([disabled])", timeout=self.TIMEOUT
         )
-        self.admin_page.locator(".send-question-btn").first.click()
+        send_button = self.admin_page.locator(".send-question-btn").first
+        if game_key in {"quiz", "estimation"}:
+            send_button.click()
+            self.admin_page.wait_for_selector(
+                "#sendPreparedQuestionBtn:not([disabled])", timeout=self.TIMEOUT
+            )
+            if game_key == "estimation":
+                self.part_page.wait_for_selector(
+                    "#questionState:not(.d-none)", timeout=self.TIMEOUT
+                )
+                self.assertEqual(
+                    self.part_page.locator("#questionText").inner_text().strip(),
+                    "",
+                )
+                self.part_page.wait_for_selector(
+                    "#questionState .vhs-question-kicker", timeout=self.TIMEOUT
+                )
+                self.assertTrue(
+                    self.part_page.locator(
+                        "#questionState .vhs-question-kicker"
+                    ).inner_text().strip()
+                )
+                self.assertTrue(
+                    self.part_page.locator("#estimationQuestionContent").evaluate(
+                        "element => element.classList.contains('is-question-content-pending')"
+                    )
+                )
+                self.part_page.evaluate(
+                    """() => {
+                        const shell = document.querySelector('.vhs-theme-shell');
+                        const questionState = document.querySelector('#questionState');
+                        const questionContent = document.querySelector('#questionState .question-content');
+                        const estimationContent = document.querySelector('#estimationQuestionContent');
+                        window.__estimationPreparedNodes = {
+                            shell,
+                            questionState,
+                            questionContent,
+                            estimationContent,
+                        };
+                    }"""
+                )
+                self._estimation_transition_viewports = (
+                    {"width": 1920, "height": 1080},
+                    {"width": 1366, "height": 768},
+                    {"width": 1024, "height": 650},
+                )
+                self._estimation_prepared_layouts = {}
+                for viewport in self._estimation_transition_viewports:
+                    self.part_page.set_viewport_size(viewport)
+                    self.part_page.wait_for_timeout(50)
+                    key = f'{viewport["width"]}x{viewport["height"]}'
+                    self._estimation_prepared_layouts[key] = self.part_page.evaluate(
+                        """() => {
+                            const rect = element => {
+                                const box = element.getBoundingClientRect();
+                                return {x: box.x, y: box.y, width: box.width, height: box.height};
+                            };
+                            const shell = document.querySelector('.vhs-theme-shell');
+                            return {
+                                shell: rect(shell),
+                                kicker: rect(document.querySelector('#questionState .vhs-question-kicker')),
+                                background: getComputedStyle(shell).backgroundImage,
+                            };
+                        }"""
+                    )
+            self.admin_page.click("#sendPreparedQuestionBtn")
+        else:
+            send_button.click()
+            send_button.click()
         # Spielmonitor lädt nach question_started neu
         self._wait_for_reload(self.admin_page)
         # Nach Reload: Frage aktiv – Assign: Runden-Button oder endQuestionBtn (je nach Rundenanzahl)
@@ -713,6 +870,49 @@ class ParticipantFlowBrowserTest(_Base):
             self.admin_page.wait_for_selector(
                 "#openAnsweringBtn:not([disabled])", timeout=self.TIMEOUT
             )
+            for viewport in self._estimation_transition_viewports:
+                self.part_page.set_viewport_size(viewport)
+                self.part_page.wait_for_timeout(50)
+                continuity = self.part_page.evaluate(
+                    """() => {
+                        const nodes = window.__estimationPreparedNodes;
+                        const shell = document.querySelector('.vhs-theme-shell');
+                        const questionState = document.querySelector('#questionState');
+                        const questionContent = document.querySelector('#questionState .question-content');
+                        const estimationContent = document.querySelector('#estimationQuestionContent');
+                        const rect = element => {
+                            const box = element.getBoundingClientRect();
+                            return {x: box.x, y: box.y, width: box.width, height: box.height};
+                        };
+                        return {
+                            sameShell: nodes.shell === shell,
+                            sameQuestionState: nodes.questionState === questionState,
+                            sameQuestionContent: nodes.questionContent === questionContent,
+                            sameEstimationContent: nodes.estimationContent === estimationContent,
+                            shell: rect(shell),
+                            kicker: rect(document.querySelector('#questionState .vhs-question-kicker')),
+                            background: getComputedStyle(shell).backgroundImage,
+                            contentPending: estimationContent.classList.contains('is-question-content-pending'),
+                            waitingVisible: !document.querySelector('#waitingQuestionState').classList.contains('d-none'),
+                        };
+                    }"""
+                )
+                key = f'{viewport["width"]}x{viewport["height"]}'
+                prepared = self._estimation_prepared_layouts[key]
+                self.assertTrue(continuity["sameShell"], key)
+                self.assertTrue(continuity["sameQuestionState"], key)
+                self.assertTrue(continuity["sameQuestionContent"], key)
+                self.assertTrue(continuity["sameEstimationContent"], key)
+                self.assertAlmostEqual(
+                    prepared["shell"]["width"], continuity["shell"]["width"], delta=1, msg=key
+                )
+                self.assertAlmostEqual(
+                    prepared["shell"]["height"], continuity["shell"]["height"], delta=1, msg=key
+                )
+                self.assertEqual(prepared["background"], continuity["background"], key)
+                self.assertFalse(continuity["contentPending"], key)
+                self.assertFalse(continuity["waitingVisible"], key)
+                self.assertLess(continuity["kicker"]["y"], prepared["kicker"]["y"], key)
             self.admin_page.click("#openAnsweringBtn")
             self.admin_page.wait_for_selector("#endQuestionBtn", timeout=self.TIMEOUT)
         elif game_key == "who_that":
@@ -1023,6 +1223,11 @@ class ParticipantFlowBrowserTest(_Base):
         elif game_key == "blackjack":
             self.part_page.wait_for_selector(
                 "#questionSubmitFeedback:not(.d-none)", timeout=self.TIMEOUT
+            )
+        elif game_key == "clue_rush":
+            self.part_page.wait_for_selector(
+                "#questionState:not(.d-none) #clueRushSubmittedAnswer:not(.d-none)",
+                timeout=self.TIMEOUT,
             )
         elif game_key not in ("where", "who", "sorting_ladder"):
             self.part_page.wait_for_selector(

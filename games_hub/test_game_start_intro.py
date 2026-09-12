@@ -873,7 +873,7 @@ class SessionGameStartIntroBrowserTests(unittest.TestCase):
                 0.05,
             )
 
-            self.assertTrue(self.start_transition(page, 2700))
+            self.assertTrue(self.start_transition(page, 2600))
             page.wait_for_timeout(20)
             self.assertGreater(
                 float(page.locator(".play-container").evaluate("el => getComputedStyle(el).opacity")),
@@ -885,7 +885,7 @@ class SessionGameStartIntroBrowserTests(unittest.TestCase):
             )
             self.assertEqual(page.locator(".vhs-theme-shell").get_attribute("inert"), "")
 
-            page.wait_for_timeout(150)
+            page.wait_for_timeout(250)
             self.assertEqual(page.locator("#sessionGameStartIntro").get_attribute("hidden"), "")
             self.assertIsNone(page.locator(".vhs-theme-shell").get_attribute("inert"))
             self.assertEqual(

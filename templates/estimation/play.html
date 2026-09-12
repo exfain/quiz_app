@@ -63,7 +63,7 @@
                             </div>
                         </div>
 
-                        <div id="waitingQuestionState" class="game-state {% if initial_participant_phase != 'presentation_delay' %}d-none{% endif %}">
+                        <div id="waitingQuestionState" class="game-state d-none">
                             <div class="waiting-card">
                                 <div class="waiting-animation">
                                     <div class="qa-wait-loader" aria-hidden="true"></div>
@@ -74,7 +74,7 @@
                         </div>
 
                         <!-- Question State -->
-                        <div id="questionState" class="game-state {% if initial_participant_phase != 'prompt_visible' and initial_participant_phase != 'content_visible' and initial_participant_phase != 'answering' and initial_participant_phase != 'answered_waiting' %}d-none{% endif %}">
+                        <div id="questionState" class="game-state estimation-question-state{% if initial_participant_phase == 'prepared' %} is-question-prepared{% elif initial_participant_phase == 'presentation_delay' %} is-question-presenting{% elif initial_participant_phase == 'prompt_visible' or initial_participant_phase == 'content_visible' or initial_participant_phase == 'answering' or initial_participant_phase == 'answered_waiting' %} is-question-presented{% endif %} {% if initial_participant_phase != 'prepared' and initial_participant_phase != 'presentation_delay' and initial_participant_phase != 'prompt_visible' and initial_participant_phase != 'content_visible' and initial_participant_phase != 'answering' and initial_participant_phase != 'answered_waiting' %}d-none{% endif %}">
                             <div class="question-card qa-active-answer-card estimation-answer-card">
                                 <!-- Question Header -->
                                 <div class="question-header">
@@ -90,22 +90,22 @@
 
                                 <!-- Question Content -->
                                 <div class="question-content">
-                                    <div class="question-text" id="questionText">
+                                    <div class="question-text{% if initial_participant_phase == 'presentation_delay' %} is-presentation-pending{% endif %}" id="questionText"{% if initial_participant_phase == 'presentation_delay' %} aria-hidden="true"{% endif %}>
                                         {% if quiz.current_question %}
                                             {{ quiz.current_question.question_text }}
                                         {% endif %}
                                     </div>
 
-                                    <div id="estimationQuestionContent">
+                                    <div id="estimationQuestionContent"{% if initial_participant_phase == 'prepared' or initial_participant_phase == 'presentation_delay' %} class="is-question-content-pending"{% endif %}>
                                     <!-- Hint Display -->
-                                    <div class="hint-display" id="hintDisplay" style="display: none;">
+                                    <div class="hint-display" id="hintDisplay" style="display: none;"{% if initial_participant_phase == 'prepared' or initial_participant_phase == 'presentation_delay' %} aria-hidden="true"{% endif %}>
                                         <div class="hint-icon">
                                             <i data-lucide="lightbulb"></i>
                                         </div>
                                         <div class="hint-text" id="hintText"></div>
                                     </div>
 
-                                    <div class="estimation-interaction-area">
+                                    <div class="estimation-interaction-area"{% if initial_participant_phase == 'prepared' or initial_participant_phase == 'presentation_delay' %} aria-hidden="true"{% endif %}>
                                         <!-- Answer Input Interface -->
                                         <div class="answer-interface" id="answerInterface">
                                             <div class="answer-input-container">
@@ -571,6 +571,15 @@
             line-height: 1.25;
             margin-bottom: 2.25rem;
             text-align: center;
+        }
+
+        .question-text.is-presentation-pending {
+            visibility: hidden;
+        }
+
+        #estimationQuestionContent.is-question-content-pending > :not(.qa-score-widget) {
+            visibility: hidden;
+            pointer-events: none;
         }
 
         .qa-active-answer-card {
@@ -1277,7 +1286,11 @@
                     this.initialState = this.readJsonScript('estimationInitialState', {phase: 'waiting'});
                     this.currentStateId = null;
                     this.questionPhase = this.initialState?.current_question?.question_phase || '';
-                    this.stateRevision = Number(this.initialState?.current_question?.state_revision ?? -1);
+                    this.stateRevision = Number(
+                        this.initialState?.current_question?.state_revision
+                        ?? this.initialState?.state_revision
+                        ?? -1
+                    );
                     this.questionPresentationTimer = null;
                     this.presentationServerNow = this.initialState?.current_question?.server_now || '';
                     this.presentationServerReceivedAt = performance.now();
@@ -1349,6 +1362,11 @@
                             window.gameTutorial?.forceClose();
                             window.unitTutorialNotice?.setFromPayload(data);
                             this.onQuestionStarted(this.mergeQuestionLifecycle(data.question, data));
+                            break;
+
+                        case 'question_prepared':
+                        case 'question_preparation_cleared':
+                            this.onQuestionPrepared();
                             break;
 
                         case 'question_answering_opened':
@@ -1623,10 +1641,12 @@
                         this.questionPhase === 'prompt_visible'
                         && this.remainingQuestionPresentationDelay(mergedQuestion) > 0
                     ) {
+                        this.setQuestionPresentationState('presenting');
+                        this.setQuestionPromptVisible(false);
                         this.setQuestionContentVisible(false);
                         this.setQuestionInteraction(false);
                         this.setQuestionTimerVisible(false);
-                        this.showState('waitingQuestionState');
+                        this.showState('questionState');
                         this.questionPresentationTimer = setTimeout(() => {
                             if (
                                 this.renderedQuestionId === incomingQuestionId
@@ -1652,6 +1672,8 @@
                 renderQuestionPhase(question) {
                     const contentVisible = ['prompt_visible', 'content_visible', 'answering_open'].includes(this.questionPhase);
                     const answeringOpen = this.questionPhase === 'answering_open';
+                    this.setQuestionPresentationState('presented');
+                    this.setQuestionPromptVisible(true);
                     this.setQuestionContentVisible(contentVisible);
                     this.setQuestionTimerVisible(answeringOpen);
 
@@ -1683,8 +1705,60 @@
                     }
                 }
 
+                onQuestionPrepared() {
+                    clearInterval(this.questionTimer);
+                    clearTimeout(this.questionPresentationTimer);
+                    this.questionPhase = '';
+                    this.renderedQuestionId = null;
+                    this.currentQuestionId = null;
+                    this.currentQuestionIsTutorial = false;
+                    this.currentUnit = '';
+                    this.hasAnswered = false;
+                    this.lastSubmittedNumericAnswer = null;
+                    document.getElementById('questionText').textContent = '';
+                    this.setQuestionPresentationState('prepared');
+                    this.setQuestionPromptVisible(true);
+                    this.setQuestionContentVisible(false);
+                    this.setQuestionTimerVisible(false);
+                    this.setQuestionInteraction(false);
+                    const estimateInput = document.getElementById('estimateInput');
+                    if (estimateInput) estimateInput.value = '';
+                    document.getElementById('unitDisplay')?.classList.add('d-none');
+                    const hintDisplay = document.getElementById('hintDisplay');
+                    if (hintDisplay) hintDisplay.style.display = 'none';
+                    this.showState('questionState');
+                }
+
+                setQuestionPromptVisible(visible) {
+                    const questionText = document.getElementById('questionText');
+                    if (!questionText) return;
+                    questionText.classList.toggle('is-presentation-pending', !visible);
+                    if (visible) {
+                        questionText.removeAttribute('aria-hidden');
+                    } else {
+                        questionText.setAttribute('aria-hidden', 'true');
+                    }
+                }
+
+                setQuestionPresentationState(state) {
+                    const questionState = document.getElementById('questionState');
+                    if (!questionState) return;
+                    questionState.classList.toggle('is-question-prepared', state === 'prepared');
+                    questionState.classList.toggle('is-question-presenting', state === 'presenting');
+                    questionState.classList.toggle('is-question-presented', state === 'presented');
+                }
+
                 setQuestionContentVisible(visible) {
-                    document.getElementById('estimationQuestionContent')?.classList.toggle('d-none', !visible);
+                    const content = document.getElementById('estimationQuestionContent');
+                    if (!content) return;
+                    content.classList.toggle('is-question-content-pending', !visible);
+                    content.querySelectorAll(':scope > :not(.qa-score-widget)').forEach((child) => {
+                        if (visible) {
+                            child.removeAttribute('aria-hidden');
+                        } else {
+                            child.setAttribute('aria-hidden', 'true');
+                        }
+                    });
                 }
 
                 setQuestionTimerVisible(visible) {
@@ -1755,6 +1829,11 @@
                     if (phase === 'finished') {
                         this.updateFinalScore(this.initialState.participant_score);
                         this.showState('quizEndedState');
+                        return;
+                    }
+
+                    if (phase === 'prepared') {
+                        this.onQuestionPrepared();
                         return;
                     }
 

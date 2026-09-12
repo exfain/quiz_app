@@ -6,12 +6,21 @@ import string
 os.environ.setdefault("DJANGO_ALLOW_ASYNC_UNSAFE", "1")
 
 from django.contrib.auth.models import User
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import Client as DjangoClient
 from django.urls import reverse
 
+from Estimation.models import EstimationQuiz
 from QuizGame.models import Quiz, QuizQuestion, QuizSession
+from black_jack_quiz.models import BlackJackQuiz, BlackJackSession
 from games_hub.models import HubGameStep, HubParticipant, HubSession
 from games_hub.playwright_e2e import install_browser_test_stubs, start_chromium_browser
+from who_is_that.models import (
+    WhoThatParticipant,
+    WhoThatQuestion,
+    WhoThatQuiz,
+    WhoThatSession,
+)
 
 try:
     from channels.testing import ChannelsLiveServerTestCase as _BaseLiveServerTestCase
@@ -274,6 +283,420 @@ class SessionCheckInBrowserE2ETest(_BaseLiveServerTestCase):
 
         self.participant_one_page.reload()
         self.participant_one_page.wait_for_url(play_pattern, timeout=self.TIMEOUT)
+
+    def test_recall_routes_players_to_lobby_before_next_game_starts(self):
+        estimation = EstimationQuiz.objects.create(
+            creator=self.admin,
+            title="E2E Recall Estimation",
+            status="waiting",
+        )
+        HubGameStep.objects.create(
+            session=self.session,
+            order=1,
+            game_key="estimation",
+            room_code=estimation.room_code,
+            title=estimation.title,
+        )
+
+        spectator_context = self._browser.new_context()
+        install_browser_test_stubs(spectator_context)
+        spectator_page = spectator_context.new_page()
+        try:
+            self._join_lobby(self.participant_one_page, "Alice")
+            self._join_lobby(self.participant_two_page, "Bob")
+            self._start_session_from_monitor()
+
+            self.host_page.click('[data-session-panel-target="checkInPanel"]')
+            self.host_page.wait_for_selector("#checkInPanel.is-open", timeout=self.TIMEOUT)
+            self.host_page.click("#startCheckInBtn")
+            self.participant_one_page.wait_for_selector("#readyCheckInBtn:not([disabled])", timeout=self.TIMEOUT)
+            self.participant_two_page.wait_for_selector("#readyCheckInBtn:not([disabled])", timeout=self.TIMEOUT)
+            self.participant_one_page.click("#readyCheckInBtn")
+            self.participant_two_page.click("#readyCheckInBtn")
+            self._wait_until_host_check_in_row("Alice", "Bereit")
+            self._wait_until_host_check_in_row("Bob", "Bereit")
+            self.host_page.click("#completeCheckInBtn")
+            self.host_page.wait_for_function(
+                "() => document.querySelector('#checkInLockedBadge')?.textContent.includes('Locked: 2')",
+                timeout=self.TIMEOUT,
+            )
+
+            spectator_page.goto(
+                f"{self.live_server_url}{reverse('games_hub:spectate_session', args=[self.session.code])}"
+            )
+            self._start_quiz_from_monitor()
+            quiz_pattern = f"**/quiz/play/{self.quiz.room_code}/**"
+            self.participant_one_page.wait_for_url(quiz_pattern, timeout=self.LONG_TIMEOUT)
+            self.participant_two_page.wait_for_url(quiz_pattern, timeout=self.LONG_TIMEOUT)
+
+            self.host_page.goto(
+                f"{self.live_server_url}{reverse('games_hub:monitor', args=[self.session.code])}"
+            )
+            self.host_page.click('[data-session-panel-target="checkInPanel"]')
+            self.host_page.wait_for_selector("#checkInPanel.is-open", timeout=self.TIMEOUT)
+            self.host_page.wait_for_selector("#recallLobbyBtn:not([disabled])", timeout=self.TIMEOUT)
+            self.host_page.click("#recallLobbyBtn")
+            self.host_page.wait_for_function(
+                "() => document.querySelector('#lobbyReturnGuardNames')?.textContent.includes('Alice')"
+                " && document.querySelector('#lobbyReturnGuardNames')?.textContent.includes('Bob')",
+                timeout=self.TIMEOUT,
+            )
+            self.host_page.locator("#lobbyReturnGuardPrimaryBtn").click(force=True)
+            self.host_page.locator("#lobbyReturnGuardPrimaryBtn").click(force=True)
+
+            lobby_pattern = f"**/hub/lobby/{self.session.code}/**"
+            self.participant_one_page.wait_for_url(lobby_pattern, timeout=self.LONG_TIMEOUT)
+            self.participant_two_page.wait_for_url(lobby_pattern, timeout=self.LONG_TIMEOUT)
+            self.participant_one_page.wait_for_selector("#joinCard", state="hidden", timeout=self.TIMEOUT)
+            self.participant_two_page.wait_for_selector("#joinCard", state="hidden", timeout=self.TIMEOUT)
+            self.assertFalse(self.quiz.participants.filter(is_active=True).exists())
+
+            self.participant_one_page.reload()
+            self.participant_one_page.wait_for_url(lobby_pattern, timeout=self.TIMEOUT)
+            self.participant_one_page.wait_for_selector("#joinCard", state="hidden", timeout=self.TIMEOUT)
+
+            estimation_monitor_url = (
+                f"{self.live_server_url}"
+                f"{reverse('admin_dashboard:estimation_monitor', args=[estimation.room_code])}"
+                f"?hub_session={self.session.code}"
+            )
+            self.host_page.goto(estimation_monitor_url)
+            self.host_page.wait_for_selector("#startQuizBtn:not([disabled])", timeout=self.TIMEOUT)
+            self.host_page.wait_for_timeout(1000)
+            self.host_page.click("#startQuizBtn")
+            self.host_page.wait_for_function(
+                "() => document.querySelector('#activeGameConflictMessage')?.textContent.includes('Quick Quiz')",
+                timeout=self.TIMEOUT,
+            )
+            self.host_page.locator("#activeGameConflictDeactivateBtn").click(force=True)
+
+            estimation_pattern = f"**/estimation/play/{estimation.room_code}/**"
+            self.participant_one_page.wait_for_url(estimation_pattern, timeout=self.LONG_TIMEOUT)
+            self.participant_two_page.wait_for_url(estimation_pattern, timeout=self.LONG_TIMEOUT)
+            spectator_page.wait_for_selector(
+                '[data-spectator-game="estimation"]',
+                timeout=self.LONG_TIMEOUT,
+            )
+            estimation.refresh_from_db()
+            self.assertEqual(estimation.status, "active")
+        finally:
+            spectator_page.close()
+            spectator_context.close()
+
+    def test_who_that_starts_for_players_and_spectator_after_recall(self):
+        who_quiz = WhoThatQuiz.objects.create(
+            creator=self.admin,
+            title='E2E Recall Who Is That',
+            status='waiting',
+        )
+        who_question = WhoThatQuestion.objects.create(
+            question_text='Welche Person ist abgebildet?',
+            image=SimpleUploadedFile(
+                'who-that-start.png',
+                b'who-that-image',
+                content_type='image/png',
+            ),
+            correct_answer='Ada Lovelace',
+            time_limit=30,
+            created_by=self.admin,
+        )
+        who_quiz.selected_questions.set([who_question])
+        who_quiz.question_order = [who_question.id]
+        who_quiz.save(update_fields=['question_order', 'updated_at'])
+        WhoThatSession.objects.create(quiz=who_quiz)
+        HubGameStep.objects.create(
+            session=self.session,
+            order=1,
+            game_key='who_that',
+            room_code=who_quiz.room_code,
+            title=who_quiz.title,
+        )
+
+        spectator_context = self._browser.new_context()
+        install_browser_test_stubs(spectator_context)
+        spectator_page = spectator_context.new_page()
+        try:
+            self._join_lobby(self.participant_one_page, 'Alice')
+            self._join_lobby(self.participant_two_page, 'Bob')
+            self._start_session_from_monitor()
+
+            self.host_page.click('[data-session-panel-target="checkInPanel"]')
+            self.host_page.wait_for_selector('#checkInPanel.is-open', timeout=self.TIMEOUT)
+            self.host_page.click('#startCheckInBtn')
+            self.participant_one_page.wait_for_selector(
+                '#readyCheckInBtn:not([disabled])', timeout=self.TIMEOUT
+            )
+            self.participant_two_page.wait_for_selector(
+                '#readyCheckInBtn:not([disabled])', timeout=self.TIMEOUT
+            )
+            self.participant_one_page.click('#readyCheckInBtn')
+            self.participant_two_page.click('#readyCheckInBtn')
+            self._wait_until_host_check_in_row('Alice', 'Bereit')
+            self._wait_until_host_check_in_row('Bob', 'Bereit')
+            self.host_page.click('#completeCheckInBtn')
+            self.host_page.wait_for_function(
+                "() => document.querySelector('#checkInLockedBadge')?.textContent.includes('Locked: 2')",
+                timeout=self.TIMEOUT,
+            )
+
+            spectator_page.goto(
+                f"{self.live_server_url}"
+                f"{reverse('games_hub:spectate_session', args=[self.session.code])}"
+            )
+            self._start_quiz_from_monitor()
+            quick_quiz_pattern = f'**/quiz/play/{self.quiz.room_code}/**'
+            self.participant_one_page.wait_for_url(
+                quick_quiz_pattern, timeout=self.LONG_TIMEOUT
+            )
+            self.participant_two_page.wait_for_url(
+                quick_quiz_pattern, timeout=self.LONG_TIMEOUT
+            )
+
+            self.host_page.goto(
+                f"{self.live_server_url}"
+                f"{reverse('games_hub:monitor', args=[self.session.code])}"
+            )
+            self.host_page.click('[data-session-panel-target="checkInPanel"]')
+            self.host_page.wait_for_selector(
+                '#recallLobbyBtn:not([disabled])', timeout=self.TIMEOUT
+            )
+            self.host_page.click('#recallLobbyBtn')
+            self.host_page.wait_for_function(
+                "() => document.querySelector('#lobbyReturnGuardNames')?.textContent.includes('Alice')"
+                " && document.querySelector('#lobbyReturnGuardNames')?.textContent.includes('Bob')",
+                timeout=self.TIMEOUT,
+            )
+            recall_button = self.host_page.locator('#lobbyReturnGuardPrimaryBtn')
+            recall_button.click(force=True)
+            recall_button.click(force=True)
+            lobby_pattern = f'**/hub/lobby/{self.session.code}/**'
+            self.participant_one_page.wait_for_url(
+                lobby_pattern, timeout=self.LONG_TIMEOUT
+            )
+            self.participant_two_page.wait_for_url(
+                lobby_pattern, timeout=self.LONG_TIMEOUT
+            )
+
+            monitor_url = (
+                f"{self.live_server_url}"
+                f"{reverse('admin_dashboard:who_that_monitor', args=[who_quiz.room_code])}"
+                f"?hub_session={self.session.code}"
+            )
+            self.host_page.goto(monitor_url)
+            self.host_page.wait_for_function(
+                '() => window.adminGameMonitor?.websocket?.readyState === WebSocket.OPEN',
+                timeout=self.TIMEOUT,
+            )
+            self.host_page.click('#startQuizBtn')
+            self.host_page.wait_for_function(
+                "() => document.querySelector('#activeGameConflictMessage')?.textContent.includes('Quick Quiz')",
+                timeout=self.TIMEOUT,
+            )
+            self.host_page.locator('#activeGameConflictDeactivateBtn').click(force=True)
+
+            alice_path = reverse(
+                'who_is_that:play', args=[who_quiz.room_code, 'Alice']
+            )
+            bob_path = reverse(
+                'who_is_that:play', args=[who_quiz.room_code, 'Bob']
+            )
+            self.participant_one_page.wait_for_url(
+                f'**{alice_path}**', timeout=self.LONG_TIMEOUT
+            )
+            self.participant_two_page.wait_for_url(
+                f'**{bob_path}**', timeout=self.LONG_TIMEOUT
+            )
+            self.host_page.wait_for_selector('#endQuizBtn', timeout=self.LONG_TIMEOUT)
+            spectator_page.wait_for_selector(
+                '[data-spectator-game="who_that"]', timeout=self.LONG_TIMEOUT
+            )
+            self.participant_one_page.wait_for_selector(
+                '#waitingQuizState:not(.d-none)', timeout=self.TIMEOUT
+            )
+            self.participant_two_page.wait_for_selector(
+                '#waitingQuizState:not(.d-none)', timeout=self.TIMEOUT
+            )
+            who_quiz.refresh_from_db()
+            self.assertEqual(who_quiz.status, 'active')
+            self.assertIsNone(who_quiz.current_question_id)
+
+            self.participant_one_page.reload()
+            self.participant_two_page.reload()
+            spectator_page.reload()
+            self.host_page.reload()
+            self.participant_one_page.wait_for_selector(
+                '#waitingQuizState:not(.d-none)', timeout=self.TIMEOUT
+            )
+            self.participant_two_page.wait_for_selector(
+                '#waitingQuizState:not(.d-none)', timeout=self.TIMEOUT
+            )
+            spectator_page.wait_for_selector(
+                '[data-spectator-game="who_that"]', timeout=self.LONG_TIMEOUT
+            )
+            self.host_page.wait_for_function(
+                '() => window.adminGameMonitor?.websocket?.readyState === WebSocket.OPEN',
+                timeout=self.TIMEOUT,
+            )
+            send_selector = f'.send-question-btn[data-question-id="{who_question.id}"]'
+            self.host_page.click(send_selector)
+            self.host_page.click(send_selector)
+            self.participant_one_page.wait_for_selector(
+                '#questionState:not(.d-none)', timeout=self.LONG_TIMEOUT
+            )
+            self.participant_two_page.wait_for_selector(
+                '#questionState:not(.d-none)', timeout=self.LONG_TIMEOUT
+            )
+            spectator_page.wait_for_function(
+                "() => document.querySelector('#stage')?.textContent.includes('Welche Person ist abgebildet?')",
+                timeout=self.LONG_TIMEOUT,
+            )
+        finally:
+            spectator_page.close()
+            spectator_context.close()
+
+    def test_blackjack_start_guard_recalls_player_from_who_that_waiting(self):
+        who_quiz = WhoThatQuiz.objects.create(
+            creator=self.admin,
+            title="E2E Stale Who Is That",
+            status="waiting",
+        )
+        WhoThatSession.objects.create(quiz=who_quiz)
+        blackjack = BlackJackQuiz.objects.create(
+            creator=self.admin,
+            title="E2E Guarded Black Jack",
+            status="waiting",
+        )
+        BlackJackSession.objects.create(quiz=blackjack)
+        HubGameStep.objects.create(
+            session=self.session,
+            order=1,
+            game_key="who_that",
+            room_code=who_quiz.room_code,
+            title=who_quiz.title,
+        )
+        HubGameStep.objects.create(
+            session=self.session,
+            order=2,
+            game_key="blackjack",
+            room_code=blackjack.room_code,
+            title=blackjack.title,
+        )
+
+        spectator_context = self._browser.new_context()
+        install_browser_test_stubs(spectator_context)
+        spectator_page = spectator_context.new_page()
+        try:
+            self._join_lobby(self.participant_one_page, "Alice")
+            self._join_lobby(self.participant_two_page, "Bob")
+            self._start_session_from_monitor()
+
+            self.host_page.click('[data-session-panel-target="checkInPanel"]')
+            self.host_page.wait_for_selector("#checkInPanel.is-open", timeout=self.TIMEOUT)
+            self.host_page.click("#startCheckInBtn")
+            self.participant_one_page.wait_for_selector(
+                "#readyCheckInBtn:not([disabled])", timeout=self.TIMEOUT
+            )
+            self.participant_two_page.wait_for_selector(
+                "#readyCheckInBtn:not([disabled])", timeout=self.TIMEOUT
+            )
+            self.participant_one_page.click("#readyCheckInBtn")
+            self.participant_two_page.click("#readyCheckInBtn")
+            self._wait_until_host_check_in_row("Alice", "Bereit")
+            self._wait_until_host_check_in_row("Bob", "Bereit")
+            self.host_page.click("#completeCheckInBtn")
+            self.host_page.wait_for_function(
+                "() => document.querySelector('#checkInLockedBadge')?.textContent.includes('Locked: 2')",
+                timeout=self.TIMEOUT,
+            )
+
+            WhoThatParticipant.objects.create(
+                quiz=who_quiz,
+                name="Bob",
+                hub_session_code=self.session.code,
+                is_active=True,
+            )
+            who_play_url = (
+                f"{self.live_server_url}"
+                f"{reverse('who_is_that:play', args=[who_quiz.room_code, 'Bob'])}"
+                f"?hub_session={self.session.code}"
+            )
+            self.participant_two_page.goto(who_play_url)
+            self.participant_two_page.wait_for_selector(
+                "#waitingQuizState:not(.d-none)", timeout=self.TIMEOUT
+            )
+            spectator_page.goto(
+                f"{self.live_server_url}"
+                f"{reverse('games_hub:spectate_session', args=[self.session.code])}"
+            )
+
+            monitor_url = (
+                f"{self.live_server_url}"
+                f"{reverse('admin_dashboard:blackjack_monitor', args=[blackjack.room_code])}"
+                f"?hub_session={self.session.code}"
+            )
+            self.host_page.goto(monitor_url)
+            self.host_page.wait_for_function(
+                "() => window.adminGameMonitor?.websocket?.readyState === WebSocket.OPEN",
+                timeout=self.TIMEOUT,
+            )
+            self.host_page.click("#startQuizBtn")
+            self.host_page.wait_for_function(
+                "() => document.querySelector('#lobbyReturnGuardNames')?.textContent.includes('Bob')",
+                timeout=self.TIMEOUT,
+            )
+            blackjack.refresh_from_db()
+            self.assertEqual(blackjack.status, "waiting")
+            self.assertIsNone(blackjack.started_at)
+
+            recall_button = self.host_page.locator("#lobbyReturnGuardPrimaryBtn")
+            recall_button.click(force=True)
+            recall_button.click(force=True)
+            lobby_pattern = f"**/hub/lobby/{self.session.code}/**"
+            self.participant_one_page.wait_for_url(
+                lobby_pattern, timeout=self.LONG_TIMEOUT
+            )
+            self.participant_two_page.wait_for_url(
+                lobby_pattern, timeout=self.LONG_TIMEOUT
+            )
+            self.host_page.wait_for_function(
+                "() => document.querySelector('#lobbyReturnGuardModal')?.getAttribute('aria-hidden') === 'true'",
+                timeout=self.TIMEOUT,
+            )
+            self.host_page.evaluate(
+                "() => document.querySelector('#lobbyReturnGuardModal')"
+                ".dispatchEvent(new Event('hidden.bs.modal'))"
+            )
+            self.host_page.wait_for_selector(
+                "#startQuizBtn:not([disabled])", timeout=self.TIMEOUT
+            )
+
+            self.host_page.click("#startQuizBtn", force=True)
+            blackjack_pattern = f"**/blackjack/play/{blackjack.room_code}/**"
+            self.participant_one_page.wait_for_url(
+                blackjack_pattern, timeout=self.LONG_TIMEOUT
+            )
+            self.participant_two_page.wait_for_url(
+                blackjack_pattern, timeout=self.LONG_TIMEOUT
+            )
+            self.host_page.wait_for_selector("#endQuizBtn", timeout=self.LONG_TIMEOUT)
+            spectator_page.wait_for_selector(
+                '[data-spectator-game="blackjack"]', timeout=self.LONG_TIMEOUT
+            )
+
+            blackjack.refresh_from_db()
+            self.assertEqual(blackjack.status, "active")
+            self.assertIsNotNone(blackjack.started_at)
+            self.assertIsNone(blackjack.current_question_id)
+            self.assertFalse(
+                WhoThatParticipant.objects.get(
+                    quiz=who_quiz,
+                    name="Bob",
+                    hub_session_code=self.session.code,
+                ).is_active
+            )
+        finally:
+            spectator_page.close()
+            spectator_context.close()
 
     def test_lobby_join_requires_token_for_rejoin_and_uses_vhs_states(self):
         lobby_url = f"{self.live_server_url}{reverse('games_hub:lobby', args=[self.session.code])}"

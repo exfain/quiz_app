@@ -111,15 +111,15 @@
                     </button>
                 </div>
                 <div class="card-body">
-                    {% if not quiz.current_question %}
+                    {% if not quiz.current_question and not prepared_question %}
                         <!-- Question Selection -->
                         <div id="questionSelection">
                             <h6 class="mb-3">Select Next Question</h6>
                             <div class="question-list" id="availableQuestions">
                                 {% for question in available_questions %}
-                                <div class="question-item" data-question-id="{{ question.id }}">
+                                <div class="question-item" data-question-id="{{ question.id }}" data-host-question-item data-host-question-text="{{ question.question_text|escape }}">
                                     <div class="question-content">
-                                        <div class="question-text">{{ question.question_text|truncatechars:120 }}</div>
+                                        <div class="question-text" data-host-question-text-target>{{ question.question_text|truncatechars:120 }}</div>
                                         <div class="question-preview">
                                             <div class="answer-preview">
                                                 <strong>Correct Answer:</strong>
@@ -147,9 +147,9 @@
                                             <small class="text-muted d-block mb-1">Zeit in Sek.</small>
                                             <input type="number" class="form-control form-control-sm question-time-input" placeholder="Time (s)" min="5" step="1" style="max-width: 120px;" value="{{ question.time_limit|default:default_question_time_limit }}">
                                         </div>
-                                        <button type="button" class="btn btn-secondary send-question-btn" data-question-id="{{ question.id }}" {% if quiz.status != 'active' %}disabled title="Start the quiz to send questions"{% endif %}>
-                                            <i data-lucide="send"></i>
-                                            FRAGE SENDEN
+                                        <button type="button" class="btn btn-secondary send-question-btn" data-question-id="{{ question.id }}" {% if quiz.status != 'active' %}disabled title="Start the quiz to select questions"{% endif %}>
+                                            <i data-lucide="mouse-pointer-click"></i>
+                                            FRAGE WÄHLEN
                                         </button>
                                     </div>
                                 </div>
@@ -166,6 +166,58 @@
                                     </a>
                                 </div>
                             {% endif %}
+                        </div>
+                    {% elif prepared_question and not quiz.current_question %}
+                        <div id="preparedQuestion" class="active-question-view">
+                            <div class="active-question-header">
+                                <h6>Ausgewählte Frage</h6>
+                            </div>
+
+                            <div class="current-question-content">
+                                <div class="question-text">{{ prepared_question.question_text }}</div>
+
+                                <div class="current-question-details">
+                                    <div class="answer-display">
+                                        <div class="answer-label">Correct Answer:</div>
+                                        <div class="answer-value">{{ prepared_question.get_formatted_correct_answer }}</div>
+                                    </div>
+
+                                    {% if prepared_question.hint_text %}
+                                    <div class="hint-display">
+                                        <div class="hint-label">Hint:</div>
+                                        <div class="hint-value">{{ prepared_question.hint_text }}</div>
+                                    </div>
+                                    {% endif %}
+
+                                    <div class="scoring-display">
+                                        <div class="scoring-label">Scoring:</div>
+                                        <div class="scoring-value">
+                                            {% if quiz.scoring_mode == 'rank' %}
+                                                Ranking: Punkte nach Teilnehmerzahl
+                                            {% else %}
+                                                {{ prepared_question.get_zone_max_points }} pts max,
+                                                ±{{ prepared_question.tolerance_percentage }}% tolerance
+                                                (Mode: Zonen)
+                                            {% endif %}
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div class="question-actions d-flex flex-wrap gap-2 align-items-end">
+                                    <div>
+                                        <label for="preparedQuestionTime" class="form-label small text-muted mb-1">Zeit in Sek.</label>
+                                        <input type="number" id="preparedQuestionTime" class="form-control form-control-sm question-time-input" min="5" step="1" value="{{ default_question_time_limit }}">
+                                    </div>
+                                    <button type="button" class="btn btn-primary" id="sendPreparedQuestionBtn" data-question-id="{{ prepared_question.id }}">
+                                        <i data-lucide="send"></i>
+                                        FRAGE SENDEN
+                                    </button>
+                                    <button type="button" class="btn btn-outline-secondary" id="returnToQuestionOverviewBtn">
+                                        <i data-lucide="arrow-left"></i>
+                                        ZURÜCK ZUR FRAGENÜBERSICHT
+                                    </button>
+                                </div>
+                            </div>
                         </div>
                     {% else %}
                         <!-- Active Question Display -->
@@ -211,7 +263,7 @@
                                 
                                 <div class="question-actions">
                                     {% if question_runtime.question_phase == 'prompt_visible' or question_runtime.question_phase == 'content_visible' %}
-                                        <button type="button" class="btn btn-primary" id="openAnsweringBtn" data-question-id="{{ quiz.current_question.id }}"{% if question_runtime.question_phase == 'prompt_visible' %} disabled aria-disabled="true"{% endif %}>FRAGE FREIGEBEN</button>
+                                        <button type="button" class="btn btn-primary" id="openAnsweringBtn" data-question-id="{{ quiz.current_question.id }}"{% if question_runtime.question_phase == 'prompt_visible' %} disabled aria-disabled="true"{% endif %}>ANTWORT FREIGEBEN</button>
                                     {% else %}
                                         <button class="btn btn-warning" id="endQuestionBtn">
                                             <i data-lucide="skip-forward"></i>
@@ -990,7 +1042,7 @@ document.addEventListener('DOMContentLoaded', function() {
         updateSendButtonAsSent(btn) {
             btn.disabled = false;
             btn.classList.remove('loading');
-            btn.innerHTML = '<i data-lucide="send"></i> FRAGE SENDEN';
+            btn.innerHTML = '<i data-lucide="mouse-pointer-click"></i> FRAGE WÄHLEN';
             btn.removeAttribute('title');
             // Add "already sent" hint next to button if not already there
             const wrapper = btn.closest('.d-flex');
@@ -1011,7 +1063,7 @@ document.addEventListener('DOMContentLoaded', function() {
             document.querySelectorAll('.send-question-btn').forEach(btn => {
                 btn.disabled = false;
                 btn.classList.remove('loading');
-                btn.innerHTML = '<i data-lucide="send"></i> FRAGE SENDEN';
+                btn.innerHTML = '<i data-lucide="mouse-pointer-click"></i> FRAGE WÄHLEN';
                 btn.removeAttribute('title');
             });
             try { lucide.createIcons(); } catch(_) {}
@@ -1110,6 +1162,11 @@ document.addEventListener('DOMContentLoaded', function() {
                         this.markQuestionSent(data.question.id);
                     }
                     location.reload(); // Refresh to show active question
+                    break;
+
+                case 'question_prepared':
+                case 'question_preparation_cleared':
+                    location.reload();
                     break;
 
                 case 'question_answering_opened':
@@ -1302,17 +1359,19 @@ document.addEventListener('DOMContentLoaded', function() {
                 btn.addEventListener('click', (e) => {
                     const questionId = e.target.closest('button').dataset.questionId;
                     if (!this.isActive) {
-                        alert('Start the quiz before sending questions.');
+                        alert('Start the quiz before selecting questions.');
                         return;
                     }
-                    // Ask for confirmation if question was already sent
-                    if (this.isQuestionSent(questionId)) {
-                        if (!confirm('This question has already been sent. Do you want to send it again?')) {
-                            return;
-                        }
-                    }
-                    this.sendQuestion(questionId);
+                    this.prepareQuestion(questionId, e.currentTarget);
                 });
+            });
+
+            document.getElementById('sendPreparedQuestionBtn')?.addEventListener('click', (event) => {
+                this.sendQuestion(event.currentTarget.dataset.questionId);
+            });
+
+            document.getElementById('returnToQuestionOverviewBtn')?.addEventListener('click', (event) => {
+                this.clearPreparedQuestion(event.currentTarget);
             });
             
             // End Question button
@@ -1415,14 +1474,16 @@ document.addEventListener('DOMContentLoaded', function() {
         
         sendQuestion(questionId) {
             if (this.websocket && this.websocket.readyState === WebSocket.OPEN) {
-                const btn = document.querySelector(`[data-question-id="${questionId}"]`);
+                const btn = document.getElementById('sendPreparedQuestionBtn')
+                    || document.querySelector(`.send-question-btn[data-question-id="${questionId}"]`);
                 if (btn) btn.classList.add('loading');
 
                 // Read optional time override from the adjacent input
                 let customTime = null;
                 try {
-                    const item = btn.closest('.question-item');
-                    const input = item ? item.querySelector('.question-time-input') : null;
+                    const item = btn?.closest('.question-item');
+                    const input = document.getElementById('preparedQuestionTime')
+                        || (item ? item.querySelector('.question-time-input') : null);
                     if (input && input.value) {
                         const v = parseInt(input.value, 10);
                         if (!isNaN(v) && v > 0) customTime = v;
@@ -1442,6 +1503,29 @@ document.addEventListener('DOMContentLoaded', function() {
 
                 this.websocket.send(JSON.stringify(payload));
             }
+        }
+
+        prepareQuestion(questionId, button) {
+            if (!questionId || !Number.isFinite(this.stateRevision) || this.stateRevision < 0) return;
+            if (!this.websocket || this.websocket.readyState !== WebSocket.OPEN) return;
+            button?.classList.add('loading');
+            this.websocket.send(JSON.stringify({
+                type: 'admin_prepare_question',
+                hub_session: this.getHubSession(),
+                ...this.hostActionContext(questionId),
+            }));
+        }
+
+        clearPreparedQuestion(button) {
+            if (!Number.isFinite(this.stateRevision) || this.stateRevision < 0) return;
+            if (!this.websocket || this.websocket.readyState !== WebSocket.OPEN) return;
+            button.disabled = true;
+            button.setAttribute('aria-busy', 'true');
+            this.websocket.send(JSON.stringify({
+                type: 'admin_clear_prepared_question',
+                hub_session: this.getHubSession(),
+                ...this.hostActionContext(null),
+            }));
         }
 
         hostActionContext(questionId) {

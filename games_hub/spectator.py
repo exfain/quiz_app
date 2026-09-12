@@ -284,6 +284,8 @@ def _runtime_fields(runtime):
             'question_phase',
             'question_presented_at',
             'question_visible_at',
+            'question_presentation_duration_ms',
+            'question_reveal_ms_per_character',
             'content_revealed_at',
             'answering_started_at',
             'answering_deadline_at',
@@ -361,10 +363,6 @@ def _serialize_quick_quiz(quiz, session):
         # A prepared manual question is intentionally inactive until answering opens.
         # That legacy inactive flag must not be interpreted as a completed question.
         reveal = False
-    if manual_current_question and not _question_is_visible(runtime):
-        waiting = _game_waiting_payload(None)
-        waiting.update(_runtime_fields(runtime))
-        return waiting
     manual_prompt_only = manual_current_question and question_phase == 'prompt_visible'
 
     question_payload = {
@@ -424,6 +422,14 @@ def _serialize_estimation(quiz, session):
             ordered_questions,
         )
     if not question:
+        if runtime.get('question_shell_prepared'):
+            prepared = _game_waiting_payload(None)
+            prepared.update({
+                'phase': 'question_prepared',
+                'message': 'Frage wird vorbereitet',
+                **_runtime_fields(runtime),
+            })
+            return prepared
         waiting = _game_waiting_payload(quiz_session)
         waiting.update(_runtime_fields(runtime))
         return waiting

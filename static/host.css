@@ -27,3 +27,29 @@
 .qa-host-root .quiz-pick-item .quiz-code {
   font-family: var(--host-font-family);
 }
+.host-question-selection-heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    margin-bottom: 1rem;
+}
+
+[data-host-question-item][hidden] {
+    display: none !important;
+}
+
+.host-question-selection-active {
+    border-color: var(--primary-500, #0d6efd) !important;
+}
+
+[data-host-question-selection].host-question-selection-mode > h6 {
+    display: none;
+}
+
+@media (max-width: 575.98px) {
+    .host-question-selection-heading {
+        align-items: stretch;
+        flex-direction: column;
+    }
+}

@@ -41,6 +41,7 @@ from wer_weiss_mehr.models import (
 from buzzer.models import BuzzerGame, BuzzerParticipant
 from host_points.models import HostPointsGame, HostPointsParticipant
 from wann_war_das.models import WannWarDasAnswer, WannWarDasGame, WannWarDasParticipant, WannWarDasQuestion
+from .models import DashboardSettings
 from wer_weiss_mehr.services import build_game_state
 from games_hub.active_game_guard import (
     _end_game_cleanly,
@@ -3777,22 +3778,36 @@ def quiz_monitor(request, room_code):
     participants = quiz.participants.all().filter(hub_session_code=hub_session).order_by('-total_score', 'name')
     # If the quiz has a predefined set of selected questions, show only those
     if quiz.selected_questions.exists():
-        available_questions = quiz.selected_questions.all().order_by('-created_at')
+        available_questions = list(quiz.selected_questions.all().order_by('-created_at'))
     else:
-        available_questions = QuizQuestion.objects.filter(created_by=request.user).order_by('-created_at')
+        available_questions = list(QuizQuestion.objects.filter(created_by=request.user).order_by('-created_at'))
     
     # Get or create quiz session
     quiz_session, created = QuizSession.objects.get_or_create(quiz=quiz)
     
+    question_runtime = current_snapshot('quiz', quiz.room_code, hub_session)
+    prepared_question_id = str(question_runtime.get('prepared_question_id') or '')
+    prepared_question = next(
+        (question for question in available_questions if str(question.id) == prepared_question_id),
+        None,
+    )
+    prepared_question_number = next(
+        (index for index, question in enumerate(available_questions, start=1) if question == prepared_question),
+        None,
+    )
+
     context = {
         'quiz': quiz,
         'participants': participants,
         'participant_count': participants.count(),
         'available_questions': available_questions,
         'quiz_session': quiz_session,
+        'prepared_question': prepared_question,
+        'prepared_question_number': prepared_question_number,
+        'host_active_question': quiz.current_question or prepared_question,
         'lobby_url': _get_lobby_url(request, room_code),
         'current_unit_is_tutorial': is_current_unit_tutorial_question('quiz', quiz.room_code, hub_session, quiz.current_question_id),
-        'question_runtime': current_snapshot('quiz', quiz.room_code, hub_session),
+        'question_runtime': question_runtime,
     }
     return render(request, 'admin_dashboard/quiz_monitor.html', context)
 
@@ -4573,7 +4588,17 @@ def analytics(request):
 @admin_required
 def settings(request):
     """Settings page"""
-    context = {}
+    dashboard_settings = DashboardSettings.load()
+    if request.method == 'POST':
+        dashboard_settings.question_reveal_ms_per_character = (
+            DashboardSettings.normalize_question_reveal_speed(
+                request.POST.get('question_reveal_ms_per_character')
+            )
+        )
+        dashboard_settings.save(update_fields=['question_reveal_ms_per_character'])
+        messages.success(request, 'Fragen-Einblendgeschwindigkeit gespeichert.')
+        return redirect('admin_dashboard:settings')
+    context = {'dashboard_settings': dashboard_settings}
     return render(request, 'admin_dashboard/settings.html', context)
 
 
@@ -6812,6 +6837,14 @@ def estimation_monitor(request, room_code):
     # Get or create quiz session
     quiz_session, created = EstimationSession.objects.get_or_create(quiz=quiz)
     question_runtime = current_snapshot('estimation', room_code, hub_session)
+    prepared_question_id = str(question_runtime.get('prepared_question_id') or '')
+    prepared_question = next(
+        (
+            question for question in available_questions
+            if str(question.id) == prepared_question_id
+        ),
+        None,
+    )
     
     context = {
         'quiz': quiz,
@@ -6820,6 +6853,7 @@ def estimation_monitor(request, room_code):
         'available_questions': available_questions,
         'quiz_session': quiz_session,
         'question_runtime': question_runtime,
+        'prepared_question': prepared_question,
         # Estimation currently uses a shared 90-second runtime default,
         # not a per-question persisted time_limit field.
         'default_question_time_limit': default_question_time_limit,

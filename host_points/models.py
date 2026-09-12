@@ -168,6 +168,8 @@ class HostPointsGame(SyncBase):
         if game.status == status and game.ended_at:
             return False
 
+        if game.status == 'active' and game.current_round_number:
+            game._finalize_round_scores(game.current_round_number)
         game.status = status
         game.ended_at = timezone.now()
         game.save(update_fields=['status', 'ended_at', 'updated_at'])
@@ -205,6 +207,31 @@ class HostPointsGame(SyncBase):
         )
         return True, participant
 
+    def _finalize_round_scores(self, round_number):
+        session_code = self.active_hub_session_code or ''
+        participants = [
+            participant
+            for participant in self.get_ordered_participants(session_code or None)
+            if self.is_official_participant(participant)
+        ]
+        scored_participant_ids = set(
+            self.adjustments.filter(
+                hub_session_code=session_code,
+                round_number=round_number,
+            ).values_list('participant_id', flat=True)
+        )
+        HostPointsAdjustment.objects.bulk_create([
+            HostPointsAdjustment(
+                quiz=self,
+                participant=participant,
+                hub_session_code=session_code,
+                round_number=round_number,
+                points_delta=0,
+            )
+            for participant in participants
+            if participant.id not in scored_participant_ids
+        ])
+
     @transaction.atomic
     def next_round(self, expected_round=None):
         game = HostPointsGame.objects.select_for_update().get(pk=self.pk)
@@ -217,6 +244,7 @@ class HostPointsGame(SyncBase):
                 return False
             if expected_round != game.current_round_number:
                 return False
+        game._finalize_round_scores(game.current_round_number or 1)
         game.current_round_number = max(game.current_round_number or 0, 1) + 1
         game.save(update_fields=['current_round_number', 'updated_at'])
         return True

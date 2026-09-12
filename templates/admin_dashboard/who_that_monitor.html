@@ -103,11 +103,11 @@
                 <div class="card-body">
                     {% if not display_question %}
                         <!-- Question Selection -->
-                        <div id="questionSelection">
+                        <div id="questionSelection" data-host-question-selection>
                             <h6 class="mb-3">Select Next Question</h6>
                             <div class="question-list" id="availableQuestions">
                                 {% for question in available_questions %}
-                                <div class="question-item" data-question-id="{{ question.id }}">
+                                <div class="question-item" data-question-id="{{ question.id }}" data-host-question-item data-host-question-text="{{ question.question_text|escape }}">
                                     <div class="question-image">
                                         {% if question.image %}
                                             <img src="{{ question.image.url }}" alt="Question Image" class="question-thumbnail">
@@ -118,7 +118,7 @@
                                         {% endif %}
                                     </div>
                                     <div class="question-content">
-                                        <div class="question-text">{{ question.question_text }}</div>
+                                        <div class="question-text" data-host-question-text-target>{{ question.question_text }}</div>
                                         <div class="question-answer">
                                             <strong>Answer:</strong> {{ question.correct_answer }}
                                             {% if question.alternative_answers %}
@@ -143,9 +143,9 @@
                                             <small class="text-muted d-block mb-1">Zeit in Sek.</small>
                                             <input type="number" class="form-control form-control-sm question-time-input" placeholder="Time (s)" min="5" step="1" style="max-width: 120px;" value="{{ question.time_limit }}">
                                         </div>
-                                        <button type="button" class="btn btn-secondary send-question-btn" data-question-id="{{ question.id }}" {% if quiz.status != 'active' %}disabled title="Start the quiz to send questions"{% endif %}>
-                                            <i data-lucide="send"></i>
-                                            FRAGE SENDEN
+                                        <button type="button" class="btn btn-secondary send-question-btn" data-question-id="{{ question.id }}" data-host-question-select data-host-select-label="FRAGE WÄHLEN" data-host-send-label="FRAGE SENDEN" data-host-selection-noun="Frage" {% if quiz.status != 'active' %}disabled title="Start the quiz to send questions"{% endif %}>
+                                            <i data-lucide="mouse-pointer-click"></i>
+                                            FRAGE WÄHLEN
                                         </button>
                                     </div>
                                 </div>
@@ -1226,21 +1226,7 @@ document.addEventListener('DOMContentLoaded', function() {
                     
                 case 'quiz_started':
                     console.log('Quiz started:', data.message);
-                    this.isActive = true;
-                    this.currentQuestionId = null;
-                    this.reviewQuestionId = null;
-                    this.isQuestionActive = false;
-                    this.resetLiveResponseStateForQuestion();
-                    this.quizStartTime = new Date(data.timestamp);
-                    //this.updateQuizTimer();
-                    this.updateQuizStatus('active');
-                    // Enable question send buttons if they were disabled before start
-                    document.querySelectorAll('.send-question-btn').forEach(btn => {
-                        btn.disabled = false;
-                        btn.removeAttribute('title');
-                    });
-                    // Re-apply sent state so already-sent questions remain blocked
-                    this.applySentStates();
+                    location.reload();
                     break;
                     
                 case 'tutorial_start':
@@ -1529,22 +1515,6 @@ document.addEventListener('DOMContentLoaded', function() {
         
         startQuiz() {
             if (this.websocket && this.websocket.readyState === WebSocket.OPEN) {
-                // Also notify hub directly (in case backend mirror is unavailable)
-                try {
-                    const qs = new URLSearchParams(window.location.search);
-                    const hub = qs.get('hub_session') || window.__hubCode || (function(){ try { return sessionStorage.getItem("_hub_admin"); } catch(_) { return null; } })();
-                    if (hub) {
-                        const hubWs = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws/hub/' + hub + '/');
-                        hubWs.onopen = () => {
-                            hubWs.send(JSON.stringify({
-                                type: 'navigate_direct',
-                                game_key: 'who_that',
-                                room_code: '{{ quiz.room_code }}'
-                            }));
-                            setTimeout(() => hubWs.close(), 100);
-                        };
-                    }
-                } catch(_) {}
                 const showTutorial = document.getElementById('showTutorialToggle')?.checked ?? false;
                 const playTutorial = document.getElementById('playTutorialToggle')?.checked ?? false;
                 if (playTutorial && !{{ quiz.tutorial_question_id|yesno:"true,false" }}) {
@@ -1556,8 +1526,6 @@ document.addEventListener('DOMContentLoaded', function() {
                     show_tutorial: showTutorial,
                     play_tutorial: playTutorial
                 }));
-                //reload page
-                location.reload();
             }
         }
         

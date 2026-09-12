@@ -1,9 +1,11 @@
 import math
+import uuid
 
 from django.db import transaction
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 from games_hub.authoritative_state import (
+    QUESTION_PRESENTATION_DELAY_MS,
     QuestionPhaseDecision,
     attach_snapshot_metadata,
     current_snapshot,
@@ -196,22 +198,77 @@ def present_next_round(quiz, *, hub_session_code=None, action, at=None):
     session = WerWeissMehrSession.objects.select_for_update().filter(quiz=quiz).first()
     if not session or not quiz.current_question:
         raise ValueError('Keine Runtime-Session gefunden.')
+    if session.phase == WerWeissMehrSession.PHASE_ROUND_ACTIVE:
+        snapshot = current_snapshot('wer_weiss_mehr', quiz.room_code, hub_session_code)
+        return open_answering(
+            game_key='wer_weiss_mehr',
+            room_code=quiz.room_code,
+            session_code=hub_session_code,
+            action={
+                **action,
+                'question_id': quiz.current_question_id,
+                'round_id': session.current_round,
+                'set_id': quiz.current_question_id,
+                'state_revision': snapshot.get('state_revision'),
+                'game_id': snapshot.get('game_id'),
+            },
+            answer_duration_seconds=session.time_limit_seconds,
+            at=at,
+        )
     if session.phase != WerWeissMehrSession.PHASE_REVIEW:
         raise ValueError('Aktuell ist keine Runde in der Review-Phase.')
     if not _can_start_next_round(quiz, session, quiz.current_question):
         raise ValueError('Keine weitere Runde moeglich. Bitte das Set beenden.')
 
-    decision = present_question(
+    transition_at = at or timezone.now()
+    presentation_action_id = uuid.uuid5(
+        uuid.NAMESPACE_URL,
+        f"wer_weiss_mehr:{quiz.room_code}:next-round:{action.get('client_action_id')}:present",
+    )
+    presented = present_question(
         game_key='wer_weiss_mehr',
         room_code=quiz.room_code,
         session_code=hub_session_code,
-        action=action,
+        action={
+            **action,
+            'client_action_id': str(presentation_action_id),
+        },
         answer_duration_seconds=session.time_limit_seconds,
-        at=at,
+        at=transition_at - timezone.timedelta(milliseconds=QUESTION_PRESENTATION_DELAY_MS),
     )
-    if decision.accepted and not decision.duplicate:
-        session.finalize_review(open_round=False)
-    return decision
+    if not presented.accepted:
+        return presented
+
+    if not session.finalize_review(open_round=False):
+        raise ValueError('Die naechste Runde konnte nicht vorbereitet werden.')
+
+    opened = open_answering(
+        game_key='wer_weiss_mehr',
+        room_code=quiz.room_code,
+        session_code=hub_session_code,
+        action={
+            **action,
+            'state_revision': presented.state_revision,
+            'game_id': presented.snapshot.get('game_id'),
+            'question_id': quiz.current_question_id,
+            'round_id': session.current_round,
+            'set_id': quiz.current_question_id,
+        },
+        answer_duration_seconds=session.time_limit_seconds,
+        at=transition_at,
+    )
+    if not opened.accepted:
+        transaction.set_rollback(True)
+        return opened
+
+    started_at = parse_datetime(opened.snapshot.get('answering_started_at') or '')
+    round_state = session.open_prepared_round(started_at=started_at)
+    if not round_state:
+        raise ValueError('Die naechste Runde konnte nicht freigegeben werden.')
+    expected_deadline = parse_datetime(opened.snapshot.get('answering_deadline_at') or '')
+    if expected_deadline and session.round_end_time != expected_deadline:
+        raise ValueError('Die Rundendeadline ist nicht konsistent.')
+    return opened
 
 
 @transaction.atomic

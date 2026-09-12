@@ -119,6 +119,12 @@ class WhoThatConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
             return
         quiz = await self.get_quiz()
         if quiz:
+            if quiz.status == 'active':
+                await self.send(text_data=json.dumps({
+                    'type': 'quiz_started',
+                    'message': 'Who is That Quiz is already active.',
+                }))
+                return
             show_tutorial = bool(data.get('show_tutorial', False))
             play_tutorial = bool(data.get('play_tutorial', False))
             hub_session_code = await self._get_hub_session_code_for_room()

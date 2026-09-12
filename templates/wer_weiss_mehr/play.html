@@ -29,11 +29,13 @@
         <div id="timerBox" class="timer-box d-none"><span id="timerValue">0</span>s</div>
         <h2 id="questionText" class="question-text"></h2>
         <div id="tiles" class="tiles wwm-target-grid" role="list" aria-label="Gesuchte Begriffe"></div>
-        <div id="answerArea" class="answer-area wwm-answer-area d-none">
-            <label class="form-label fw-semibold wwm-answer-label" for="answerInput">Deine Antwort für diese Runde</label>
-            <div class="wwm-answer-controls">
-                <input class="form-control form-control-lg wwm-answer-input" id="answerInput" autocomplete="off">
-                <button class="btn btn-primary btn-lg vhs-action-button wwm-submit-button" id="submitBtn">Einloggen</button>
+        <div id="answerSlot" class="wwm-answer-slot">
+            <div id="answerArea" class="answer-area wwm-answer-area d-none">
+                <label class="form-label fw-semibold wwm-answer-label" for="answerInput">Deine Antwort für diese Runde</label>
+                <div class="wwm-answer-controls">
+                    <input class="form-control form-control-lg wwm-answer-input" id="answerInput" autocomplete="off">
+                    <button class="btn btn-primary btn-lg vhs-action-button wwm-submit-button" id="submitBtn">Einloggen</button>
+                </div>
             </div>
         </div>
         <div id="messageBox" class="alert mt-4 d-none"></div>
@@ -92,6 +94,11 @@ body > * { position: relative; z-index: 1; }
     .tile.wwm-tile-presentation-reveal { animation: none; }
 }
 .answer-area { border-top: 1px solid #e2e6ee; padding-top: 24px; }
+.wwm-answer-slot.is-reserved .wwm-answer-area.d-none {
+    display: block !important;
+    visibility: hidden;
+    pointer-events: none;
+}
 .end-screen { margin-top: 24px; border-top: 1px solid #e2e6ee; padding-top: 24px; }
 .ended-card { background: #f4f6fa; border: 1px solid #d7dbe5; border-radius: 20px; padding: 20px; }
 .ended-card h2 { margin: 0 0 8px; font-weight: 900; }
@@ -433,9 +440,14 @@ function renderState(state, skipSnapshotCheck = false) {
     window.unitTutorialNotice?.setFromPayload(state);
     const own = state.participant_state || {};
     const answerArea = document.getElementById('answerArea');
+    const answerSlot = document.getElementById('answerSlot');
     const messageBox = document.getElementById('messageBox');
     const gameEnded = ['completed', 'cancelled', 'ended'].includes(state.game_status);
     const gameInactive = state.game_status !== 'active' && !gameEnded;
+    answerSlot.classList.toggle(
+        'is-reserved',
+        Boolean(question) && !gameEnded && state.phase !== 'set_completed'
+    );
     messageBox.className = 'alert mt-4 d-none';
     hideEndScreen();
     updateLobbyActionVisibility(state);
@@ -575,6 +587,7 @@ function updateVhsTileLayout() {
         delete tiles.dataset.tileCount;
         delete tiles.dataset.singleColumn;
         delete tiles.dataset.scrollable;
+        delete tiles.dataset.layoutSignature;
         return;
     }
 
@@ -583,8 +596,19 @@ function updateVhsTileLayout() {
     const rowGap = parseFloat(styles.getPropertyValue('--wwm-tile-row-gap')) || 7;
     const columnGap = parseFloat(styles.getPropertyValue('--wwm-tile-column-gap')) || 26;
     const minTileWidth = parseFloat(styles.getPropertyValue('--wwm-tile-min-width')) || 132;
-    const answerArea = document.getElementById('answerArea');
-    const answerHeight = answerArea.classList.contains('d-none') ? 0 : answerArea.getBoundingClientRect().height;
+    const answerSlot = document.getElementById('answerSlot');
+    const answerHeight = answerSlot.classList.contains('is-reserved')
+        ? answerSlot.getBoundingClientRect().height
+        : 0;
+    const availableWidth = tiles.parentElement?.clientWidth || tiles.clientWidth;
+    const layoutSignature = [
+        window.innerWidth,
+        window.innerHeight,
+        tileCount,
+        Math.round(answerHeight),
+        Math.round(availableWidth),
+    ].join(':');
+    if (tiles.dataset.layoutSignature === layoutSignature) return;
     const shell = tiles.closest('.vhs-theme-shell');
     const shellBottom = shell ? shell.getBoundingClientRect().bottom - 58 : window.innerHeight - 58;
     const usableBottom = Math.min(window.innerHeight - 58, shellBottom);
@@ -593,7 +617,6 @@ function updateVhsTileLayout() {
         usableBottom - tiles.getBoundingClientRect().top - answerHeight - 28
     );
     const heightRows = Math.max(1, Math.floor((availableHeight + rowGap) / (tileHeight + rowGap)));
-    const availableWidth = tiles.parentElement?.clientWidth || tiles.clientWidth;
     const maxColumns = Math.max(
         1,
         Math.floor((availableWidth + columnGap) / (minTileWidth + columnGap))
@@ -604,6 +627,7 @@ function updateVhsTileLayout() {
     const needsScroll = contentHeight > availableHeight + 2;
 
     tiles.dataset.tileCount = String(tileCount);
+    tiles.dataset.layoutSignature = layoutSignature;
     tiles.dataset.singleColumn = columns === 1 ? 'true' : 'false';
     tiles.dataset.scrollable = needsScroll ? 'true' : 'false';
     tiles.style.setProperty('--wwm-tile-rows', String(rows));

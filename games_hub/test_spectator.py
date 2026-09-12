@@ -529,7 +529,9 @@ class HubSpectatorTests(TestCase):
             reverse('games_hub:spectate_session_state', args=[self.session.code])
         ).json()['game']
         self.assertEqual(delayed['question_phase'], 'prompt_visible')
-        self.assertIsNone(delayed['question'])
+        self.assertEqual(delayed['question']['text'], 'Nur die Frage zuerst?')
+        self.assertNotIn('options', delayed['question'])
+        self.assertNotIn('correct_answer', delayed['question'])
 
         revealed = reveal_question_content(
             game_key='quiz',

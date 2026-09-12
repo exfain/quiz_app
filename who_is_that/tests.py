@@ -20,8 +20,8 @@ from games_hub.authoritative_state import (
     reveal_question_content,
     validate_and_reserve_action,
 )
-from games_hub.models import GameRuntimeState, HubGameStep, HubSession
-from games_hub.spectator import _serialize_who_that
+from games_hub.models import GameRuntimeState, HubGameStep, HubParticipant, HubSession
+from games_hub.spectator import _serialize_who_that, build_spectator_state
 from .models import (
     WhoThatAnswer,
     WhoThatParticipant,
@@ -435,6 +435,127 @@ class FakeChannelLayer:
 
     async def group_send(self, group_name, message):
         self.group_messages.append((group_name, message))
+
+
+class WhoThatStartFlowTests(TransactionTestCase):
+    def setUp(self):
+        self.host = User.objects.create_user(
+            username='who-that-start-host',
+            password='pw123456',
+            is_staff=True,
+        )
+        self.quiz = WhoThatQuiz.objects.create(
+            creator=self.host,
+            title='Who That Start',
+            status='waiting',
+        )
+        WhoThatSession.objects.create(quiz=self.quiz)
+        self.hub = HubSession.objects.create(
+            code='WTSTART',
+            name='Who That Start Session',
+            is_active=True,
+            started_at=timezone.now(),
+            check_in_status=HubSession.CHECK_IN_COMPLETED,
+            check_in_completed_at=timezone.now(),
+            locked_participant_count=1,
+        )
+        HubGameStep.objects.create(
+            session=self.hub,
+            order=0,
+            game_key='who_that',
+            room_code=self.quiz.room_code,
+            title=self.quiz.title,
+        )
+        HubParticipant.objects.create(
+            session=self.hub,
+            nickname='Alice',
+            checked_in_at=timezone.now(),
+            scoring_eligible=True,
+        )
+        WhoThatParticipant.objects.create(
+            quiz=self.quiz,
+            name='Alice',
+            hub_session_code=self.hub.code,
+            is_active=False,
+        )
+        self.consumer = WhoThatConsumer()
+        self.consumer.room_code = self.quiz.room_code
+        self.consumer.room_group_name = f'who_that_{self.quiz.room_code}'
+        self.consumer.channel_layer = FakeChannelLayer()
+        self.sent_payloads = []
+
+        async def capture_send(*args, **kwargs):
+            self.sent_payloads.append(json.loads(kwargs['text_data']))
+
+        self.consumer.send = capture_send
+
+    def test_start_is_authoritative_waiting_and_duplicate_is_idempotent(self):
+        async_to_sync(self.consumer.handle_admin_start_quiz)({})
+
+        self.quiz.refresh_from_db()
+        self.assertEqual(self.quiz.status, 'active')
+        self.assertIsNone(self.quiz.current_question_id)
+        first_started_at = self.quiz.started_at
+        snapshot = current_snapshot(
+            'who_that',
+            self.quiz.room_code,
+            self.hub.code,
+        )
+        self.assertEqual(snapshot['question_flow_mode'], 'manual_three_phase')
+        self.assertIsNone(snapshot['current_question_id'])
+        self.assertIsNone(snapshot['question_phase'])
+        first_revision = snapshot['state_revision']
+
+        spectator = build_spectator_state(self.hub)
+        self.assertEqual(spectator['game']['game_key'], 'who_that')
+        self.assertEqual(spectator['phase'], 'game_waiting')
+        self.assertIsNone(spectator['game'].get('question'))
+        event_types = [
+            message['type']
+            for _, message in self.consumer.channel_layer.group_messages
+        ]
+        self.assertEqual(event_types.count('quiz_started'), 1)
+        self.assertEqual(event_types.count('hub_event'), 1)
+
+        async_to_sync(self.consumer.handle_admin_start_quiz)({})
+
+        self.quiz.refresh_from_db()
+        duplicate_snapshot = current_snapshot(
+            'who_that',
+            self.quiz.room_code,
+            self.hub.code,
+        )
+        self.assertEqual(self.quiz.started_at, first_started_at)
+        self.assertEqual(duplicate_snapshot['state_revision'], first_revision)
+        self.assertEqual(
+            sum(
+                message['type'] == 'quiz_started'
+                for _, message in self.consumer.channel_layer.group_messages
+            ),
+            1,
+        )
+        self.assertEqual(self.sent_payloads[-1]['type'], 'quiz_started')
+
+
+class WhoThatStartMonitorTests(SimpleTestCase):
+    def test_host_waits_for_server_start_confirmation_before_reload(self):
+        source = (
+            REPO_ROOT / 'templates' / 'admin_dashboard' / 'who_that_monitor.html'
+        ).read_text(encoding='utf-8')
+        start_method = source.split('        startQuiz() {', 1)[1].split(
+            '        endQuiz() {',
+            1,
+        )[0]
+        started_case = source.split("                case 'quiz_started':", 1)[1].split(
+            "                case 'tutorial_start':",
+            1,
+        )[0]
+
+        self.assertIn("type: 'admin_start_quiz'", start_method)
+        self.assertNotIn('navigate_direct', start_method)
+        self.assertNotIn('location.reload()', start_method)
+        self.assertIn('location.reload()', started_case)
+        self.assertNotIn('updateQuizStatus', started_case)
 
 
 class WhoThatPointsConfigurationTests(TestCase):

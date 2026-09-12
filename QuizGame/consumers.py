@@ -11,14 +11,17 @@ from .presentation import (
     QUIZ_ANSWER_REVEAL_PAUSE_MS,
     QUIZ_ANSWER_REVEAL_STAGGER_MS,
     multiple_choice_answering_starts_at,
+    question_typewriter_duration_ms,
     quiz_answers_open_automatically,
 )
+from admin_dashboard.models import DashboardSettings
 from games_hub.active_game_guard import resolve_session_game_activation_for_room
 from games_hub.authoritative_consumer import AuthoritativeGameConsumerMixin
 from games_hub.authoritative_state import (
     QuestionPhaseDecision,
     current_snapshot,
     finish_question_flow,
+    get_runtime_state,
     open_answering,
     present_question,
     reset_question_flow,
@@ -89,6 +92,10 @@ class QuizConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
                 await self.handle_tutorial_completed(text_data_json)
             elif message_type == 'admin_send_question':
                 await self.handle_admin_send_question(text_data_json)
+            elif message_type == 'admin_prepare_question':
+                await self.handle_admin_prepare_question(text_data_json)
+            elif message_type == 'admin_clear_prepared_question':
+                await self.handle_admin_clear_prepared_question(text_data_json)
             elif message_type == 'admin_reveal_question_content':
                 await self.handle_admin_reveal_question_content(text_data_json)
             elif message_type == 'admin_open_answering':
@@ -373,12 +380,95 @@ class QuizConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
             'question': question_payload,
         })
 
+    async def handle_admin_prepare_question(self, data):
+        question_id = data.get('question_id')
+        quiz = await self.get_quiz()
+        if not quiz or quiz.status != 'active':
+            await self.send(text_data=json.dumps({
+                'type': 'error',
+                'message': 'Start the quiz before selecting questions.',
+                'question_id': question_id,
+            }))
+            return
+        question = await self.get_question(question_id)
+        if not question:
+            await self.send(text_data=json.dumps({
+                'type': 'error',
+                'message': 'Frage konnte nicht ausgewaehlt werden.',
+                'question_id': question_id,
+            }))
+            return
+        if await self.quiz_has_selected_questions(quiz.id):
+            if not await self.is_question_in_selected(quiz.id, question.id):
+                await self.send(text_data=json.dumps({
+                    'type': 'error',
+                    'message': 'This question is not part of the selected set for this quiz.',
+                    'question_id': question_id,
+                }))
+                return
+
+        hub_session = (
+            data.get('hub_session')
+            or data.get('hub_session_code')
+            or await self._get_hub_session_code_for_room()
+        )
+        decision = await self.prepare_quiz_question(question.id, hub_session, data)
+        if not decision.get('accepted'):
+            await self.send(text_data=json.dumps({
+                'type': 'action_rejected',
+                'code': decision.get('code'),
+                'message': decision.get('message'),
+                'question_id': question.id,
+                'snapshot': decision.get('snapshot'),
+            }))
+            return
+        await self.channel_layer.group_send(
+            self.room_group_name,
+            {
+                'type': 'question_prepared',
+                'question_id': question.id,
+                **self.question_lifecycle_fields(decision.get('snapshot')),
+            },
+        )
+
+    async def handle_admin_clear_prepared_question(self, data):
+        hub_session = (
+            data.get('hub_session')
+            or data.get('hub_session_code')
+            or await self._get_hub_session_code_for_room()
+        )
+        decision = await self.clear_prepared_quiz_question(hub_session, data)
+        if not decision.get('accepted'):
+            await self.send(text_data=json.dumps({
+                'type': 'action_rejected',
+                'code': decision.get('code'),
+                'message': decision.get('message'),
+                'snapshot': decision.get('snapshot'),
+            }))
+            return
+        await self.channel_layer.group_send(
+            self.room_group_name,
+            {
+                'type': 'question_preparation_cleared',
+                **self.question_lifecycle_fields(decision.get('snapshot')),
+            },
+        )
+
     async def handle_admin_reveal_question_content(self, data):
         quiz = await self.get_quiz()
         if not quiz or not quiz.current_question_id:
             await self.send(text_data=json.dumps({
                 'type': 'error',
                 'message': 'Es ist keine aktuelle Frage vorhanden.',
+            }))
+            return
+        question = await self.get_question(quiz.current_question_id)
+        if question and question.get_effective_question_type() == 'short_answer':
+            await self.send(text_data=json.dumps({
+                'type': 'action_rejected',
+                'code': 'invalid_phase',
+                'message': 'Freitextfragen besitzen keine Antwortanzeige.',
+                'question_id': quiz.current_question_id,
             }))
             return
         hub_session = (
@@ -476,6 +566,8 @@ class QuizConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
                 'question_phase',
                 'question_presented_at',
                 'question_visible_at',
+                'question_presentation_duration_ms',
+                'question_reveal_ms_per_character',
                 'content_revealed_at',
                 'answering_started_at',
                 'answering_deadline_at',
@@ -736,6 +828,16 @@ class QuizConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
                             'time_taken': existing_answer['time_taken'],
                         }))
                 else:
+                    runtime_snapshot = await database_sync_to_async(current_snapshot)(
+                        'quiz', self.room_code, hub_session,
+                    )
+                    if runtime_snapshot.get('question_shell_prepared'):
+                        await self.send(text_data=json.dumps({
+                            'type': 'question_prepared',
+                            'question_id': runtime_snapshot.get('prepared_question_id'),
+                            **self.question_lifecycle_fields(runtime_snapshot),
+                        }))
+                        return
                     last_result = await self.get_last_question_result()
                     if last_result:
                         await self.send(text_data=json.dumps({
@@ -791,6 +893,19 @@ class QuizConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
         await self.send(text_data=json.dumps({
             'type': 'question_started',
             'question': question,
+            **self.question_lifecycle_fields(event),
+        }))
+
+    async def question_prepared(self, event):
+        await self.send(text_data=json.dumps({
+            'type': 'question_prepared',
+            'question_id': event.get('question_id'),
+            **self.question_lifecycle_fields(event),
+        }))
+
+    async def question_preparation_cleared(self, event):
+        await self.send(text_data=json.dumps({
+            'type': 'question_preparation_cleared',
             **self.question_lifecycle_fields(event),
         }))
 
@@ -1192,16 +1307,146 @@ class QuizConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
     def present_quiz_question(self, quiz_id, question_id, hub_session_code, action):
         quiz = Quiz.objects.select_for_update().get(id=quiz_id)
         question = QuizQuestion.objects.get(id=question_id)
+        milliseconds_per_character = DashboardSettings.question_reveal_speed()
         decision = present_question(
             game_key='quiz',
             room_code=self.room_code,
             session_code=hub_session_code,
             action=action,
+            question_presentation_duration_ms=question_typewriter_duration_ms(
+                question.question_text,
+                milliseconds_per_character,
+            ),
+            question_reveal_ms_per_character=milliseconds_per_character,
         )
         if decision.accepted and not decision.duplicate:
+            runtime = get_runtime_state('quiz', self.room_code, hub_session_code)
+            runtime = GameRuntimeState.objects.select_for_update().get(pk=runtime.pk)
+            public_snapshot = dict(runtime.public_snapshot or {})
+            public_snapshot.pop('prepared_question_id', None)
+            public_snapshot.pop('question_shell_prepared', None)
+            runtime.public_snapshot = public_snapshot
+            runtime.save(update_fields=['public_snapshot', 'updated_at'])
             session, _ = QuizSession.objects.select_for_update().get_or_create(quiz=quiz)
             session.present_question(question)
         return decision
+
+    @database_sync_to_async
+    @transaction.atomic
+    def prepare_quiz_question(self, question_id, hub_session_code, action):
+        quiz = Quiz.objects.select_for_update().get(room_code=self.room_code)
+        runtime = get_runtime_state('quiz', self.room_code, hub_session_code)
+        runtime = GameRuntimeState.objects.select_for_update().get(pk=runtime.pk)
+        snapshot = dict(runtime.public_snapshot or {})
+        current_prepared_id = str(snapshot.get('prepared_question_id') or '')
+        requested_id = str(question_id)
+        if quiz.current_question_id or runtime.current_question_id or runtime.question_phase:
+            return {
+                'accepted': False,
+                'code': 'invalid_phase',
+                'message': 'Die vorherige Frage ist noch aktiv.',
+                'snapshot': current_snapshot('quiz', self.room_code, hub_session_code),
+            }
+        if current_prepared_id == requested_id:
+            return {
+                'accepted': True,
+                'code': 'accepted',
+                'snapshot': current_snapshot('quiz', self.room_code, hub_session_code),
+            }
+        try:
+            action_revision = int(action.get('state_revision'))
+        except (TypeError, ValueError):
+            action_revision = -1
+        if action_revision < runtime.context_revision or action_revision > runtime.state_revision:
+            return {
+                'accepted': False,
+                'code': 'stale_action',
+                'message': 'Der Spielzustand hat sich geaendert.',
+                'snapshot': current_snapshot('quiz', self.room_code, hub_session_code),
+            }
+        supplied_game_id = str(action.get('game_id') or '')
+        if supplied_game_id and supplied_game_id != runtime.game_instance_id:
+            return {
+                'accepted': False,
+                'code': 'stale_action',
+                'message': 'Die Aktion gehoert zu einer anderen Spielinstanz.',
+                'snapshot': current_snapshot('quiz', self.room_code, hub_session_code),
+            }
+        if not action.get('client_action_id'):
+            return {
+                'accepted': False,
+                'code': 'invalid_action_context',
+                'message': 'client_action_id fehlt.',
+                'snapshot': current_snapshot('quiz', self.room_code, hub_session_code),
+            }
+        snapshot.pop('question', None)
+        snapshot.pop('answer_options', None)
+        snapshot.pop('answer_duration_seconds', None)
+        snapshot['prepared_question_id'] = requested_id
+        snapshot['question_shell_prepared'] = True
+        snapshot['revealed'] = False
+        runtime.state_revision += 1
+        runtime.context_revision = runtime.state_revision
+        runtime.public_snapshot = snapshot
+        runtime.save(update_fields=[
+            'state_revision',
+            'context_revision',
+            'public_snapshot',
+            'updated_at',
+        ])
+        return {
+            'accepted': True,
+            'code': 'accepted',
+            'snapshot': current_snapshot('quiz', self.room_code, hub_session_code),
+        }
+
+    @database_sync_to_async
+    @transaction.atomic
+    def clear_prepared_quiz_question(self, hub_session_code, action):
+        quiz = Quiz.objects.select_for_update().get(room_code=self.room_code)
+        runtime = get_runtime_state('quiz', self.room_code, hub_session_code)
+        runtime = GameRuntimeState.objects.select_for_update().get(pk=runtime.pk)
+        if quiz.current_question_id or runtime.current_question_id or runtime.question_phase:
+            return {
+                'accepted': False,
+                'code': 'invalid_phase',
+                'message': 'Eine bereits gesendete Frage kann nicht zurueckgenommen werden.',
+                'snapshot': current_snapshot('quiz', self.room_code, hub_session_code),
+            }
+        snapshot = dict(runtime.public_snapshot or {})
+        if not snapshot.get('prepared_question_id'):
+            return {
+                'accepted': True,
+                'code': 'accepted',
+                'snapshot': current_snapshot('quiz', self.room_code, hub_session_code),
+            }
+        try:
+            action_revision = int(action.get('state_revision'))
+        except (TypeError, ValueError):
+            action_revision = -1
+        if action_revision < runtime.context_revision or action_revision > runtime.state_revision:
+            return {
+                'accepted': False,
+                'code': 'stale_action',
+                'message': 'Der Spielzustand hat sich geaendert.',
+                'snapshot': current_snapshot('quiz', self.room_code, hub_session_code),
+            }
+        snapshot.pop('prepared_question_id', None)
+        snapshot['question_shell_prepared'] = True
+        runtime.state_revision += 1
+        runtime.context_revision = runtime.state_revision
+        runtime.public_snapshot = snapshot
+        runtime.save(update_fields=[
+            'state_revision',
+            'context_revision',
+            'public_snapshot',
+            'updated_at',
+        ])
+        return {
+            'accepted': True,
+            'code': 'accepted',
+            'snapshot': current_snapshot('quiz', self.room_code, hub_session_code),
+        }
 
     @database_sync_to_async
     @transaction.atomic
@@ -1303,6 +1548,9 @@ class QuizConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
             session_code=hub_session_code,
             action=action,
             answer_duration_seconds=answer_duration_seconds,
+            uses_content_phase=(
+                question.get_effective_question_type() != 'short_answer'
+            ),
             at=opened_at,
         )
         if decision.accepted and not decision.duplicate:

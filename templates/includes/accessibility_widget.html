@@ -3352,11 +3352,26 @@ html[data-participant-theme="arcade"] .qa-arcade-wait-loader-10::before {
     shell.querySelectorAll('.vhs-question-kicker').forEach(function (kicker) {
       setVhsText(kicker, gameMeta);
     });
-    if (!question || question.querySelector(':scope > .vhs-question-lead')) return;
+    if (!question) return;
 
     var originalQuestion = question.textContent;
     var fullQuestion = originalQuestion.replace(/\s+/g, ' ').trim();
-    if (!fullQuestion) return;
+    var questionContent = question.closest('.question-content');
+    if (
+      questionContent
+      && !questionContent.querySelector(':scope > .vhs-question-kicker')
+      && (
+        fullQuestion
+        || document.body.classList.contains('quiz-play-page')
+        || document.body.classList.contains('estimation-play-page')
+      )
+    ) {
+      var kicker = document.createElement('p');
+      kicker.className = 'vhs-question-kicker';
+      kicker.textContent = gameMeta;
+      questionContent.insertBefore(kicker, question);
+    }
+    if (!fullQuestion || question.querySelector(':scope > .vhs-question-lead')) return;
     question.dataset.vhsFullQuestion = originalQuestion;
 
     var firstWhitespace = fullQuestion.search(/\s/);
@@ -3370,13 +3385,6 @@ html[data-participant-theme="arcade"] .qa-arcade-wait-loader-10::before {
     body.textContent = remainingQuestion;
     question.replaceChildren(lead, body);
 
-    var questionContent = question.closest('.question-content');
-    if (questionContent && !questionContent.querySelector(':scope > .vhs-question-kicker')) {
-      var kicker = document.createElement('p');
-      kicker.className = 'vhs-question-kicker';
-      kicker.textContent = gameMeta;
-      questionContent.insertBefore(kicker, question);
-    }
   }
 
   function syncVhsScoreWidget(shell) {

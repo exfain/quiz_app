@@ -276,7 +276,7 @@ class BlackJackQuestionPhaseTemplateTests(SimpleTestCase):
 
     def test_host_uses_direct_question_release_without_content_step(self):
         self.assertIn('FRAGE SENDEN', self.monitor)
-        self.assertIn('FRAGE FREIGEBEN', self.monitor)
+        self.assertIn('ANTWORT FREIGEBEN', self.monitor)
         self.assertNotIn('ANTWORTFELD ANZEIGEN', self.monitor)
         self.assertIn("sendQuestionPhaseAction(\n                    'admin_open_answering'", self.monitor)
         self.assertNotIn('override_time_', self.monitor)
@@ -2484,6 +2484,7 @@ class BlackJackHostSetProgressTests(TransactionTestCase):
         start_function = content.split('startQuiz() {', 1)[1].split('\n        endQuiz() {', 1)[0]
         self.assertIn('this.setStartButtonPending(true);', start_function)
         self.assertIn("type: 'admin_start_quiz'", start_function)
+        self.assertNotIn('navigate_direct', start_function)
         self.assertNotIn('location.reload()', start_function)
         self.assertIn('this.handleQuizStarted(data);', content)
         self.assertIn('renderActiveControls()', content)

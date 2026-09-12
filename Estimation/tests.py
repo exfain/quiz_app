@@ -17,10 +17,11 @@ from games_hub.authoritative_state import (
     reset_question_flow,
 )
 from games_hub.models import GameRuntimeState, HubGameStep, HubParticipant, HubSession
+from games_hub.spectator import _serialize_estimation
 
 from .consumers import EstimationConsumer
 from .models import EstimationAnswer, EstimationParticipant, EstimationQuestion, EstimationQuiz, EstimationSession
-from .views import _get_last_revealed_estimation_question
+from .views import _build_estimation_initial_state, _get_last_revealed_estimation_question
 
 
 class FakeChannelLayer:
@@ -528,6 +529,7 @@ class EstimationManualQuestionPhaseTests(TransactionTestCase):
             session_code='HUBPHASE',
             mode=GameRuntimeState.QUESTION_FLOW_MANUAL_THREE_PHASE,
         )
+        EstimationSession.objects.get_or_create(quiz=self.quiz)
 
     def action_for(self, question, action_id=None):
         runtime = current_snapshot('estimation', self.quiz.room_code, 'HUBPHASE')
@@ -557,6 +559,135 @@ class EstimationManualQuestionPhaseTests(TransactionTestCase):
             self.action_for(self.question, action_id),
             at,
         )
+
+    def prepare(self, question=None):
+        question = question or self.question
+        return async_to_sync(self.consumer.prepare_estimation_question)(
+            question.id,
+            'HUBPHASE',
+            self.action_for(question),
+        )
+
+    def test_prepare_question_creates_blank_public_shell_without_starting_question(self):
+        decision = self.prepare()
+
+        self.quiz.refresh_from_db()
+        session = EstimationSession.objects.get(quiz=self.quiz)
+        snapshot = current_snapshot('estimation', self.quiz.room_code, 'HUBPHASE')
+        self.assertTrue(decision['accepted'])
+        self.assertIsNone(self.quiz.current_question_id)
+        self.assertEqual(session.current_question_number, 0)
+        self.assertFalse(session.is_question_active)
+        self.assertEqual(snapshot['prepared_question_id'], str(self.question.id))
+        self.assertTrue(snapshot['question_shell_prepared'])
+        self.assertNotIn('question', snapshot)
+        self.assertIsNone(snapshot['question_presented_at'])
+        self.assertIsNone(snapshot['answering_started_at'])
+        self.assertIsNone(snapshot['answering_deadline_at'])
+
+    def test_prepared_reload_replaces_previous_result_with_blank_question_shell(self):
+        self.prepare(self.second_question)
+
+        state = _build_estimation_initial_state(
+            self.quiz,
+            self.participant,
+            'HUBPHASE',
+            1,
+            0,
+        )
+        self.assertEqual(state['phase'], 'prepared')
+        self.assertTrue(state['question_shell_prepared'])
+        self.assertNotIn('current_question', state)
+        self.assertNotIn('correct_answer', state)
+        self.assertNotIn('revealed_question', state)
+
+        response = self.client.get(
+            reverse('estimation:play', args=[self.quiz.room_code, self.participant.name]),
+            {'hub_session': 'HUBPHASE'},
+        )
+        body = response.content.decode('utf-8')
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, self.quiz.title)
+        self.assertContains(response, '"phase": "prepared"')
+        self.assertNotIn(self.second_question.question_text, body)
+        self.assertNotIn(self.second_question.hint_text or 'unused-hint', body)
+
+    def test_prepared_spectator_payload_contains_no_question_or_solution(self):
+        hub_session = HubSession.objects.create(code='HUBPHASE', name='Prepared Estimation')
+        self.prepare()
+
+        payload = _serialize_estimation(self.quiz, hub_session)
+        self.assertEqual(payload['phase'], 'question_prepared')
+        self.assertIsNone(payload['question'])
+        self.assertNotIn('correct_answer', payload)
+
+    def test_send_after_prepare_presents_question_and_clears_prepared_marker(self):
+        self.prepare()
+        presented_at = timezone.now()
+        decision = self.present(at=presented_at, duration=42)
+
+        self.quiz.refresh_from_db()
+        session = EstimationSession.objects.get(quiz=self.quiz)
+        snapshot = current_snapshot('estimation', self.quiz.room_code, 'HUBPHASE')
+        self.assertTrue(decision.accepted)
+        self.assertEqual(self.quiz.current_question_id, self.question.id)
+        self.assertEqual(snapshot['question_phase'], 'prompt_visible')
+        self.assertNotIn('prepared_question_id', snapshot)
+        self.assertNotIn('question_shell_prepared', snapshot)
+        self.assertFalse(session.is_question_active)
+        self.assertIsNone(session.question_end_time)
+        self.assertIsNone(snapshot['answering_started_at'])
+        self.assertIsNone(snapshot['answering_deadline_at'])
+
+    def test_return_to_overview_clears_selection_but_keeps_participant_shell_blank(self):
+        self.prepare()
+        decision = async_to_sync(self.consumer.clear_prepared_estimation_question)(
+            'HUBPHASE',
+            self.action_for(self.question),
+        )
+
+        snapshot = current_snapshot('estimation', self.quiz.room_code, 'HUBPHASE')
+        self.quiz.refresh_from_db()
+        self.assertTrue(decision['accepted'])
+        self.assertNotIn('prepared_question_id', snapshot)
+        self.assertTrue(snapshot['question_shell_prepared'])
+        self.assertIsNone(self.quiz.current_question_id)
+        self.assertIsNone(snapshot['question_presented_at'])
+
+    def test_host_monitor_separates_overview_from_prepared_question(self):
+        self.user.is_staff = True
+        self.user.save(update_fields=['is_staff'])
+        self.client.force_login(self.user)
+        self.prepare()
+
+        response = self.client.get(
+            reverse('admin_dashboard:estimation_monitor', args=[self.quiz.room_code]),
+            {'hub_session': 'HUBPHASE'},
+        )
+        body = response.content.decode('utf-8')
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('id="preparedQuestion"', body)
+        self.assertIn('id="sendPreparedQuestionBtn"', body)
+        self.assertIn('id="returnToQuestionOverviewBtn"', body)
+        self.assertNotIn('id="questionSelection"', body)
+
+    def test_participant_rejoin_receives_prepared_event_without_question_content(self):
+        self.prepare()
+        sent_messages = []
+
+        async def fake_send(text_data=None, **kwargs):
+            sent_messages.append(json.loads(text_data))
+
+        self.consumer.send = fake_send
+        async_to_sync(self.consumer.handle_participant_join)({
+            'participant_name': self.participant.name,
+            'hub_session': 'HUBPHASE',
+        })
+
+        prepared = next(message for message in sent_messages if message['type'] == 'question_prepared')
+        self.assertEqual(str(prepared['question_id']), str(self.question.id))
+        self.assertNotIn('question', prepared)
+        self.assertNotIn('correct_answer', prepared)
 
     def test_present_does_not_start_deadline_or_accept_input(self):
         presented_at = timezone.now()
@@ -756,12 +887,23 @@ class EstimationManualQuestionPhaseTests(TransactionTestCase):
         participant_source = Path('templates/estimation/play.html').read_text(encoding='utf-8')
 
         self.assertNotIn('SCHÄTZFELD ANZEIGEN', host_source)
-        self.assertIn('FRAGE FREIGEBEN', host_source)
+        self.assertIn('ANTWORT FREIGEBEN', host_source)
         self.assertNotIn("'admin_reveal_question_content'", host_source)
         self.assertIn("'admin_open_answering'", host_source)
         self.assertIn("this.questionPhase !== 'answering_open'", participant_source)
         self.assertIn("['prompt_visible', 'content_visible', 'answering_open']", participant_source)
         self.assertIn('id="estimationQuestionContent"', participant_source)
+        self.assertIn('class="is-question-content-pending"', participant_source)
+        self.assertNotIn('id="estimationQuestionContent"{% if initial_participant_phase == \'prepared\' or initial_participant_phase == \'presentation_delay\' %} class="d-none"', participant_source)
+        self.assertIn("this.setQuestionPresentationState('prepared')", participant_source)
+        self.assertIn("this.setQuestionPresentationState('presenting')", participant_source)
+        self.assertIn("this.setQuestionPresentationState('presented')", participant_source)
+        presentation_branch = participant_source.split(
+            "this.questionPhase === 'prompt_visible'",
+            1,
+        )[1].split('this.renderQuestionPhase(mergedQuestion);', 1)[0]
+        self.assertIn("this.showState('questionState')", presentation_branch)
+        self.assertNotIn("this.showState('waitingQuestionState')", presentation_branch)
 
 
 class EstimationScoringTests(TransactionTestCase):
@@ -1426,7 +1568,11 @@ class EstimationScoreBoxViewTests(TestCase):
         self.assertFalse(state['current_question']['has_answered'])
         self.assertGreaterEqual(state['current_question']['time_limit'], 0)
         self.assertGreaterEqual(state['current_question']['elapsed_seconds'], 0)
-        self.assertContains(response, 'id="questionState" class="game-state "', html=False)
+        self.assertContains(
+            response,
+            'id="questionState" class="game-state estimation-question-state is-question-presented "',
+            html=False,
+        )
 
     def test_hub_recall_listener_uses_rendered_session_after_reload(self):
         response = self.client.get(
