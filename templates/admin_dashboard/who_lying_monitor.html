@@ -219,8 +219,8 @@
                                 
                                 <div class="question-actions">
                                     <div class="d-flex align-items-center gap-2">
-                                        <input type="number" min="3" step="1" class="form-control form-control-sm" id="timePerPersonInput" value="{{ current_question_time_per_person|default:quiz.current_question.time_limit }}" style="max-width:120px;" disabled title="Während eines laufenden Sets gesperrt">
-                                        <button class="btn btn-outline-secondary btn-sm" id="updateTimePerPersonBtn" disabled title="Während eines laufenden Sets gesperrt">Zeit/Name setzen</button>
+                                        <input type="number" min="3" step="1" class="form-control form-control-sm" id="timePerPersonInput" value="{{ current_question_time_per_person|default:quiz.current_question.time_limit }}" style="max-width:120px;"{% if question_answering_open %} disabled title="Während eines laufenden Sets gesperrt"{% else %} title="Zeit pro Name vor dem Setstart"{% endif %}>
+                                        <button class="btn btn-outline-secondary btn-sm" id="updateTimePerPersonBtn"{% if question_answering_open %} disabled title="Während eines laufenden Sets gesperrt"{% else %} title="Zeit pro Name vor dem Setstart"{% endif %}>Zeit/Name setzen</button>
                                     </div>
                                     {% if question_runtime.question_phase == 'prompt_visible' or question_runtime.question_phase == 'content_visible' %}
                                     <button class="btn btn-primary" id="startSetBtn" data-question-id="{{ quiz.current_question.id }}" disabled aria-disabled="true">
@@ -1127,6 +1127,9 @@ document.addEventListener('DOMContentLoaded', function() {
 
                 case 'action_rejected':
                     this.pendingPhaseAction = null;
+                    if (document.getElementById('updateTimePerPersonBtn')) {
+                        document.getElementById('updateTimePerPersonBtn').disabled = false;
+                    }
                     this.scheduleSetStartAvailability();
                     break;
                     
@@ -1151,11 +1154,16 @@ document.addEventListener('DOMContentLoaded', function() {
                     break;
 
                 case 'time_per_person_updated':
+                    this.pendingPhaseAction = null;
                     this.currentTimePerPerson = parseInt(data.time_per_person || this.currentTimePerPerson, 10) || this.currentTimePerPerson;
                     document.querySelector('#activeQuestion .current-question-content')?.setAttribute('data-time-per-person', String(this.currentTimePerPerson));
                     if (document.getElementById('timePerPersonInput')) {
                         document.getElementById('timePerPersonInput').value = this.currentTimePerPerson;
                     }
+                    if (document.getElementById('updateTimePerPersonBtn')) {
+                        document.getElementById('updateTimePerPersonBtn').disabled = false;
+                    }
+                    this.scheduleSetStartAvailability();
                     break;
                     
                 default:
@@ -1292,13 +1300,21 @@ document.addEventListener('DOMContentLoaded', function() {
             });
 
             document.getElementById('updateTimePerPersonBtn')?.addEventListener('click', () => {
-                if (!this.websocket || this.websocket.readyState !== WebSocket.OPEN) return;
+                if (
+                    this.pendingPhaseAction
+                    || !this.websocket
+                    || this.websocket.readyState !== WebSocket.OPEN
+                ) return;
                 const raw = document.getElementById('timePerPersonInput')?.value;
                 const v = parseInt(raw || '0', 10);
                 if (isNaN(v) || v <= 0) return;
+                this.pendingPhaseAction = 'admin_set_time_per_person';
+                document.getElementById('updateTimePerPersonBtn').disabled = true;
+                this.scheduleSetStartAvailability();
                 this.websocket.send(JSON.stringify({
                     type: 'admin_set_time_per_person',
-                    time_per_person: v
+                    time_per_person: v,
+                    ...this.hostActionContext(document.getElementById('startSetBtn')?.dataset.questionId)
                 }));
             });
             
@@ -1447,8 +1463,13 @@ document.addEventListener('DOMContentLoaded', function() {
             this.pendingPhaseAction = 'admin_open_answering';
             button.disabled = true;
             button.setAttribute('aria-busy', 'true');
+            const configuredTimePerPerson = parseInt(
+                document.getElementById('timePerPersonInput')?.value || '0',
+                10
+            );
             this.websocket.send(JSON.stringify({
                 type: 'admin_open_answering',
+                ...(configuredTimePerPerson > 0 ? { time_per_person: configuredTimePerPerson } : {}),
                 ...this.hostActionContext(questionId),
             }));
         }

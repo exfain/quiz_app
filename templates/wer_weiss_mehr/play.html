@@ -9,6 +9,7 @@
 <script src="{% static 'js/authoritative-game-state.js' %}"></script>
 </head>
 <body class="wer-weiss-mehr-play-page"
+      data-authoritative-paint-gate
       data-vhs-progress-kind="set"
       data-vhs-progress-source="#vhsProgressNumber">
 <main class="wwm-page" data-participant-name="{{ participant.name }}">
@@ -453,6 +454,7 @@ function renderState(state, skipSnapshotCheck = false) {
     updateLobbyActionVisibility(state);
 
     renderScorebox(state.scorebox || []);
+    window.AuthoritativeGameState?.markInitialPaintReady?.();
 
     if (!question) {
         resetPresentationState();

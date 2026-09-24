@@ -210,13 +210,23 @@
                                     <button class="btn btn-primary primary-action" id="revealAssignContentBtn" data-question-id="{{ quiz.current_question.id }}" disabled aria-disabled="true">
                                         ELEMENTE UND ZIELE ENTHÜLLEN
                                     </button>
+                                    {% elif current_set_phase == 'waiting_reveal' %}
+                                    <button class="btn btn-success secondary-action" id="showSolutionBtn">
+                                        <i data-lucide="eye"></i>
+                                        Zuordnung anzeigen
+                                    </button>
+                                    {% elif current_set_phase == 'revealed' %}
+                                    <button class="btn btn-warning secondary-action" id="endQuestionBtn" data-action="end-set">
+                                        <i data-lucide="check-square"></i>
+                                        Set beenden
+                                    </button>
                                     {% elif current_round_index < total_rounds_current|add:"-1" %}
                                     <button class="btn btn-primary primary-action" id="nextRoundBtn">
                                         <i data-lucide="arrow-right"></i>
                                         Nächste Runde (<span id="nextRoundLabel">{{ current_round_index|add:2 }}/{{ total_rounds_current }}</span>)
                                     </button>
                                     {% else %}
-                                    <button class="btn btn-warning secondary-action" id="endQuestionBtn">
+                                    <button class="btn btn-warning secondary-action" id="endQuestionBtn" data-action="complete-round">
                                         <i data-lucide="check-square"></i>
                                         Frage beenden
                                     </button>
@@ -1106,7 +1116,7 @@ document.addEventListener('DOMContentLoaded', function() {
                     break;
 
                 case 'show_solution':
-                    // Admin kennt die Lösung bereits
+                    this.onSolutionShown();
                     break;
 
                 case 'question_ended':
@@ -1293,8 +1303,16 @@ document.addEventListener('DOMContentLoaded', function() {
             
             // "Frage beenden" – letzte Runde abschließen (→ admin_next_round → question_rounds_complete)
             // damit Teilnehmer noch ihre letzte Antwort auto-submiten können
-            document.getElementById('endQuestionBtn')?.addEventListener('click', () => {
+            document.getElementById('endQuestionBtn')?.addEventListener('click', (event) => {
+                if (event.currentTarget.dataset.action === 'end-set') {
+                    this.endCurrentQuestion();
+                    return;
+                }
                 this.sendNextRound();
+            });
+
+            document.getElementById('showSolutionBtn')?.addEventListener('click', () => {
+                this.showSolution();
             });
 
             // Nächste Runde button
@@ -1317,22 +1335,6 @@ document.addEventListener('DOMContentLoaded', function() {
         
         startQuiz() {
             if (this.websocket && this.websocket.readyState === WebSocket.OPEN) {
-                // Also notify hub directly (in case backend mirror is unavailable)
-                try {
-                    const qs = new URLSearchParams(window.location.search);
-                    const hub = qs.get('hub_session') || window.__hubCode || (function(){ try { return sessionStorage.getItem("_hub_admin"); } catch(_) { return null; } })();
-                    if (hub) {
-                        const hubWs = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws/hub/' + hub + '/');
-                        hubWs.onopen = () => {
-                            hubWs.send(JSON.stringify({
-                                type: 'navigate_direct',
-                                game_key: 'assign',
-                                room_code: '{{ quiz.room_code }}'
-                            }));
-                            setTimeout(() => hubWs.close(), 100);
-                        };
-                    }
-                } catch(_) {}
                 const showTutorial = document.getElementById('showTutorialToggle')?.checked ?? false;
                 const playTutorial = document.getElementById('playTutorialToggle')?.checked ?? false;
                 if (playTutorial && !{{ quiz.tutorial_question_id|yesno:"true,false" }}) {
@@ -1489,17 +1491,12 @@ document.addEventListener('DOMContentLoaded', function() {
             const actions = document.querySelector('.question-actions');
             if (actions) {
                 actions.innerHTML = `
-                    <button class="btn btn-success primary-action" id="showSolutionBtn">
+                    <button class="btn btn-success secondary-action" id="showSolutionBtn">
                         <i data-lucide="eye"></i>
                         Zuordnung anzeigen
                     </button>
-                    <button class="btn btn-warning secondary-action" id="endQuestionBtn">
-                        <i data-lucide="check-square"></i>
-                        Spiel beendet
-                    </button>
                 `;
                 document.getElementById('showSolutionBtn')?.addEventListener('click', () => this.showSolution());
-                document.getElementById('endQuestionBtn')?.addEventListener('click', () => this.endCurrentQuestion());
                 try { lucide.createIcons(); } catch(_) {}
             }
             this.updateMonitorPhase();
@@ -1511,6 +1508,22 @@ document.addEventListener('DOMContentLoaded', function() {
             }
             const btn = document.getElementById('showSolutionBtn');
             if (btn) btn.disabled = true;
+        }
+
+        onSolutionShown() {
+            this.currentPhaseLabel = 'Zuordnung angezeigt';
+            const actions = document.querySelector('.question-actions');
+            if (actions) {
+                actions.innerHTML = `
+                    <button class="btn btn-warning secondary-action" id="endQuestionBtn" data-action="end-set">
+                        <i data-lucide="check-square"></i>
+                        Set beenden
+                    </button>
+                `;
+                document.getElementById('endQuestionBtn')?.addEventListener('click', () => this.endCurrentQuestion());
+                try { lucide.createIcons(); } catch(_) {}
+            }
+            this.updateMonitorPhase();
         }
 
         onRoundAdvanced(data) {
@@ -1534,6 +1547,7 @@ document.addEventListener('DOMContentLoaded', function() {
                         const btn = document.createElement('button');
                         btn.className = 'btn btn-warning secondary-action';
                         btn.id = 'endQuestionBtn';
+                        btn.dataset.action = 'complete-round';
                         btn.innerHTML = '<i data-lucide="check-square"></i> Frage beenden';
                         btn.addEventListener('click', () => this.sendNextRound());
                         actions.appendChild(btn);

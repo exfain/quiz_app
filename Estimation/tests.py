@@ -104,6 +104,154 @@ class EstimationStartSyncTests(TransactionTestCase):
             }
         )
 
+    def test_waiting_hub_start_clears_stale_question_before_start_broadcast(self):
+        user = User.objects.create_user(username='estimation-stale-start-host', is_staff=True)
+        question = EstimationQuestion.objects.create(
+            question_text='Stale question from an earlier run',
+            correct_answer=42,
+            unit='number',
+            created_by=user,
+        )
+        quiz = EstimationQuiz.objects.create(
+            title='Clean Estimation Start',
+            room_code='9104',
+            creator=user,
+            status='waiting',
+            started_at=timezone.now() - timezone.timedelta(hours=1),
+            current_question=question,
+            question_start_time=timezone.now() - timezone.timedelta(minutes=5),
+        )
+        estimation_session = EstimationSession.objects.create(
+            quiz=quiz,
+            current_question_number=1,
+            total_questions_sent=1,
+            is_question_active=True,
+            question_end_time=timezone.now() - timezone.timedelta(minutes=4),
+            pending_answers={'Alice': {'user_answer': 40}},
+            total_responses_current_question=1,
+        )
+        session = HubSession.objects.create(code='HUBSTALE', name='Hub Stale Start')
+        session.check_in_status = HubSession.CHECK_IN_COMPLETED
+        session.check_in_completed_at = timezone.now()
+        session.locked_participant_count = 1
+        session.save(update_fields=['check_in_status', 'check_in_completed_at', 'locked_participant_count'])
+        HubParticipant.objects.create(
+            session=session,
+            nickname='Alice',
+            checked_in_at=timezone.now(),
+            scoring_eligible=True,
+        )
+        HubGameStep.objects.create(
+            session=session,
+            order=0,
+            game_key='estimation',
+            room_code=quiz.room_code,
+        )
+        EstimationParticipant.objects.create(
+            quiz=quiz,
+            name='Alice',
+            hub_session_code=session.code,
+            is_active=False,
+        )
+        consumer, sent_messages = self.make_consumer(quiz)
+
+        async_to_sync(consumer.handle_admin_start_quiz)({})
+        async_to_sync(consumer.handle_participant_join)({
+            'participant_name': 'Alice',
+            'hub_session': session.code,
+        })
+
+        quiz.refresh_from_db()
+        estimation_session.refresh_from_db()
+        snapshot = current_snapshot('estimation', quiz.room_code, session.code)
+        self.client.force_login(user)
+        host_response = self.client.get(
+            reverse('admin_dashboard:estimation_monitor', args=[quiz.room_code]),
+            {'hub_session': session.code},
+        )
+        self.assertEqual(quiz.status, 'active')
+        self.assertIsNone(quiz.current_question_id)
+        self.assertIsNone(quiz.question_start_time)
+        self.assertEqual(estimation_session.current_question_number, 0)
+        self.assertEqual(estimation_session.total_questions_sent, 0)
+        self.assertFalse(estimation_session.is_question_active)
+        self.assertIsNone(estimation_session.question_end_time)
+        self.assertEqual(estimation_session.pending_answers, {})
+        self.assertEqual(estimation_session.total_responses_current_question, 0)
+        self.assertIsNone(snapshot['question_phase'])
+        self.assertEqual([message['type'] for message in sent_messages], ['quiz_started'])
+        self.assertNotContains(host_response, 'End Question Early')
+        self.assertContains(host_response, 'FRAGE WÄHLEN')
+
+    def test_host_monitor_waits_for_start_ack_before_reloading(self):
+        source = Path('templates/admin_dashboard/estimation_monitor.html').read_text(
+            encoding='utf-8'
+        )
+        start_source = source.split('        startQuiz() {', 1)[1].split(
+            '        endQuiz() {',
+            1,
+        )[0]
+        started_handler = source.split("case 'quiz_started':", 1)[1].split('break;', 1)[0]
+
+        self.assertIn('this.setStartButtonPending(true);', start_source)
+        self.assertIn("type: 'admin_start_quiz'", start_source)
+        self.assertNotIn("type: 'navigate_direct'", start_source)
+        self.assertNotIn('location.reload()', start_source)
+        self.assertIn('location.reload()', started_handler)
+        self.assertNotIn('updateQuizStatus', started_handler)
+
+    def test_active_estimation_rebroadcasts_start_after_participant_recall(self):
+        user = User.objects.create_user(username='estimation-recall-restart-host')
+        quiz = EstimationQuiz.objects.create(
+            title='Recall Restart Estimation',
+            room_code='9103',
+            creator=user,
+            status='active',
+            started_at=timezone.now(),
+        )
+        session = HubSession.objects.create(code='HUBRETRY', name='Hub Retry')
+        session.check_in_status = HubSession.CHECK_IN_COMPLETED
+        session.check_in_completed_at = timezone.now()
+        session.locked_participant_count = 1
+        session.save(update_fields=[
+            'check_in_status',
+            'check_in_completed_at',
+            'locked_participant_count',
+        ])
+        HubParticipant.objects.create(
+            session=session,
+            nickname='Alice',
+            checked_in_at=timezone.now(),
+            scoring_eligible=True,
+        )
+        HubGameStep.objects.create(
+            session=session,
+            order=0,
+            game_key='estimation',
+            room_code=quiz.room_code,
+        )
+        EstimationParticipant.objects.create(
+            quiz=quiz,
+            name='Alice',
+            hub_session_code=session.code,
+            is_active=False,
+        )
+        consumer, sent_messages = self.make_consumer(quiz)
+
+        async_to_sync(consumer.handle_admin_start_quiz)({})
+
+        quiz.refresh_from_db()
+        self.assertEqual(quiz.status, 'active')
+        self.assertEqual(sent_messages, [])
+        self.assertEqual(
+            [message[1]['type'] for message in consumer.channel_layer.group_messages],
+            ['quiz_started', 'hub_event'],
+        )
+        self.assertEqual(
+            consumer.channel_layer.group_messages[1][1]['event']['type'],
+            'quiz_started',
+        )
+
     def test_fresh_start_clears_stale_reveal_runtime_before_first_question(self):
         user = User.objects.create_user(username='estimation-restart-host')
         question = EstimationQuestion.objects.create(
@@ -697,9 +845,10 @@ class EstimationManualQuestionPhaseTests(TransactionTestCase):
 
         self.assertTrue(decision.accepted)
         self.assertEqual(decision.snapshot['question_phase'], 'prompt_visible')
+        duration_ms = decision.snapshot['question_presentation_duration_ms']
         self.assertEqual(
             parse_datetime(decision.snapshot['question_visible_at']),
-            presented_at + timezone.timedelta(seconds=1),
+            presented_at + timezone.timedelta(milliseconds=duration_ms),
         )
         self.assertIsNone(self.quiz.question_start_time)
         self.assertFalse(session.is_question_active)
@@ -712,7 +861,7 @@ class EstimationManualQuestionPhaseTests(TransactionTestCase):
         ))
 
         early = self.open_answering(
-            at=presented_at + timezone.timedelta(milliseconds=999),
+            at=parse_datetime(decision.snapshot['question_visible_at']) - timezone.timedelta(milliseconds=1),
         )
         self.assertFalse(early.accepted)
         self.assertEqual(early.code, 'question_not_visible')
@@ -1785,6 +1934,29 @@ class EstimationScoreBoxViewTests(TestCase):
         self.assertContains(response, 'estimationQuestionScoreboardData')
         self.assertContains(response, 'estimationInitialProgressData')
         self.assertContains(response, 'score-history-empty score-box__empty')
+
+    def test_estimation_player_progress_uses_current_and_total_question_count(self):
+        question_one = self._create_question('Question one', 100)
+        question_two = self._create_question('Question two', 200)
+        question_three = self._create_question('Question three', 300)
+        self.quiz.selected_questions.set([question_one, question_two, question_three])
+        self.quiz.question_order = [question_one.id, question_two.id, question_three.id]
+        self.quiz.current_question = question_two
+        self.quiz.save(update_fields=['question_order', 'current_question'])
+
+        response = self.client.get(
+            reverse('estimation:play', args=[self.quiz.room_code, self.participant.name]),
+            {'hub_session': self.participant.hub_session_code},
+        )
+
+        self.assertEqual(response.context['current_question_number'], 1)
+        self.assertContains(
+            response,
+            '<span id="vhsEstimationProgress" hidden aria-hidden="true">1/3</span>',
+            html=True,
+        )
+        self.assertContains(response, 'data-vhs-progress-source="#vhsEstimationProgress"')
+        self.assertContains(response, 'this.setVhsQuestionProgress(this.currentQuestionIndex);')
 
     def test_estimation_rank_mode_uses_awarded_max_points_for_played_question(self):
         self.quiz.scoring_mode = 'rank'

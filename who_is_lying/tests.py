@@ -13,10 +13,10 @@ from django.utils.dateparse import parse_datetime
 
 from games_hub.active_game_guard import resolve_session_game_activation
 from games_hub.authoritative_state import (
-    QUESTION_PRESENTATION_DELAY_MS,
     current_snapshot,
     finish_question_flow,
     get_question_flow_capabilities,
+    open_answering,
     present_question,
     reset_question_flow,
 )
@@ -527,7 +527,9 @@ class WhoLyingConsumerTests(TransactionTestCase):
         visible_at = parse_datetime(prompt_snapshot['question_visible_at'])
         self.assertEqual(
             visible_at,
-            presented_at + timezone.timedelta(milliseconds=QUESTION_PRESENTATION_DELAY_MS),
+            presented_at + timezone.timedelta(
+                milliseconds=prompt_snapshot['question_presentation_duration_ms'],
+            ),
         )
         open_action = self.phase_action(quiz, question)
         decision = async_to_sync(consumer.open_who_answering)(
@@ -564,6 +566,132 @@ class WhoLyingConsumerTests(TransactionTestCase):
         self.assertTrue(duplicate.accepted)
         self.assertTrue(duplicate.duplicate)
         self.assertEqual(quiz.session.question_end_time, original_deadline)
+
+    def test_admin_can_change_time_per_person_before_set_start(self):
+        user = User.objects.create_user(username='who-time-before-start')
+        question = WhoQuestion.objects.create(
+            statement='Zeit vor Setstart aendern',
+            points=10,
+            time_limit=20,
+            people=[
+                {'name': 'Alice', 'is_lying': False},
+                {'name': 'Bob', 'is_lying': True},
+                {'name': 'Cara', 'is_lying': False},
+            ],
+            created_by=user,
+        )
+        quiz = WhoQuiz.objects.create(
+            title='Who Prepared Time',
+            room_code='7622',
+            creator=user,
+            status='active',
+        )
+        WhoSession.objects.create(quiz=quiz)
+        consumer, sent_messages = self.make_consumer(quiz)
+        self.reset_manual_flow(quiz)
+        async_to_sync(consumer.handle_admin_send_question)({
+            'question_id': question.id,
+            **self.phase_action(quiz, question),
+        })
+        prepared = current_snapshot('who', quiz.room_code)
+
+        async_to_sync(consumer.handle_admin_set_time_per_person)({
+            'time_per_person': 9,
+            'question_id': question.id,
+            'game_id': prepared['game_id'],
+            'state_revision': prepared['state_revision'],
+            'client_action_id': str(uuid.uuid4()),
+        })
+
+        updated = current_snapshot('who', quiz.room_code)
+        self.assertEqual(updated['answer_duration_seconds'], 27.0)
+        update_event = consumer.channel_layer.group_messages[-1][1]
+        self.assertEqual(update_event['type'], 'time_per_person_updated')
+        self.assertEqual(update_event['time_per_person'], 9)
+        self.assertEqual(update_event['state_revision'], updated['state_revision'])
+        visible_at = parse_datetime(updated['question_visible_at'])
+        opened = async_to_sync(consumer.open_who_answering)(
+            quiz.id,
+            question.id,
+            None,
+            self.phase_action(quiz, question),
+            at=visible_at,
+        )
+        self.assertTrue(opened.accepted)
+        quiz.refresh_from_db()
+        quiz.session.refresh_from_db()
+        self.assertAlmostEqual(
+            (quiz.session.question_end_time - quiz.question_start_time).total_seconds(),
+            27,
+            delta=0.01,
+        )
+        participant_payload = async_to_sync(consumer.get_current_question_data)()
+        self.assertEqual(participant_payload['time_per_person'], 9)
+        self.assertEqual(participant_payload['time_limit'], 9)
+
+        running = current_snapshot('who', quiz.room_code)
+        async_to_sync(consumer.handle_admin_set_time_per_person)({
+            'time_per_person': 12,
+            'question_id': question.id,
+            'game_id': running['game_id'],
+            'state_revision': running['state_revision'],
+            'client_action_id': str(uuid.uuid4()),
+        })
+        self.assertEqual(sent_messages[-1]['type'], 'action_rejected')
+        self.assertEqual(sent_messages[-1]['code'], 'invalid_phase')
+        self.assertEqual(current_snapshot('who', quiz.room_code)['answer_duration_seconds'], 27.0)
+
+    def test_set_start_applies_submitted_time_per_person_atomically(self):
+        user = User.objects.create_user(username='who-time-on-set-start')
+        question = WhoQuestion.objects.create(
+            statement='Zeit beim Setstart anwenden',
+            points=10,
+            time_limit=20,
+            people=[
+                {'name': 'Alice', 'is_lying': False},
+                {'name': 'Bob', 'is_lying': True},
+                {'name': 'Cara', 'is_lying': False},
+            ],
+            created_by=user,
+        )
+        quiz = WhoQuiz.objects.create(
+            title='Who Atomic Start Time',
+            room_code='7623',
+            creator=user,
+            status='active',
+        )
+        WhoSession.objects.create(quiz=quiz)
+        consumer, _sent_messages = self.make_consumer(quiz)
+        self.reset_manual_flow(quiz)
+        async_to_sync(consumer.handle_admin_send_question)({
+            'question_id': question.id,
+            **self.phase_action(quiz, question),
+        })
+        prepared = current_snapshot('who', quiz.room_code)
+        visible_at = parse_datetime(prepared['question_visible_at'])
+
+        opened = async_to_sync(consumer.open_who_answering)(
+            quiz.id,
+            question.id,
+            None,
+            {
+                **self.phase_action(quiz, question),
+                'time_per_person': 9,
+            },
+            at=visible_at,
+        )
+
+        self.assertTrue(opened.accepted)
+        quiz.refresh_from_db()
+        quiz.session.refresh_from_db()
+        self.assertAlmostEqual(
+            (quiz.session.question_end_time - quiz.question_start_time).total_seconds(),
+            27,
+            delta=0.01,
+        )
+        participant_payload = async_to_sync(consumer.get_current_question_data)()
+        self.assertEqual(participant_payload['time_per_person'], 9)
+        self.assertEqual(participant_payload['time_limit'], 9)
 
     def test_participant_answer_is_blocked_before_set_start_and_allowed_afterward(self):
         user = User.objects.create_user(username='who-phase-answer-guard')
@@ -624,9 +752,7 @@ class WhoLyingConsumerTests(TransactionTestCase):
             question.id,
             None,
             self.phase_action(quiz, question),
-            at=presented_at + timezone.timedelta(
-                milliseconds=QUESTION_PRESENTATION_DELAY_MS,
-            ),
+            at=parse_datetime(present_decision.snapshot['question_visible_at']),
         )
         self.assertTrue(open_decision.accepted)
         accepted = async_to_sync(consumer.save_participant_answer)(
@@ -672,7 +798,7 @@ class WhoLyingConsumerTests(TransactionTestCase):
         consumer, sent_messages = self.make_consumer(quiz)
         self.reset_manual_flow(quiz)
 
-        presented_at = timezone.now() - timezone.timedelta(seconds=17)
+        presented_at = timezone.now() - timezone.timedelta(seconds=20)
         present_decision = async_to_sync(consumer.present_who_question)(
             quiz.id,
             question.id,
@@ -701,7 +827,7 @@ class WhoLyingConsumerTests(TransactionTestCase):
             question.id,
             participant.hub_session_code,
             self.phase_action(quiz, question, participant.hub_session_code),
-            at=presented_at + timezone.timedelta(seconds=1),
+            at=parse_datetime(present_decision.snapshot['question_visible_at']),
         )
         self.assertTrue(open_decision.accepted)
         async_to_sync(consumer.handle_participant_join)({
@@ -716,7 +842,7 @@ class WhoLyingConsumerTests(TransactionTestCase):
         self.assertEqual(len(answering_payload['question']['people']), 3)
         self.assertEqual(answering_payload['question']['current_person_index'], 1)
         self.assertTrue(
-            13 <= answering_payload['question']['current_person_time_left'] <= 14
+            12 <= answering_payload['question']['current_person_time_left'] <= 14
         )
 
     def test_save_participant_answer_returns_person_results_for_reveal(self):
@@ -1309,13 +1435,49 @@ class WhoLyingConsumerTests(TransactionTestCase):
         )
         WhoSession.objects.create(quiz=quiz)
         consumer, sent_messages = self.make_consumer(quiz)
+        snapshot = reset_question_flow(
+            game_key='who',
+            room_code=quiz.room_code,
+            session_code=None,
+            mode=GameRuntimeState.QUESTION_FLOW_MANUAL_THREE_PHASE,
+        )
+        presented = present_question(
+            game_key='who',
+            room_code=quiz.room_code,
+            session_code=None,
+            action={
+                'question_id': question.id,
+                'game_id': snapshot['game_id'],
+                'state_revision': snapshot['state_revision'],
+                'client_action_id': str(uuid.uuid4()),
+            },
+            answer_duration_seconds=40,
+        )
+        opened = open_answering(
+            game_key='who',
+            room_code=quiz.room_code,
+            session_code=None,
+            action={
+                'question_id': question.id,
+                'game_id': presented.snapshot['game_id'],
+                'state_revision': presented.state_revision,
+                'client_action_id': str(uuid.uuid4()),
+            },
+            at=parse_datetime(presented.snapshot['question_visible_at']),
+        )
+        self.assertTrue(opened.accepted)
 
         async_to_sync(consumer.handle_admin_set_time_per_person)({
             'time_per_person': 25,
+            'question_id': question.id,
+            'game_id': opened.snapshot['game_id'],
+            'state_revision': opened.state_revision,
+            'client_action_id': str(uuid.uuid4()),
         })
 
         self.assertEqual(consumer.channel_layer.group_messages, [])
-        self.assertEqual(sent_messages[-1]['type'], 'error')
+        self.assertEqual(sent_messages[-1]['type'], 'action_rejected')
+        self.assertEqual(sent_messages[-1]['code'], 'invalid_phase')
 
 
 class WhoLyingResultViewTests(TestCase):
@@ -1492,6 +1654,43 @@ class WhoLyingMonitorViewTests(TestCase):
         self.assertContains(response, 'SET STARTEN')
         self.assertNotContains(response, 'PERSONEN ANZEIGEN')
         self.assertContains(response, 'class="question-timer d-none" id="questionTimerWrapper"')
+        self.assertContains(response, 'id="timePerPersonInput" value="18" style="max-width:120px;" title="Zeit pro Name vor dem Setstart"', html=False)
+        self.assertContains(response, 'id="updateTimePerPersonBtn" title="Zeit pro Name vor dem Setstart"', html=False)
+        self.assertContains(response, "...this.hostActionContext(document.getElementById('startSetBtn')?.dataset.questionId)")
+        self.assertContains(response, "...(configuredTimePerPerson > 0 ? { time_per_person: configuredTimePerPerson } : {})")
+        self.assertContains(response, "this.pendingPhaseAction = 'admin_set_time_per_person';")
+
+    def test_prompt_phase_reload_uses_prepared_time_per_person(self):
+        reset_snapshot = reset_question_flow(
+            game_key='who',
+            room_code=self.quiz.room_code,
+            session_code=None,
+            mode=GameRuntimeState.QUESTION_FLOW_MANUAL_THREE_PHASE,
+        )
+        decision = present_question(
+            game_key='who',
+            room_code=self.quiz.room_code,
+            session_code=None,
+            action={
+                'question_id': self.question.id,
+                'game_id': reset_snapshot['game_id'],
+                'state_revision': reset_snapshot['state_revision'],
+                'client_action_id': str(uuid.uuid4()),
+            },
+            answer_duration_seconds=36,
+        )
+        self.assertTrue(decision.accepted)
+
+        response = self.client.get(
+            reverse('admin_dashboard:who_monitor', args=[self.quiz.room_code])
+        )
+
+        self.assertEqual(response.context['current_question_time_per_person'], 9)
+        self.assertContains(
+            response,
+            'id="timePerPersonInput" value="9" style="max-width:120px;" title="Zeit pro Name vor dem Setstart"',
+            html=False,
+        )
 
     def test_monitor_does_not_render_non_negative_score_clamp(self):
         response = self.client.get(

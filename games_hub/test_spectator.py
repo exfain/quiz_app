@@ -7,8 +7,11 @@ from django.test import TestCase
 from django.urls import reverse
 from django.utils import timezone
 
+from Assign.models import AssignQuestion, AssignQuiz, AssignSession
+from admin_dashboard.models import DashboardSettings
 from QuizGame.models import Quiz, QuizParticipant, QuizQuestion, QuizSession
 from Estimation.models import EstimationQuestion, EstimationQuiz, EstimationSession
+from black_jack_quiz.models import BlackJackQuestion, BlackJackQuiz, BlackJackSession
 from clue_rush.models import Clue, ClueAnswer, ClueQuestion, ClueRushGame, ClueRushParticipant, ClueRushSession
 from games_hub.authoritative_state import (
     finish_question_flow,
@@ -20,13 +23,22 @@ from games_hub.authoritative_state import (
 )
 from games_hub.game_intro import GAME_INTRO_DURATION_MS
 from games_hub.models import GameRuntimeState, HubGameStep, HubParticipant, HubSession
-from games_hub.spectator import _public_spectator_payload
+from games_hub.spectator import _public_spectator_payload, build_spectator_state
 from sorting_ladder.models import (
     SortingItem,
     SortingLadderGame,
     SortingLadderSession,
     SortingQuestion,
 )
+from where_is_this.models import (
+    WhereAnswer,
+    WhereParticipant,
+    WhereQuestion,
+    WhereQuiz,
+    WhereSession,
+)
+from who_is_lying.models import WhoQuestion, WhoQuiz, WhoSession
+from who_is_that.models import WhoThatQuestion, WhoThatQuiz, WhoThatSession
 
 
 class HubSpectatorTests(TestCase):
@@ -77,6 +89,392 @@ class HubSpectatorTests(TestCase):
         self.assertEqual(payload['phase'], 'waiting')
         self.assertIsNone(payload['game'])
         self.assertEqual(HubParticipant.objects.count(), 0)
+
+    def test_assign_manual_start_does_not_reveal_stale_completed_question(self):
+        question = AssignQuestion.objects.create(
+            created_by=self.user,
+            question_text='Ordne die alten Werte zu',
+            left_items=['Alt A', 'Alt B'],
+            right_items=['Alt X', 'Alt Y'],
+            correct_matches={'0': 0, '1': 1},
+            explanation='Geheime alte Aufloesung',
+        )
+        quiz = AssignQuiz.objects.create(
+            creator=self.user,
+            title='Fresh Assign Run',
+            status='active',
+            started_at=self.session.started_at,
+            current_question=question,
+        )
+        quiz.selected_questions.add(question)
+        AssignSession.objects.create(
+            quiz=quiz,
+            current_question_number=1,
+            total_questions_sent=1,
+            is_question_active=False,
+        )
+        HubGameStep.objects.create(
+            session=self.session,
+            order=0,
+            game_key='assign',
+            room_code=quiz.room_code,
+        )
+        reset_question_flow(
+            game_key='assign',
+            room_code=quiz.room_code,
+            session_code=self.session.code,
+            mode=GameRuntimeState.QUESTION_FLOW_MANUAL_THREE_PHASE,
+        )
+
+        game = self.client.get(
+            reverse('games_hub:spectate_session_state', args=[self.session.code])
+        ).json()['game']
+
+        self.assertEqual(game['phase'], 'game_waiting')
+        self.assertIsNone(game['question'])
+
+        observe_snapshot(
+            'assign',
+            quiz.room_code,
+            {
+                'type': 'question_ended',
+                'phase': 'question_result',
+                'revealed': True,
+                'current_question_id': question.id,
+                'question': {'id': question.id},
+            },
+            self.session.code,
+        )
+
+        revealed_game = self.client.get(
+            reverse('games_hub:spectate_session_state', args=[self.session.code])
+        ).json()['game']
+
+        self.assertEqual(revealed_game['phase'], 'reveal')
+        self.assertEqual(
+            revealed_game['question']['correct_pairs'],
+            [
+                {'left': 'Alt A', 'right': 'Alt X'},
+                {'left': 'Alt B', 'right': 'Alt Y'},
+            ],
+        )
+        self.assertEqual(
+            revealed_game['question']['explanation'],
+            'Geheime alte Aufloesung',
+        )
+
+    def test_manual_game_starts_ignore_stale_legacy_reveals(self):
+        scenarios = []
+
+        who_question = WhoQuestion.objects.create(
+            created_by=self.user,
+            statement='Geheime alte Behauptung',
+            people=[
+                {'name': 'Ada', 'is_lying': True},
+                {'name': 'Grace', 'is_lying': False},
+            ],
+        )
+        who_quiz = WhoQuiz.objects.create(
+            creator=self.user,
+            title='Fresh Who Run',
+            status='active',
+            started_at=self.session.started_at,
+            current_question=who_question,
+        )
+        who_quiz.selected_questions.add(who_question)
+        WhoSession.objects.create(
+            quiz=who_quiz,
+            current_question_number=1,
+            total_questions_sent=1,
+            is_question_active=False,
+        )
+        scenarios.append(('who', who_quiz, 'Ada'))
+
+        who_that_question = WhoThatQuestion.objects.create(
+            created_by=self.user,
+            question_text='Geheime alte Person',
+            image='',
+            correct_answer='Alte Loesung',
+        )
+        who_that_quiz = WhoThatQuiz.objects.create(
+            creator=self.user,
+            title='Fresh Who That Run',
+            status='active',
+            started_at=self.session.started_at,
+            current_question=who_that_question,
+        )
+        who_that_quiz.selected_questions.add(who_that_question)
+        WhoThatSession.objects.create(
+            quiz=who_that_quiz,
+            current_question_number=1,
+            total_questions_sent=1,
+            is_question_active=False,
+        )
+        scenarios.append(('who_that', who_that_quiz, 'Alte Loesung'))
+
+        blackjack_question = BlackJackQuestion.objects.create(
+            created_by=self.user,
+            question_text='Geheime alte Zahl',
+            correct_answer=73,
+        )
+        blackjack_quiz = BlackJackQuiz.objects.create(
+            creator=self.user,
+            title='Fresh Black Jack Run',
+            status='active',
+            started_at=self.session.started_at,
+            current_question=blackjack_question,
+            current_question_number=1,
+            question_order=[[blackjack_question.id]],
+        )
+        blackjack_quiz.selected_questions.add(blackjack_question)
+        BlackJackSession.objects.create(
+            quiz=blackjack_quiz,
+            current_question_number=1,
+            total_questions_sent=1,
+            asked_question_ids=[blackjack_question.id],
+            is_question_active=False,
+        )
+        scenarios.append(('blackjack', blackjack_quiz, '73'))
+
+        clue_question = ClueQuestion.objects.create(
+            created_by=self.user,
+            question_text='Geheime alte Clue-Frage',
+            answer='Geheime Clue-Loesung',
+        )
+        clue_quiz = ClueRushGame.objects.create(
+            creator=self.user,
+            title='Fresh Clue Rush Run',
+            status='active',
+            started_at=self.session.started_at,
+            current_question=clue_question,
+            question_order=[clue_question.id],
+        )
+        clue_quiz.selected_questions.add(clue_question)
+        ClueRushSession.objects.create(
+            quiz=clue_quiz,
+            current_question_number=1,
+            total_questions_sent=1,
+            is_question_active=False,
+            is_clue_active=False,
+        )
+        scenarios.append(('clue_rush', clue_quiz, 'Geheime Clue-Loesung'))
+
+        for index, (game_key, game, secret) in enumerate(scenarios):
+            with self.subTest(game_key=game_key):
+                hub = HubSession.objects.create(
+                    code=f'STALE{index}',
+                    name=f'Stale {game_key}',
+                    is_active=True,
+                    started_at=self.session.started_at,
+                )
+                HubGameStep.objects.create(
+                    session=hub,
+                    order=0,
+                    game_key=game_key,
+                    room_code=game.room_code,
+                )
+                reset_question_flow(
+                    game_key=game_key,
+                    room_code=game.room_code,
+                    session_code=hub.code,
+                    mode=GameRuntimeState.QUESTION_FLOW_MANUAL_THREE_PHASE,
+                )
+
+                spectator_game = build_spectator_state(hub)['game']
+
+                self.assertEqual(spectator_game['phase'], 'game_waiting')
+                self.assertIsNone(spectator_game['question'])
+                self.assertNotIn(secret, json.dumps(spectator_game))
+
+        who_hub = HubSession.objects.get(code='STALE0')
+        observe_snapshot(
+            'who',
+            who_quiz.room_code,
+            {
+                'type': 'question_ended',
+                'phase': 'question_result',
+                'revealed': True,
+                'current_question_id': who_question.id,
+                'question': {'id': who_question.id},
+            },
+            who_hub.code,
+        )
+        revealed_who = build_spectator_state(who_hub)['game']
+        self.assertEqual(revealed_who['phase'], 'reveal')
+        self.assertEqual(revealed_who['question']['liars'], ['Ada'])
+
+    def test_fresh_where_session_does_not_reuse_question_from_stale_answer(self):
+        question = WhereQuestion.objects.create(
+            created_by=self.user,
+            question_text='Alter geheimer Ort',
+            correct_latitude=50,
+            correct_longitude=8,
+        )
+        quiz = WhereQuiz.objects.create(
+            creator=self.user,
+            title='Fresh Where Run',
+            status='active',
+            started_at=self.session.started_at,
+        )
+        quiz.selected_questions.add(question)
+        WhereSession.objects.create(
+            quiz=quiz,
+            current_question_number=0,
+            total_questions_sent=0,
+            is_question_active=False,
+        )
+        participant = WhereParticipant.objects.create(
+            quiz=quiz,
+            name='Ada',
+            hub_session_code=self.session.code,
+        )
+        WhereAnswer.objects.create(
+            quiz=quiz,
+            participant=participant,
+            question=question,
+            user_latitude=49,
+            user_longitude=9,
+            time_taken=2,
+        )
+        HubGameStep.objects.create(
+            session=self.session,
+            order=0,
+            game_key='where',
+            room_code=quiz.room_code,
+        )
+
+        spectator_game = build_spectator_state(self.session)['game']
+
+        self.assertEqual(spectator_game['phase'], 'game_waiting')
+        self.assertIsNone(spectator_game['question'])
+        self.assertNotIn(question.question_text, json.dumps(spectator_game))
+
+    def test_who_that_spectator_exposes_image_without_question_text(self):
+        question = WhoThatQuestion.objects.create(
+            created_by=self.user,
+            question_text='Dieser Text gehoert nicht auf den Spectator.',
+            image='who_that_images/spectator-person.jpg',
+            correct_answer='Ada Lovelace',
+            category='Wissenschaft',
+        )
+        quiz = WhoThatQuiz.objects.create(
+            creator=self.user,
+            title='Who That Image',
+            status='active',
+            started_at=self.session.started_at,
+            current_question=question,
+        )
+        quiz.selected_questions.set([question])
+        WhoThatSession.objects.create(
+            quiz=quiz,
+            current_question_number=1,
+            total_questions_sent=1,
+            is_question_active=True,
+        )
+        HubGameStep.objects.create(
+            session=self.session,
+            order=0,
+            game_key='who_that',
+            room_code=quiz.room_code,
+            title=quiz.title,
+        )
+
+        spectator_game = build_spectator_state(self.session)['game']
+
+        self.assertEqual(spectator_game['question']['category'], 'Wissenschaft')
+        self.assertTrue(
+            spectator_game['question']['image_url'].endswith(
+                '/media/who_that_images/spectator-person.jpg'
+            )
+        )
+        self.assertNotIn('text', spectator_game['question'])
+        self.assertNotIn(question.question_text, json.dumps(spectator_game))
+
+    def test_who_spectator_uses_same_randomized_person_order_as_participants(self):
+        question = WhoQuestion.objects.create(
+            created_by=self.user,
+            statement='Wer sagt die Wahrheit?',
+            people=[
+                {'name': 'Ada', 'is_lying': False},
+                {'name': 'Grace', 'is_lying': True},
+                {'name': 'Katherine', 'is_lying': False},
+                {'name': 'Margaret', 'is_lying': True},
+            ],
+            time_limit=10,
+        )
+        original_names = [person['name'] for person in question.people]
+        room_code = next(
+            code
+            for code in (f'WHOORDER{index}' for index in range(20))
+            if [
+                person['name']
+                for person in question.get_randomized_people(room_code=code)['people']
+            ] != original_names
+        )
+        quiz = WhoQuiz.objects.create(
+            creator=self.user,
+            title='Ordered Who',
+            room_code=room_code,
+            status='active',
+            started_at=self.session.started_at,
+        )
+        quiz.selected_questions.set([question])
+        quiz_session = WhoSession.objects.create(quiz=quiz)
+        quiz_session.prepare_question(question)
+        HubGameStep.objects.create(
+            session=self.session,
+            order=0,
+            game_key='who',
+            room_code=quiz.room_code,
+            title=quiz.title,
+        )
+        snapshot = reset_question_flow(
+            game_key='who',
+            room_code=quiz.room_code,
+            session_code=self.session.code,
+            mode=GameRuntimeState.QUESTION_FLOW_MANUAL_THREE_PHASE,
+        )
+        started_at = timezone.now() - timedelta(seconds=11)
+        presented = present_question(
+            game_key='who',
+            room_code=quiz.room_code,
+            session_code=self.session.code,
+            action={
+                'question_id': question.id,
+                'game_id': snapshot.get('game_id'),
+                'state_revision': snapshot['state_revision'],
+                'client_action_id': str(uuid.uuid4()),
+            },
+            answer_duration_seconds=40,
+            at=started_at - timedelta(seconds=1),
+        )
+        opened = open_answering(
+            game_key='who',
+            room_code=quiz.room_code,
+            session_code=self.session.code,
+            action={
+                'question_id': question.id,
+                'game_id': presented.snapshot.get('game_id'),
+                'state_revision': presented.state_revision,
+                'client_action_id': str(uuid.uuid4()),
+            },
+            at=started_at,
+        )
+        self.assertTrue(opened.accepted)
+        quiz_session.open_answering(
+            question,
+            started_at=started_at,
+            answer_duration_seconds=40,
+        )
+
+        spectator_game = build_spectator_state(self.session)['game']
+        randomized_people = question.get_randomized_people(room_code=room_code)['people']
+
+        self.assertEqual(spectator_game['question']['timer_state']['current_person_index'], 1)
+        self.assertEqual(
+            spectator_game['question']['current_person'],
+            randomized_people[1]['name'],
+        )
 
     def test_quick_quiz_spectator_uses_runtime_state_without_participant(self):
         question = QuizQuestion.objects.create(
@@ -481,7 +879,68 @@ class HubSpectatorTests(TestCase):
         self.assertEqual(revealed['phase'], 'reveal')
         self.assertEqual(revealed['question']['correct_answer'], 'Geheime Loesung')
 
+    def test_prepared_quick_quiz_renders_blank_spectator_question_shell(self):
+        question = QuizQuestion.objects.create(
+            created_by=self.user,
+            question_text='Noch nicht oeffentliche Frage',
+            question_type='true_false',
+            correct_answer='True',
+        )
+        quiz = Quiz.objects.create(
+            creator=self.user,
+            title='Prepared Spectator Quiz',
+            status='active',
+            started_at=self.session.started_at,
+        )
+        quiz.selected_questions.set([question])
+        QuizSession.objects.create(quiz=quiz)
+        HubGameStep.objects.create(
+            session=self.session,
+            order=0,
+            game_key='quiz',
+            room_code=quiz.room_code,
+            title=quiz.title,
+        )
+        reset_question_flow(
+            game_key='quiz',
+            room_code=quiz.room_code,
+            session_code=self.session.code,
+            mode=GameRuntimeState.QUESTION_FLOW_MANUAL_THREE_PHASE,
+        )
+        runtime = GameRuntimeState.objects.get(
+            session=self.session,
+            game_key='quiz',
+            room_code=quiz.room_code,
+        )
+        runtime.state_revision += 1
+        runtime.context_revision = runtime.state_revision
+        runtime.public_snapshot = {
+            **runtime.public_snapshot,
+            'prepared_question_id': str(question.id),
+            'question_shell_prepared': True,
+        }
+        runtime.save(update_fields=[
+            'state_revision',
+            'context_revision',
+            'public_snapshot',
+            'updated_at',
+        ])
+
+        game = self.client.get(
+            reverse('games_hub:spectate_session_state', args=[self.session.code])
+        ).json()['game']
+
+        self.assertEqual(game['phase'], 'question_prepared')
+        self.assertEqual(game['message'], 'Frage wird vorbereitet')
+        self.assertIsNone(game['question'])
+        self.assertFalse(game['timer']['active'])
+        self.assertNotIn(question.question_text, json.dumps(game))
+        self.assertNotIn('correct_answer', json.dumps(game))
+
     def test_manual_quick_quiz_spectator_hides_options_until_content_phase(self):
+        settings = DashboardSettings.load()
+        settings.quiz_mc_answer_reveal_stagger_ms = 520
+        settings.save(update_fields=['quiz_mc_answer_reveal_stagger_ms'])
         question = QuizQuestion.objects.create(
             created_by=self.user,
             question_text='Nur die Frage zuerst?',
@@ -551,6 +1010,7 @@ class HubSpectatorTests(TestCase):
         ).json()['game']
         self.assertEqual(content['question_phase'], 'content_visible')
         self.assertEqual(len(content['question']['options']), 2)
+        self.assertEqual(content['answer_reveal_stagger_ms'], 520)
         self.assertEqual(content['phase'], 'question')
         self.assertNotIn('correct_answer', content['question'])
         self.assertNotIn('explanation', content['question'])
@@ -607,6 +1067,19 @@ class HubSpectatorTests(TestCase):
         ).json()['game']
         self.assertEqual(resolution['phase'], 'reveal')
         self.assertEqual(resolution['question']['correct_answer'], 'A. Ja')
+
+        reset_question_flow(
+            game_key='quiz',
+            room_code=quiz.room_code,
+            session_code=self.session.code,
+            mode=GameRuntimeState.QUESTION_FLOW_MANUAL_THREE_PHASE,
+        )
+        restarted = self.client.get(
+            reverse('games_hub:spectate_session_state', args=[self.session.code])
+        ).json()['game']
+        self.assertEqual(restarted['phase'], 'game_waiting')
+        self.assertIsNone(restarted['question'])
+        self.assertNotIn('correct_answer', json.dumps(restarted))
 
     def test_spectator_state_exposes_shared_intro_timeline(self):
         quiz = Quiz.objects.create(

@@ -1261,6 +1261,8 @@
                     this.questionPresentationTimer = null;
                     this.visibleQuestionInstanceKey = null;
                     this.answerRevealTimers = [];
+                    this.answerRevealFrames = [];
+                    this.liveAnswerRevealQuestionKey = null;
                     this.selectedAnswer = null;
                     this.hasAnswered = false;
                     this.submissionPending = false;
@@ -1538,14 +1540,17 @@
                     return index >= 0 ? index + 1 : null;
                 }
 
-                setCurrentQuestion(questionId) {
+                setCurrentQuestion(questionId, questionNumberOverride = null) {
                     if (questionId === null || questionId === undefined || questionId === '') {
                         this.currentQuestionId = null;
                     } else {
                         const normalizedQuestionId = Number(questionId);
                         this.currentQuestionId = Number.isNaN(normalizedQuestionId) ? null : normalizedQuestionId;
                     }
-                    const questionNumber = this.getCurrentQuestionNumber();
+                    const incomingQuestionNumber = Number(questionNumberOverride);
+                    const questionNumber = (
+                        Number.isInteger(incomingQuestionNumber) && incomingQuestionNumber > 0
+                    ) ? incomingQuestionNumber : this.getCurrentQuestionNumber();
                     const progressNumber = document.getElementById('currentQuestionNumber');
                     if (progressNumber && Number.isInteger(questionNumber) && questionNumber > 0) {
                         progressNumber.textContent = String(questionNumber);
@@ -1562,10 +1567,7 @@
                         ) ? incomingTotal : 0;
                     }
                     const total = Number(this.totalQuestionCount);
-                    let current = Number(questionNumber);
-                    if ((!Number.isInteger(current) || current < 1) && Number.isInteger(total) && total > 0) {
-                        current = 1;
-                    }
+                    const current = Number(questionNumber);
                     const progress = document.getElementById('vhsQuizProgress');
                     if (!progress) return;
                     progress.textContent = (
@@ -1598,6 +1600,7 @@
                     this.answerSubmissionConfirmed = false;
                     this.recentlyEndedQuestionId = null;
                     this.revealedQuestionId = null;
+                    this.liveAnswerRevealQuestionKey = null;
                     this.clearAnswerRevealTimers();
                     this.clearQuestionPresentationTimer();
                     clearInterval(this.questionTimer);
@@ -1638,7 +1641,7 @@
                         };
                         this.currentQuestionIsTutorial = !!question?.is_tutorial_round;
                         this.setVhsQuestionProgress(
-                            this.getQuestionNumberById(question?.id),
+                            question?.question_number || this.getQuestionNumberById(question?.id),
                             question?.total_questions
                         );
                         if (
@@ -1672,7 +1675,7 @@
                         this.setCurrentQuestion(null);
                     } else {
                         this.reorderScoreboardForQuestionStart(question.id);
-                        this.setCurrentQuestion(question.id);
+                        this.setCurrentQuestion(question.id, question.question_number);
                     }
                     const submittedAnswerText = document.getElementById('submittedAnswerText');
                     if (submittedAnswerText) submittedAnswerText.textContent = '';
@@ -1692,6 +1695,8 @@
                 clearAnswerRevealTimers() {
                     this.answerRevealTimers.forEach(timer => clearTimeout(timer));
                     this.answerRevealTimers = [];
+                    this.answerRevealFrames.forEach(frame => cancelAnimationFrame(frame));
+                    this.answerRevealFrames = [];
                 }
 
                 clearQuestionPresentationTimer() {
@@ -1790,6 +1795,17 @@
                     const responseArea = document.getElementById('quickQuizResponseArea');
                     const timerWrapper = document.getElementById('playerQuestionTimerWrapper');
                     const optionsContainer = document.getElementById('answerOptions');
+                    const responseAreaWasHidden = !!responseArea && (
+                        responseArea.hidden || responseArea.classList.contains('d-none')
+                    );
+                    responseArea?.toggleAttribute(
+                        'data-reserve-answer-space',
+                        ['multiple_choice', 'true_false'].includes(question.question_type)
+                    );
+                    optionsContainer?.classList.toggle(
+                        'quick-quiz-short-answer-form',
+                        question.question_type === 'short_answer'
+                    );
                     if (phase !== 'prompt_visible') {
                         this.visibleQuestionInstanceKey = this.getQuestionInstanceKey(question);
                         document.getElementById('questionText').textContent = question.question_text || '';
@@ -1818,6 +1834,20 @@
                         responseArea.setAttribute('aria-hidden', 'false');
                     }
                     const hasExistingContent = optionsContainer && optionsContainer.children.length > 0;
+                    const questionInstanceKey = this.getQuestionInstanceKey(question);
+                    if (
+                        phase !== 'prompt_visible'
+                        && responseAreaWasHidden
+                        && !hasExistingContent
+                    ) {
+                        this.liveAnswerRevealQuestionKey = questionInstanceKey;
+                    }
+                    const answerRevealOptions = {
+                        animateFirstOptionFromStart: (
+                            !!questionInstanceKey
+                            && this.liveAnswerRevealQuestionKey === questionInstanceKey
+                        ),
+                    };
                     if (!preserveExistingContent || !hasExistingContent) {
                         this.loadQuestion(question, { interactive: phase === 'answering_open' });
                     } else {
@@ -1828,7 +1858,7 @@
                         clearInterval(this.questionTimer);
                         this.questionTimerGeneration += 1;
                         if (timerWrapper) timerWrapper.classList.add('d-none');
-                        this.revealAnswerContent(question);
+                        this.revealAnswerContent(question, answerRevealOptions);
                         this.disableAnswerControls();
                     } else {
                         const answerStartDelay = this.remainingAnswerStartDelay(question);
@@ -1836,7 +1866,7 @@
                             clearInterval(this.questionTimer);
                             this.questionTimerGeneration += 1;
                             if (timerWrapper) timerWrapper.classList.add('d-none');
-                            this.revealAnswerContent(question);
+                            this.revealAnswerContent(question, answerRevealOptions);
                             this.disableAnswerControls();
                             this.answerRevealTimers.push(setTimeout(() => {
                                 if (
@@ -1873,12 +1903,21 @@
                     this.showState('questionState');
                 }
 
-                revealAnswerContent(question) {
+                revealAnswerContent(question, options = {}) {
                     const items = Array.from(document.querySelectorAll('#answerOptions .quick-quiz-phase-item'));
                     const revealedAt = Date.parse(question.content_revealed_at || '');
                     const serverNow = this.estimatedQuestionServerNow(question);
                     const staggerMs = Math.max(0, Number(question.answer_reveal_stagger_ms) || 300);
                     const animationMs = Math.max(0, Number(question.answer_reveal_animation_ms) || 220);
+                    const revealItemAfterHiddenFrame = (item) => {
+                        const firstFrame = requestAnimationFrame(() => {
+                            const revealFrame = requestAnimationFrame(() => {
+                                item.classList.add('is-content-visible');
+                            });
+                            this.answerRevealFrames.push(revealFrame);
+                        });
+                        this.answerRevealFrames.push(firstFrame);
+                    };
                     items.forEach((item, index) => {
                         const revealOffset = index * staggerMs;
                         item.dataset.revealDelayMs = String(revealOffset);
@@ -1886,17 +1925,26 @@
                             ? serverNow - revealedAt
                             : 0;
                         const optionElapsed = Math.max(0, elapsed - revealOffset);
+                        const animateFromStart = (
+                            options.animateFirstOptionFromStart === true
+                            && index === 0
+                            && optionElapsed < animationMs
+                        );
                         item.style.setProperty(
                             '--quick-quiz-answer-reveal-duration',
                             `${animationMs}ms`
                         );
                         item.style.setProperty(
                             '--quick-quiz-answer-reveal-elapsed',
-                            `${Math.min(animationMs, optionElapsed)}ms`
+                            `${animateFromStart ? 0 : Math.min(animationMs, optionElapsed)}ms`
                         );
                         const delay = Math.max(0, revealOffset - elapsed);
                         if (delay === 0) {
-                            item.classList.add('is-content-visible');
+                            if (optionElapsed < animationMs && !item.classList.contains('is-content-visible')) {
+                                revealItemAfterHiddenFrame(item);
+                            } else {
+                                item.classList.add('is-content-visible');
+                            }
                             return;
                         }
                         this.answerRevealTimers.push(setTimeout(() => {
@@ -1950,7 +1998,7 @@
                     if (!data?.is_tutorial_round && !this.hasProgressEntry(endedQuestionId)) {
                         this.markCurrentQuestionIncorrectIfNeeded();
                     }
-                    this.setCurrentQuestion(null);
+                    this.setCurrentQuestion(endedQuestionId, data?.question_number);
 
                     if (data && data.correct_answer) {
                         this.showCorrectAnswer(data.correct_answer);
@@ -1990,6 +2038,7 @@
                     {% if quiz.current_question %}
                     const question = {
                         id: {{ quiz.current_question.id }},
+                        question_number: {{ current_question_number|default:"null" }},
                         question_text: '{{ quiz.current_question.question_text|escapejs }}',
                         question_type: '{{ quiz.current_question.get_effective_question_type }}',
                         short_answer_fields: [

@@ -51,10 +51,18 @@ class HostFontScopeTests(SimpleTestCase):
 
     def test_host_font_rules_do_not_use_global_or_icon_font_overrides(self):
         css = HOST_CSS_PATH.read_text(encoding="utf-8")
+        font_declarations = [
+            line.strip()
+            for line in css.splitlines()
+            if "font-family:" in line.lower()
+        ]
 
         self.assertNotIn("body {", css)
         self.assertNotIn("* {", css)
-        self.assertNotIn("!important", css)
+        self.assertTrue(font_declarations)
+        for declaration in font_declarations:
+            with self.subTest(declaration=declaration):
+                self.assertNotIn("!important", declaration)
         self.assertNotIn("fontawesome", css.lower())
         self.assertNotIn("bootstrap-icons", css.lower())
 

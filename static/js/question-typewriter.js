@@ -1,6 +1,8 @@
 (function (global) {
     'use strict';
 
+    const activeAnimations = new WeakMap();
+
     function unicodeCharacters(value) {
         return Array.from(String(value ?? ''));
     }
@@ -137,10 +139,50 @@
         };
     }
 
+    function sync(element, options) {
+        if (!element) return function () {};
+        const text = String(options.text ?? '');
+        const instanceKey = String(
+            options.instanceKey ?? `${options.presentedAt || ''}:${text}`
+        );
+        const active = activeAnimations.get(element);
+        if (options.animate && active?.instanceKey === instanceKey) return active.cancel;
+        active?.cancel();
+
+        if (!options.animate || !options.presentedAt) {
+            element.textContent = text;
+            activeAnimations.delete(element);
+            return function () {};
+        }
+
+        let completed = false;
+        let cancelAnimation = function () {};
+        const cancel = function () {
+            cancelAnimation();
+            if (activeAnimations.get(element)?.instanceKey === instanceKey) {
+                activeAnimations.delete(element);
+            }
+        };
+        cancelAnimation = start(element, {
+            ...options,
+            text,
+            onComplete() {
+                completed = true;
+                if (activeAnimations.get(element)?.instanceKey === instanceKey) {
+                    activeAnimations.delete(element);
+                }
+                options.onComplete?.();
+            },
+        });
+        if (!completed) activeAnimations.set(element, { instanceKey, cancel });
+        return cancel;
+    }
+
     global.QuestionTypewriter = {
         start,
         unicodeCharacters,
         splitFirstWord,
         visibleCharacterCount,
+        sync,
     };
 })(window);

@@ -3,6 +3,97 @@
 
     if (window.AuthoritativeGameState) return;
 
+    const participantThemes = new Set(['standard', 'arcade', 'vhs']);
+    const configuredTheme = document.documentElement.dataset.participantTheme;
+    if (!participantThemes.has(configuredTheme)) {
+        let storedTheme = null;
+        try {
+            storedTheme = window.localStorage.getItem('participant_interface_theme');
+        } catch (_) {
+            storedTheme = null;
+        }
+        document.documentElement.dataset.participantTheme = participantThemes.has(storedTheme)
+            ? storedTheme
+            : 'standard';
+    }
+
+    (function primeSessionGameIntroGate() {
+        const params = new URLSearchParams(window.location.search);
+        if (params.get('game_start_intro') !== '1') return;
+        const endsAt = Date.parse(params.get('game_start_intro_ends_at') || '');
+        const receivedAt = Number(params.get('game_start_client_received_at'));
+        const serverNow = Date.parse(params.get('game_start_server_now') || '');
+        if (!Number.isFinite(endsAt) || !Number.isFinite(serverNow)) return;
+        const estimatedNow = serverNow + (
+            Number.isFinite(receivedAt) ? Math.max(0, Date.now() - receivedAt) : 0
+        );
+        const transitionDuration = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+            ? 480
+            : 2800;
+        if (estimatedNow >= endsAt + transitionDuration) return;
+
+        document.documentElement.classList.add('is-session-game-intro-active');
+        if (estimatedNow >= endsAt) {
+            document.documentElement.classList.add('qa-vhs-transition--active');
+            document.documentElement.style.setProperty(
+                '--qa-vhs-transition-elapsed',
+                `${Math.max(0, estimatedNow - endsAt)}ms`
+            );
+        }
+        window.__qaVhsTransitionGateFallback = window.setTimeout(function () {
+            document.documentElement.classList.remove(
+                'is-session-game-intro-active',
+                'qa-vhs-transition--active'
+            );
+            document.documentElement.style.removeProperty('--qa-vhs-transition-elapsed');
+            window.__qaVhsTransitionGateFallback = null;
+        }, 13000);
+    }());
+
+    const initialPaintClass = 'qa-authoritative-paint-pending';
+    const initialPaintStyle = document.createElement('style');
+    initialPaintStyle.textContent = `
+        html.is-session-game-intro-active:not(.qa-vhs-transition--active) body {
+            background: #000 !important;
+            background-image: none !important;
+        }
+        html.is-session-game-intro-active:not(.qa-vhs-transition--active) body::before,
+        html.is-session-game-intro-active:not(.qa-vhs-transition--active) body::after,
+        html.is-session-game-intro-active:not(.qa-vhs-transition--active)
+            body > :not(.qa-vhs-intro) {
+            visibility: hidden !important;
+        }
+        html.is-session-game-intro-active:not(.qa-vhs-transition--active)
+            body > .qa-vhs-intro {
+            visibility: visible !important;
+        }
+        html.${initialPaintClass} body[data-authoritative-paint-gate] :is(
+            .game-state,
+            #waitingArea,
+            #questionArea,
+            #gameArea,
+            .wwm-card,
+            #stage
+        ) {
+            visibility: hidden !important;
+        }
+    `;
+    document.head.appendChild(initialPaintStyle);
+    document.documentElement.classList.add(initialPaintClass);
+
+    let initialPaintFallback = window.setTimeout(function () {
+        document.documentElement.classList.remove(initialPaintClass);
+        initialPaintFallback = null;
+    }, 4000);
+
+    function markInitialPaintReady() {
+        if (initialPaintFallback !== null) {
+            window.clearTimeout(initialPaintFallback);
+            initialPaintFallback = null;
+        }
+        document.documentElement.classList.remove(initialPaintClass);
+    }
+
     const NativeWebSocket = window.WebSocket;
     const socketState = new WeakMap();
     const latestByIdentity = new Map();
@@ -273,6 +364,7 @@
             const serverNow = estimatedServerNow(context);
             return Math.max(0, endMillis - serverNow);
         },
+        markInitialPaintReady: markInitialPaintReady,
         createActionId: makeActionId,
     };
 }());

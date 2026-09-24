@@ -27,6 +27,7 @@
 <script src="{% static 'js/authoritative-game-state.js' %}"></script>
 </head>
 <body class="buzzer-play-page"
+      data-authoritative-paint-gate
       data-vhs-progress-kind="question"
       data-vhs-progress-source="#roundNumber">
 <main class="buzzer-shell" data-participant-name="{{ participant.name }}">
@@ -200,6 +201,7 @@ function renderState(state) {
     const gameStarted = state.game?.status === 'active';
     document.getElementById('waitingArea').classList.toggle('d-none', gameStarted);
     document.getElementById('gameArea').classList.toggle('d-none', !gameStarted);
+    window.AuthoritativeGameState?.markInitialPaintReady?.();
     document.getElementById('roundNumber').textContent = round.number || 0;
     document.getElementById('ownScore').textContent = participant.score ?? 0;
     renderRoundScores(state);

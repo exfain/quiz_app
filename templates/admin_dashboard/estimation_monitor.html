@@ -1125,17 +1125,30 @@ document.addEventListener('DOMContentLoaded', function() {
                     
                 case 'quiz_started':
                     console.log('Quiz started:', data.message);
-                    this.isActive = true;
-                    this.quizStartTime = new Date(data.timestamp);
-                    //this.updateQuizTimer();
-                    this.updateQuizStatus('active');
-                    // Enable question send buttons if they were disabled before start
-                    document.querySelectorAll('.send-question-btn').forEach(btn => {
-                        btn.disabled = false;
-                        btn.removeAttribute('title');
-                    });
-                    // Re-apply sent state so already-sent questions remain blocked
-                    this.applySentStates();
+                    location.reload();
+                    break;
+
+                case 'participants_not_in_lobby': {
+                    this.setStartButtonPending(false);
+                    const startButton = document.getElementById('startQuizBtn');
+                    if (!window.hostGameStartGuard?.showLobbyReturn(data, startButton)) {
+                        alert(data.message || 'Noch nicht alle Teilnehmer sind in der Lobby.');
+                    }
+                    break;
+                }
+
+                case 'active_game_conflict': {
+                    this.setStartButtonPending(false);
+                    const startButton = document.getElementById('startQuizBtn');
+                    if (!window.hostGameStartGuard?.showActiveGameConflict(data, startButton)) {
+                        alert(data.message || 'Ein anderes Spiel ist noch aktiv.');
+                    }
+                    break;
+                }
+
+                case 'error':
+                    this.setStartButtonPending(false);
+                    alert(data.message || 'Das Spiel konnte nicht gestartet werden.');
                     break;
                     
                 case 'tutorial_start':
@@ -1151,6 +1164,7 @@ document.addEventListener('DOMContentLoaded', function() {
                     break;
 
                 case 'tutorial_question_missing':
+                    this.setStartButtonPending(false);
                     window.showTutorialQuestionMissing?.(data);
                     break;
                     
@@ -1393,38 +1407,40 @@ document.addEventListener('DOMContentLoaded', function() {
             });
         }
         
-        startQuiz() {
-            if (this.websocket && this.websocket.readyState === WebSocket.OPEN) {
-                // Also notify hub directly (in case backend mirror is unavailable)
-                try {
-                    const qs = new URLSearchParams(window.location.search);
-                    const hub = qs.get('hub_session') || window.__hubCode || (function(){ try { return sessionStorage.getItem("_hub_admin"); } catch(_) { return null; } })();
-                    if (hub) {
-                        const hubWs = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws/hub/' + hub + '/');
-                        hubWs.onopen = () => {
-                            hubWs.send(JSON.stringify({
-                                type: 'navigate_direct',
-                                game_key: 'estimation',
-                                room_code: '{{ quiz.room_code }}'
-                            }));
-                            setTimeout(() => hubWs.close(), 100);
-                        };
-                    }
-                } catch(_) {}
-                const showTutorial = document.getElementById('showTutorialToggle')?.checked ?? false;
-                const playTutorial = document.getElementById('playTutorialToggle')?.checked ?? false;
-                if (playTutorial && !{{ quiz.tutorial_question_id|yesno:"true,false" }}) {
-                    window.showTutorialQuestionMissing?.();
-                    return;
-                }
-                this.websocket.send(JSON.stringify({
-                    type: 'admin_start_quiz',
-                    show_tutorial: showTutorial,
-                    play_tutorial: playTutorial
-                }));
-                //reload page
-                location.reload();
+        setStartButtonPending(isPending) {
+            const startButton = document.getElementById('startQuizBtn');
+            if (!startButton) return;
+            if (!startButton.dataset.originalHtml) {
+                startButton.dataset.originalHtml = startButton.innerHTML;
             }
+            startButton.disabled = isPending;
+            startButton.classList.toggle('loading', isPending);
+            startButton.innerHTML = isPending
+                ? '<span class="spinner-border spinner-border-sm me-2" aria-hidden="true"></span>Spiel wird gestartet'
+                : startButton.dataset.originalHtml;
+        }
+
+        startQuiz() {
+            if (!this.websocket || this.websocket.readyState !== WebSocket.OPEN) {
+                this.setStartButtonPending(false);
+                alert('Die WebSocket-Verbindung ist noch nicht bereit. Bitte versuche es erneut.');
+                return;
+            }
+
+            const showTutorial = document.getElementById('showTutorialToggle')?.checked ?? false;
+            const playTutorial = document.getElementById('playTutorialToggle')?.checked ?? false;
+            if (playTutorial && !{{ quiz.tutorial_question_id|yesno:"true,false" }}) {
+                this.setStartButtonPending(false);
+                window.showTutorialQuestionMissing?.();
+                return;
+            }
+
+            this.setStartButtonPending(true);
+            this.websocket.send(JSON.stringify({
+                type: 'admin_start_quiz',
+                show_tutorial: showTutorial,
+                play_tutorial: playTutorial
+            }));
         }
         
         endQuiz() {

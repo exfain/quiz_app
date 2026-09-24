@@ -364,10 +364,16 @@ class ClueRushQuestionRevisionBrowserTests(_BaseLiveServerTestCase):
                         """() => {
                             const list = document.getElementById('playerCluesList');
                             const clue = list.querySelector('.clue-rush-clue');
+                            const submit = document.getElementById('submitAnswerBtn');
+                            const submitShell = submit.closest('.qa-theme-button-shell');
+                            const submittedTime = document.getElementById('submittedTime');
                             const rect = clue.getBoundingClientRect();
                             return {
                                 sameListNode: window.__clueRushHintList === list,
                                 questionVisible: !document.getElementById('questionState').classList.contains('d-none'),
+                                submitShellVisibility: submitShell ? getComputedStyle(submitShell).visibility : null,
+                                submitShellOpacity: submitShell ? getComputedStyle(submitShell).opacity : null,
+                                submittedTimeWeight: getComputedStyle(submittedTime).fontWeight,
                                 text: clue.textContent.trim(),
                                 x: rect.x,
                                 y: rect.y + window.scrollY,
@@ -379,6 +385,10 @@ class ClueRushQuestionRevisionBrowserTests(_BaseLiveServerTestCase):
 
                     self.assertTrue(after['sameListNode'])
                     self.assertTrue(after['questionVisible'])
+                    self.assertIsNotNone(after['submitShellVisibility'])
+                    self.assertEqual(after['submitShellVisibility'], 'hidden')
+                    self.assertEqual(after['submitShellOpacity'], '0')
+                    self.assertEqual(after['submittedTimeWeight'], '400')
                     self.assertEqual(after['text'], before['text'])
                     for key in ('x', 'y', 'width', 'height'):
                         self.assertAlmostEqual(

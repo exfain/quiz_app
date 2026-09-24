@@ -9,8 +9,9 @@
     <link rel="stylesheet" href="{% static 'themes/vhs/vhs.css' %}">
     <link rel="stylesheet" href="{% static 'themes/vhs/spectator.css' %}">
     <link rel="stylesheet" href="{% static 'css/session_join_qr.css' %}">
+    <script src="{% static 'js/authoritative-game-state.js' %}"></script>
 </head>
-<body class="spectator-page">
+<body class="spectator-page" data-authoritative-paint-gate>
     <main
         class="vhs-theme-shell spectator-shell"
         id="spectator-root"
@@ -221,6 +222,17 @@
             `;
         }
 
+        function typewriterQuestionMarkup(question, textField = 'text', meta = '') {
+            return `
+                <div class="spectator-question">
+                    <p class="spectator-question__text spectator-question__typewriter"
+                       data-question-typewriter="${escapeHtml(question?.id || '')}"
+                       data-question-typewriter-field="${escapeHtml(textField)}"></p>
+                    ${meta ? `<div class="spectator-question__meta">${meta}</div>` : ''}
+                </div>
+            `;
+        }
+
         function quickQuizQuestionMarkup(question) {
             return `
                 <div class="spectator-question">
@@ -251,6 +263,25 @@
             if (!questionTypewriterCancel) element.textContent = question.text || '';
         }
 
+        function syncQuestionTypewriter(game) {
+            const element = stage.querySelector('[data-question-typewriter]');
+            if (!element) return;
+            const question = game.question || {};
+            const textField = element.dataset.questionTypewriterField || 'text';
+            questionTypewriterCancel = window.QuestionTypewriter?.sync(element, {
+                text: question[textField] || '',
+                presentedAt: game.question_presented_at,
+                serverNow: game.server_now,
+                receivedAt: performance.now(),
+                millisecondsPerCharacter: game.question_reveal_ms_per_character,
+                instanceKey: `${game.game_key}:${question.id || ''}:${game.question_presented_at || ''}`,
+                animate: game.question_phase === 'prompt_visible',
+                onComplete: () => {
+                    questionTypewriterCancel = null;
+                },
+            }) || null;
+        }
+
         function imageMarkup(url, alt) {
             return url
                 ? `<img class="spectator-media" src="${escapeHtml(url)}" alt="${escapeHtml(alt)}">`
@@ -277,13 +308,29 @@
             `;
         }
 
-        function optionMarkup(option, correctAnswer = '') {
-            const normalizedCorrect = String(correctAnswer || '').toLowerCase();
-            const isCorrect = normalizedCorrect.includes(String(option.key || '').toLowerCase())
-                || normalizedCorrect.includes(String(option.text || '').toLowerCase());
+        function booleanAnswerLabel(value) {
+            const normalized = String(value || '').trim().toLowerCase();
+            if (normalized === 'true') return 'Stimmt';
+            if (normalized === 'false') return 'Stimmt Nicht';
+            return String(value || '');
+        }
+
+        function optionMarkup(option, correctAnswer = '', singleLabel = false) {
+            const normalizedCorrect = String(correctAnswer || '').trim().toLowerCase();
+            const normalizedKey = String(option.key || '').trim().toLowerCase();
+            const normalizedText = String(option.text || '').trim().toLowerCase();
+            const keyPrefix = normalizedCorrect.match(/^([^\s./:|\-]+)\s*(?:[./:|\-]|$)/);
+            const isCorrect = Boolean(normalizedCorrect) && (
+                normalizedCorrect === normalizedKey
+                || normalizedCorrect === normalizedText
+                || (normalizedKey && keyPrefix?.[1] === normalizedKey)
+            );
+            const label = singleLabel
+                ? booleanAnswerLabel(option.key || option.text)
+                : String(option.text || '');
             return `
                 <div class="spectator-card spectator-reveal-item ${isCorrect && correctAnswer ? 'spectator-card--correct' : ''}">
-                    <span class="spectator-card__key">${escapeHtml(option.key)}</span>${escapeHtml(option.text)}
+                    ${singleLabel ? '' : `<span class="spectator-card__key">${escapeHtml(option.key)}</span>`}${escapeHtml(label)}
                 </div>
             `;
         }
@@ -293,6 +340,11 @@
             const reveal = game.phase === 'reveal';
             const correctAnswer = reveal ? q.correct_answer : '';
             const allOptions = q.options || [];
+            const trueFalse = q.type === 'true_false' || (
+                allOptions.length === 2
+                && String(allOptions[0]?.key || '').toLowerCase() === 'true'
+                && String(allOptions[1]?.key || '').toLowerCase() === 'false'
+            );
             const answeringStartsAt = Date.parse(game.answering_started_at || '');
             const answersStillRevealing = (
                 game.question_phase === 'content_visible'
@@ -308,10 +360,13 @@
             const options = answersStillRevealing
                 ? visibleSequence(allOptions, game.content_revealed_at, game.answer_reveal_stagger_ms)
                 : allOptions;
+            const revealQuestion = trueFalse && reveal
+                ? {...q, correct_answer: booleanAnswerLabel(q.correct_answer)}
+                : q;
             return gameMarkup(game, `
                 ${quickQuizQuestionMarkup(q)}
-                ${options.length ? `<div class="spectator-grid spectator-grid--options">${options.map(option => optionMarkup(option, correctAnswer)).join('')}</div>` : ''}
-                ${reveal ? revealMarkup(q) : ''}
+                ${options.length ? `<div class="spectator-grid spectator-grid--options">${options.map(option => optionMarkup(option, correctAnswer, trueFalse)).join('')}</div>` : ''}
+                ${reveal ? revealMarkup(revealQuestion) : ''}
             `);
         }
 
@@ -320,6 +375,15 @@
             const zoneScoring = q.zones || {};
             const zones = zoneScoring.zones || [];
             const reveal = game.phase === 'reveal' && Boolean(q.correct_answer);
+            const questionMeta = [
+                q.unit ? `
+                    <span class="spectator-estimation-unit">
+                        <span class="spectator-estimation-unit__label">EINHEIT</span>
+                        <span class="spectator-estimation-unit__value">${escapeHtml(q.unit)}</span>
+                    </span>
+                ` : '',
+                q.hint ? `<span>HINWEIS ${escapeHtml(q.hint)}</span>` : '',
+            ].filter(Boolean).join('<span aria-hidden="true"> / </span>');
             const zoneRows = zones.map(zone => {
                 const title = zoneScoring.special_case === 'exact_zero'
                     ? `Zone ${escapeHtml(zone.zone_number)}: exakt 0`
@@ -346,7 +410,7 @@
                 `);
             }
             return gameMarkup(game, `
-                ${questionMarkup(q.text || '', [q.unit ? `EINHEIT ${escapeHtml(q.unit)}` : '', q.hint ? `HINWEIS ${escapeHtml(q.hint)}` : ''].filter(Boolean).join('<span aria-hidden="true"> / </span>'))}
+                ${typewriterQuestionMarkup(q, 'text', questionMeta)}
                 ${reveal ? `
                     <section class="spectator-estimation-result" data-spectator-estimation-result>
                         <div class="spectator-estimation-result__answer spectator-panel--reveal">
@@ -376,8 +440,8 @@
         function renderWhoThat(game) {
             const q = game.question || {};
             return gameMarkup(game, `
-                ${imageMarkup(q.image_url, q.text)}
-                ${questionMarkup(q.text || '', q.category ? `KATEGORIE ${escapeHtml(q.category)}` : '')}
+                ${imageMarkup(q.image_url, q.category ? `Gesuchte Person, Kategorie ${q.category}` : 'Gesuchte Person')}
+                ${q.category ? `<div class="spectator-question__meta">KATEGORIE ${escapeHtml(q.category)}</div>` : ''}
                 ${game.phase === 'reveal' ? revealMarkup(q, 'Gesuchte Person') : ''}
             `);
         }
@@ -389,7 +453,7 @@
                 q.question_in_set ? `FRAGE ${escapeHtml(q.question_in_set)} / ${escapeHtml(q.set_question_count || '?')}` : '',
                 'ZIEL 21',
             ].filter(Boolean).join('<span aria-hidden="true"> / </span>');
-            return gameMarkup(game, `${questionMarkup(q.text || '', meta)}${game.phase === 'reveal' ? revealMarkup(q) : ''}`);
+            return gameMarkup(game, `${typewriterQuestionMarkup(q, 'text', meta)}${game.phase === 'reveal' ? revealMarkup(q) : ''}`);
         }
 
         function renderWho(game) {
@@ -403,14 +467,14 @@
             } else if (q.current_person) {
                 publicState = panelMarkup(`<span class="spectator-card-label">Aktuelle Person</span><div class="spectator-reveal-answer">${escapeHtml(q.current_person)}</div>`);
             }
-            return gameMarkup(game, `${questionMarkup(q.statement || '')}${publicState}`);
+            return gameMarkup(game, `${typewriterQuestionMarkup(q, 'statement')}${publicState}`);
         }
 
         function renderClueRush(game) {
             const q = game.question || {};
             const clues = q.clues || [];
             return gameMarkup(game, `
-                ${questionMarkup(q.text || '')}
+                ${typewriterQuestionMarkup(q)}
                 ${panelMarkup(`<span class="spectator-card-label">Hinweise</span><div class="spectator-list">${clues.map(clue => `<div class="spectator-card"><span class="spectator-card__key">${escapeHtml(clue.number)}</span>${escapeHtml(clue.text)}</div>`).join('') || '<div class="spectator-card">Noch kein Hinweis freigegeben.</div>'}</div>`)}
                 ${game.phase === 'reveal' && q.correct_answer ? panelMarkup(`<span class="spectator-card-label">Loesung</span><div class="spectator-reveal-answer">${escapeHtml(q.correct_answer)}</div>`, 'spectator-panel--reveal') : ''}
             `);
@@ -423,7 +487,7 @@
             const items = visibleSequence(q.left_items || [], game.content_revealed_at, game.assign_reveal_stagger_ms, (q.right_items || []).length, forceAll);
             const pairs = game.phase === 'reveal' ? (q.correct_pairs || []) : [];
             return gameMarkup(game, `
-                ${questionMarkup(q.text || '')}
+                ${typewriterQuestionMarkup(q)}
                 ${(targets.length || items.length) ? `<div class="spectator-grid spectator-grid--two">
                     ${panelMarkup(`<span class="spectator-card-label">Ziele</span><div class="spectator-list">${targets.map(item => `<div class="spectator-card spectator-reveal-item">${escapeHtml(item.text)}</div>`).join('')}</div>`)}
                     ${panelMarkup(`<span class="spectator-card-label">Elemente</span><div class="spectator-list">${items.map(item => `<div class="spectator-card spectator-reveal-item">${escapeHtml(item.text)}</div>`).join('')}</div>`)}
@@ -507,7 +571,7 @@
                 timer.current_tolerance !== undefined && timer.current_tolerance !== null ? `TOLERANZ +/-${escapeHtml(timer.current_tolerance)}` : '',
                 timer.current_points !== undefined && timer.current_points !== null ? `PUNKTE ${escapeHtml(timer.current_points)}` : '',
             ].filter(Boolean).join('<span aria-hidden="true"> / </span>');
-            return gameMarkup(game, `${questionMarkup(q.text || '', meta)}${game.phase === 'reveal' ? revealMarkup(q, 'Richtiges Jahr') : ''}`);
+            return gameMarkup(game, `${typewriterQuestionMarkup(q, 'text', meta)}${game.phase === 'reveal' ? revealMarkup(q, 'Richtiges Jahr') : ''}`);
         }
 
         const renderers = {
@@ -634,6 +698,7 @@
             if (!game) {
                 updateStage(waitingMarkup(state?.message));
                 updateFooter(null);
+                window.AuthoritativeGameState?.markInitialPaintReady?.();
                 return;
             }
             if (!syncIntro(game)) return;
@@ -649,9 +714,14 @@
                 updateStage(renderer
                     ? renderer(game)
                     : waitingMarkup('Fuer diesen Spieltyp fehlen oeffentliche Spectator-Daten.', false));
-                if (game.game_key === 'quiz') syncQuickQuizTypewriter(game);
+                if (game.game_key === 'quiz') {
+                    syncQuickQuizTypewriter(game);
+                } else {
+                    syncQuestionTypewriter(game);
+                }
             }
             updateFooter(game);
+            window.AuthoritativeGameState?.markInitialPaintReady?.();
         }
 
         async function loadState() {

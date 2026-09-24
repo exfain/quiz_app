@@ -355,6 +355,19 @@ class LoginTest(TestCase):
         resp = self.client.get(self.login_url)
         self.assertIn(resp.status_code, [301, 302])
 
+    def test_landing_options_are_presented_as_available_action(self):
+        self.client.force_login(self.user)
+
+        resp = self.client.get(self.home_url)
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(
+            resp,
+            f'href="{reverse("admin_dashboard:settings")}" class="landing-options-action"',
+        )
+        self.assertContains(resp, 'data-lucide="chevron-right"')
+        self.assertNotContains(resp, 'opacity: 0.4;')
+
 
 # ---------------------------------------------------------------------------
 # 2. Manage-Games-Tests (Backend / API)

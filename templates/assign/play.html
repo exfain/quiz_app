@@ -20,8 +20,10 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 <script src="{% static 'js/authoritative-game-state.js' %}"></script>
+<script src="{% static 'js/question-typewriter.js' %}"></script>
 </head>
 <body class="assign-play-page"
+      data-authoritative-paint-gate
       data-vhs-progress-kind="question"
       data-vhs-progress-source="#vhsProgressNumber">
     <div class="play-container">
@@ -1233,7 +1235,9 @@
                     this.currentQuestionId = this.readJsonScript('assignCurrentQuestionId', null);
                     this.questionFlowMode = '';
                     this.questionPhase = '';
+                    this.questionPresentedAt = '';
                     this.questionVisibleAt = '';
+                    this.questionRevealMsPerCharacter = 75;
                     this.contentRevealedAt = '';
                     this.answeringStartedAt = '';
                     this.answeringDeadlineAt = '';
@@ -1318,6 +1322,7 @@
                                 question_phase: data.question_phase,
                                 question_presented_at: data.question_presented_at,
                                 question_visible_at: data.question_visible_at,
+                                question_reveal_ms_per_character: data.question_reveal_ms_per_character,
                                 content_revealed_at: data.content_revealed_at,
                                 answering_started_at: data.answering_started_at,
                                 answering_deadline_at: data.answering_deadline_at,
@@ -1650,6 +1655,7 @@
                         question_phase: data.question_phase,
                         question_presented_at: data.question_presented_at,
                         question_visible_at: data.question_visible_at,
+                        question_reveal_ms_per_character: data.question_reveal_ms_per_character,
                         content_revealed_at: data.content_revealed_at,
                         answering_started_at: data.answering_started_at,
                         answering_deadline_at: data.answering_deadline_at,
@@ -1844,6 +1850,12 @@
 
                 onQuestionRoundsComplete(data = {}) {
                     if (!this.acceptSetEvent(data?.set_number)) return;
+                    if (Array.isArray(data.progress_history)) {
+                        this.setProgressHistory(
+                            data.progress_history,
+                            data.scoreboard_questions
+                        );
+                    }
                     if (this.eliminated) return;
                     clearInterval(this.questionTimer);
 
@@ -1991,7 +2003,16 @@
 
                     // Fragetext setzen
                     if (this.currentQuestion) {
-                        document.getElementById('questionText').textContent = this.currentQuestion.question_text;
+                        window.QuestionTypewriter?.sync(document.getElementById('questionText'), {
+                            text: this.currentQuestion.question_text || '',
+                            presentedAt: this.questionPresentedAt,
+                            serverNow: this.phaseServerNow,
+                            receivedAt: this.phaseServerReceivedAt,
+                            millisecondsPerCharacter: this.questionRevealMsPerCharacter,
+                            instanceKey: `${this.currentQuestion.id || ''}:${this.questionPresentedAt}`,
+                            stableFirstWord: true,
+                            animate: this.questionPhase === 'prompt_visible',
+                        });
                     }
 
                     // Submit-Button einblenden (deaktiviert bis eine Zuordnung gemacht wurde)
@@ -2057,6 +2078,12 @@
                     }
                     if (source.question_visible_at !== undefined && source.question_visible_at !== null) {
                         this.questionVisibleAt = String(source.question_visible_at);
+                    }
+                    if (source.question_presented_at !== undefined && source.question_presented_at !== null) {
+                        this.questionPresentedAt = String(source.question_presented_at);
+                    }
+                    if (source.question_reveal_ms_per_character !== undefined) {
+                        this.questionRevealMsPerCharacter = Number(source.question_reveal_ms_per_character) || 75;
                     }
                     if (source.content_revealed_at !== undefined && source.content_revealed_at !== null) {
                         this.contentRevealedAt = String(source.content_revealed_at);
@@ -2233,21 +2260,7 @@
                     }
 
                     this.concealAssignRevealItems();
-                    const visibleAt = Date.parse(this.questionVisibleAt || '');
-                    const remaining = Number.isFinite(visibleAt)
-                        ? Math.max(0, visibleAt - this.estimatedPhaseServerNow())
-                        : 0;
-                    if (remaining <= 0) {
-                        this.showState('questionState');
-                        return;
-                    }
-                    this.showState('waitingQuestionState');
-                    const timerId = setTimeout(() => {
-                        if (this.questionPhase === 'prompt_visible') {
-                            this.showState('questionState');
-                        }
-                    }, remaining);
-                    this.assignPhaseTimers.push(timerId);
+                    this.showState('questionState');
                 }
 
                 applyAssignBoxTextSizing(element, text) {
@@ -2732,6 +2745,7 @@
                     if (targetState) {
                         targetState.classList.remove('d-none');
                     }
+                    window.AuthoritativeGameState?.markInitialPaintReady?.();
                 }
 
                 updateParticipantCount(count) {

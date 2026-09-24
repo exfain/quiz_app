@@ -20,6 +20,7 @@ from games_hub.authoritative_consumer import AuthoritativeGameConsumerMixin
 from games_hub.authoritative_state import (
     current_snapshot,
     finish_question_flow,
+    get_runtime_state,
     open_answering,
     present_question,
     reset_question_flow,
@@ -41,6 +42,7 @@ from games_hub.unit_tutorial_runtime import (
     start_unit_tutorial_if_needed,
     validate_unit_tutorial_request,
 )
+from QuizGame.presentation import question_typewriter_timing
 
 
 logger = logging.getLogger(__name__)
@@ -393,6 +395,8 @@ class WhoConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
                 'question_phase',
                 'question_presented_at',
                 'question_visible_at',
+                'question_presentation_duration_ms',
+                'question_reveal_ms_per_character',
                 'content_revealed_at',
                 'answering_started_at',
                 'answering_deadline_at',
@@ -487,10 +491,10 @@ class WhoConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
 
     async def handle_admin_set_time_per_person(self, data):
         quiz = await self.get_quiz()
-        if not quiz or quiz.current_question_id:
+        if not quiz or not quiz.current_question_id:
             await self.send(text_data=json.dumps({
                 'type': 'error',
-                'message': 'Time per person cannot be changed during a running question.'
+                'message': 'Es ist kein vorbereitetes Set vorhanden.'
             }))
             return
         try:
@@ -499,11 +503,33 @@ class WhoConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
             return
         if seconds <= 0:
             return
+        hub_session = (
+            data.get('hub_session')
+            or data.get('hub_session_code')
+            or await self._get_hub_session_code_for_room()
+        )
+        result = await self.update_prepared_time_per_person(
+            quiz.id,
+            quiz.current_question_id,
+            hub_session,
+            data,
+            seconds,
+        )
+        if not result['accepted']:
+            await self.send(text_data=json.dumps({
+                'type': 'action_rejected',
+                'code': result['code'],
+                'message': result['message'],
+                'question_id': quiz.current_question_id,
+                'snapshot': result.get('snapshot'),
+            }))
+            return
         await self.channel_layer.group_send(
             self.room_group_name,
             {
                 'type': 'time_per_person_updated',
                 'time_per_person': seconds,
+                **self.question_lifecycle_fields(result['snapshot']),
             }
         )
 
@@ -796,7 +822,89 @@ class WhoConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
         await self.send(text_data=json.dumps({
             'type': 'time_per_person_updated',
             'time_per_person': event.get('time_per_person'),
+            **self.question_lifecycle_fields(event),
         }))
+
+    @database_sync_to_async
+    @transaction.atomic
+    def update_prepared_time_per_person(
+        self,
+        quiz_id,
+        question_id,
+        hub_session_code,
+        action,
+        seconds,
+    ):
+        quiz = WhoQuiz.objects.select_for_update().select_related('current_question').get(id=quiz_id)
+        runtime = get_runtime_state('who', self.room_code, hub_session_code)
+        runtime = GameRuntimeState.objects.select_for_update().get(pk=runtime.pk)
+        snapshot = current_snapshot('who', self.room_code, hub_session_code)
+        if (
+            quiz.current_question_id != question_id
+            or str(runtime.current_question_id or '') != str(question_id)
+        ):
+            return {
+                'accepted': False,
+                'code': 'stale_action',
+                'message': 'Das vorbereitete Set ist nicht mehr aktuell.',
+                'snapshot': snapshot,
+            }
+        if runtime.question_phase not in {
+            GameRuntimeState.QUESTION_PHASE_PROMPT_VISIBLE,
+            GameRuntimeState.QUESTION_PHASE_CONTENT_VISIBLE,
+        } or runtime.starts_at:
+            return {
+                'accepted': False,
+                'code': 'invalid_phase',
+                'message': 'Die Zeit pro Name kann nur vor dem Setstart geaendert werden.',
+                'snapshot': snapshot,
+            }
+        try:
+            expected_revision = int(action.get('state_revision'))
+        except (TypeError, ValueError):
+            expected_revision = -1
+        if expected_revision != runtime.state_revision:
+            return {
+                'accepted': False,
+                'code': 'stale_action',
+                'message': 'Der Spielzustand hat sich geaendert.',
+                'snapshot': snapshot,
+            }
+        supplied_game_id = str(action.get('game_id') or '')
+        if supplied_game_id and supplied_game_id != str(runtime.game_instance_id or ''):
+            return {
+                'accepted': False,
+                'code': 'stale_action',
+                'message': 'Die Aktion gehoert zu einer anderen Spielinstanz.',
+                'snapshot': snapshot,
+            }
+        people_count = len(quiz.current_question.people or [])
+        if people_count <= 0:
+            return {
+                'accepted': False,
+                'code': 'invalid_action_context',
+                'message': 'Das Set enthaelt keine Namen.',
+                'snapshot': snapshot,
+            }
+        answer_duration = float(seconds * people_count)
+        public_snapshot = dict(runtime.public_snapshot or {})
+        if float(public_snapshot.get('answer_duration_seconds') or 0) != answer_duration:
+            public_snapshot['answer_duration_seconds'] = answer_duration
+            runtime.public_snapshot = public_snapshot
+            runtime.state_revision += 1
+            runtime.context_revision = runtime.state_revision
+            runtime.save(update_fields=[
+                'public_snapshot',
+                'state_revision',
+                'context_revision',
+                'updated_at',
+            ])
+        return {
+            'accepted': True,
+            'code': 'accepted',
+            'message': '',
+            'snapshot': current_snapshot('who', self.room_code, hub_session_code),
+        }
 
     # Database operations
     @database_sync_to_async
@@ -1245,6 +1353,7 @@ class WhoConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
             action=action,
             answer_duration_seconds=question.get_total_duration_seconds(time_per_person),
             at=at,
+            **question_typewriter_timing(question.statement),
         )
         if decision.accepted and not decision.duplicate:
             session.prepare_question(question)
@@ -1274,12 +1383,22 @@ class WhoConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
                 session_code=hub_session_code,
                 action=action,
             )
+        try:
+            requested_time_per_person = int(action.get('time_per_person') or 0)
+        except (TypeError, ValueError):
+            requested_time_per_person = 0
+        requested_answer_duration = None
+        if requested_time_per_person > 0:
+            requested_answer_duration = float(
+                requested_time_per_person * len(quiz.current_question.people or [])
+            )
         opened_at = at or timezone.now()
         decision = open_answering(
             game_key='who',
             room_code=self.room_code,
             session_code=hub_session_code,
             action=action,
+            answer_duration_seconds=requested_answer_duration,
             at=opened_at,
         )
         if decision.accepted and not decision.duplicate:

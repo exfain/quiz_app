@@ -128,6 +128,14 @@ class WhereScoreBoxViewTests(TestCase):
         self.assertContains(response, 'whereQuestionScoreboardData')
         self.assertContains(response, 'whereInitialProgressData')
         self.assertContains(response, 'sessionCode: \'HUB1\'')
+        self.assertEqual(response.context['current_question_number'], 2)
+        self.assertEqual(response.context['total_question_count'], 3)
+        self.assertContains(response, 'data-vhs-progress-source="#vhsWhereProgress"')
+        self.assertContains(
+            response,
+            '<span id="vhsWhereProgress" data-total="3" hidden aria-hidden="true">2/3</span>',
+            html=True,
+        )
 
     def test_play_view_does_not_trust_stale_sent_counter_for_unanswered_question(self):
         question_one = self._create_question('Q1', 80, 10)

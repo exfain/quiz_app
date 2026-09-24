@@ -72,6 +72,61 @@ def _materialize_round(runtime, round_index):
 
 
 @transaction.atomic
+def enroll_participant_in_active_round(participant_id, hub_session_code):
+    """Attach a reconnecting participant to a round prepared before they joined."""
+    try:
+        participant = (
+            AssignParticipant.objects
+            .select_for_update()
+            .select_related('quiz')
+            .get(pk=participant_id)
+        )
+        session = AssignSession.objects.select_for_update().get(quiz=participant.quiz)
+    except (AssignParticipant.DoesNotExist, AssignSession.DoesNotExist):
+        return False
+
+    normalized_session = _session_code(hub_session_code)
+    if (
+        participant.quiz.status != 'active'
+        or not session.is_question_active
+        or participant.hub_session_code != normalized_session
+        or participant.eliminated_set_number == session.current_question_number
+    ):
+        return False
+
+    runtime = (
+        AssignSetRuntime.objects
+        .select_for_update()
+        .filter(
+            quiz=participant.quiz,
+            hub_session_code=normalized_session,
+            set_number=session.current_question_number,
+            question_id=participant.quiz.current_question_id,
+            current_round_index=session.current_round_index,
+            phase=AssignSetRuntime.PHASE_ACTIVE,
+        )
+        .first()
+    )
+    if not runtime:
+        return False
+
+    round_key = str(runtime.current_round_index)
+    participant_map = dict(runtime.round_participant_ids or {})
+    participant_ids = list(participant_map.get(round_key, []))
+    if participant.id not in participant_ids:
+        participant_ids.append(participant.id)
+        participant_map[round_key] = sorted(participant_ids)
+        runtime.round_participant_ids = participant_map
+        runtime.save(update_fields=['round_participant_ids', 'updated_at'])
+    AssignRoundParticipantState.objects.get_or_create(
+        set_runtime=runtime,
+        participant=participant,
+        round_index=runtime.current_round_index,
+    )
+    return True
+
+
+@transaction.atomic
 def start_set_runtime(
     *,
     quiz_id,
@@ -592,10 +647,13 @@ def mark_ended(room_code, hub_session_code):
     runtime = current_set_runtime(room_code, hub_session_code, lock=True)
     if not runtime:
         return None
-    if runtime.phase != AssignSetRuntime.PHASE_ENDED:
-        runtime.phase = AssignSetRuntime.PHASE_ENDED
-        runtime.ended_at = timezone.now()
-        runtime.save(update_fields=['phase', 'ended_at', 'updated_at'])
+    if runtime.phase == AssignSetRuntime.PHASE_ENDED:
+        return runtime
+    if runtime.phase != AssignSetRuntime.PHASE_REVEALED:
+        return None
+    runtime.phase = AssignSetRuntime.PHASE_ENDED
+    runtime.ended_at = timezone.now()
+    runtime.save(update_fields=['phase', 'ended_at', 'updated_at'])
     return runtime
 
 

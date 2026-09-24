@@ -20,6 +20,7 @@ from .runtime import (
     assign_reveal_counts,
     assign_reveal_ready_at,
     current_set_runtime,
+    enroll_participant_in_active_round,
     evaluate_and_advance,
     mark_ended,
     mark_revealed,
@@ -60,6 +61,7 @@ from games_hub.unit_tutorial_runtime import (
     start_unit_tutorial_if_needed,
     validate_unit_tutorial_request,
 )
+from QuizGame.presentation import question_typewriter_timing
 
 
 class AssignConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
@@ -401,6 +403,8 @@ class AssignConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
                 'question_phase',
                 'question_presented_at',
                 'question_visible_at',
+                'question_presentation_duration_ms',
+                'question_reveal_ms_per_character',
                 'content_revealed_at',
                 'answering_started_at',
                 'answering_deadline_at',
@@ -438,13 +442,19 @@ class AssignConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
         }
 
     async def handle_admin_end_question(self, data):
-        """Handle admin ending current question (nach Auflösung / 'Spiel beendet')."""
+        """End the current set only after its assignment has been revealed."""
         quiz = await self.get_quiz()
         if quiz:
             hub_session = data.get('hub_session') or data.get('hub_session_code') or await self._get_hub_session_code_for_room()
+            if not await self.mark_runtime_ended():
+                await self.send(text_data=json.dumps({
+                    'type': 'action_rejected',
+                    'code': 'solution_required',
+                    'message': 'Die Zuordnung muss vor dem Setende angezeigt werden.',
+                }))
+                return
             unit_tutorial = await self.finish_current_unit_tutorial(hub_session)
             await self.persist_runtime_answers()
-            await self.mark_runtime_ended()
             await self.set_question_active_db(quiz.id, False)
             await self.clear_current_question(quiz.id)
 
@@ -982,11 +992,23 @@ class AssignConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
         )
 
     async def question_rounds_complete(self, event):
+        participant_name = self._authoritative_participant_name()
+        hub_session = self._authoritative_session_code()
+        progress_history = []
+        scoreboard_questions = []
+        if participant_name:
+            progress_history = await self.get_participant_progress_history(
+                participant_name,
+                hub_session,
+            )
+            scoreboard_questions = await self.get_scoreboard_questions(hub_session)
         await self.send(text_data=json.dumps({
             'type': 'question_rounds_complete',
             'message': event['message'],
             'solved_pairs': event.get('solved_pairs', []),
             'set_number': event.get('set_number'),
+            'progress_history': progress_history,
+            'scoreboard_questions': scoreboard_questions,
         }))
 
     async def show_solution(self, event):
@@ -1590,6 +1612,7 @@ class AssignConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
                 session_code=hub_session_code,
                 action={**action, 'question_id': question_id},
                 answer_duration_seconds=effective_time_limit,
+                **question_typewriter_timing(runtime.question.question_text),
             )
             if started and not decision.accepted:
                 transaction.set_rollback(True)
@@ -2231,6 +2254,10 @@ class AssignConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
             participant.is_active = True
             participant.last_activity = timezone.now()
             participant.save()
+            enroll_participant_in_active_round(
+                participant.id,
+                participant.hub_session_code,
+            )
         except AssignParticipant.DoesNotExist:
             pass
     

@@ -173,7 +173,8 @@ class WannWarDasStartFlowTests(TransactionTestCase):
         )
         self.assertIn('timer?.elapsed_seconds', content)
         self.assertIn('timer?.step_index', content)
-        self.assertIn('remainingQuestionPresentationDelay(state)', content)
+        self.assertIn('QuestionTypewriter?.sync', content)
+        self.assertNotIn('remainingQuestionPresentationDelay(state)', content)
         self.assertIn('timer.current_points ?? question.max_points', content)
         self.assertIn('const segmentStart = stepIndex === 0 ? 0 : stepIndex - 0.5;', content)
         self.assertIn('const segmentEnd = stepIndex + 0.5;', content)
@@ -299,6 +300,11 @@ class WannWarDasStartFlowTests(TransactionTestCase):
         self.assertEqual(question_event['question_phase'], 'prompt_visible')
         self.assertIsNotNone(question_event['question_presented_at'])
         self.assertIsNotNone(question_event['question_visible_at'])
+        self.assertEqual(question_event['question_reveal_ms_per_character'], 75)
+        self.assertEqual(
+            question_event['question_presentation_duration_ms'],
+            len(self.question.question_text) * 75,
+        )
         self.assertIsNone(question_event['answering_started_at'])
         self.assertIsNone(question_event['answering_deadline_at'])
         self.assertIsNone(question_event['timer'])

@@ -215,12 +215,22 @@ class SessionGameStartIntroTemplateTests(unittest.TestCase):
         self.assertIn("startVhsTransition(serverNow - endsAt)", content)
         self.assertIn("--qa-vhs-transition-elapsed", content)
         self.assertIn("qa-vhs-transition-background 1100ms ease-in-out", css)
+        authoritative_state = read_text("static/js/authoritative-game-state.js")
+        self.assertIn(
+            "html.is-session-game-intro-active:not(.qa-vhs-transition--active) body",
+            authoritative_state,
+        )
+        self.assertNotIn(
+            "html.is-session-game-intro-active body > :not(.qa-vhs-intro)",
+            authoritative_state,
+        )
         self.assertIn("calc(1100ms - var(--qa-vhs-transition-elapsed))", css)
         self.assertIn("calc(1100ms - var(--qa-vhs-transition-elapsed))", css)
         self.assertIn("calc(1170ms - var(--qa-vhs-transition-elapsed))", css)
         self.assertIn("calc(1240ms - var(--qa-vhs-transition-elapsed))", css)
         self.assertIn("calc(1310ms - var(--qa-vhs-transition-elapsed))", css)
         self.assertIn("calc(1380ms - var(--qa-vhs-transition-elapsed))", css)
+        self.assertEqual(css.count('max(100vh, 760px)'), 5)
         self.assertIn("calc(2040ms - var(--qa-vhs-transition-elapsed))", css)
         self.assertIn("calc(2200ms - var(--qa-vhs-transition-elapsed))", css)
         self.assertIn("calc(2400ms - var(--qa-vhs-transition-elapsed))", css)
@@ -266,12 +276,16 @@ class SessionGameStartIntroBrowserTests(unittest.TestCase):
             "includes/_session_game_start_intro.html",
             {"participant": SimpleNamespace(name="Mia")},
         )
+        authoritative_state = read_text("static/js/authoritative-game-state.js")
         vhs_css = read_text("static/themes/vhs/vhs.css")
         theme_attribute = f' data-participant-theme="{theme}"' if theme else ""
         body = f"""
           <!doctype html>
           <html{theme_attribute}>
-            <head><style>{vhs_css}</style></head>
+            <head>
+              <script>{authoritative_state}</script>
+              <style>{vhs_css}</style>
+            </head>
             <body>
               <div class="vhs-theme-shell">
                 <header class="vhs-theme-header">
@@ -289,6 +303,15 @@ class SessionGameStartIntroBrowserTests(unittest.TestCase):
                   <span class="vhs-theme-participant">LIVE · MIA</span>
                 </footer>
               </div>
+              <script>
+                window.__qaPreIntroPaintProbe = {{
+                  theme: document.documentElement.dataset.participantTheme,
+                  shellVisibility: getComputedStyle(
+                    document.querySelector('.vhs-theme-shell')
+                  ).visibility,
+                  bodyBackground: getComputedStyle(document.body).backgroundColor,
+                }};
+              </script>
               <aside class="qa-score-widget">Punkte</aside>
               <div id="participant-options-menu-root">Optionen</div>
               {intro}
@@ -694,6 +717,10 @@ class SessionGameStartIntroBrowserTests(unittest.TestCase):
             self.assertIn(
                 "qa-vhs-transition-background",
                 root.evaluate("el => getComputedStyle(el).animationName"),
+            )
+            self.assertEqual(
+                shell.evaluate("el => getComputedStyle(el).visibility"),
+                "visible",
             )
             self.assertIn(
                 "noise.png",
@@ -1369,7 +1396,10 @@ class SessionGameStartIntroBrowserTests(unittest.TestCase):
                 ),
                 "true",
             )
-            page.evaluate("document.documentElement.dataset.participantTheme = 'vhs'")
+            pre_intro_paint = page.evaluate("window.__qaPreIntroPaintProbe")
+            self.assertEqual(pre_intro_paint["theme"], "vhs")
+            self.assertEqual(pre_intro_paint["shellVisibility"], "hidden")
+            self.assertNotEqual(pre_intro_paint["bodyBackground"], "rgb(208, 214, 180)")
             self.assertEqual(page.locator(".qa-vhs-intro__layer").count(), 5)
             self.assertEqual(page.locator(".qa-vhs-intro__scanlines").count(), 1)
             self.assertEqual(page.locator(".qa-vhs-intro__scanline").count(), 11)

@@ -3,6 +3,7 @@ import os
 import time
 import uuid
 from pathlib import Path
+from urllib.parse import urlencode
 from unittest.mock import patch
 
 os.environ.setdefault('DJANGO_ALLOW_ASYNC_UNSAFE', '1')
@@ -28,14 +29,15 @@ from .runtime import (
     ASSIGN_REVEAL_STAGGER_MS,
     assign_reveal_ready_at,
     current_set_runtime,
+    enroll_participant_in_active_round,
     evaluate_and_advance,
+    mark_revealed,
     round_status,
     start_set_runtime,
     store_round_selection,
 )
 from games_hub.models import GameRuntimeState, HubGameStep, HubParticipant, HubSession
 from games_hub.authoritative_state import (
-    QUESTION_PRESENTATION_DELAY_MS,
     current_snapshot,
     observe_snapshot,
     reset_question_flow,
@@ -141,6 +143,35 @@ class CheckRoundAnswerTest(TransactionTestCase):
             user_match=user_match,
             lock_selection=lock,
         )
+
+    def test_participant_join_after_set_start_is_enrolled_in_active_round(self):
+        self.participant.is_active = False
+        self.participant.save(update_fields=['is_active', 'updated_at'])
+        runtime = self._start_runtime()
+        self.assertEqual(runtime.round_participant_ids['0'], [])
+
+        self.participant.is_active = True
+        self.participant.save(update_fields=['is_active', 'updated_at'])
+        enrolled = enroll_participant_in_active_round(
+            self.participant.id,
+            self.participant.hub_session_code,
+        )
+
+        runtime.refresh_from_db()
+        self.assertTrue(enrolled)
+        self.assertEqual(runtime.round_participant_ids['0'], [self.participant.id])
+        self.assertTrue(AssignRoundParticipantState.objects.filter(
+            set_runtime=runtime,
+            participant=self.participant,
+            round_index=0,
+        ).exists())
+        result = self._store_selection(
+            runtime,
+            round_index=0,
+            left_item_index=0,
+            user_match={'0': self._get_shuffled_pos_for_original(2)},
+        )
+        self.assertTrue(result.accepted)
 
     def _capture_consumer_send(self):
         payloads = []
@@ -250,6 +281,27 @@ class CheckRoundAnswerTest(TransactionTestCase):
 
         session = AssignSession.objects.get(quiz=self.quiz)
         self.assertTrue(session.is_question_active)
+
+        payloads = self._capture_consumer_send()
+        async_to_sync(self.consumer.handle_admin_end_question)({
+            'hub_session': self.participant.hub_session_code,
+        })
+        session.refresh_from_db()
+        self.quiz.refresh_from_db()
+        self.assertTrue(session.is_question_active)
+        self.assertEqual(self.quiz.current_question_id, self.question.id)
+        self.assertEqual(payloads[-1]['code'], 'solution_required')
+
+        runtime = current_set_runtime(
+            self.quiz.room_code,
+            self.participant.hub_session_code,
+        )
+        runtime.phase = AssignSetRuntime.PHASE_WAITING_REVEAL
+        runtime.save(update_fields=['phase', 'updated_at'])
+        self.assertIsNotNone(mark_revealed(
+            self.quiz.room_code,
+            self.participant.hub_session_code,
+        ))
 
         async_to_sync(self.consumer.handle_admin_end_question)({
             'hub_session': self.participant.hub_session_code,
@@ -865,6 +917,62 @@ class CheckRoundAnswerTest(TransactionTestCase):
         self.assertEqual(runtime.solved_matches, {'0': 0, '1': 1, '2': 2, '3': 3})
         self.assertEqual(async_to_sync(self.consumer.get_current_round_index)(self.quiz.id), 3)
 
+    def test_completed_set_pushes_participant_score_before_next_set(self):
+        next_question = AssignQuestion.objects.create(
+            question_text='Next set',
+            points=10,
+            time_limit=45,
+            left_items=['D', 'E'],
+            right_items=['U', 'V'],
+            correct_matches={'0': 0, '1': 1},
+            created_by=self.user,
+        )
+        self.quiz.selected_questions.set([self.question, next_question])
+        self.quiz.question_order = [self.question.id, next_question.id]
+        self.quiz.save(update_fields=['question_order'])
+        runtime = self._start_runtime()
+
+        for round_index, correct_original_index in enumerate((2, 0, 1)):
+            self._store_selection(
+                runtime,
+                round_index=round_index,
+                left_item_index=round_index,
+                user_match={
+                    str(round_index): self._get_shuffled_pos_for_original(
+                        correct_original_index
+                    ),
+                },
+            )
+            async_to_sync(self.consumer.handle_admin_next_round)({
+                'expected_round': round_index,
+                'expected_set': runtime.set_number,
+            })
+            runtime.refresh_from_db()
+
+        completion_event = next(
+            message for _, message in reversed(self.consumer.channel_layer.sent)
+            if message.get('type') == 'question_rounds_complete'
+        )
+        payloads = self._capture_consumer_send()
+        async_to_sync(self.consumer.question_rounds_complete)(completion_event)
+
+        payload = payloads[-1]
+        self.assertEqual(
+            payload['progress_history'],
+            [{
+                'question_id': self.question.id,
+                'question_number': 1,
+                'survived_rounds': 3,
+                'max_rounds': 3,
+            }],
+        )
+        self.assertEqual(
+            [entry['id'] for entry in payload['scoreboard_questions']],
+            [self.question.id, next_question.id],
+        )
+        self.assertEqual(payload['scoreboard_questions'][0]['number'], 1)
+        self.assertEqual(payload['scoreboard_questions'][1]['number'], 2)
+
     def test_progress_history_uses_correct_match_count_for_max_rounds(self):
         """Fortschrittshistory verwendet die Anzahl lösbarer Paare statt left_items."""
         question = self._create_left_distractor_question()
@@ -999,6 +1107,53 @@ class CheckRoundAnswerTest(TransactionTestCase):
         self.assertContains(response, 'this.roundEndsAt = ')
         self.assertNotContains(response, 'override_time_${this.roomCode}')
         self.assertContains(response, '<span id="questionTimeLeft">23</span>', html=True)
+
+    def test_assign_monitor_requires_solution_before_set_end(self):
+        runtime = self._start_runtime()
+        runtime.phase = AssignSetRuntime.PHASE_WAITING_REVEAL
+        runtime.save(update_fields=['phase', 'updated_at'])
+        self.user.is_staff = True
+        self.user.save(update_fields=['is_staff'])
+        self.client.force_login(self.user)
+        monitor_url = reverse(
+            'admin_dashboard:assign_monitor',
+            args=[self.quiz.room_code],
+        )
+
+        waiting_response = self.client.get(
+            monitor_url,
+            {'hub_session': self.participant.hub_session_code},
+        )
+        waiting_actions = (
+            waiting_response.content.decode('utf-8')
+            .split('<div class="question-actions question-actions--split">', 1)[1]
+            .split('</div>', 1)[0]
+        )
+
+        self.assertEqual(waiting_response.context['current_set_phase'], 'waiting_reveal')
+        self.assertIn('id="showSolutionBtn"', waiting_actions)
+        self.assertIn('secondary-action', waiting_actions)
+        self.assertNotIn('id="endQuestionBtn"', waiting_actions)
+
+        self.assertIsNotNone(mark_revealed(
+            self.quiz.room_code,
+            self.participant.hub_session_code,
+        ))
+        revealed_response = self.client.get(
+            monitor_url,
+            {'hub_session': self.participant.hub_session_code},
+        )
+        revealed_actions = (
+            revealed_response.content.decode('utf-8')
+            .split('<div class="question-actions question-actions--split">', 1)[1]
+            .split('</div>', 1)[0]
+        )
+
+        self.assertEqual(revealed_response.context['current_set_phase'], 'revealed')
+        self.assertNotIn('id="showSolutionBtn"', revealed_actions)
+        self.assertIn('id="endQuestionBtn"', revealed_actions)
+        self.assertIn('data-action="end-set"', revealed_actions)
+        self.assertIn('Set beenden', revealed_actions)
 
     def test_add_assign_question_ignores_legacy_points_field(self):
         self.user.is_staff = True
@@ -1480,7 +1635,9 @@ class AssignManualQuestionPhaseTests(TransactionTestCase):
             prompt['question_visible_at'],
             (
                 presented_at
-                + timezone.timedelta(milliseconds=QUESTION_PRESENTATION_DELAY_MS)
+                + timezone.timedelta(
+                    milliseconds=prompt['question_presentation_duration_ms'],
+                )
             ).isoformat(),
         )
         blocked = store_round_selection(
@@ -1495,9 +1652,7 @@ class AssignManualQuestionPhaseTests(TransactionTestCase):
         )
         self.assertEqual(blocked.code, 'invalid_phase')
 
-        visible_at = presented_at + timezone.timedelta(
-            milliseconds=QUESTION_PRESENTATION_DELAY_MS
-        )
+        visible_at = parse_datetime(prompt['question_visible_at'])
         opened = self.reveal_round(prompt, visible_at)
         session.refresh_from_db()
         ready_at = assign_reveal_ready_at(runtime, visible_at)
@@ -1563,10 +1718,7 @@ class AssignManualQuestionPhaseTests(TransactionTestCase):
             prompt,
             action_type='admin_reveal_question_content',
         )
-        visible_at = (
-            presented_at
-            + timezone.timedelta(milliseconds=QUESTION_PRESENTATION_DELAY_MS)
-        )
+        visible_at = parse_datetime(prompt['question_visible_at'])
         with patch('games_hub.authoritative_state.timezone.now', return_value=visible_at):
             async_to_sync(self.consumer.handle_admin_reveal_question_content)(action)
         opened = current_snapshot(
@@ -1617,9 +1769,7 @@ class AssignManualQuestionPhaseTests(TransactionTestCase):
         self.assertEqual(self.sent_payloads[-2]['type'], 'action_rejected')
         self.assertEqual(self.sent_payloads[-2]['code'], 'invalid_phase')
 
-        visible_at = presented_at + timezone.timedelta(
-            milliseconds=QUESTION_PRESENTATION_DELAY_MS
-        )
+        visible_at = parse_datetime(prompt['question_visible_at'])
         self.reveal_round(prompt, visible_at)
         runtime = current_set_runtime(
             self.quiz.room_code,
@@ -1648,9 +1798,7 @@ class AssignManualQuestionPhaseTests(TransactionTestCase):
     def test_next_internal_round_opens_directly_without_another_reveal(self):
         presented_at = timezone.now()
         prompt = self.send_first_round(presented_at)
-        visible_at = presented_at + timezone.timedelta(
-            milliseconds=QUESTION_PRESENTATION_DELAY_MS
-        )
+        visible_at = parse_datetime(prompt['question_visible_at'])
         opened = self.reveal_round(prompt, visible_at)
         runtime = current_set_runtime(
             self.quiz.room_code,
@@ -1705,9 +1853,7 @@ class AssignManualQuestionPhaseTests(TransactionTestCase):
         )
         presented_at = timezone.now()
         prompt = self.send_first_round(presented_at)
-        visible_at = presented_at + timezone.timedelta(
-            milliseconds=QUESTION_PRESENTATION_DELAY_MS
-        )
+        visible_at = parse_datetime(prompt['question_visible_at'])
         self.reveal_round(prompt, visible_at)
         runtime = current_set_runtime(
             self.quiz.room_code,
@@ -1903,12 +2049,19 @@ class AssignManualQuestionPhaseTests(TransactionTestCase):
         )
         self.assertIn('ELEMENTE UND ZIELE ENTHÜLLEN', host_source)
         self.assertNotIn('RUNDE FREIGEBEN', host_source)
+        self.assertNotIn('Spiel beendet', host_source)
+        self.assertIn("case 'show_solution':", host_source)
+        self.assertIn('this.onSolutionShown();', host_source)
+        self.assertIn('Set beenden', host_source)
         self.assertIn('this.pendingQuestionId = null;', host_source)
         self.assertIn('this.sendSocketReady = false;', host_source)
         self.assertIn('this.pendingQuestionId !== null) return;', host_source)
         self.assertIn('this.websocket.readyState === WebSocket.OPEN', host_source)
         self.assertIn('this.updateSendQuestionAvailability();', host_source)
-        self.assertIn('data-question-id="{{ question.id }}" disabled', host_source)
+        self.assertRegex(
+            host_source,
+            r'<button(?=[^>]*class="[^"]*\bsend-question-btn\b)(?=[^>]*data-question-id="\{\{ question\.id \}\}")(?=[^>]*\sdisabled(?:\{%|[\s>]))[^>]*>',
+        )
         self.assertEqual(ASSIGN_REVEAL_STAGGER_MS, 120)
         self.assertEqual(ASSIGN_REVEAL_ANIMATION_MS, 160)
 
@@ -2692,6 +2845,160 @@ class AssignReloadBrowserLiveFlowTests(_BrowserLiveServerTestCase):
         ]
         self.assertEqual(relevant_errors, [])
 
+    def test_send_and_next_round_remain_available_when_first_set_starts_during_intro(self):
+        self.first_quiz.status = 'waiting'
+        self.first_quiz.started_at = None
+        self.first_quiz.save(update_fields=['status', 'started_at', 'updated_at'])
+        AssignParticipant.objects.filter(quiz=self.first_quiz).update(is_active=False)
+
+        self.host_page.goto(self._monitor_url(self.first_quiz))
+        self.host_page.wait_for_function('() => !!window.adminGameMonitor', timeout=self.TIMEOUT)
+        self._wait_for_ws_url('host', f'/ws/assign/{self.first_quiz.room_code}/')
+        self.host_page.evaluate('window.adminGameMonitor.startQuiz()')
+        self._wait_for_frame('host', 'received', 'quiz_started')
+        self.host_page.wait_for_function(
+            '() => !!window.adminGameMonitor && window.adminGameMonitor.isActive',
+            timeout=self.LONG_TIMEOUT,
+        )
+
+        send_selector = f'.send-question-btn[data-question-id="{self.followup_question.id}"]'
+        self.host_page.click(send_selector)
+        self.host_page.click(send_selector)
+        self._wait_for_frame('host', 'received', 'question_started')
+
+        send_actions = []
+        for raw_frame in self.websocket_frames['host']['sent']:
+            try:
+                payload = json.loads(raw_frame)
+            except (TypeError, json.JSONDecodeError):
+                continue
+            if payload.get('type') == 'admin_send_question':
+                send_actions.append(payload)
+        self.assertEqual(len(send_actions), 1)
+        self.assertFalse(any(
+            'action_rejected' in frame
+            for frame in self.websocket_frames['host']['received']
+        ))
+
+        self.first_quiz.refresh_from_db()
+        self.first_quiz.session.refresh_from_db()
+        runtime = AssignSetRuntime.objects.filter(
+            quiz=self.first_quiz,
+            hub_session_code=self.session.code,
+        ).order_by('-id').first()
+        snapshot = current_snapshot(
+            'assign',
+            self.first_quiz.room_code,
+            self.session.code,
+        )
+        self.assertEqual(self.first_quiz.current_question_id, self.followup_question.id)
+        self.assertTrue(self.first_quiz.session.is_question_active)
+        self.assertIsNotNone(runtime)
+        self.assertEqual(runtime.question_id, self.followup_question.id)
+        self.assertEqual(snapshot['question_phase'], 'prompt_visible')
+        self.host_page.wait_for_selector(
+            '#revealAssignContentBtn',
+            state='attached',
+            timeout=self.LONG_TIMEOUT,
+        )
+        self.host_page.wait_for_selector(
+            '#revealAssignContentBtn:not([disabled])',
+            timeout=self.LONG_TIMEOUT,
+        )
+        self.host_page.click('#revealAssignContentBtn')
+        self._wait_for_frame('host', 'received', 'question_content_revealed')
+
+        step = HubGameStep.objects.get(
+            session=self.session,
+            game_key='assign',
+            room_code=self.first_quiz.room_code,
+        )
+        self.assertIsNotNone(step.intro_started_at)
+        self.assertIsNotNone(step.intro_ends_at)
+        server_now = timezone.now()
+        self.assertGreater(step.intro_ends_at, server_now)
+        intro_query = urlencode({
+            'game_start_intro': '1',
+            'game_start_key': 'assign',
+            'game_start_room': self.first_quiz.room_code,
+            'game_start_instance': f'assign:{self.first_quiz.room_code}:{step.pk}',
+            'game_start_order': '1',
+            'game_start_title': self.first_quiz.title,
+            'game_start_intro_started_at': step.intro_started_at.isoformat(),
+            'game_start_intro_ends_at': step.intro_ends_at.isoformat(),
+            'game_start_server_now': server_now.isoformat(),
+            'game_start_state_revision': str(step.intro_state_revision),
+            'game_start_client_received_at': str(int(time.time() * 1000)),
+        })
+        self.player_page.goto(f'{self._play_url(self.first_quiz)}&{intro_query}')
+        self.player_page.wait_for_selector(
+            '#sessionGameStartIntro:not([hidden])',
+            timeout=self.TIMEOUT,
+        )
+        self._wait_for_ws_url('player', f'/ws/assign/{self.first_quiz.room_code}/')
+        self._wait_for_frame('player', 'received', 'assign_state')
+        self.second_player_page.goto(
+            f'{self._play_url(self.first_quiz, "Bob")}&{intro_query}'
+        )
+        self.second_player_page.wait_for_selector(
+            '#sessionGameStartIntro:not([hidden])',
+            timeout=self.TIMEOUT,
+        )
+        self._wait_for_ws_url('player_two', f'/ws/assign/{self.first_quiz.room_code}/')
+        self._wait_for_frame('player_two', 'received', 'assign_state')
+        runtime.refresh_from_db()
+        self.assertEqual(
+            runtime.round_participant_ids['0'],
+            [self.participant.id, self.second_participant.id],
+        )
+        self.player_page.wait_for_selector(
+            '#sessionGameStartIntro[hidden]',
+            state='attached',
+            timeout=self.LONG_TIMEOUT,
+        )
+        self.second_player_page.wait_for_selector(
+            '#sessionGameStartIntro[hidden]',
+            state='attached',
+            timeout=self.LONG_TIMEOUT,
+        )
+        self.player_page.wait_for_selector(
+            '.draggable-item[data-left-index="0"][draggable="true"]',
+            timeout=self.LONG_TIMEOUT,
+        )
+        self.second_player_page.wait_for_selector(
+            '.draggable-item[data-left-index="0"][draggable="true"]',
+            timeout=self.LONG_TIMEOUT,
+        )
+
+        next_round_start = len(self.websocket_frames['player']['received'])
+        self._drag_and_log(self.followup_question, left_index=0)
+        self._drag_and_log(
+            self.followup_question,
+            left_index=0,
+            page=self.second_player_page,
+        )
+        self._wait_for_frame('player', 'received', 'round_logged', next_round_start)
+        self._wait_for_frame('player_two', 'received', 'round_logged')
+        self.assertFalse(any(
+            'action_rejected' in frame
+            for frame in self.websocket_frames['player']['received'][next_round_start:]
+        ))
+        self.assertFalse(any(
+            'action_rejected' in frame
+            for frame in self.websocket_frames['player_two']['received']
+        ))
+        self.host_page.click('#nextRoundBtn')
+        self._wait_for_frame('player', 'received', 'round_advanced', next_round_start)
+        self.player_page.wait_for_selector(
+            '.draggable-item[data-left-index="1"][draggable="true"]',
+            timeout=self.LONG_TIMEOUT,
+        )
+        self.second_player_page.wait_for_selector(
+            '.draggable-item[data-left-index="1"][draggable="true"]',
+            timeout=self.LONG_TIMEOUT,
+        )
+        self._assert_no_browser_errors()
+
     def test_reload_after_completed_round_does_not_reactivate_it(self):
         self.host_page.goto(self._monitor_url(self.first_quiz))
         self.host_page.wait_for_function('() => !!window.adminGameMonitor', timeout=self.TIMEOUT)
@@ -2748,6 +3055,19 @@ class AssignReloadBrowserLiveFlowTests(_BrowserLiveServerTestCase):
         )
         self.host_page.click('#endQuestionBtn')
         self._wait_for_frame('player', 'received', 'question_rounds_complete')
+        completed_score_selector = (
+            '#assignScoreList '
+            f'[data-question-id="{self.completed_round_question.id}"] '
+            '.score-box__value'
+        )
+        self.player_page.wait_for_function(
+            r"""selector => {
+                const value = document.querySelector(selector)?.textContent || '';
+                return value.replace(/\s+/g, '').startsWith('1/1');
+            }""",
+            arg=completed_score_selector,
+            timeout=self.TIMEOUT,
+        )
         self.first_quiz.session.refresh_from_db()
         self.assertFalse(self.first_quiz.session.is_question_active)
         completed_runtime = AssignSetRuntime.objects.get(
@@ -2817,6 +3137,9 @@ class AssignReloadBrowserLiveFlowTests(_BrowserLiveServerTestCase):
         self.assertEqual(submit_count_before_reload, submit_count_after_reload)
 
         end_question_start = len(self.websocket_frames['player']['received'])
+        self.host_page.click('#showSolutionBtn')
+        self._wait_for_frame('player', 'received', 'show_solution', end_question_start)
+        self.host_page.wait_for_selector('#endQuestionBtn', timeout=self.TIMEOUT)
         self.host_page.click('#endQuestionBtn')
         self._wait_for_frame('player', 'received', 'question_ended', end_question_start)
 
@@ -2830,6 +3153,25 @@ class AssignReloadBrowserLiveFlowTests(_BrowserLiveServerTestCase):
         self.player_page.wait_for_selector('.draggable-item[draggable="true"]', timeout=self.TIMEOUT)
         self.second_player_page.wait_for_selector(
             '.draggable-item[draggable="true"]',
+            timeout=self.TIMEOUT,
+        )
+        followup_score_selector = (
+            '#assignScoreList '
+            f'[data-question-id="{self.followup_question.id}"] '
+            '.score-box__value'
+        )
+        self.assertTrue(
+            self.player_page.locator(completed_score_selector)
+            .inner_text()
+            .replace(' ', '')
+            .startswith('1/1')
+        )
+        self.player_page.wait_for_function(
+            r"""selector => {
+                const value = document.querySelector(selector)?.textContent || '';
+                return value.replace(/\s+/g, '').startsWith('_/3');
+            }""",
+            arg=followup_score_selector,
             timeout=self.TIMEOUT,
         )
         self._assert_vhs_workspace_layout()

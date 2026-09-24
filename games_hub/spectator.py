@@ -14,7 +14,7 @@ from QuizGame.models import Quiz as QuizGameModel
 from QuizGame.presentation import (
     QUIZ_ANSWER_REVEAL_ANIMATION_MS,
     QUIZ_ANSWER_REVEAL_PAUSE_MS,
-    QUIZ_ANSWER_REVEAL_STAGGER_MS,
+    quiz_answer_reveal_stagger_ms,
 )
 from black_jack_quiz.models import BlackJackQuiz
 from buzzer.models import BuzzerGame
@@ -195,6 +195,35 @@ def _manual_question_is_in_progress(runtime, manual_current_question):
     )
 
 
+def _manual_spectator_question(runtime, game, ordered_questions, manual_current_question):
+    """Resolve public question data only from the authoritative manual runtime."""
+    if _manual_question_is_in_progress(runtime, manual_current_question):
+        return game.current_question, False
+
+    completed_question_id = str(runtime.get('completed_question_id') or '')
+    reveal_phase = bool(completed_question_id) or (
+        runtime.get('phase') in {'question_result', 'revealed'}
+        or (runtime.get('phase') == 'completed' and runtime.get('revealed'))
+    )
+    if not reveal_phase or str(runtime.get('game_id') or '') != str(game.pk):
+        return None, False
+
+    question_id = str(
+        completed_question_id
+        or runtime.get('current_question_id')
+        or (runtime.get('question') or {}).get('id')
+        or ''
+    )
+    current_question = getattr(game, 'current_question', None)
+    if current_question is not None and str(current_question.pk) == question_id:
+        return current_question, True
+    question = next(
+        (item for item in ordered_questions if str(item.pk) == question_id),
+        None,
+    )
+    return question, question is not None
+
+
 def _single_game_scoreboard(session, step):
     # Imported lazily because games_hub.views imports this module for the state endpoint.
     from games_hub.views import get_post_game_results
@@ -343,17 +372,33 @@ def _question_progress(question, ordered_questions, *, kind='question'):
 def _serialize_quick_quiz(quiz, session):
     quiz_session = _safe_session(quiz)
     ordered_questions = _ordered_questions(quiz)
-    question, reveal = _current_or_last_question(
-        quiz,
-        session,
-        quiz_session,
-        'quiz_answers',
-        ordered_questions,
-    )
+    runtime, manual_current_question = _manual_runtime('quiz', quiz, session)
+    if runtime.get('question_flow_mode') == GameRuntimeState.QUESTION_FLOW_MANUAL_THREE_PHASE:
+        question, reveal = _manual_spectator_question(
+            runtime,
+            quiz,
+            ordered_questions,
+            manual_current_question,
+        )
+    else:
+        question, reveal = _current_or_last_question(
+            quiz,
+            session,
+            quiz_session,
+            'quiz_answers',
+            ordered_questions,
+        )
     if not question:
+        if runtime.get('question_shell_prepared'):
+            prepared = _game_waiting_payload(None)
+            prepared.update({
+                'phase': 'question_prepared',
+                'message': 'Frage wird vorbereitet',
+                **_runtime_fields(runtime),
+            })
+            return prepared
         return _game_waiting_payload(quiz_session)
 
-    runtime, manual_current_question = _manual_runtime('quiz', quiz, session)
     question_phase = runtime.get('question_phase')
     if manual_current_question and question_phase in {
         'prompt_visible',
@@ -376,6 +421,12 @@ def _serialize_quick_quiz(quiz, session):
         question_payload['correct_answer'] = question.get_formatted_correct_answer()
         question_payload['explanation'] = question.explanation or ''
 
+    answer_reveal_stagger_ms = runtime.get('answer_reveal_stagger_ms')
+    if answer_reveal_stagger_ms is None:
+        answer_reveal_stagger_ms = quiz_answer_reveal_stagger_ms(
+            question.question_type
+        )
+
     return {
         'phase': 'reveal' if reveal else 'question',
         'message': 'Aufloesung' if reveal else 'Aktuelle Frage',
@@ -383,7 +434,7 @@ def _serialize_quick_quiz(quiz, session):
         'question': question_payload,
         'response_count': _answer_count(quiz, session, 'quiz_answers', question),
         'progress': _question_progress(question, ordered_questions),
-        'answer_reveal_stagger_ms': QUIZ_ANSWER_REVEAL_STAGGER_MS,
+        'answer_reveal_stagger_ms': answer_reveal_stagger_ms,
         'answer_reveal_animation_ms': QUIZ_ANSWER_REVEAL_ANIMATION_MS,
         'answer_reveal_pause_ms': QUIZ_ANSWER_REVEAL_PAUSE_MS,
         **_runtime_fields(runtime),
@@ -440,10 +491,6 @@ def _serialize_estimation(quiz, session):
         'answering_open',
     }:
         reveal = False
-        if not _question_is_visible(runtime):
-            waiting = _game_waiting_payload(None)
-            waiting.update(_runtime_fields(runtime))
-            return waiting
 
     prompt_details_visible = (
         not manual_current_question
@@ -518,20 +565,13 @@ def _serialize_who_that(quiz, session):
     quiz_session = _safe_session(quiz)
     runtime, manual_current_question = _manual_runtime('who_that', quiz, session)
     ordered_questions = _ordered_questions(quiz)
-    if manual_current_question and runtime.get('question_phase') in {
-        'prompt_visible',
-        'content_visible',
-        'answering_open',
-    }:
-        if not question_content_is_visible(runtime):
-            waiting = _game_waiting_payload(None)
-            waiting.update({
-                'question_phase': runtime.get('question_phase'),
-                'state_revision': runtime.get('state_revision'),
-                'server_now': runtime.get('server_now'),
-            })
-            return waiting
-        question, reveal = quiz.current_question, False
+    if runtime.get('question_flow_mode') == GameRuntimeState.QUESTION_FLOW_MANUAL_THREE_PHASE:
+        question, reveal = _manual_spectator_question(
+            runtime,
+            quiz,
+            ordered_questions,
+            manual_current_question,
+        )
     else:
         question, reveal = _current_or_last_question(
             quiz,
@@ -540,12 +580,20 @@ def _serialize_who_that(quiz, session):
             'who_that_answers',
             ordered_questions,
         )
+    if question and manual_current_question:
+        if not question_content_is_visible(runtime):
+            waiting = _game_waiting_payload(None)
+            waiting.update({
+                'question_phase': runtime.get('question_phase'),
+                'state_revision': runtime.get('state_revision'),
+                'server_now': runtime.get('server_now'),
+            })
+            return waiting
     if not question:
         return _game_waiting_payload(quiz_session)
 
     question_payload = {
         'id': question.id,
-        'text': question.question_text,
         'image_url': _file_url(question.image),
         'category': question.category or '',
     }
@@ -568,32 +616,36 @@ def _serialize_who(quiz, session):
     quiz_session = _safe_session(quiz)
     runtime, manual_current_question = _manual_runtime('who', quiz, session)
     ordered_questions = _ordered_questions(quiz)
-    question, reveal = _current_or_last_question(
-        quiz,
-        session,
-        quiz_session,
-        'who_answers',
-        ordered_questions,
-    )
+    if runtime.get('question_flow_mode') == GameRuntimeState.QUESTION_FLOW_MANUAL_THREE_PHASE:
+        question, reveal = _manual_spectator_question(
+            runtime,
+            quiz,
+            ordered_questions,
+            manual_current_question,
+        )
+    else:
+        question, reveal = _current_or_last_question(
+            quiz,
+            session,
+            quiz_session,
+            'who_answers',
+            ordered_questions,
+        )
     if not question:
         waiting = _game_waiting_payload(quiz_session)
         waiting['message'] = 'Warte auf das naechste Set.'
         return waiting
-    if manual_current_question and not _question_is_visible(runtime):
-        waiting = _game_waiting_payload(None)
-        waiting.update(_runtime_fields(runtime))
-        return waiting
     if _manual_question_is_in_progress(runtime, manual_current_question):
         reveal = False
 
+    people = question.get_randomized_people(room_code=quiz.room_code).get('people', [])
     timer_state = get_question_timer_state(
         question,
         question_start_time=getattr(quiz, 'question_start_time', None),
         question_end_time=getattr(quiz_session, 'question_end_time', None),
-        people_count=len(question.people or []),
+        people_count=len(people),
     )
     current_person = None
-    people = question.people or []
     if people and not reveal and (
         not manual_current_question or runtime.get('question_phase') == 'answering_open'
     ):
@@ -631,13 +683,17 @@ def _serialize_who(quiz, session):
 def _serialize_blackjack(quiz, session):
     quiz_session = _safe_session(quiz)
     runtime, manual_current_question = _manual_runtime('blackjack', quiz, session)
-    question, reveal = _current_or_last_blackjack_question(quiz, session, quiz_session)
+    if runtime.get('question_flow_mode') == GameRuntimeState.QUESTION_FLOW_MANUAL_THREE_PHASE:
+        question, reveal = _manual_spectator_question(
+            runtime,
+            quiz,
+            _ordered_questions(quiz),
+            manual_current_question,
+        )
+    else:
+        question, reveal = _current_or_last_blackjack_question(quiz, session, quiz_session)
     if not question:
         return _game_waiting_payload(quiz_session)
-    if manual_current_question and not _question_is_visible(runtime):
-        waiting = _game_waiting_payload(None)
-        waiting.update(_runtime_fields(runtime))
-        return waiting
     if _manual_question_is_in_progress(runtime, manual_current_question):
         reveal = False
 
@@ -679,20 +735,31 @@ def _serialize_clue_rush(game, session):
     game_session = _safe_session(game)
     runtime, manual_current_question = _manual_runtime('clue_rush', game, session)
     ordered_questions = _ordered_questions(game)
-    question = game.current_question or _last_question_from_answers(game, session, 'clue_answers')
+    if runtime.get('question_flow_mode') == GameRuntimeState.QUESTION_FLOW_MANUAL_THREE_PHASE:
+        question, reveal = _manual_spectator_question(
+            runtime,
+            game,
+            ordered_questions,
+            manual_current_question,
+        )
+    else:
+        question = game.current_question
+        if not question and _session_has_question_history(game_session):
+            question = _last_question_from_answers(game, session, 'clue_answers')
+        reveal = bool(
+            question
+            and (
+                getattr(game, 'status', None) == 'completed'
+                or (
+                    game_session
+                    and not game_session.is_question_active
+                    and not game_session.is_clue_active
+                    and game.current_question_id
+                )
+            )
+        )
     if not question:
         return _game_waiting_payload(game_session)
-    if manual_current_question and not _question_is_visible(runtime):
-        waiting = _game_waiting_payload(None)
-        waiting.update(_runtime_fields(runtime))
-        return waiting
-
-    reveal = getattr(game, 'status', None) == 'completed' or (
-        game_session
-        and not game_session.is_question_active
-        and not game_session.is_clue_active
-        and game.current_question_id
-    )
     if _manual_question_is_in_progress(runtime, manual_current_question):
         reveal = False
     revealed_count = 0
@@ -749,17 +816,43 @@ def _serialize_assign(quiz, session):
     quiz_session = _safe_session(quiz)
     runtime, manual_current_question = _manual_runtime('assign', quiz, session)
     ordered_questions = _ordered_questions(quiz)
-    question, reveal = _current_or_last_question(
-        quiz,
-        session,
-        quiz_session,
-        'assign_answers',
-        ordered_questions,
-    )
+    if runtime.get('question_flow_mode') == GameRuntimeState.QUESTION_FLOW_MANUAL_THREE_PHASE:
+        question = None
+        reveal = False
+        if _manual_question_is_in_progress(runtime, manual_current_question):
+            question = quiz.current_question
+        elif (
+            runtime.get('phase') in {'question_result', 'revealed'}
+            and str(runtime.get('game_id') or '') == str(quiz.pk)
+        ):
+            revealed_question_id = str(
+                runtime.get('current_question_id')
+                or (runtime.get('question') or {}).get('id')
+                or ''
+            )
+            question = next(
+                (item for item in ordered_questions if str(item.id) == revealed_question_id),
+                None,
+            )
+            reveal = question is not None
+    else:
+        question, reveal = _current_or_last_question(
+            quiz,
+            session,
+            quiz_session,
+            'assign_answers',
+            ordered_questions,
+        )
     if not question:
-        return _game_waiting_payload(quiz_session)
-    if manual_current_question and not _question_is_visible(runtime):
-        waiting = _game_waiting_payload(None)
+        if runtime.get('question_shell_prepared'):
+            prepared = _game_waiting_payload(None)
+            prepared.update({
+                'phase': 'question_prepared',
+                'message': 'Aufgabe wird vorbereitet',
+                **_runtime_fields(runtime),
+            })
+            return prepared
+        waiting = _game_waiting_payload(quiz_session)
         waiting.update(_runtime_fields(runtime))
         return waiting
     if _manual_question_is_in_progress(runtime, manual_current_question):
@@ -962,14 +1055,7 @@ def _serialize_host_points(game, session):
 
 def _serialize_wann_war_das(game, session):
     state = game.serialize_state(session.code)
-    visible_at = parse_datetime(state.get('question_visible_at') or '')
-    server_now = parse_datetime(state.get('server_now') or '') or timezone.now()
-    question_visible = not (
-        state.get('question_phase') == 'prompt_visible'
-        and visible_at
-        and server_now < visible_at
-    )
-    question = (state.get('question') or {}) if question_visible else {}
+    question = state.get('question') or {}
     timer = state.get('timer') or {}
     ordered_questions = _ordered_questions(game)
     question_payload = {
@@ -1058,7 +1144,12 @@ def _current_or_last_question(quiz, hub_session, runtime_session, answer_relatio
         )
         return quiz.current_question, reveal
 
-    last_question = _last_question_from_answers(quiz, hub_session, answer_relation)
+    has_question_history = _session_has_question_history(runtime_session)
+    last_question = (
+        _last_question_from_answers(quiz, hub_session, answer_relation)
+        if has_question_history
+        else None
+    )
     if not last_question and runtime_session:
         total_sent = int(getattr(runtime_session, 'total_questions_sent', 0) or getattr(runtime_session, 'current_question_number', 0) or 0)
         if total_sent > 0 and ordered_questions:
@@ -1076,6 +1167,17 @@ def _current_or_last_question(quiz, hub_session, runtime_session, answer_relatio
         )
     )
     return last_question, reveal
+
+
+def _session_has_question_history(runtime_session):
+    return bool(
+        runtime_session
+        and int(
+            getattr(runtime_session, 'total_questions_sent', 0)
+            or getattr(runtime_session, 'current_question_number', 0)
+            or 0
+        ) > 0
+    )
 
 
 def _current_or_last_blackjack_question(quiz, hub_session, runtime_session):

@@ -1,35 +1,3 @@
-<script>
-(function primeVhsIntroTransitionGate() {
-  const params = new URLSearchParams(window.location.search);
-  if (params.get('game_start_intro') !== '1') return;
-  const endsAt = Date.parse(params.get('game_start_intro_ends_at') || '');
-  const receivedAt = Number(params.get('game_start_client_received_at'));
-  const serverNow = Date.parse(params.get('game_start_server_now') || '');
-  if (!Number.isFinite(endsAt) || !Number.isFinite(serverNow)) return;
-  const estimatedNow = serverNow + (
-    Number.isFinite(receivedAt) ? Math.max(0, Date.now() - receivedAt) : 0
-  );
-  const transitionDuration = window.matchMedia('(prefers-reduced-motion: reduce)').matches
-    ? 480
-    : 2800;
-  if (estimatedNow >= endsAt + transitionDuration) return;
-  document.documentElement.classList.add('is-session-game-intro-active');
-  if (estimatedNow >= endsAt) {
-    document.documentElement.classList.add('qa-vhs-transition--active');
-    document.documentElement.style.setProperty(
-      '--qa-vhs-transition-elapsed',
-      `${Math.max(0, estimatedNow - endsAt)}ms`
-    );
-  }
-  window.__qaVhsTransitionGateFallback = window.setTimeout(function () {
-    document.documentElement.classList.remove(
-      'is-session-game-intro-active',
-      'qa-vhs-transition--active'
-    );
-    document.documentElement.style.removeProperty('--qa-vhs-transition-elapsed');
-  }, 13000);
-}());
-</script>
 <section
   id="sessionGameStartIntro"
   class="qa-vhs-intro"

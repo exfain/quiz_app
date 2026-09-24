@@ -22,8 +22,10 @@
         .answer-input { font-size: 2rem; text-align: center; font-weight: 800; }
     </style>
 <script src="{% static 'js/authoritative-game-state.js' %}"></script>
+<script src="{% static 'js/question-typewriter.js' %}"></script>
 </head>
 <body class="wann-war-das-play-page"
+      data-authoritative-paint-gate
       data-vhs-progress-kind="question"
       data-vhs-progress-source="#questionNumber">
 <main class="game-shell" data-participant-name="{{ participant.name }}">
@@ -136,7 +138,6 @@ const GAME_TITLE = '{{ game.title|escapejs }}';
 let socket = null;
 let currentState = null;
 let toleranceBoundaryTimer = null;
-let presentationDelayTimer = null;
 let currentQuestionId = null;
 const lobbyReturnController = createHubLobbyReturnController({
     sessionCode: '{{ hub_session|default_if_none:""|escapejs }}',
@@ -328,18 +329,8 @@ function renderStartWaitingText() {
     waitingText.append(title, subtitle);
 }
 
-function remainingQuestionPresentationDelay(state) {
-    const visibleAt = Date.parse(state?.question_visible_at || '');
-    const serverNow = Date.parse(state?.server_now || '');
-    if (!Number.isFinite(visibleAt) || !Number.isFinite(serverNow)) return 0;
-    const estimatedServerNow = serverNow + (performance.now() - (state.receivedAt || performance.now()));
-    return Math.max(0, visibleAt - estimatedServerNow);
-}
-
 function renderState(state) {
     if (!state.receivedAt) state.receivedAt = performance.now();
-    window.clearTimeout(presentationDelayTimer);
-    presentationDelayTimer = null;
     window.sessionGameStartIntro?.handleState(state);
     currentState = state;
     const gameEnded = state.event_type === 'game_ended' || state.game?.status === 'completed';
@@ -353,10 +344,7 @@ function renderState(state) {
         return;
     }
     const preparedQuestion = state.question;
-    const remainingPresentationDelay = state.question_phase === 'prompt_visible'
-        ? remainingQuestionPresentationDelay(state)
-        : 0;
-    const question = remainingPresentationDelay > 0 ? null : preparedQuestion;
+    const question = preparedQuestion;
     const timer = state.timer || {};
     const own = state.participant || {};
     const ownAnswer = state.own_answer;
@@ -374,23 +362,30 @@ function renderState(state) {
     document.getElementById('questionNumber').textContent = state.question_number || 0;
     document.getElementById('questionArea').classList.toggle('d-none', !question);
     document.getElementById('waitingArea').classList.toggle('d-none', !!question);
+    window.AuthoritativeGameState?.markInitialPaintReady?.();
     if (!question) {
+        window.QuestionTypewriter?.sync(document.getElementById('questionText'), {
+            text: '',
+            animate: false,
+        });
         window.clearTimeout(toleranceBoundaryTimer);
         toleranceBoundaryTimer = null;
         document.getElementById('answerInput').disabled = true;
         document.getElementById('submitBtn').disabled = true;
-        if (preparedQuestion && remainingPresentationDelay > 0) {
-            presentationDelayTimer = window.setTimeout(
-                () => renderState(state),
-                remainingPresentationDelay + 10,
-            );
-        }
         const started = state.game?.status === 'active';
         if (started) document.getElementById('waitingText').textContent = 'Spiel gestartet. Warte auf die naechste Frage.';
         else renderStartWaitingText();
         return;
     }
-    document.getElementById('questionText').textContent = question.question_text || '';
+    window.QuestionTypewriter?.sync(document.getElementById('questionText'), {
+        text: question.question_text || '',
+        presentedAt: state.question_presented_at,
+        serverNow: state.server_now,
+        receivedAt: state.receivedAt,
+        millisecondsPerCharacter: state.question_reveal_ms_per_character,
+        instanceKey: `${question.id || ''}:${state.question_presented_at || ''}`,
+        animate: state.question_phase === 'prompt_visible',
+    });
     renderToleranceScale(question, timer);
     document.getElementById('pointsText').textContent = fmt(timer.current_points ?? question.max_points);
     document.getElementById('answerInput').disabled = !state.can_answer;

@@ -1666,14 +1666,8 @@ document.addEventListener('DOMContentLoaded', function() {
                     
                 case 'quiz_started':
                     console.log('Quiz started:', data.message);
-                    this.isActive = true;
-                    // Enable question send buttons if they were disabled before start
-                    document.querySelectorAll('.send-question-btn').forEach(btn => {
-                        btn.disabled = false;
-                        btn.removeAttribute('title');
-                    });
-                    // Re-apply sent state so already-sent questions remain blocked
-                    this.applySentStates();
+                    // Reconstruct the monitor only after the server committed the start.
+                    location.reload();
                     break;
 
                 case 'tutorial_start':
@@ -1793,7 +1787,9 @@ document.addEventListener('DOMContentLoaded', function() {
 
         updateQuestionProgress(state = {}, question = {}) {
             const source = state.snapshot && typeof state.snapshot === 'object' ? state.snapshot : state;
-            const incomingNumber = Number(source.current_round_id);
+            const incomingNumber = Number(
+                question.question_number ?? source.question_number ?? source.current_round_id
+            );
             const incomingTotal = Number(question.total_questions ?? source.total_questions);
             if (Number.isFinite(incomingNumber) && incomingNumber > 0) {
                 this.currentQuestionNumber = incomingNumber;
@@ -2243,22 +2239,6 @@ document.addEventListener('DOMContentLoaded', function() {
         
         startQuiz() {
             if (this.websocket && this.websocket.readyState === WebSocket.OPEN) {
-                // Also notify hub directly (in case backend mirror is unavailable)
-                try {
-                    const qs = new URLSearchParams(window.location.search);
-                    const hub = qs.get('hub_session') || window.__hubCode || (function(){ try { return sessionStorage.getItem("_hub_admin"); } catch(_) { return null; } })();
-                    if (hub) {
-                        const hubWs = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws/hub/' + hub + '/');
-                        hubWs.onopen = () => {
-                            hubWs.send(JSON.stringify({
-                                type: 'navigate_direct',
-                                game_key: 'quiz',
-                                room_code: '{{ quiz.room_code }}'
-                            }));
-                            setTimeout(() => hubWs.close(), 100);
-                        };
-                    }
-                } catch(_) {}
                 const showTutorial = document.getElementById('showTutorialToggle')?.checked ?? false;
                 const playTutorial = document.getElementById('playTutorialToggle')?.checked ?? false;
                 if (playTutorial && !{{ quiz.tutorial_question_id|yesno:"true,false" }}) {
@@ -2271,8 +2251,6 @@ document.addEventListener('DOMContentLoaded', function() {
                     play_tutorial: playTutorial,
                     hub_session: this.getHubSession()
                 }));
-                //reload page
-                location.reload();
             }
         }
         

@@ -20,8 +20,10 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 <script src="{% static 'js/authoritative-game-state.js' %}"></script>
+<script src="{% static 'js/question-typewriter.js' %}"></script>
 </head>
 <body class="who-play-page"
+      data-authoritative-paint-gate
       data-vhs-progress-kind="set"
       data-vhs-progress-source="#currentQuestionNumber">
     <div class="play-container">
@@ -1304,7 +1306,9 @@
                     this.questionHasEnded = false;
                     this.stateRevision = Number('{{ question_runtime.state_revision|default:"-1"|escapejs }}');
                     this.questionPhase = '{{ question_runtime.question_phase|default:""|escapejs }}';
+                    this.questionPresentedAt = '{{ question_runtime.question_presented_at|default:""|escapejs }}';
                     this.questionVisibleAt = '{{ question_runtime.question_visible_at|default:""|escapejs }}';
+                    this.questionRevealMsPerCharacter = Number('{{ question_runtime.question_reveal_ms_per_character|default:75 }}') || 75;
                     this.questionPresentationTimer = null;
                     
                     this.init();
@@ -1565,28 +1569,17 @@
                     if (question?.question_visible_at !== undefined && question?.question_visible_at !== null) {
                         this.questionVisibleAt = String(question.question_visible_at);
                     }
+                    if (question?.question_presented_at !== undefined && question?.question_presented_at !== null) {
+                        this.questionPresentedAt = String(question.question_presented_at);
+                    }
+                    if (question?.question_reveal_ms_per_character !== undefined) {
+                        this.questionRevealMsPerCharacter = Number(question.question_reveal_ms_per_character) || 75;
+                    }
                     this.syncServerClock(question?.server_now);
                 }
 
                 scheduleQuestionPresentation(question) {
-                    const visibleAt = this.parseServerTimestamp(this.questionVisibleAt);
-                    const remaining = visibleAt === null
-                        ? 0
-                        : Math.max(0, visibleAt - this.getSynchronizedNowMs());
-                    const questionId = Number(question?.id) || null;
-                    if (remaining <= 0) {
-                        this.showState('questionState');
-                        return;
-                    }
-                    this.showState('waitingQuestionState');
-                    this.questionPresentationTimer = window.setTimeout(() => {
-                        if (
-                            this.activeQuestionId === questionId
-                            && this.questionPhase === 'prompt_visible'
-                        ) {
-                            this.showState('questionState');
-                        }
-                    }, remaining);
+                    this.showState('questionState');
                 }
 
                 applyQuestionState(question) {
@@ -1669,7 +1662,9 @@
                         question_end_time: {% if current_question_end_time %}'{{ current_question_end_time|date:"c" }}'{% else %}null{% endif %},
                         server_now: {% if who_timer_server_now %}'{{ who_timer_server_now|date:"c" }}'{% else %}null{% endif %},
                         question_phase: '{{ question_runtime.question_phase|default:""|escapejs }}',
+                        question_presented_at: '{{ question_runtime.question_presented_at|default:""|escapejs }}',
                         question_visible_at: '{{ question_runtime.question_visible_at|default:""|escapejs }}',
+                        question_reveal_ms_per_character: {{ question_runtime.question_reveal_ms_per_character|default:75 }},
                         people: {{ current_question_people|safe }},
                         total_possible_points: {{ quiz.current_question.get_total_possible_points }}
                     };
@@ -1681,7 +1676,15 @@
 
                 loadQuestion(question) {
                     this.activeQuestionId = Number(question?.id) || null;
-                    document.getElementById('statementText').textContent = question.statement;
+                    window.QuestionTypewriter?.sync(document.getElementById('statementText'), {
+                        text: question.statement || '',
+                        presentedAt: this.questionPresentedAt,
+                        serverNow: question.server_now,
+                        receivedAt: performance.now(),
+                        millisecondsPerCharacter: this.questionRevealMsPerCharacter,
+                        instanceKey: `${this.activeQuestionId || ''}:${this.questionPresentedAt}`,
+                        animate: this.questionPhase === 'prompt_visible',
+                    });
                     this.currentQuestionStatement = question.statement || '';
                     this.peopleSequence = Array.isArray(question.people) ? question.people : [];
                     this.currentPersonPosition = Number(question?.current_person_index ?? this.currentPersonPosition) || 0;
@@ -2075,6 +2078,7 @@
                     if (targetState) {
                         targetState.classList.remove('d-none');
                     }
+                    window.AuthoritativeGameState?.markInitialPaintReady?.();
                 }
 
                 updateParticipantCount(count) {

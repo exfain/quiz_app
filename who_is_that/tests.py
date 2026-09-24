@@ -1090,6 +1090,12 @@ class WhoThatQuestionStatusBoxTests(TestCase):
         self.assertContains(response, 'data-question-number="1"', html=False)
         self.assertContains(response, 'data-question-number="2"', html=False)
         self.assertContains(response, 'data-question-number="3"', html=False)
+        self.assertContains(response, 'data-vhs-progress-source="#vhsWhoThatProgress"')
+        self.assertContains(
+            response,
+            '<span id="vhsWhoThatProgress" data-total="3" hidden aria-hidden="true">2/3</span>',
+            html=True,
+        )
 
         board = response.context["question_status_board"]
         self.assertEqual(len(board), 3)

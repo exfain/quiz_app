@@ -20,8 +20,10 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 <script src="{% static 'js/authoritative-game-state.js' %}"></script>
+<script src="{% static 'js/question-typewriter.js' %}"></script>
 </head>
 <body class="blackjack-play-page"
+      data-authoritative-paint-gate
       data-vhs-progress-kind="set"
       data-vhs-progress-source=".play-container"
       data-vhs-progress-attribute="data-blackjack-current-set">
@@ -1794,22 +1796,32 @@
                     this.loadQuestion(question);
                     clearTimeout(this.questionPresentationTimer);
                     clearInterval(this.questionTimer);
-                    if (
-                        this.questionPhase === 'prompt_visible'
-                        && this.remainingQuestionPresentationDelay(question) > 0
-                    ) {
+                    if (this.questionPhase === 'prompt_visible') {
                         this.setQuestionInteraction(false);
                         this.setQuestionTimerVisible(false);
-                        this.showState('waitingQuestionState');
+                        this.showState('questionState');
                         const questionId = this.currentQuestionId;
-                        this.questionPresentationTimer = setTimeout(() => {
-                            if (
-                                this.currentQuestionId === questionId
-                                && this.questionPhase === 'prompt_visible'
-                            ) {
-                                this.renderQuestionPhase(question);
-                            }
-                        }, this.remainingQuestionPresentationDelay(question));
+                        window.QuestionTypewriter?.sync(
+                            document.getElementById('questionText'),
+                            {
+                                text: question.question_text || '',
+                                presentedAt: question.question_presented_at,
+                                serverNow: question.server_now,
+                                receivedAt: this.presentationServerReceivedAt,
+                                millisecondsPerCharacter: question.question_reveal_ms_per_character,
+                                instanceKey: `${questionId || ''}:${question.question_presented_at || ''}`,
+                                stableFirstWord: true,
+                                animate: true,
+                                onComplete: () => {
+                                    if (
+                                        this.currentQuestionId === questionId
+                                        && this.questionPhase === 'prompt_visible'
+                                    ) {
+                                        this.renderQuestionPhase(question);
+                                    }
+                                },
+                            },
+                        );
                     } else {
                         this.renderQuestionPhase(question);
                     }
@@ -1973,6 +1985,8 @@
                         'question_phase',
                         'question_presented_at',
                         'question_visible_at',
+                        'question_presentation_duration_ms',
+                        'question_reveal_ms_per_character',
                         'answering_started_at',
                         'answering_deadline_at',
                         'answering_allowed',
@@ -1994,6 +2008,10 @@
 
                 renderQuestionPhase(question) {
                     const answeringOpen = this.questionPhase === 'answering_open';
+                    window.QuestionTypewriter?.sync(document.getElementById('questionText'), {
+                        text: question?.question_text || '',
+                        animate: false,
+                    });
                     this.setQuestionInteraction(answeringOpen);
                     this.setQuestionTimerVisible(answeringOpen);
                     this.showState('questionState');
@@ -2435,6 +2453,7 @@
                     if (targetState) {
                         targetState.classList.remove('d-none');
                     }
+                    window.AuthoritativeGameState?.markInitialPaintReady?.();
                 }
 
                 updateParticipantCount(count) {

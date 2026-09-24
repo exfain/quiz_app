@@ -50,6 +50,7 @@ from games_hub.unit_tutorial_runtime import (
     start_unit_tutorial_if_needed,
     validate_unit_tutorial_request,
 )
+from QuizGame.presentation import question_typewriter_timing
 try:
     from rapidfuzz import fuzz
 except Exception:
@@ -442,6 +443,8 @@ class ClueRushGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsume
                 'question_phase',
                 'question_presented_at',
                 'question_visible_at',
+                'question_presentation_duration_ms',
+                'question_reveal_ms_per_character',
                 'content_revealed_at',
                 'answering_started_at',
                 'answering_deadline_at',
@@ -1421,6 +1424,7 @@ class ClueRushGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsume
             action={**action, 'question_id': question_id},
             answer_duration_seconds=sum(durations),
             at=at,
+            **question_typewriter_timing(question.question_text),
         )
         if decision.accepted and not decision.duplicate:
             prepared = prepare_question_schedule(

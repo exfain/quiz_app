@@ -22,9 +22,14 @@
 <script src="{% static 'js/authoritative-game-state.js' %}"></script>
 </head>
 <body class="where-play-page"
+      data-authoritative-paint-gate
       data-vhs-progress-kind="question"
-      data-vhs-progress-source="#currentQuestionNumber">
+      data-vhs-progress-source="#vhsWhereProgress">
     <div class="play-container">
+        <span id="vhsWhereProgress"
+              data-total="{{ total_question_count }}"
+              hidden
+              aria-hidden="true">{% if total_question_count %}{% firstof current_question_number 1 %}/{{ total_question_count }}{% endif %}</span>
         <!-- Header -->
         <header class="quiz-header">
             <div class="container">
@@ -1359,6 +1364,13 @@
                     const questionNumber = this.getCurrentQuestionNumber();
                     if (Number.isInteger(questionNumber) && questionNumber > 0) {
                         document.getElementById('currentQuestionNumber').textContent = String(questionNumber);
+                        const progressElement = document.getElementById('vhsWhereProgress');
+                        const totalQuestions = Number(progressElement?.dataset.total || 0);
+                        if (progressElement) {
+                            progressElement.textContent = totalQuestions > 0
+                                ? `${questionNumber}/${totalQuestions}`
+                                : '';
+                        }
                     }
                     this.renderScoreHistory();
                 }
@@ -1608,6 +1620,7 @@
                     if (targetState) {
                         targetState.classList.remove('d-none');
                     }
+                    window.AuthoritativeGameState?.markInitialPaintReady?.();
 
                     // Karte neu berechnen sobald questionState sichtbar wird
                     if (stateId === 'questionState' && this.gameMap) {
@@ -1813,6 +1826,7 @@
                     if (targetState) {
                         targetState.classList.remove('d-none');
                     }
+                    window.AuthoritativeGameState?.markInitialPaintReady?.();
                     if (stateId === 'questionState' && this.gameMap) {
                         document.getElementById('gameMap').style.cursor = 'crosshair';
                     }

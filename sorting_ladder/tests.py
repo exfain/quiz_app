@@ -18,6 +18,7 @@ from games_hub.authoritative_state import (
     reset_question_flow,
 )
 from games_hub.models import GameRuntimeState
+from games_hub.spectator import build_spectator_state
 from games_hub.tutorial_runtime import activate_tutorial_runtime as activate_game_tutorial_runtime
 from games_hub.unit_tutorial_runtime import (
     get_unit_tutorial_state,
@@ -1895,6 +1896,65 @@ class SortingLadderTutorialRuntimeTests(TransactionTestCase):
         question.starting_item = items[1]
         question.save(update_fields=['starting_item'])
         return question, items
+
+    @patch('sorting_ladder.consumers.resolve_session_game_activation_for_room', return_value={'success': True})
+    @patch('sorting_ladder.consumers.ensure_session_players_ready_for_game_start_for_room', return_value={'allowed': True})
+    def test_completed_game_restart_does_not_reuse_revealed_ladder(
+        self,
+        _ready_mock,
+        _activation_mock,
+    ):
+        question, items = self._create_named_question('Completed ladder')
+        self.quiz.status = 'completed'
+        self.quiz.current_question = question
+        self.quiz.started_at = timezone.now() - timedelta(minutes=5)
+        self.quiz.ended_at = timezone.now() - timedelta(minutes=1)
+        self.quiz.selected_questions.add(question)
+        self.quiz.save(update_fields=[
+            'status',
+            'current_question',
+            'started_at',
+            'ended_at',
+        ])
+        ladder_session = SortingLadderSession.objects.create(
+            quiz=self.quiz,
+            current_round=2,
+            reveal_state=SortingLadderSession.REVEAL_REVEALED,
+            active_element=items[-1],
+        )
+        ladder_session.placed_elements.add(items[0], items[1])
+        hub_session = HubSession.objects.create(
+            code='SLCOMPLETE',
+            name='Sorting completed restart',
+            is_active=True,
+            started_at=timezone.now(),
+        )
+        HubGameStep.objects.create(
+            session=hub_session,
+            order=0,
+            game_key='sorting_ladder',
+            room_code=self.quiz.room_code,
+            title=self.quiz.title,
+        )
+
+        async_to_sync(self.consumer.handle_admin_start_quiz)({
+            'hub_session': hub_session.code,
+            'show_tutorial': False,
+            'play_tutorial': False,
+        })
+
+        self.quiz.refresh_from_db()
+        ladder_session.refresh_from_db()
+        spectator_game = build_spectator_state(hub_session)['game']
+        self.assertEqual(self.quiz.status, 'active')
+        self.assertIsNone(self.quiz.current_question_id)
+        self.assertEqual(ladder_session.current_round, 0)
+        self.assertEqual(
+            ladder_session.reveal_state,
+            SortingLadderSession.REVEAL_ACTIVE,
+        )
+        self.assertEqual(spectator_game['phase'], 'game_waiting')
+        self.assertIsNone(spectator_game['question'])
 
     @patch('sorting_ladder.consumers.resolve_session_game_activation_for_room', return_value={'success': True})
     @patch('sorting_ladder.consumers.ensure_session_players_ready_for_game_start_for_room', return_value={'allowed': True})

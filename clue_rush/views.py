@@ -8,7 +8,11 @@ import json
 from .models import ClueRushGame, ClueRushParticipant, ClueAnswer, ClueRushSession
 from .runtime import reconcile_clue_schedule
 from games_hub.authoritative_state import validate_and_reserve_action
-from games_hub.unit_tutorial_runtime import is_current_unit_tutorial_question, is_unit_tutorial_question
+from games_hub.unit_tutorial_runtime import (
+    get_scorebox_excluded_tutorial_question_ids,
+    is_current_unit_tutorial_question,
+    is_unit_tutorial_question,
+)
 
 
 def join_view(request):
@@ -121,11 +125,29 @@ def play(request, room_code, participant_name):
         participant.last_activity = timezone.now()
         participant.save()
 
+        excluded_question_ids = get_scorebox_excluded_tutorial_question_ids(
+            'clue_rush',
+            quiz.room_code,
+            session_code,
+        )
+        total_question_count = (
+            quiz.selected_questions
+            .filter(is_active=True)
+            .exclude(id__in=excluded_question_ids)
+            .count()
+        )
+        try:
+            current_question_number = quiz.session.current_question_number
+        except ClueRushSession.DoesNotExist:
+            current_question_number = 0
+
         context = {
             'quiz': quiz,
             'participant': participant,
             'hub_session': session_code,
             'participant_count': quiz.participants.filter(hub_session_code=session_code, is_active=True).count(),
+            'current_question_number': current_question_number,
+            'total_question_count': total_question_count,
             'current_unit_is_tutorial': is_current_unit_tutorial_question('clue_rush', quiz.room_code, session_code, quiz.current_question_id),
         }
         return render(request, 'clue_rush/play.html', context)

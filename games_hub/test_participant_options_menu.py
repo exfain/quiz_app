@@ -213,6 +213,16 @@ class ParticipantOptionsMenuTests(unittest.TestCase):
             vhs_css,
         )
         self.assertIn("#questionState:has(.quick-quiz-short-answer-form)", vhs_css)
+        phase_start = quiz_template.index("applyQuestionPhase(question, timeLimit")
+        short_answer_layout = quiz_template.index(
+            "question.question_type === 'short_answer'",
+            phase_start,
+        )
+        prompt_visible_return = quiz_template.index(
+            "if (phase === 'prompt_visible')",
+            phase_start,
+        )
+        self.assertLess(short_answer_layout, prompt_visible_return)
         self.assertIn("padding-top: 240px", vhs_css)
         self.assertIn("padding-top: 410px", vhs_css)
         self.assertNotIn('html[data-participant-theme="standard"] .quick-quiz-short-answer-field', vhs_css)
@@ -236,8 +246,8 @@ class ParticipantOptionsMenuTests(unittest.TestCase):
             estimation_template.count("document.getElementById('submitAnswerBtn').addEventListener('click'"),
             1,
         )
-        self.assertIn("#questionState .estimation-interaction-area", widget)
-        self.assertIn("isVhsElementVisible", widget)
+        self.assertIn("widget.parentNode !== document.body", widget)
+        self.assertIn("positionVhsScoreWidgetPanel", widget)
         self.assertIn(
             'html[data-participant-theme="vhs"] body.estimation-play-page .vhs-theme-shell',
             vhs_css,
@@ -342,7 +352,7 @@ class ParticipantOptionsMenuTests(unittest.TestCase):
         self.assertIn("document.documentElement.dataset.participantTheme = normalized", rendered)
         self.assertIn("if (normalized === 'vhs') setupVhsTheme()", rendered)
         self.assertIn("else teardownVhsTheme()", rendered)
-        self.assertIn("Im VHS-Theme fest positioniert", rendered)
+        self.assertIn("Im VHS-Theme direkt am Punkt verschiebbar", rendered)
 
         self.assertTrue(noise_path.is_file())
         noise = noise_path.read_bytes()
@@ -523,6 +533,7 @@ class ParticipantOptionsMenuTests(unittest.TestCase):
         self.assertIn("participant_interface_theme", rendered)
         self.assertIn("THEMES = ['standard', 'arcade', 'vhs']", rendered)
         self.assertIn("participant_interface_score_position", rendered)
+        self.assertIn("participant_interface_score_drag_position", rendered)
         self.assertIn("participant_interface_score_collapsed", rendered)
         self.assertIn("participant_interface_custom_colors_enabled", rendered)
         self.assertIn("participant_interface_background_color", rendered)
@@ -538,6 +549,10 @@ class ParticipantOptionsMenuTests(unittest.TestCase):
         self.assertIn("applyScoreWidgetPosition", rendered)
         self.assertIn("applyScoreWidgetCollapsed", rendered)
         self.assertIn("observeScoreWidgetTarget", rendered)
+        self.assertIn("positionVhsScoreWidgetPanel", rendered)
+        self.assertIn("scheduleVhsScoreWidgetLayout", rendered)
+        self.assertIn("widget.parentNode !== document.body", rendered)
+        self.assertIn("panel.dataset.scorePlacement = placement", rendered)
         self.assertIn("DEFAULT_SCORE_POSITION = 'bottom-left'", rendered)
         self.assertIn("SCORE_POSITIONS = ['bottom-left', 'top-left', 'top-right', 'bottom-right']", rendered)
         self.assertIn("scoreWidgetButton.textContent = 'Punkte'", rendered)
@@ -549,6 +564,7 @@ class ParticipantOptionsMenuTests(unittest.TestCase):
         self.assertIn('html[data-participant-high-contrast="true"] .waiting-card::before', rendered)
         self.assertIn("removeStoredValue(LS_CUSTOM_COLORS_ENABLED)", rendered)
         self.assertIn("removeStoredValue(LS_SCORE_POSITION)", rendered)
+        self.assertIn("removeStoredValue(LS_SCORE_DRAG_POSITION)", rendered)
         self.assertIn("removeStoredValue(LS_SCORE_COLLAPSED)", rendered)
         self.assertIn("removeStoredValue(LS_ACCENT_COLOR)", rendered)
         self.assertIn("removeStoredValue(LS_ACCENT_COLOR_2)", rendered)
@@ -559,6 +575,29 @@ class ParticipantOptionsMenuTests(unittest.TestCase):
         self.assertNotIn("a11y-font-down", rendered)
         self.assertNotIn("a11y-font-up", rendered)
         self.assertNotIn("a11y-contrast-btn", rendered)
+
+    def test_score_widget_dragging_uses_relative_participant_only_persistence(self):
+        rendered = render_to_string(
+            "includes/accessibility_widget.html",
+            {"participant_options_menu": True},
+        )
+
+        self.assertIn("var SCORE_DRAG_THRESHOLD = 7", rendered)
+        self.assertIn("function enableScoreWidgetDragging()", rendered)
+        self.assertIn("Math.hypot(deltaX, deltaY) < SCORE_DRAG_THRESHOLD", rendered)
+        self.assertIn("xRatio: availableWidth ?", rendered)
+        self.assertIn("yRatio: availableHeight ?", rendered)
+        self.assertIn("function restoreScoreWidgetDragPosition()", rendered)
+        self.assertIn("document.querySelector('.vhs-theme-shell') || findVhsPageRoot()", rendered)
+        self.assertIn("scoreWidget.style.setProperty('left'", rendered)
+        self.assertIn("scoreWidget.style.setProperty('top'", rendered)
+        self.assertIn("suppressScoreWidgetClick", rendered)
+        self.assertIn("touch-action: none", rendered)
+        self.assertIn("cursor: grab", rendered)
+        self.assertIn("cursor: grabbing", rendered)
+
+        admin_rendered = render_to_string("includes/accessibility_widget.html", {})
+        self.assertNotIn("participant_interface_score_drag_position", admin_rendered)
 
     def test_custom_color_toggle_controls_accent_with_background_and_text(self):
         rendered = render_to_string(
@@ -859,8 +898,9 @@ class ParticipantOptionsMenuTests(unittest.TestCase):
         self.assertNotIn('html[data-participant-theme="standard"] body.assign-play-page', vhs_css)
         self.assertNotIn('html[data-participant-theme="arcade"] body.assign-play-page', vhs_css)
 
-        self.assertIn("shell.querySelectorAll('#questionState .assign-workspace')", widget)
-        self.assertIn('assignResponse.parentNode.insertBefore(widget, assignResponse);', widget)
+        self.assertIn('widget.parentNode !== document.body', widget)
+        self.assertIn('document.body.appendChild(widget)', widget)
+        self.assertNotIn('assignResponse.parentNode.insertBefore(widget, assignResponse);', widget)
 
     def test_vhs_assign_reveal_uses_one_solved_matrix_and_existing_result_state(self):
         content = read_text("templates/assign/play.html")
@@ -1059,6 +1099,331 @@ class ParticipantThemeButtonBrowserTests(unittest.TestCase):
             cls._browser.close()
             cls._playwright.stop()
         super().tearDownClass()
+
+    def test_score_widget_drag_position_persists_across_games_reload_and_resize(self):
+        if not self._playwright_available:
+            self.skipTest(f"Playwright/Chromium nicht verfuegbar: {self._playwright_error}")
+
+        widget = render_to_string(
+            "includes/accessibility_widget.html",
+            {"participant_options_menu": True},
+        )
+        vhs_css = read_text("static/themes/vhs/vhs.css")
+        game_classes = {
+            "quiz": "quiz-play-page",
+            "estimation": "estimation-play-page",
+            "assign": "assign-play-page",
+        }
+
+        def fulfill_participant(route):
+            game = route.request.url.rstrip("/").rsplit("/", 1)[-1] or "quiz"
+            body_class = game_classes.get(game, game_classes["quiz"])
+            route.fulfill(
+                status=200,
+                content_type="text/html; charset=utf-8",
+                body=(
+                    "<!doctype html><html><head>"
+                    f"<style>{vhs_css}</style>"
+                    "</head>"
+                    f"<body class='{body_class}'>"
+                    "<div class='play-container'>"
+                    "<header class='quiz-header'><h1 class='quiz-title'>Testspiel</h1></header>"
+                    "<main><div class='game-state'>Spielinhalt</div>"
+                    "<aside class='score-box'><h6 class='score-box__title'>Punkte</h6>"
+                    "<div class='score-box__list'><div class='score-box__row'>"
+                    "<span class='score-box__badge'>1</span>"
+                    "<span class='score-box__value'>2/4</span>"
+                    "</div></div></aside></main></div>"
+                    f"{widget}</body></html>"
+                ),
+            )
+
+        context = self._browser.new_context(viewport={"width": 1280, "height": 800})
+        context.route("http://participant.test/**", fulfill_participant)
+        page = context.new_page()
+        browser_errors = []
+        page.on("pageerror", lambda exc: browser_errors.append(str(exc)))
+        try:
+            page.goto("http://participant.test/quiz")
+            page.evaluate(
+                """() => {
+                  localStorage.setItem('participant_interface_theme', 'vhs');
+                  localStorage.setItem('participant_interface_score_collapsed', 'true');
+                }"""
+            )
+            page.reload()
+            page.wait_for_selector(".vhs-theme-shell")
+            toggle = page.locator(".qa-score-widget__toggle")
+            initial_box = toggle.bounding_box()
+            initial_expanded = toggle.get_attribute("aria-expanded")
+
+            page.mouse.move(
+                initial_box["x"] + initial_box["width"] / 2,
+                initial_box["y"] + initial_box["height"] / 2,
+            )
+            page.mouse.down()
+            page.mouse.move(
+                initial_box["x"] - 300,
+                initial_box["y"] + 240,
+                steps=8,
+            )
+            page.mouse.up()
+            page.wait_for_timeout(50)
+
+            dragged_box = toggle.bounding_box()
+            self.assertLess(dragged_box["x"], initial_box["x"] - 150)
+            self.assertGreater(dragged_box["y"], initial_box["y"] + 100)
+            self.assertEqual(toggle.get_attribute("aria-expanded"), initial_expanded)
+            stored_position = page.evaluate(
+                "JSON.parse(localStorage.getItem('participant_interface_score_drag_position'))"
+            )
+            self.assertGreaterEqual(stored_position["xRatio"], 0)
+            self.assertLessEqual(stored_position["xRatio"], 1)
+            self.assertGreaterEqual(stored_position["yRatio"], 0)
+            self.assertLessEqual(stored_position["yRatio"], 1)
+
+            page.reload()
+            page.wait_for_selector(".vhs-theme-shell")
+            reloaded_box = page.locator(".qa-score-widget__toggle").bounding_box()
+            self.assertAlmostEqual(reloaded_box["x"], dragged_box["x"], delta=1.5)
+            self.assertAlmostEqual(reloaded_box["y"], dragged_box["y"], delta=1.5)
+
+            for game in ("estimation", "assign"):
+                page.goto(f"http://participant.test/{game}")
+                page.wait_for_selector(".vhs-theme-shell")
+                game_box = page.locator(".qa-score-widget__toggle").bounding_box()
+                self.assertAlmostEqual(game_box["x"], dragged_box["x"], delta=1.5)
+                self.assertAlmostEqual(game_box["y"], dragged_box["y"], delta=1.5)
+
+            page.set_viewport_size({"width": 390, "height": 700})
+            page.wait_for_timeout(100)
+            mobile_box = page.locator(".qa-score-widget__toggle").bounding_box()
+            shell_box = page.locator(".vhs-theme-shell").bounding_box()
+            self.assertGreaterEqual(mobile_box["x"], max(0, shell_box["x"]) - 0.5)
+            self.assertGreaterEqual(mobile_box["y"], max(0, shell_box["y"]) - 0.5)
+            self.assertLessEqual(
+                mobile_box["x"] + mobile_box["width"],
+                min(390, shell_box["x"] + shell_box["width"]) + 0.5,
+            )
+            self.assertLessEqual(
+                mobile_box["y"] + mobile_box["height"],
+                min(700, shell_box["y"] + shell_box["height"]) + 0.5,
+            )
+
+            before_click = toggle.get_attribute("aria-expanded")
+            toggle.click()
+            self.assertNotEqual(toggle.get_attribute("aria-expanded"), before_click)
+            self.assertIn("noise.png", toggle.evaluate("el => getComputedStyle(el).backgroundImage"))
+            self.assertIn("radial-gradient", toggle.evaluate("el => getComputedStyle(el).backgroundImage"))
+            toggle.hover()
+            page.wait_for_timeout(220)
+            self.assertNotEqual(toggle.evaluate("el => getComputedStyle(el).transform"), "none")
+            self.assertNotEqual(toggle.evaluate("el => getComputedStyle(el).boxShadow"), "none")
+            self.assertEqual(browser_errors, [])
+        finally:
+            page.close()
+            context.close()
+
+    def test_score_widget_touch_drag_does_not_open_panel_but_tap_still_does(self):
+        if not self._playwright_available:
+            self.skipTest(f"Playwright/Chromium nicht verfuegbar: {self._playwright_error}")
+
+        widget = render_to_string(
+            "includes/accessibility_widget.html",
+            {"participant_options_menu": True},
+        )
+        context = self._browser.new_context(
+            viewport={"width": 390, "height": 844},
+            has_touch=True,
+            is_mobile=True,
+        )
+        context.route(
+            "http://participant.test/",
+            lambda route: route.fulfill(
+                status=200,
+                content_type="text/html; charset=utf-8",
+                body=(
+                    "<!doctype html><html><body class='quiz-play-page'>"
+                    "<div class='play-container' style='min-height:100vh'>"
+                    "<main><div class='game-state'>Spielinhalt</div>"
+                    "<aside class='score-box'>Punkte</aside></main></div>"
+                    f"{widget}</body></html>"
+                ),
+            ),
+        )
+        page = context.new_page()
+        browser_errors = []
+        page.on("pageerror", lambda exc: browser_errors.append(str(exc)))
+        try:
+            page.goto("http://participant.test/")
+            toggle = page.locator(".qa-score-widget__toggle")
+            initial_box = toggle.bounding_box()
+            initial_expanded = toggle.get_attribute("aria-expanded")
+            page.evaluate(
+                """({ startX, startY }) => {
+                  const toggle = document.querySelector('.qa-score-widget__toggle');
+                  const options = { bubbles: true, pointerType: 'touch', pointerId: 41, isPrimary: true };
+                  toggle.dispatchEvent(new PointerEvent('pointerdown', {
+                    ...options, clientX: startX, clientY: startY,
+                  }));
+                  toggle.dispatchEvent(new PointerEvent('pointermove', {
+                    ...options, clientX: startX + 90, clientY: startY - 110,
+                  }));
+                  toggle.dispatchEvent(new PointerEvent('pointerup', {
+                    ...options, clientX: startX + 90, clientY: startY - 110,
+                  }));
+                }""",
+                {
+                    "startX": initial_box["x"] + initial_box["width"] / 2,
+                    "startY": initial_box["y"] + initial_box["height"] / 2,
+                },
+            )
+            page.wait_for_timeout(20)
+            dragged_box = toggle.bounding_box()
+            self.assertGreater(dragged_box["x"], initial_box["x"] + 40)
+            self.assertLess(dragged_box["y"], initial_box["y"] - 40)
+            self.assertEqual(toggle.get_attribute("aria-expanded"), initial_expanded)
+            self.assertEqual(toggle.evaluate("el => getComputedStyle(el).touchAction"), "none")
+
+            center_x = dragged_box["x"] + dragged_box["width"] / 2
+            center_y = dragged_box["y"] + dragged_box["height"] / 2
+            page.touchscreen.tap(center_x, center_y)
+            self.assertNotEqual(toggle.get_attribute("aria-expanded"), initial_expanded)
+            self.assertEqual(browser_errors, [])
+        finally:
+            page.close()
+            context.close()
+
+    def test_vhs_shell_clips_striped_background_inside_outline(self):
+        if not self._playwright_available:
+            self.skipTest(f"Playwright/Chromium nicht verfuegbar: {self._playwright_error}")
+
+        context = self._browser.new_context()
+        page = context.new_page()
+        try:
+            page.set_content(
+                '<!doctype html><html data-participant-theme="vhs">'
+                '<body><main class="vhs-theme-shell"></main></body></html>'
+            )
+            page.add_style_tag(content=read_text("static/themes/vhs/vhs.css"))
+            styles = page.locator(".vhs-theme-shell").evaluate(
+                """element => ({
+                    backgroundImage: getComputedStyle(element).backgroundImage,
+                    backgroundColor: getComputedStyle(element).backgroundColor,
+                    backgroundClip: getComputedStyle(element).backgroundClip,
+                    borderStyle: getComputedStyle(element).borderStyle,
+                    borderWidth: getComputedStyle(element).borderWidth,
+                    borderColor: getComputedStyle(element).borderColor,
+                    reflection: getComputedStyle(element, '::before').backgroundImage,
+                })"""
+            )
+
+            self.assertIn("linear-gradient(153deg", styles["backgroundImage"])
+            self.assertEqual(styles["backgroundClip"], "padding-box")
+            self.assertEqual(styles["borderStyle"], "solid")
+            self.assertEqual(styles["borderWidth"], "1px")
+            self.assertNotEqual(styles["borderColor"], "rgba(0, 0, 0, 0)")
+            self.assertIn("linear-gradient", styles["reflection"])
+            self.assertIn("120deg", styles["reflection"])
+        finally:
+            page.close()
+            context.close()
+
+    def test_all_participant_game_shells_reserve_the_available_viewport_height(self):
+        if not self._playwright_available:
+            self.skipTest(f"Playwright/Chromium nicht verfuegbar: {self._playwright_error}")
+
+        game_page_classes = (
+            "quiz-play-page",
+            "estimation-play-page",
+            "blackjack-play-page",
+            "assign-play-page",
+            "sorting-ladder-play-page",
+            "wann-war-das-play-page",
+            "clue-rush-play-page",
+            "who-play-page",
+            "who-that-play-page",
+            "where-play-page",
+            "wer-weiss-mehr-play-page",
+            "buzzer-play-page",
+            "host-points-play-page",
+        )
+        vhs_css = read_text("static/themes/vhs/vhs.css")
+        context = self._browser.new_context(viewport={"width": 1280, "height": 900})
+        page = context.new_page()
+        try:
+            for viewport, expected_height in (
+                ({"width": 1280, "height": 900}, 852),
+                ({"width": 390, "height": 844}, 824),
+            ):
+                page.set_viewport_size(viewport)
+                for page_class in game_page_classes:
+                    with self.subTest(page_class=page_class, viewport=viewport):
+                        page.set_content(
+                            f'<!doctype html><html data-participant-theme="vhs">'
+                            f'<body class="{page_class}"><main class="vhs-theme-shell">'
+                            '<section id="gameState">Bereit</section>'
+                            '</main></body></html>'
+                        )
+                        page.add_style_tag(content=vhs_css)
+                        initial_height = page.locator(".vhs-theme-shell").evaluate(
+                            "element => element.getBoundingClientRect().height"
+                        )
+                        page.locator("#gameState").evaluate(
+                            "element => { element.style.height = '720px'; element.textContent = 'Antworten'; }"
+                        )
+                        answer_height = page.locator(".vhs-theme-shell").evaluate(
+                            "element => element.getBoundingClientRect().height"
+                        )
+
+                        self.assertGreaterEqual(initial_height, expected_height)
+                        self.assertEqual(initial_height, answer_height)
+        finally:
+            page.close()
+            context.close()
+
+    def test_typewriter_games_keep_first_word_close_to_question_body(self):
+        if not self._playwright_available:
+            self.skipTest(f"Playwright/Chromium nicht verfuegbar: {self._playwright_error}")
+
+        vhs_css = read_text("static/themes/vhs/vhs.css")
+        fixture = """
+          <main class="vhs-theme-shell">
+            <section id="questionState">
+              <div class="question-text" id="questionText">
+                <span class="vhs-question-lead">WELCHER</span>
+                <span class="vhs-question-body">Fluss fließt durch Köln?</span>
+              </div>
+            </section>
+          </main>
+        """
+        for page_class in (
+            "estimation-play-page",
+            "assign-play-page",
+            "blackjack-play-page",
+        ):
+            for viewport in ({"width": 1280, "height": 900}, {"width": 390, "height": 844}):
+                with self.subTest(page_class=page_class, viewport=viewport):
+                    context = self._browser.new_context(viewport=viewport)
+                    page = context.new_page()
+                    try:
+                        page.set_content(
+                            f'<!doctype html><html data-participant-theme="vhs"><body class="{page_class}">{fixture}</body></html>'
+                        )
+                        page.add_style_tag(content=vhs_css)
+                        gap = page.evaluate(
+                            """() => {
+                                const lead = document.querySelector('.vhs-question-lead').getBoundingClientRect();
+                                const body = document.querySelector('.vhs-question-body').getBoundingClientRect();
+                                return body.top - lead.bottom;
+                            }"""
+                        )
+
+                        self.assertGreaterEqual(gap, 0)
+                        self.assertLessEqual(gap, 14)
+                    finally:
+                        page.close()
+                        context.close()
 
     def test_vhs_result_page_uses_shared_shell_and_restores_legacy_labels(self):
         if not self._playwright_available:
@@ -1304,8 +1669,8 @@ class ParticipantThemeButtonBrowserTests(unittest.TestCase):
               <div class="container">
                 <div class="row">
                   <div class="col-lg-8">
-                    <div id="questionState" class="game-state">
-                      <div class="question-card">
+                        <div id="questionState" class="game-state">
+                          <div class="question-card">
                         <div class="question-header">
                           <span id="currentQuestionNumber">1</span>
                           <span id="playerTimeLeft">18</span>
@@ -1319,6 +1684,18 @@ class ParticipantThemeButtonBrowserTests(unittest.TestCase):
                             <div class="answer-option selected" data-qa-answer-selectable="true" aria-pressed="true">
                               <span class="option-key">B</span><span class="option-text">Saturn</span>
                             </div>
+                          </div>
+                        </div>
+                        <div id="answerSubmittedState" class="game-state" hidden>
+                          <div class="submitted-card">
+                            <h2>Antwort eingeloggt</h2>
+                            <p>Warte auf die AuflÃ¶sung.</p>
+                          </div>
+                        </div>
+                        <div id="correctAnswerState" class="game-state" hidden>
+                          <div class="correct-answer-card">
+                            <h2>Die richtige Antwort ist</h2>
+                            <p>Saturn</p>
                           </div>
                         </div>
                       </div>
@@ -1341,7 +1718,7 @@ class ParticipantThemeButtonBrowserTests(unittest.TestCase):
                 content_type="text/html; charset=utf-8",
                 body=(
                     "<!doctype html><html><head></head>"
-                    "<body data-vhs-progress-kind='question' "
+                    "<body class='quiz-play-page' data-vhs-progress-kind='question' "
                     "data-vhs-progress-source='#currentQuestionNumber'>"
                     f"{fixture}{widget}</body></html>"
                 ),
@@ -1392,6 +1769,12 @@ class ParticipantThemeButtonBrowserTests(unittest.TestCase):
             self.assertIn("noise.png", page.locator("body").evaluate("el => getComputedStyle(el).backgroundImage"))
 
             self.assertEqual(page.locator(".qa-score-widget__toggle").inner_text(), "P")
+            self.assertIn(
+                "noise.png",
+                page.locator(".qa-score-widget__toggle").evaluate(
+                    "el => getComputedStyle(el).backgroundImage"
+                ),
+            )
             self.assertTrue(page.locator("#participant-score-position-select").is_disabled())
             page.locator("#participant-options-toggle").click()
             page.locator("[data-participant-options-panel='interface']").click()
@@ -1406,11 +1789,111 @@ class ParticipantThemeButtonBrowserTests(unittest.TestCase):
                 "3",
             )
             self.assertEqual(page.locator(".qa-score-widget__body").get_attribute("aria-hidden"), "false")
+            page.wait_for_function(
+                "Boolean(document.querySelector('.qa-score-widget__body')?.dataset.scorePlacement)"
+            )
+            self.assertEqual(
+                page.locator(".qa-score-widget").evaluate("el => el.parentElement.tagName"),
+                "BODY",
+            )
+            open_toggle_box = page.locator(".qa-score-widget__toggle").bounding_box()
+            self.assertNotEqual(
+                page.locator(".qa-score-widget__toggle").evaluate(
+                    "el => getComputedStyle(el).transform"
+                ),
+                "none",
+            )
+            open_scroll_height = page.evaluate("document.documentElement.scrollHeight")
             page.locator(".qa-score-widget__toggle").click()
             self.assertEqual(page.locator(".qa-score-widget__toggle").get_attribute("aria-expanded"), "false")
+            page.mouse.move(1, 1)
+            page.wait_for_timeout(220)
+            collapsed_toggle_box = page.locator(".qa-score-widget__toggle").bounding_box()
+            self.assertEqual(
+                page.locator(".qa-score-widget__toggle").evaluate(
+                    "el => getComputedStyle(el).transform"
+                ),
+                "none",
+            )
+            self.assertAlmostEqual(
+                open_toggle_box["x"] + open_toggle_box["width"] / 2,
+                collapsed_toggle_box["x"] + collapsed_toggle_box["width"] / 2,
+                delta=0.5,
+            )
+            self.assertAlmostEqual(
+                open_toggle_box["y"] + open_toggle_box["height"] / 2,
+                collapsed_toggle_box["y"] + collapsed_toggle_box["height"] / 2,
+                delta=0.5,
+            )
+            self.assertGreater(open_toggle_box["width"], collapsed_toggle_box["width"])
             self.assertEqual(page.locator(".qa-score-widget__body").get_attribute("aria-hidden"), "true")
+            page.locator(".qa-score-widget__toggle").hover()
+            page.wait_for_timeout(220)
+            self.assertNotEqual(
+                page.locator(".qa-score-widget__toggle").evaluate(
+                    "el => getComputedStyle(el).transform"
+                ),
+                "none",
+            )
             page.locator(".qa-score-widget__toggle").click()
             self.assertEqual(page.locator(".qa-score-widget__toggle").get_attribute("aria-expanded"), "true")
+            page.wait_for_timeout(220)
+            page.wait_for_function(
+                "Boolean(document.querySelector('.qa-score-widget__body')?.dataset.scorePlacement)"
+            )
+            reopened_toggle_box = page.locator(".qa-score-widget__toggle").bounding_box()
+            panel_box = page.locator(".qa-score-widget__body").bounding_box()
+            self.assertAlmostEqual(
+                open_toggle_box["x"] + open_toggle_box["width"] / 2,
+                reopened_toggle_box["x"] + reopened_toggle_box["width"] / 2,
+                delta=0.5,
+            )
+            self.assertAlmostEqual(
+                open_toggle_box["y"] + open_toggle_box["height"] / 2,
+                reopened_toggle_box["y"] + reopened_toggle_box["height"] / 2,
+                delta=0.5,
+            )
+            self.assertGreaterEqual(panel_box["x"], 0)
+            self.assertGreaterEqual(panel_box["y"], 0)
+            self.assertLessEqual(panel_box["x"] + panel_box["width"], page.evaluate("window.innerWidth"))
+            self.assertLessEqual(panel_box["y"] + panel_box["height"], page.evaluate("window.innerHeight"))
+            self.assertEqual(
+                page.locator(".qa-score-widget__body").evaluate("el => getComputedStyle(el).backgroundColor"),
+                "rgb(40, 47, 44)",
+            )
+            self.assertEqual(open_scroll_height, page.evaluate("document.documentElement.scrollHeight"))
+            self.assertLessEqual(page.evaluate("document.documentElement.scrollWidth"), page.evaluate("window.innerWidth"))
+
+            page.set_viewport_size({"width": 390, "height": 700})
+            page.wait_for_timeout(100)
+            mobile_open_box = page.locator(".qa-score-widget__toggle").bounding_box()
+            mobile_scroll_height = page.evaluate("document.documentElement.scrollHeight")
+            page.locator(".qa-score-widget__toggle").click()
+            page.mouse.move(1, 1)
+            page.wait_for_timeout(220)
+            mobile_closed_box = page.locator(".qa-score-widget__toggle").bounding_box()
+            page.locator(".qa-score-widget__toggle").click()
+            page.wait_for_timeout(220)
+            mobile_reopened_box = page.locator(".qa-score-widget__toggle").bounding_box()
+            mobile_panel_box = page.locator(".qa-score-widget__body").bounding_box()
+            for current_box in (mobile_closed_box, mobile_reopened_box):
+                self.assertAlmostEqual(
+                    mobile_open_box["x"] + mobile_open_box["width"] / 2,
+                    current_box["x"] + current_box["width"] / 2,
+                    delta=0.5,
+                )
+                self.assertAlmostEqual(
+                    mobile_open_box["y"] + mobile_open_box["height"] / 2,
+                    current_box["y"] + current_box["height"] / 2,
+                    delta=0.5,
+                )
+            self.assertGreaterEqual(mobile_panel_box["x"], 0)
+            self.assertGreaterEqual(mobile_panel_box["y"], 0)
+            self.assertLessEqual(mobile_panel_box["x"] + mobile_panel_box["width"], 390)
+            self.assertLessEqual(mobile_panel_box["y"] + mobile_panel_box["height"], 700)
+            self.assertEqual(mobile_scroll_height, page.evaluate("document.documentElement.scrollHeight"))
+            self.assertLessEqual(page.evaluate("document.documentElement.scrollWidth"), 390)
+            page.set_viewport_size({"width": 1280, "height": 720})
 
             page.locator("#playerTimeLeft").evaluate("el => { el.textContent = '9'; }")
             page.wait_for_function("document.querySelector('.vhs-theme-time').textContent === '00:00:09'")
@@ -1470,6 +1953,86 @@ class ParticipantThemeButtonBrowserTests(unittest.TestCase):
                 "center",
             )
             self.assertLessEqual(page.evaluate("document.body.scrollWidth"), page.evaluate("window.innerWidth"))
+
+            if page.locator(".qa-score-widget__toggle").get_attribute("aria-expanded") == "true":
+                page.locator(".qa-score-widget__toggle").click()
+            page.mouse.move(1, 1)
+            page.wait_for_timeout(220)
+            for viewport in ({"width": 390, "height": 844}, {"width": 768, "height": 1024}):
+                page.set_viewport_size(viewport)
+                page.wait_for_timeout(100)
+                overlaps = page.evaluate(
+                    """
+                    () => {
+                      const trigger = document.querySelector('.qa-score-widget__toggle').getBoundingClientRect();
+                      const selectors = [
+                        '.vhs-theme-app',
+                        '.vhs-theme-rec',
+                        '#questionText',
+                        '.answer-options',
+                      ];
+                      return selectors.map((selector) => {
+                        const element = document.querySelector(selector);
+                        if (!element) return false;
+                        const rect = element.getBoundingClientRect();
+                        return trigger.left < rect.right
+                          && trigger.right > rect.left
+                          && trigger.top < rect.bottom
+                          && trigger.bottom > rect.top;
+                      });
+                    }
+                    """
+                )
+                self.assertEqual(overlaps, [False, False, False, False])
+                self.assertGreaterEqual(
+                    page.locator(".play-container").bounding_box()["y"],
+                    page.locator(".qa-score-widget__toggle").bounding_box()["y"]
+                    + page.locator(".qa-score-widget__toggle").bounding_box()["height"],
+                )
+
+            for viewport in ({"width": 1280, "height": 900}, {"width": 390, "height": 844}):
+                page.set_viewport_size(viewport)
+                for state_id in ("questionState", "answerSubmittedState", "correctAnswerState"):
+                    page.evaluate(
+                        """
+                        (activeStateId) => {
+                          document.querySelectorAll('.game-state').forEach((state) => {
+                            state.hidden = state.id !== activeStateId;
+                          });
+                        }
+                        """,
+                        state_id,
+                    )
+                    page.wait_for_timeout(50)
+                    footer_metrics = page.evaluate(
+                        """
+                        () => {
+                          const shell = document.querySelector('.vhs-theme-shell');
+                          const footer = document.querySelector('.vhs-theme-footer');
+                          const shellRect = shell.getBoundingClientRect();
+                          const footerRect = footer.getBoundingClientRect();
+                          return {
+                            bottomGap: shellRect.bottom - footerRect.bottom,
+                            paddingBottom: Number.parseFloat(getComputedStyle(shell).paddingBottom),
+                          };
+                        }
+                        """
+                    )
+                    self.assertAlmostEqual(
+                        footer_metrics["bottomGap"],
+                        footer_metrics["paddingBottom"],
+                        delta=1,
+                    )
+
+            page.evaluate(
+                """
+                () => {
+                  document.querySelectorAll('.game-state').forEach((state) => {
+                    state.hidden = state.id !== 'questionState';
+                  });
+                }
+                """
+            )
 
             page.locator("#participant-theme-select").evaluate(
                 "el => { el.value = 'standard'; el.dispatchEvent(new Event('change', { bubbles: true })); }"
@@ -1960,8 +2523,8 @@ class ParticipantThemeButtonBrowserTests(unittest.TestCase):
             self.assertEqual(page.locator(".drop-zone").count(), 8)
             self.assertEqual(page.locator(".drop-zone-slot").count(), 8)
             self.assertEqual(
-                page.locator(".qa-score-widget").evaluate("el => el.nextElementSibling.id"),
-                "dragDropInterface",
+                page.locator(".qa-score-widget").evaluate("el => el.parentElement.tagName"),
+                "BODY",
             )
 
             source_boxes = [
@@ -2392,7 +2955,7 @@ class ParticipantThemeButtonBrowserTests(unittest.TestCase):
         vhs_css = read_text("static/themes/vhs/vhs.css")
         fixture = """
           <title>Quiz - QuizMaster</title>
-          <style>.quick-quiz-response-area { display: contents; }</style>
+          <style>.quick-quiz-response-area { display: contents; } .d-none { display: none !important; }</style>
           <div class="play-container">
             <header class="quiz-header">
               <h1 class="quiz-title">QA Quick Quiz</h1>
@@ -2403,7 +2966,7 @@ class ParticipantThemeButtonBrowserTests(unittest.TestCase):
               <div id="questionState" class="game-state"><div class="question-card">
                 <div class="question-content quick-quiz-layout">
                   <div class="question-text quick-quiz-question" id="questionText">Welche Antwort ist richtig?</div>
-                  <div class="quick-quiz-response-area">
+                  <div class="quick-quiz-response-area" data-reserve-answer-space>
                     <div class="answer-options quick-quiz-answer-list" id="answerOptions">
                       <div class="answer-option quick-quiz-answer"><div class="option-key">A</div><div class="option-text">Kurz</div></div>
                       <div class="answer-option quick-quiz-answer"><div class="option-key">B</div><div class="option-text">Eine deutlich laengere Antwort, die bei wenig Platz sauber in mehrere Zeilen umbrechen muss</div></div>
@@ -2474,6 +3037,34 @@ class ParticipantThemeButtonBrowserTests(unittest.TestCase):
             )
             self.assertFalse(any(overlaps(box, widget_box) for box in answer_boxes))
             self.assertGreater(answer_boxes[1]["height"], 70)
+
+            for width, height in ((1920, 1080), (1366, 768), (1024, 768), (390, 844)):
+                with self.subTest(transition_viewport=(width, height)):
+                    page.set_viewport_size({"width": width, "height": height})
+                    page.evaluate("""() => {
+                        const area = document.querySelector('.quick-quiz-response-area');
+                        const list = document.querySelector('#answerOptions');
+                        window.savedAnswerMarkup = list.innerHTML;
+                        list.replaceChildren();
+                        area.hidden = true;
+                        area.classList.add('d-none');
+                        area.setAttribute('aria-hidden', 'true');
+                    }""")
+                    page.wait_for_timeout(50)
+                    prompt_box = page.locator('.vhs-theme-shell').bounding_box()
+                    self.assertFalse(page.locator('#submitAnswerBtn').is_visible())
+                    page.evaluate("""() => {
+                        const area = document.querySelector('.quick-quiz-response-area');
+                        document.querySelector('#answerOptions').innerHTML = window.savedAnswerMarkup;
+                        area.hidden = false;
+                        area.classList.remove('d-none');
+                        area.setAttribute('aria-hidden', 'false');
+                    }""")
+                    page.wait_for_timeout(50)
+                    answer_box = page.locator('.vhs-theme-shell').bounding_box()
+                    for dimension in ('x', 'y', 'width', 'height'):
+                        self.assertAlmostEqual(prompt_box[dimension], answer_box[dimension], delta=0.5)
+            page.set_viewport_size({"width": 1440, "height": 1100})
 
             page.evaluate("""
               () => {
@@ -2623,7 +3214,8 @@ class ParticipantThemeButtonBrowserTests(unittest.TestCase):
             )
             page.wait_for_selector(".vhs-theme-shell")
             page.wait_for_function(
-                "document.querySelector('.qa-score-widget')?.parentElement?.classList.contains('question-content')"
+                "document.querySelector('.qa-score-widget')?.parentElement === document.body"
+                " && Boolean(document.querySelector('.qa-score-widget__body')?.dataset.scorePlacement)"
             )
 
             labels = page.locator(".quick-quiz-short-answer-field > label")
@@ -2632,7 +3224,6 @@ class ParticipantThemeButtonBrowserTests(unittest.TestCase):
             second_label_box = labels.nth(1).bounding_box()
             first_input_box = inputs.nth(0).bounding_box()
             second_input_box = inputs.nth(1).bounding_box()
-            score_toggle_box = page.locator(".qa-score-widget__toggle").bounding_box()
             score_panel_box = page.locator(".qa-score-widget__body").bounding_box()
             submit_box = page.locator("#submitAnswerBtn").bounding_box()
 
@@ -2642,10 +3233,10 @@ class ParticipantThemeButtonBrowserTests(unittest.TestCase):
             self.assertAlmostEqual(first_input_box["x"], second_input_box["x"], delta=0.5)
             self.assertAlmostEqual(first_input_box["width"], second_input_box["width"], delta=0.5)
             self.assertLessEqual(first_input_box["width"], 360.5)
-            self.assertGreaterEqual(first_label_box["y"], max(score_toggle_box["y"] + score_toggle_box["height"], score_panel_box["y"] + score_panel_box["height"]) + 20)
             self.assertGreater(second_label_box["y"], first_input_box["y"] + first_input_box["height"])
             self.assertGreater(submit_box["y"], second_input_box["y"] + second_input_box["height"])
-            self.assertLess(score_panel_box["x"], score_toggle_box["x"])
+            self.assertGreaterEqual(score_panel_box["x"], 0)
+            self.assertGreaterEqual(score_panel_box["y"], 0)
 
             inputs.nth(0).focus()
             self.assertNotEqual(inputs.nth(0).evaluate("el => getComputedStyle(el).boxShadow"), "none")
@@ -2671,15 +3262,40 @@ class ParticipantThemeButtonBrowserTests(unittest.TestCase):
             ):
                 page.set_viewport_size(viewport)
                 page.wait_for_timeout(100)
-                current_widget_box = page.locator(".qa-score-widget").bounding_box()
-                content_boxes = [
-                    labels.nth(0).bounding_box(),
-                    inputs.nth(0).bounding_box(),
-                    labels.nth(1).bounding_box(),
-                    inputs.nth(1).bounding_box(),
-                    page.locator("#submitAnswerBtn").bounding_box(),
-                ]
-                self.assertFalse(any(overlaps(box, current_widget_box) for box in content_boxes))
+                answer_question_box = page.locator("#questionText").bounding_box()
+                page.locator(".quick-quiz-response-area").evaluate(
+                    """
+                    el => {
+                      el.hidden = true;
+                      el.classList.add('d-none');
+                      el.setAttribute('aria-hidden', 'true');
+                    }
+                    """
+                )
+                page.wait_for_timeout(50)
+                prompt_question_box = page.locator("#questionText").bounding_box()
+                for dimension in ("x", "y", "width", "height"):
+                    self.assertAlmostEqual(
+                        prompt_question_box[dimension],
+                        answer_question_box[dimension],
+                        delta=0.5,
+                        msg=(viewport, dimension),
+                    )
+                page.locator(".quick-quiz-response-area").evaluate(
+                    """
+                    el => {
+                      el.hidden = false;
+                      el.classList.remove('d-none');
+                      el.setAttribute('aria-hidden', 'false');
+                    }
+                    """
+                )
+                page.wait_for_timeout(50)
+                current_panel_box = page.locator(".qa-score-widget__body").bounding_box()
+                self.assertGreaterEqual(current_panel_box["x"], 0)
+                self.assertGreaterEqual(current_panel_box["y"], 0)
+                self.assertLessEqual(current_panel_box["x"] + current_panel_box["width"], viewport["width"] + 0.5)
+                self.assertLessEqual(current_panel_box["y"] + current_panel_box["height"], viewport["height"] + 0.5)
                 self.assertAlmostEqual(inputs.nth(0).bounding_box()["width"], inputs.nth(1).bounding_box()["width"], delta=0.5)
                 self.assertLessEqual(page.evaluate("document.body.scrollWidth"), page.evaluate("window.innerWidth"))
 
@@ -2687,6 +3303,8 @@ class ParticipantThemeButtonBrowserTests(unittest.TestCase):
                 "el => { el.value = 'standard'; el.dispatchEvent(new Event('change', { bubbles: true })); }"
             )
             self.assertEqual(page.locator(".vhs-theme-shell").count(), 0)
+            self.assertEqual(page.locator(".qa-score-widget__body").evaluate("el => el.style.cssText"), "")
+            self.assertEqual(page.locator(".qa-score-widget__body").get_attribute("data-score-placement"), None)
             self.assertEqual(labels.nth(0).evaluate("el => getComputedStyle(el).color"), "rgb(30, 64, 175)")
             self.assertEqual(page.locator(".quick-quiz-response-area").evaluate("el => getComputedStyle(el).display"), "contents")
             self.assertEqual(browser_errors, [])
@@ -2787,7 +3405,8 @@ class ParticipantThemeButtonBrowserTests(unittest.TestCase):
             )
             page.wait_for_selector(".vhs-theme-shell")
             page.wait_for_function(
-                "document.querySelector('.qa-score-widget')?.parentElement?.classList.contains('question-content')"
+                "document.querySelector('.qa-score-widget')?.parentElement === document.body"
+                " && Boolean(document.querySelector('.qa-score-widget__body')?.dataset.scorePlacement)"
             )
 
             estimate_input = page.locator("#estimateInput")
@@ -2798,7 +3417,6 @@ class ParticipantThemeButtonBrowserTests(unittest.TestCase):
             input_box = estimate_input.bounding_box()
             unit_box = unit.bounding_box()
             submit_box = submit.bounding_box()
-            score_box = score_widget.bounding_box()
 
             self.assertEqual(
                 estimate_input.evaluate("el => getComputedStyle(el, '::placeholder').color"),
@@ -2817,7 +3435,6 @@ class ParticipantThemeButtonBrowserTests(unittest.TestCase):
             self.assertGreater(unit_box["x"], input_box["x"] + input_box["width"])
             self.assertAlmostEqual(submit_box["x"], input_box["x"], delta=0.5)
             self.assertGreater(submit_box["y"], input_box["y"] + input_box["height"])
-            self.assertGreaterEqual(input_box["y"], score_box["y"] + score_box["height"])
             self.assertLessEqual(interaction.bounding_box()["width"], 360.5)
 
             estimate_input.focus()
@@ -2835,19 +3452,18 @@ class ParticipantThemeButtonBrowserTests(unittest.TestCase):
             for width in (1180, 1024, 900):
                 page.set_viewport_size({"width": width, "height": 1100})
                 page.wait_for_timeout(100)
-                current_widget_box = score_widget.bounding_box()
-                current_interaction_box = interaction.bounding_box()
-                self.assertGreaterEqual(
-                    current_interaction_box["y"],
-                    current_widget_box["y"] + current_widget_box["height"],
-                )
+                current_panel_box = page.locator(".qa-score-widget__body").bounding_box()
+                self.assertGreaterEqual(current_panel_box["x"], 0)
+                self.assertGreaterEqual(current_panel_box["y"], 0)
+                self.assertLessEqual(current_panel_box["x"] + current_panel_box["width"], width + 0.5)
+                self.assertLessEqual(current_panel_box["y"] + current_panel_box["height"], 1100.5)
                 self.assertLessEqual(page.evaluate("document.body.scrollWidth"), width)
 
             page.set_viewport_size({"width": 820, "height": 1100})
             page.wait_for_timeout(100)
-            tablet_widget_box = score_widget.bounding_box()
-            tablet_input_box = estimate_input.bounding_box()
-            self.assertGreaterEqual(tablet_input_box["y"], tablet_widget_box["y"] + tablet_widget_box["height"])
+            tablet_panel_box = page.locator(".qa-score-widget__body").bounding_box()
+            self.assertLessEqual(tablet_panel_box["x"] + tablet_panel_box["width"], 820.5)
+            self.assertLessEqual(tablet_panel_box["y"] + tablet_panel_box["height"], 1100.5)
             self.assertLessEqual(page.evaluate("document.body.scrollWidth"), page.evaluate("window.innerWidth"))
 
             page.set_viewport_size({"width": 390, "height": 900})
@@ -2974,15 +3590,14 @@ class ParticipantThemeButtonBrowserTests(unittest.TestCase):
             self.assertEqual(details.evaluate("el => getComputedStyle(el).borderRadius"), "0px")
             self.assertNotEqual(details.evaluate("el => getComputedStyle(el).backgroundColor"), "rgb(255, 255, 255)")
             self.assertEqual(submitted.locator(".summary-value").first.evaluate("el => getComputedStyle(el).color"), "rgb(233, 223, 202)")
-            self.assertFalse(overlaps(submitted.bounding_box(), score_widget.bounding_box()))
+            self.assertEqual(score_widget.evaluate("el => el.parentElement.tagName"), "BODY")
 
             page.evaluate("""
               document.querySelector('#answerSubmittedState').classList.add('d-none');
               document.querySelector('#correctAnswerState').classList.remove('d-none');
             """)
             page.wait_for_function(
-                "document.querySelector('.qa-score-widget')?.nextElementSibling?.id === 'correctAnswerState'"
-                " || document.querySelector('#correctAnswerState')?.classList.contains('d-none') === false"
+                "document.querySelector('#correctAnswerState')?.classList.contains('d-none') === false"
             )
             page.wait_for_timeout(100)
 
@@ -3002,7 +3617,11 @@ class ParticipantThemeButtonBrowserTests(unittest.TestCase):
             for width, height in ((1280, 1100), (1180, 1100), (900, 1200), (480, 1200)):
                 page.set_viewport_size({"width": width, "height": height})
                 page.wait_for_timeout(100)
-                self.assertFalse(overlaps(reveal.bounding_box(), score_widget.bounding_box()))
+                panel_box = page.locator(".qa-score-widget__body").bounding_box()
+                self.assertGreaterEqual(panel_box["x"], 0)
+                self.assertGreaterEqual(panel_box["y"], 0)
+                self.assertLessEqual(panel_box["x"] + panel_box["width"], width + 0.5)
+                self.assertLessEqual(panel_box["y"] + panel_box["height"], height + 0.5)
                 self.assertLessEqual(page.evaluate("document.body.scrollWidth"), width)
 
             self.assertEqual(browser_errors, [])
@@ -3288,13 +3907,11 @@ class ParticipantThemeButtonBrowserTests(unittest.TestCase):
             ):
                 page.set_viewport_size(viewport)
                 page.wait_for_timeout(100)
-                widget_box = page.locator(".qa-score-widget").bounding_box()
-                reveal_boxes = [
-                    card.locator(".vhs-reveal-hero").bounding_box(),
-                    card.locator(".vhs-reveal-answer-panel").bounding_box(),
-                    card.locator(".vhs-reveal-prompt-panel").bounding_box(),
-                ]
-                self.assertFalse(any(overlaps(box, widget_box) for box in reveal_boxes))
+                panel_box = page.locator(".qa-score-widget__body").bounding_box()
+                self.assertGreaterEqual(panel_box["x"], 0)
+                self.assertGreaterEqual(panel_box["y"], 0)
+                self.assertLessEqual(panel_box["x"] + panel_box["width"], viewport["width"] + 0.5)
+                self.assertLessEqual(panel_box["y"] + panel_box["height"], viewport["height"] + 0.5)
                 self.assertLessEqual(
                     card.locator(".vhs-reveal-correct-value").bounding_box()["width"],
                     card.bounding_box()["width"] + 0.5,

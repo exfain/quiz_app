@@ -22,9 +22,14 @@
 <script src="{% static 'js/authoritative-game-state.js' %}"></script>
 </head>
 <body class="who-that-play-page"
+      data-authoritative-paint-gate
       data-vhs-progress-kind="question"
-      data-vhs-progress-source="#currentQuestionNumber">
+      data-vhs-progress-source="#vhsWhoThatProgress">
     <div class="play-container">
+        <span id="vhsWhoThatProgress"
+              data-total="{{ question_status_board|length }}"
+              hidden
+              aria-hidden="true">{% if question_status_board %}{% firstof current_question_number 1 %}/{{ question_status_board|length }}{% endif %}</span>
         <!-- Header -->
         <header class="quiz-header">
             <div class="container">
@@ -2104,6 +2109,7 @@
                     if (targetState) {
                         targetState.classList.remove('d-none');
                     }
+                    window.AuthoritativeGameState?.markInitialPaintReady?.();
                 }
 
                 updateParticipantCount(count) {
@@ -2229,8 +2235,16 @@
 
                 updateCurrentQuestionNumberDisplay() {
                     const questionNumberElement = document.getElementById('currentQuestionNumber');
+                    const displayNumber = this.currentQuestionNumber > 0 ? this.currentQuestionNumber : 1;
                     if (questionNumberElement) {
-                        questionNumberElement.textContent = this.currentQuestionNumber > 0 ? this.currentQuestionNumber : 1;
+                        questionNumberElement.textContent = displayNumber;
+                    }
+                    const progressElement = document.getElementById('vhsWhoThatProgress');
+                    const totalQuestions = Number(progressElement?.dataset.total || 0);
+                    if (progressElement) {
+                        progressElement.textContent = totalQuestions > 0
+                            ? `${displayNumber}/${totalQuestions}`
+                            : '';
                     }
                 }
 

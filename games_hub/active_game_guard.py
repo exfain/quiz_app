@@ -6,6 +6,7 @@ from typing import Any
 from django.db import transaction
 from django.utils import timezone
 
+from .game_intro import start_game_intro
 from .models import HubGameParticipantSnapshot, HubGameStep, HubSession
 
 
@@ -269,6 +270,7 @@ def resolve_session_game_activation(
             HubGameParticipantSnapshot.create_for_step(target_step)
             _provision_target_game_participants(target_step, target_game)
         if target_needs_activation:
+            start_game_intro(session.code, target_game_key, target_room_code)
             _activate_target_game(target_game_key, target_game, hub_session_code=session.code)
 
         return {

@@ -3791,9 +3791,20 @@ def quiz_monitor(request, room_code):
         (question for question in available_questions if str(question.id) == prepared_question_id),
         None,
     )
-    prepared_question_number = next(
-        (index for index, question in enumerate(available_questions, start=1) if question == prepared_question),
-        None,
+    unit_tutorial_state = get_unit_tutorial_state('quiz', quiz.room_code, hub_session)
+    tutorial_question_offset = int(bool(
+        unit_tutorial_state.get('requested')
+        and (
+            unit_tutorial_state.get('current_unit_is_tutorial')
+            or unit_tutorial_state.get('tutorial_has_been_played')
+        )
+    ))
+    prepared_question_number = (
+        quiz_session.current_question_number
+        - tutorial_question_offset
+        + 1
+        if prepared_question is not None
+        else None
     )
 
     context = {
@@ -4590,13 +4601,24 @@ def settings(request):
     """Settings page"""
     dashboard_settings = DashboardSettings.load()
     if request.method == 'POST':
-        dashboard_settings.question_reveal_ms_per_character = (
-            DashboardSettings.normalize_question_reveal_speed(
-                request.POST.get('question_reveal_ms_per_character')
+        update_fields = []
+        if 'question_reveal_ms_per_character' in request.POST:
+            dashboard_settings.question_reveal_ms_per_character = (
+                DashboardSettings.normalize_question_reveal_speed(
+                    request.POST.get('question_reveal_ms_per_character')
+                )
             )
-        )
-        dashboard_settings.save(update_fields=['question_reveal_ms_per_character'])
-        messages.success(request, 'Fragen-Einblendgeschwindigkeit gespeichert.')
+            update_fields.append('question_reveal_ms_per_character')
+        if 'quiz_mc_answer_reveal_stagger_ms' in request.POST:
+            dashboard_settings.quiz_mc_answer_reveal_stagger_ms = (
+                DashboardSettings.normalize_quiz_mc_answer_reveal_stagger(
+                    request.POST.get('quiz_mc_answer_reveal_stagger_ms')
+                )
+            )
+            update_fields.append('quiz_mc_answer_reveal_stagger_ms')
+        if update_fields:
+            dashboard_settings.save(update_fields=update_fields)
+        messages.success(request, 'Darstellungseinstellungen gespeichert.')
         return redirect('admin_dashboard:settings')
     context = {'dashboard_settings': dashboard_settings}
     return render(request, 'admin_dashboard/settings.html', context)
@@ -5831,6 +5853,7 @@ def assign_monitor(request, room_code):
         'hub_session': hub_session or '',
         'current_round_index': current_round_index,
         'total_rounds_current': total_rounds_current,
+        'current_set_phase': runtime.phase if runtime_is_current else '',
         'current_round_ends_at': current_round_ends_at,
         'current_round_time_left': current_round_time_left,
         'snapshot_server_now': timezone.now(),
@@ -7276,6 +7299,16 @@ def who_monitor(request, room_code):
             server_now=who_timer_server_now,
         )
         current_question_time_per_person = timer_state['time_per_person'] or None
+        if not question_answering_open and people_count:
+            try:
+                prepared_duration = float(question_runtime.get('answer_duration_seconds') or 0)
+            except (TypeError, ValueError):
+                prepared_duration = 0
+            if prepared_duration > 0:
+                current_question_time_per_person = max(
+                    1,
+                    int(round(prepared_duration / people_count)),
+                )
         current_person_index = timer_state['current_person_index']
         current_question_time_left = timer_state['current_person_time_left']
         current_question_started_at = quiz.question_start_time

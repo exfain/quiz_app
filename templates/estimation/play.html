@@ -20,11 +20,13 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 <script src="{% static 'js/authoritative-game-state.js' %}"></script>
+<script src="{% static 'js/question-typewriter.js' %}"></script>
 </head>
 <body class="estimation-play-page"
       data-vhs-progress-kind="question"
-      data-vhs-progress-source="#currentQuestionNumber">
+      data-vhs-progress-source="#vhsEstimationProgress">
     <div class="play-container">
+        <span id="vhsEstimationProgress" hidden aria-hidden="true">{% if question_scoreboard %}{% firstof current_question_number 1 %}/{{ question_scoreboard|length }}{% endif %}</span>
         <!-- Header -->
         <header class="quiz-header">
             <div class="container">
@@ -1522,6 +1524,21 @@
                     }
                 }
 
+                setVhsQuestionProgress(questionNumber = this.currentQuestionIndex) {
+                    const current = Number(questionNumber);
+                    const total = Array.isArray(this.scoreboardQuestions)
+                        ? this.scoreboardQuestions.length
+                        : 0;
+                    const progress = document.getElementById('vhsEstimationProgress');
+                    if (!progress) return;
+                    progress.textContent = (
+                        Number.isInteger(current)
+                        && current >= 1
+                        && Number.isInteger(total)
+                        && total >= current
+                    ) ? `${current}/${total}` : '';
+                }
+
                 moveQuestionToNextFreeScoreSlot(questionId, maxPoints = null) {
                     const numericQuestionId = Number(questionId);
                     if (!numericQuestionId) return null;
@@ -1583,7 +1600,10 @@
                     const mergedQuestion = {...question};
                     [
                         'question_phase',
+                        'question_presented_at',
                         'question_visible_at',
+                        'question_presentation_duration_ms',
+                        'question_reveal_ms_per_character',
                         'server_now',
                         'answering_started_at',
                         'answering_deadline_at',
@@ -1630,6 +1650,7 @@
                         document.getElementById('accuracyPercent').textContent = '0%';
                         const qn = document.getElementById('currentQuestionNumber');
                         if (qn) qn.textContent = this.currentQuestionIndex;
+                        this.setVhsQuestionProgress(this.currentQuestionIndex);
                     }
 
                     this.questionPhase = mergedQuestion.question_phase || this.questionPhase;
@@ -1637,24 +1658,36 @@
                     this.loadQuestion(mergedQuestion, {resetInput: isNewQuestion});
                     if (!this.currentQuestionIsTutorial) this.renderScoreHistory();
 
-                    if (
-                        this.questionPhase === 'prompt_visible'
-                        && this.remainingQuestionPresentationDelay(mergedQuestion) > 0
-                    ) {
+                    if (this.questionPhase === 'prompt_visible') {
                         this.setQuestionPresentationState('presenting');
-                        this.setQuestionPromptVisible(false);
+                        this.setQuestionPromptVisible(true);
                         this.setQuestionContentVisible(false);
                         this.setQuestionInteraction(false);
                         this.setQuestionTimerVisible(false);
                         this.showState('questionState');
-                        this.questionPresentationTimer = setTimeout(() => {
-                            if (
-                                this.renderedQuestionId === incomingQuestionId
-                                && this.questionPhase === 'prompt_visible'
-                            ) {
-                                this.renderQuestionPhase(mergedQuestion);
-                            }
-                        }, this.remainingQuestionPresentationDelay(mergedQuestion));
+                        window.QuestionTypewriter?.sync(
+                            document.getElementById('questionText'),
+                            {
+                                text: mergedQuestion.question_text || '',
+                                presentedAt: mergedQuestion.question_presented_at,
+                                serverNow: mergedQuestion.server_now,
+                                receivedAt: this.presentationServerReceivedAt,
+                                millisecondsPerCharacter: mergedQuestion.question_reveal_ms_per_character,
+                                instanceKey: `${incomingQuestionId || ''}:${mergedQuestion.question_presented_at || ''}`,
+                                stableFirstWord: true,
+                                animate: true,
+                                onComplete: () => {
+                                    if (
+                                        this.renderedQuestionId === incomingQuestionId
+                                        && this.questionPhase === 'prompt_visible'
+                                    ) {
+                                        this.renderQuestionPhase(mergedQuestion, {
+                                            preserveQuestionMarkup: true,
+                                        });
+                                    }
+                                },
+                            },
+                        );
                         return;
                     }
 
@@ -1669,9 +1702,15 @@
                     return Math.max(0, visibleAt - estimatedServerNow);
                 }
 
-                renderQuestionPhase(question) {
+                renderQuestionPhase(question, {preserveQuestionMarkup = false} = {}) {
                     const contentVisible = ['prompt_visible', 'content_visible', 'answering_open'].includes(this.questionPhase);
                     const answeringOpen = this.questionPhase === 'answering_open';
+                    if (!preserveQuestionMarkup) {
+                        window.QuestionTypewriter?.sync(document.getElementById('questionText'), {
+                            text: question?.question_text || '',
+                            animate: false,
+                        });
+                    }
                     this.setQuestionPresentationState('presented');
                     this.setQuestionPromptVisible(true);
                     this.setQuestionContentVisible(contentVisible);

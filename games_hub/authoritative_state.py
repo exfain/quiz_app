@@ -749,6 +749,8 @@ def observe_snapshot(
         'question_phase',
         'question_presented_at',
         'question_visible_at',
+        'question_presentation_duration_ms',
+        'question_reveal_ms_per_character',
         'content_revealed_at',
         'answering_started_at',
         'answering_deadline_at',
@@ -853,6 +855,8 @@ def attach_snapshot_metadata(
         'question_phase',
         'question_presented_at',
         'question_visible_at',
+        'question_presentation_duration_ms',
+        'question_reveal_ms_per_character',
         'content_revealed_at',
         'answering_started_at',
         'answering_deadline_at',
@@ -864,6 +868,8 @@ def attach_snapshot_metadata(
             'question_phase',
             'question_presented_at',
             'question_visible_at',
+            'question_presentation_duration_ms',
+            'question_reveal_ms_per_character',
             'content_revealed_at',
             'answering_started_at',
             'answering_deadline_at',
@@ -963,6 +969,7 @@ def reset_question_flow(
         snapshot.pop('question_reveal_ms_per_character', None)
         snapshot.pop('prepared_question_id', None)
         snapshot.pop('question_shell_prepared', None)
+        snapshot.pop('completed_question_id', None)
         snapshot['revealed'] = False
         runtime.public_snapshot = snapshot
         runtime.public_snapshot = _runtime_snapshot_payload(runtime)
@@ -1174,6 +1181,7 @@ def _transition_question_phase(
         transition_at = _aware_datetime(at) or timezone.now()
         if action_type == 'present_question' and not idempotent:
             runtime.public_snapshot = dict(runtime.public_snapshot or {})
+            runtime.public_snapshot.pop('completed_question_id', None)
             if question_presentation_duration_ms is not None:
                 runtime.public_snapshot['question_presentation_duration_ms'] = max(
                     0,
@@ -1361,6 +1369,7 @@ def finish_question_flow(
         ):
             raise ValueError('The question cannot be completed before answering opens.')
 
+        completed_question_id = runtime.current_question_id
         runtime.question_phase = ''
         runtime.current_question_id = ''
         runtime.question_presented_at = None
@@ -1377,6 +1386,7 @@ def finish_question_flow(
         snapshot.pop('question_reveal_ms_per_character', None)
         snapshot.pop('prepared_question_id', None)
         snapshot.pop('question_shell_prepared', None)
+        snapshot['completed_question_id'] = completed_question_id
         snapshot['revealed'] = False
         runtime.public_snapshot = snapshot
         runtime.public_snapshot = _runtime_snapshot_payload(runtime)

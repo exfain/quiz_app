@@ -287,6 +287,48 @@ class ClueRushScoreBoxTests(TransactionTestCase):
         self.assertContains(response, 'score-box__row')
         self.assertContains(response, 'score-box__title')
 
+    def test_play_view_renders_current_and_total_question_progress(self):
+        user = User.objects.create_user(username='clue-question-progress')
+        questions = [
+            self._create_question(user, answer=f'Answer {index}')
+            for index in range(1, 4)
+        ]
+        quiz = ClueRushGame.objects.create(
+            title='Clue Progress',
+            room_code='8420',
+            creator=user,
+            status='active',
+            current_question=questions[1],
+        )
+        quiz.selected_questions.set(questions)
+        quiz.question_order = [question.id for question in questions]
+        quiz.save(update_fields=['question_order'])
+        ClueRushSession.objects.create(
+            quiz=quiz,
+            current_question_number=2,
+            total_questions_sent=2,
+            is_question_active=True,
+        )
+        participant = ClueRushParticipant.objects.create(
+            quiz=quiz,
+            name='Ada',
+            hub_session_code=None,
+        )
+
+        response = self.client.get(
+            reverse('clue_rush:play', args=[quiz.room_code, participant.name])
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context['current_question_number'], 2)
+        self.assertEqual(response.context['total_question_count'], 3)
+        self.assertContains(response, 'data-vhs-progress-source="#vhsClueRushProgress"')
+        self.assertContains(
+            response,
+            '<span id="vhsClueRushProgress" data-total="3" hidden aria-hidden="true">2/3</span>',
+            html=True,
+        )
+
     def test_game_status_returns_one_based_current_round_for_zero_based_first_clue(self):
         user = User.objects.create_user(username='clue-status-round')
         question = self._create_question(user, clue_orders=[0, 1, 2], points=12)
@@ -1308,9 +1350,10 @@ class ClueRushManualQuestionPhaseTests(TransactionTestCase):
 
         self.assertTrue(decision.accepted)
         self.assertEqual(decision.snapshot['question_phase'], 'prompt_visible')
+        duration_ms = decision.snapshot['question_presentation_duration_ms']
         self.assertEqual(
             parse_datetime(decision.snapshot['question_visible_at']),
-            presented_at + timezone.timedelta(seconds=1),
+            presented_at + timezone.timedelta(milliseconds=duration_ms),
         )
         self.assertEqual(self.quiz.current_question_id, self.questions[0].id)
         self.assertIsNone(self.quiz.question_start_time)
@@ -1336,7 +1379,7 @@ class ClueRushManualQuestionPhaseTests(TransactionTestCase):
         )
 
         early = self.open_answering(
-            at=presented_at + timezone.timedelta(milliseconds=999),
+            at=parse_datetime(decision.snapshot['question_visible_at']) - timezone.timedelta(milliseconds=1),
         )
         self.assertFalse(early.accepted)
         self.assertEqual(early.code, 'question_not_visible')
@@ -1837,6 +1880,15 @@ class ClueRushVhsParticipantSafeguardTests(SimpleTestCase):
         self.assertNotIn('--clue-rush-next-progress', template)
         self.assertIn('id="clueRushAnswerRegion"', template)
         self.assertIn('id="clueRushSubmittedAnswer"', template)
+        self.assertIn('clue-rush-submitted-answer__title', template)
+        self.assertIn('clue-rush-submitted-answer__time', template)
+        self.assertIn('.clue-rush-answer-region.is-submitted #submitAnswerBtn', template)
+        self.assertIn('.qa-theme-button-shell:has(> #submitAnswerBtn)', template)
+        self.assertIn('visibility: hidden !important;', template)
+        self.assertIn('opacity: 0 !important;', template)
+        self.assertIn('pointer-events: none;', template)
+        self.assertIn('Eingeloggt nach <span id="submittedTime"></span> Sekunden', template)
+        self.assertNotIn('<b id="submittedTime">', template)
         self.assertEqual(template.count('id="playerCluesList"'), 1)
         self.assertNotIn('id="playerCluesListSubmitted"', template)
         self.assertNotIn("this.showState('answerSubmittedState');", template)
@@ -1870,6 +1922,7 @@ class ClueRushVhsParticipantSafeguardTests(SimpleTestCase):
         self.assertIn('width: min(100%, var(--clue-answer-width));', css)
         self.assertIn('#questionState #clueRushAnswerRegion', css)
         self.assertIn('#questionState .clue-rush-submitted-answer', css)
+        self.assertIn('#questionState .clue-rush-submitted-answer__time', css)
         self.assertIn(
             '--clue-rush-score-safe-area: clamp(270px, 27vw, 290px);',
             css,

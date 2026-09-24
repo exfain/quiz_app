@@ -405,17 +405,38 @@ def quiz_play(request, room_code, participant_name):
                 current_question_id = int(question_runtime['prepared_question_id'])
             except (TypeError, ValueError):
                 current_question_id = None
-        current_question_number = next(
+        if current_question_id is None and question_runtime.get('completed_question_id'):
+            try:
+                current_question_id = int(question_runtime['completed_question_id'])
+            except (TypeError, ValueError):
+                current_question_id = None
+        current_question_position = next(
             (index for index, question in enumerate(ordered_questions, start=1) if question.id == current_question_id),
             None,
         )
+        try:
+            session_question_number = quiz.session.current_question_number
+        except QuizSession.DoesNotExist:
+            session_question_number = 0
+        tutorial_state = get_unit_tutorial_state('quiz', quiz.room_code, session_code)
+        if tutorial_state.get('requested') and (
+            tutorial_state.get('current_unit_is_tutorial')
+            or tutorial_state.get('tutorial_has_been_played')
+        ):
+            session_question_number = max(0, session_question_number - 1)
+        if question_runtime.get('prepared_question_id'):
+            current_question_number = session_question_number + 1
+        elif current_question_id is not None and session_question_number > 0:
+            current_question_number = session_question_number
+        else:
+            current_question_number = current_question_position
         question_scoreboard = []
         for index, question in enumerate(ordered_questions, start=1):
             history_entry = progress_by_number.get(index)
             if history_entry:
                 status = 'played'
                 is_correct = history_entry['is_correct']
-            elif current_question_number == index:
+            elif current_question_position == index:
                 status = 'current'
                 is_correct = None
             else:

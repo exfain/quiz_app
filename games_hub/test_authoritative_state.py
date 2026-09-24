@@ -823,6 +823,98 @@ class SocketPresenceTests(TestCase):
 
 
 class AuthoritativeClientSafeguardTests(TestCase):
+    def test_participant_theme_and_intro_gate_are_primed_before_body_paint(self):
+        script_path = finders.find('js/authoritative-game-state.js')
+        self.assertIsNotNone(script_path)
+        script = Path(script_path).read_text(encoding='utf-8')
+
+        self.assertIn("localStorage.getItem('participant_interface_theme')", script)
+        self.assertIn('document.documentElement.dataset.participantTheme', script)
+        self.assertIn('function primeSessionGameIntroGate()', script)
+        self.assertIn("params.get('game_start_intro') !== '1'", script)
+        self.assertIn(
+            'html.is-session-game-intro-active:not(.qa-vhs-transition--active)',
+            script,
+        )
+        self.assertIn('body > :not(.qa-vhs-intro)', script)
+        self.assertIn('background: #000 !important', script)
+
+        intro_include = Path(
+            'templates/includes/_session_game_start_intro.html'
+        ).read_text(encoding='utf-8')
+        self.assertNotIn('function primeVhsIntroTransitionGate()', intro_include)
+
+    def test_all_intro_player_views_load_early_gate_in_their_head(self):
+        game_templates = [
+            'assign',
+            'black_jack_quiz',
+            'buzzer',
+            'clue_rush',
+            'estimation',
+            'host_points',
+            'quiz',
+            'sorting_ladder',
+            'wann_war_das',
+            'wer_weiss_mehr',
+            'where_is_this',
+            'who_is_lying',
+            'who_is_that',
+        ]
+        for game_template in game_templates:
+            with self.subTest(game_template=game_template):
+                source = Path(f'templates/{game_template}/play.html').read_text(encoding='utf-8')
+                head = source.split('</head>', 1)[0]
+                self.assertIn("js/authoritative-game-state.js", head)
+                self.assertIn("_session_game_start_intro.html", source)
+
+    def test_initial_paint_gate_hides_only_state_surfaces_until_authoritative_render(self):
+        script_path = finders.find('js/authoritative-game-state.js')
+        self.assertIsNotNone(script_path)
+        script = Path(script_path).read_text(encoding='utf-8')
+
+        self.assertIn("const initialPaintClass = 'qa-authoritative-paint-pending'", script)
+        self.assertIn('body[data-authoritative-paint-gate]', script)
+        self.assertIn('visibility: hidden !important', script)
+        self.assertIn('markInitialPaintReady: markInitialPaintReady', script)
+        self.assertIn('}, 4000);', script)
+
+    def test_legacy_participant_views_release_initial_paint_after_their_existing_renderer(self):
+        game_templates = [
+            'assign',
+            'black_jack_quiz',
+            'buzzer',
+            'clue_rush',
+            'host_points',
+            'sorting_ladder',
+            'wann_war_das',
+            'wer_weiss_mehr',
+            'where_is_this',
+            'who_is_lying',
+            'who_is_that',
+        ]
+        for game_template in game_templates:
+            with self.subTest(game_template=game_template):
+                source = Path(f'templates/{game_template}/play.html').read_text(encoding='utf-8')
+                self.assertIn('data-authoritative-paint-gate', source)
+                self.assertIn('markInitialPaintReady?.()', source)
+
+        for synchronously_hydrated_template in ('quiz', 'estimation'):
+            with self.subTest(synchronously_hydrated_template=synchronously_hydrated_template):
+                source = Path(
+                    f'templates/{synchronously_hydrated_template}/play.html'
+                ).read_text(encoding='utf-8')
+                self.assertNotIn('data-authoritative-paint-gate', source)
+
+    def test_spectator_waits_for_first_fetched_state_before_revealing_stage(self):
+        source = Path('templates/hub/spectate.html').read_text(encoding='utf-8')
+
+        self.assertIn("js/authoritative-game-state.js", source)
+        self.assertIn('class="spectator-page" data-authoritative-paint-gate', source)
+        no_game_branch = source.split('if (!game) {', 1)[1].split('return;', 1)[0]
+        self.assertIn('markInitialPaintReady?.()', no_game_branch)
+        rendered_game_branch = source.split('updateFooter(game);', 1)[1]
+        self.assertIn('markInitialPaintReady?.()', rendered_game_branch)
+
     def test_production_settings_default_to_shared_redis_channel_layer(self):
         settings_source = Path('games_website/settings.py').read_text(encoding='utf-8')
 

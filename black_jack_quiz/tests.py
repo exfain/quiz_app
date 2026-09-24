@@ -4058,7 +4058,10 @@ class BlackJackQuestionPhaseFlowTests(TransactionTestCase):
         self.assertIsNone(decision.snapshot['answering_started_at'])
         self.assertIsNone(decision.snapshot['answering_deadline_at'])
         visible_at = parse_datetime(decision.snapshot['question_visible_at'])
-        self.assertEqual(visible_at - presented_at, timedelta(seconds=1))
+        self.assertEqual(
+            visible_at - presented_at,
+            timedelta(milliseconds=decision.snapshot['question_presentation_duration_ms']),
+        )
         self.quiz.refresh_from_db()
         self.session.refresh_from_db()
         self.assertEqual(self.quiz.current_question_id, self.questions[0].id)
@@ -4102,7 +4105,7 @@ class BlackJackQuestionPhaseFlowTests(TransactionTestCase):
     def test_answers_are_rejected_before_release_and_accepted_afterwards(self):
         presented = self._present(
             self.questions[0],
-            timezone.now() - timedelta(seconds=1),
+            timezone.now() - timedelta(seconds=10),
         )
         rejected = async_to_sync(self.consumer.save_participant_answer)(
             self.participant.name,
@@ -4190,9 +4193,12 @@ class BlackJackTutorialRuntimeTests(TransactionTestCase):
         }
 
     def _open_question(self, question, hub_session_code=''):
+        snapshot = current_snapshot('blackjack', self.quiz.room_code, hub_session_code)
         release_at = timezone.now()
         runtime = get_runtime_state('blackjack', self.quiz.room_code, hub_session_code)
-        runtime.question_presented_at = release_at - timedelta(seconds=1)
+        runtime.question_presented_at = release_at - timedelta(
+            milliseconds=snapshot['question_presentation_duration_ms'],
+        )
         runtime.save(update_fields=['question_presented_at', 'updated_at'])
         return async_to_sync(self.consumer.open_blackjack_answering)(
             self.quiz.id,

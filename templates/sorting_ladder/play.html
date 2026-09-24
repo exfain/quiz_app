@@ -22,6 +22,7 @@
 <script src="{% static 'js/authoritative-game-state.js' %}"></script>
 </head>
 <body class="quiz-play-page sorting-ladder-play-page"
+      data-authoritative-paint-gate
       data-vhs-progress-kind="set"
       data-vhs-progress-source="#vhsProgressNumber">
     <div class="play-container">
@@ -2526,6 +2527,7 @@
                     if (targetState) {
                         targetState.classList.remove('d-none');
                     }
+                    window.AuthoritativeGameState?.markInitialPaintReady?.();
                 }
 
                 updateParticipantCount(count) {

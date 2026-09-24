@@ -657,11 +657,30 @@ class ParticipantFlowBrowserTest(_Base):
             )
             self.part_page.evaluate(
                 """() => {
+                    const questionText = document.querySelector('#questionText');
                     window.__estimationTransitionNodes = {
                         shell: document.querySelector('.vhs-theme-shell'),
                         state: document.querySelector('#questionState'),
                         content: document.querySelector('#estimationQuestionContent'),
+                        plainTextAfterFormattedMarkup: false,
+                        formattedMarkupSeen: false,
                     };
+                    window.__estimationQuestionObserver?.disconnect();
+                    window.__estimationQuestionObserver = new MutationObserver(() => {
+                        const hasFormattedMarkup = Boolean(
+                            questionText.querySelector(':scope > .vhs-question-lead')
+                            && questionText.querySelector(':scope > .vhs-question-body')
+                        );
+                        if (hasFormattedMarkup) {
+                            window.__estimationTransitionNodes.formattedMarkupSeen = true;
+                        } else if (
+                            questionText.textContent.trim()
+                            && window.__estimationTransitionNodes.formattedMarkupSeen
+                        ) {
+                            window.__estimationTransitionNodes.plainTextAfterFormattedMarkup = true;
+                        }
+                    });
+                    window.__estimationQuestionObserver.observe(questionText, {childList: true});
                 }"""
             )
 
@@ -678,20 +697,42 @@ class ParticipantFlowBrowserTest(_Base):
                 timeout=self.TIMEOUT,
             )
             continuity = self.part_page.evaluate(
-                """() => ({
-                    sameShell: window.__estimationTransitionNodes.shell
-                        === document.querySelector('.vhs-theme-shell'),
-                    sameState: window.__estimationTransitionNodes.state
-                        === document.querySelector('#questionState'),
-                    sameContent: window.__estimationTransitionNodes.content
-                        === document.querySelector('#estimationQuestionContent'),
-                    waitingVisible: !document.querySelector('#waitingQuestionState').classList.contains('d-none'),
-                })"""
+                """() => {
+                    const lead = document.querySelector('#questionText > .vhs-question-lead');
+                    const body = document.querySelector('#questionText > .vhs-question-body');
+                    return {
+                        sameShell: window.__estimationTransitionNodes.shell
+                            === document.querySelector('.vhs-theme-shell'),
+                        sameState: window.__estimationTransitionNodes.state
+                            === document.querySelector('#questionState'),
+                        sameContent: window.__estimationTransitionNodes.content
+                            === document.querySelector('#estimationQuestionContent'),
+                        waitingVisible: !document.querySelector('#waitingQuestionState').classList.contains('d-none'),
+                        leadCount: lead ? 1 : 0,
+                        bodyCount: body ? 1 : 0,
+                        leadFontSize: lead ? parseFloat(getComputedStyle(lead).fontSize) : 0,
+                        bodyFontSize: body ? parseFloat(getComputedStyle(body).fontSize) : 0,
+                        plainTextAfterFormattedMarkup:
+                            window.__estimationTransitionNodes.plainTextAfterFormattedMarkup,
+                    };
+                }"""
             )
+            self.part_page.evaluate("window.__estimationQuestionObserver.disconnect()")
             self.assertTrue(continuity["sameShell"], question_number)
             self.assertTrue(continuity["sameState"], question_number)
             self.assertTrue(continuity["sameContent"], question_number)
             self.assertFalse(continuity["waitingVisible"], question_number)
+            self.assertEqual(continuity["leadCount"], 1, question_number)
+            self.assertEqual(continuity["bodyCount"], 1, question_number)
+            self.assertGreater(
+                continuity["leadFontSize"],
+                continuity["bodyFontSize"],
+                question_number,
+            )
+            self.assertFalse(
+                continuity["plainTextAfterFormattedMarkup"],
+                question_number,
+            )
 
             self.admin_page.click("#openAnsweringBtn")
             self.admin_page.wait_for_selector("#endQuestionBtn", timeout=self.TIMEOUT)
@@ -778,6 +819,10 @@ class ParticipantFlowBrowserTest(_Base):
                     self.part_page.locator("#estimationQuestionContent").evaluate(
                         "element => element.classList.contains('is-question-content-pending')"
                     )
+                )
+                self.part_page.wait_for_function(
+                    "() => !document.documentElement.classList.contains('qa-vhs-transition--active')",
+                    timeout=self.TIMEOUT,
                 )
                 self.part_page.evaluate(
                     """() => {
@@ -890,7 +935,7 @@ class ParticipantFlowBrowserTest(_Base):
                             sameQuestionContent: nodes.questionContent === questionContent,
                             sameEstimationContent: nodes.estimationContent === estimationContent,
                             shell: rect(shell),
-                            kicker: rect(document.querySelector('#questionState .vhs-question-kicker')),
+                                kicker: rect(document.querySelector('#questionState .vhs-question-kicker')),
                             background: getComputedStyle(shell).backgroundImage,
                             contentPending: estimationContent.classList.contains('is-question-content-pending'),
                             waitingVisible: !document.querySelector('#waitingQuestionState').classList.contains('d-none'),

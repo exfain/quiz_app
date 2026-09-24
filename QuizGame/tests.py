@@ -24,6 +24,7 @@ from games_hub.authoritative_state import (
     QUESTION_PRESENTATION_DELAY_MS,
     current_snapshot,
     finish_question_flow,
+    get_runtime_state,
     observe_snapshot,
     open_answering,
     present_question,
@@ -44,7 +45,15 @@ from games_hub.unit_tutorial_runtime import (
 
 from .consumers import QuizConsumer
 from .models import Quiz, QuizAnswer, QuizParticipant, QuizQuestion, QuizSession
-from .presentation import question_typewriter_duration_ms
+from .presentation import (
+    QUIZ_ANSWER_REVEAL_ANIMATION_MS,
+    QUIZ_ANSWER_REVEAL_PAUSE_MS,
+    QUIZ_ANSWER_REVEAL_STAGGER_MS,
+    multiple_choice_answering_starts_at,
+    question_typewriter_duration_ms,
+    question_typewriter_timing,
+    quiz_answer_reveal_stagger_ms,
+)
 from games_website.asgi import application
 
 
@@ -79,6 +88,95 @@ class QuickQuizTypewriterConfigurationTests(TestCase):
         self.assertEqual(settings.question_reveal_ms_per_character, 75)
         self.assertEqual(DashboardSettings.normalize_question_reveal_speed(5), 35)
         self.assertEqual(DashboardSettings.normalize_question_reveal_speed(500), 180)
+        self.assertEqual(settings.quiz_mc_answer_reveal_stagger_ms, 300)
+        self.assertEqual(
+            DashboardSettings.normalize_quiz_mc_answer_reveal_stagger(20),
+            120,
+        )
+        self.assertEqual(
+            DashboardSettings.normalize_quiz_mc_answer_reveal_stagger(5000),
+            1000,
+        )
+
+    def test_mc_answer_reveal_setting_controls_visual_and_answering_timeline(self):
+        settings = DashboardSettings.load()
+        settings.quiz_mc_answer_reveal_stagger_ms = 520
+        settings.save(update_fields=['quiz_mc_answer_reveal_stagger_ms'])
+        revealed_at = timezone.now()
+
+        stagger_ms = quiz_answer_reveal_stagger_ms('multiple_choice')
+        answering_starts_at = multiple_choice_answering_starts_at(
+            revealed_at,
+            4,
+            stagger_ms,
+        )
+
+        self.assertEqual(stagger_ms, 520)
+        self.assertEqual(
+            answering_starts_at,
+            revealed_at + timedelta(milliseconds=(
+                3 * 520
+                + QUIZ_ANSWER_REVEAL_ANIMATION_MS
+                + QUIZ_ANSWER_REVEAL_PAUSE_MS
+            )),
+        )
+        self.assertEqual(
+            quiz_answer_reveal_stagger_ms('true_false'),
+            QUIZ_ANSWER_REVEAL_STAGGER_MS,
+        )
+        self.assertEqual(
+            QuizConsumer.answer_reveal_fields(
+                'multiple_choice',
+                {'answer_reveal_stagger_ms': 640},
+            )['answer_reveal_stagger_ms'],
+            640,
+        )
+
+    def test_shared_timing_uses_the_global_dashboard_speed(self):
+        with patch.object(DashboardSettings, 'question_reveal_speed', return_value=80):
+            timing = question_typewriter_timing('Ueberall gleich')
+
+        self.assertEqual(timing['question_reveal_ms_per_character'], 80)
+        self.assertEqual(
+            timing['question_presentation_duration_ms'],
+            len('Ueberall gleich') * 80,
+        )
+
+    def test_narrated_games_use_shared_typewriter_without_who_is_that(self):
+        templates = (
+            'estimation',
+            'black_jack_quiz',
+            'assign',
+            'wann_war_das',
+            'who_is_lying',
+            'clue_rush',
+        )
+        for template in templates:
+            source = Path('templates', template, 'play.html').read_text(encoding='utf-8')
+            self.assertIn("static 'js/question-typewriter.js'", source)
+            self.assertIn('QuestionTypewriter?.sync', source)
+
+        for template in ('estimation', 'black_jack_quiz', 'assign'):
+            source = Path('templates', template, 'play.html').read_text(encoding='utf-8')
+            self.assertEqual(source.count('stableFirstWord: true'), 1)
+
+        vhs_css = Path('static/themes/vhs/vhs.css').read_text(encoding='utf-8')
+        self.assertIn('.vhs-theme-shell .question-typewriter-cursor', vhs_css)
+
+        who_that = Path('templates/who_is_that/play.html').read_text(encoding='utf-8')
+        self.assertNotIn("static 'js/question-typewriter.js'", who_that)
+
+        spectator = Path('templates/hub/spectate.html').read_text(encoding='utf-8')
+        self.assertIn('function syncQuestionTypewriter(game)', spectator)
+        self.assertEqual(spectator.count('${typewriterQuestionMarkup(q'), 6)
+        self.assertIn("function renderWhoThat(game)", spectator)
+        who_that_renderer = spectator.split('function renderWhoThat(game)', 1)[1].split(
+            'function renderBlackjack(game)',
+            1,
+        )[0]
+        self.assertIn('imageMarkup(', who_that_renderer)
+        self.assertNotIn('questionMarkup(', who_that_renderer)
+        self.assertNotIn('typewriterQuestionMarkup(', who_that_renderer)
 
     def test_dashboard_options_persist_question_reveal_speed(self):
         user = User.objects.create_superuser('settings-host', '', 'testpass123')
@@ -86,13 +184,32 @@ class QuickQuizTypewriterConfigurationTests(TestCase):
 
         response = self.client.post(
             reverse('admin_dashboard:settings'),
-            {'question_reveal_ms_per_character': 85},
+            {
+                'question_reveal_ms_per_character': 85,
+                'quiz_mc_answer_reveal_stagger_ms': 460,
+            },
         )
 
         self.assertRedirects(response, reverse('admin_dashboard:settings'))
         self.assertEqual(
             DashboardSettings.load().question_reveal_ms_per_character,
             85,
+        )
+        self.assertEqual(
+            DashboardSettings.load().quiz_mc_answer_reveal_stagger_ms,
+            460,
+        )
+        settings_page = self.client.get(reverse('admin_dashboard:settings'))
+        self.assertContains(settings_page, 'name="quiz_mc_answer_reveal_stagger_ms"')
+        self.assertContains(settings_page, 'value="460"')
+
+        self.client.post(
+            reverse('admin_dashboard:settings'),
+            {'question_reveal_ms_per_character': 90},
+        )
+        self.assertEqual(
+            DashboardSettings.load().quiz_mc_answer_reveal_stagger_ms,
+            460,
         )
 
     def test_missing_settings_table_falls_back_only_for_that_table(self):
@@ -556,6 +673,7 @@ class QuizTutorialRuntimeTests(TransactionTestCase):
         ][-1]
         self.assertEqual(question_started['question']['id'], tutorial_question.id)
         self.assertTrue(question_started['question']['is_tutorial_round'])
+        self.assertEqual(question_started['question']['question_number'], 0)
         self.assertEqual(question_started['question']['points'], 0)
         self.assertEqual(question_started['question']['total_questions'], 1)
         self.assertTrue(get_unit_tutorial_state('quiz', self.quiz.room_code, session.code)['current_unit_is_tutorial'])
@@ -614,6 +732,7 @@ class QuizTutorialRuntimeTests(TransactionTestCase):
         ][-1]
         self.assertEqual(scored_question_started['question']['id'], normal_question.id)
         self.assertFalse(scored_question_started['question']['is_tutorial_round'])
+        self.assertEqual(scored_question_started['question']['question_number'], 1)
         self.assertEqual(scored_question_started['question']['points'], 1)
         self.assertEqual(scored_question_started['question']['total_questions'], 1)
 
@@ -781,8 +900,10 @@ class QuizTutorialRuntimeTests(TransactionTestCase):
         rejoin_question = async_to_sync(self.consumer.get_current_question_data)()
 
         self.assertEqual(question_started['question']['total_questions'], 4)
+        self.assertEqual(question_started['question']['question_number'], 1)
         self.assertEqual(rejoin_question['id'], questions[1].id)
         self.assertEqual(rejoin_question['total_questions'], 4)
+        self.assertEqual(rejoin_question['question_number'], 1)
         self.assertIsNone(question_started['question']['starts_at'])
         self.assertIsNone(question_started['question']['ends_at'])
         self.assertEqual(
@@ -1100,6 +1221,44 @@ class QuickQuizPreparedQuestionFlowTests(TransactionTestCase):
         )
         self.assertEqual(question_started['question']['question_text'], self.question.question_text)
         self.assertEqual(question_started['question_phase'], 'prompt_visible')
+
+    def test_mc_reveal_persists_configured_stagger_for_clients_and_timer(self):
+        self.question.option_c = 'Private C'
+        self.question.option_d = 'Private D'
+        self.question.save(update_fields=['option_c', 'option_d', 'updated_at'])
+        settings = DashboardSettings.load()
+        settings.quiz_mc_answer_reveal_stagger_ms = 520
+        settings.save(update_fields=['quiz_mc_answer_reveal_stagger_ms'])
+        self._prepare()
+        async_to_sync(self.consumer.handle_admin_send_question)(
+            self._action(self.question.id)
+        )
+        GameRuntimeState.objects.filter(
+            game_key='quiz',
+            room_code=self.quiz.room_code,
+        ).update(question_presented_at=timezone.now() - timedelta(seconds=10))
+
+        async_to_sync(self.consumer.handle_admin_reveal_question_content)(
+            self._action(self.question.id)
+        )
+
+        snapshot = current_snapshot('quiz', self.quiz.room_code)
+        content_event = next(
+            message for _, message in self.consumer.channel_layer.group_messages
+            if message['type'] == 'question_content_revealed'
+        )
+        self.assertEqual(snapshot['answer_reveal_stagger_ms'], 520)
+        self.assertEqual(content_event['answer_reveal_stagger_ms'], 520)
+        self.assertEqual(
+            parse_datetime(snapshot['answering_started_at']),
+            parse_datetime(snapshot['content_revealed_at']) + timedelta(
+                milliseconds=(
+                    3 * 520
+                    + QUIZ_ANSWER_REVEAL_ANIMATION_MS
+                    + QUIZ_ANSWER_REVEAL_PAUSE_MS
+                )
+            ),
+        )
 
     def test_short_answer_opens_directly_after_prompt_without_content_reveal(self):
         self.question.question_type = 'short_answer'
@@ -2113,6 +2272,50 @@ class QuickQuizBrowserLiveFlowTests(_BrowserLiveServerTestCase):
                 '#revealQuestionContentBtn:not([disabled])',
                 timeout=self.TIMEOUT,
             )
+            self.player_page.evaluate(
+                """() => {
+                    window.__trueFalseRevealObserver?.disconnect();
+                    window.__trueFalseRevealShellPainted = false;
+                    window.__trueFalseFirstOptionShellPainted = null;
+                    const responseArea = document.querySelector('#quickQuizResponseArea');
+                    const options = document.querySelector('#answerOptions');
+                    const responseObserver = new MutationObserver(() => {
+                        if (!responseArea.hidden && !responseArea.classList.contains('d-none')) {
+                            requestAnimationFrame(() => {
+                                window.__trueFalseRevealShellPainted = true;
+                            });
+                        }
+                    });
+                    responseObserver.observe(responseArea, {
+                        attributes: true,
+                        attributeFilter: ['class', 'hidden'],
+                    });
+                    const optionObserver = new MutationObserver(records => {
+                        records.forEach(record => {
+                            if (
+                                record.attributeName === 'class'
+                                && record.target.matches('.answer-option.is-content-visible')
+                                && window.__trueFalseFirstOptionShellPainted === null
+                            ) {
+                                window.__trueFalseFirstOptionShellPainted = (
+                                    window.__trueFalseRevealShellPainted
+                                );
+                            }
+                        });
+                    });
+                    optionObserver.observe(options, {
+                        attributes: true,
+                        attributeFilter: ['class'],
+                        subtree: true,
+                    });
+                    window.__trueFalseRevealObserver = {
+                        disconnect() {
+                            responseObserver.disconnect();
+                            optionObserver.disconnect();
+                        },
+                    };
+                }"""
+            )
             self.host_page.click('#revealQuestionContentBtn')
             self._wait_for_frame('host', 'received', 'question_content_revealed')
             self._wait_for_frame('player', 'received', 'question_content_revealed')
@@ -2126,6 +2329,9 @@ class QuickQuizBrowserLiveFlowTests(_BrowserLiveServerTestCase):
                     'buttons => buttons.map(button => Number(button.dataset.revealDelayMs))'
                 ),
                 [0, 300],
+            )
+            self.assertTrue(
+                self.player_page.evaluate('window.__trueFalseFirstOptionShellPainted')
             )
             self.assertTrue(
                 self.player_page.locator('#answerOptions .answer-option').last.is_disabled()
@@ -2393,9 +2599,28 @@ class QuickQuizBrowserLiveFlowTests(_BrowserLiveServerTestCase):
         self.assertTrue(self.player_page.locator('#playerQuestionTimerWrapper').is_hidden())
 
         self.host_page.wait_for_selector('#revealQuestionContentBtn:not([disabled])', timeout=self.TIMEOUT)
+        self.player_page.set_viewport_size({'width': 1366, 'height': 768})
+        self.player_page.locator('#participant-theme-select').evaluate(
+            "el => { el.value = 'vhs'; el.dispatchEvent(new Event('change', { bubbles: true })); }"
+        )
+        self.player_page.wait_for_selector('.vhs-theme-shell')
+        self.player_page.wait_for_timeout(100)
+        prompt_shell_box = self.player_page.locator('.vhs-theme-shell').bounding_box()
         self.player_page.evaluate(
             """() => {
                 window.__answerRevealEntries = {};
+                window.__answerRevealShellPainted = false;
+                const responseArea = document.querySelector('#quickQuizResponseArea');
+                new MutationObserver(() => {
+                    if (!responseArea.hidden && !responseArea.classList.contains('d-none')) {
+                        requestAnimationFrame(() => {
+                            window.__answerRevealShellPainted = true;
+                        });
+                    }
+                }).observe(responseArea, {
+                    attributes: true,
+                    attributeFilter: ['class', 'hidden'],
+                });
                 new MutationObserver(records => {
                     records.forEach(record => {
                         const option = record.target;
@@ -2407,7 +2632,9 @@ class QuickQuizBrowserLiveFlowTests(_BrowserLiveServerTestCase):
                             const style = getComputedStyle(option);
                             const entry = {
                                 initialOpacity: Number(style.opacity),
+                                animationDelay: style.animationDelay,
                                 at: performance.now(),
+                                shellPainted: window.__answerRevealShellPainted,
                             };
                             window.__answerRevealEntries[option.dataset.value] = entry;
                             requestAnimationFrame(() => requestAnimationFrame(() => {
@@ -2442,10 +2669,18 @@ class QuickQuizBrowserLiveFlowTests(_BrowserLiveServerTestCase):
             timeout=self.TIMEOUT,
         )
         reveal_entries = self.player_page.evaluate('window.__answerRevealEntries')
+        answer_shell_box = self.player_page.locator('.vhs-theme-shell').bounding_box()
+        for dimension in ('x', 'y', 'width', 'height'):
+            self.assertAlmostEqual(prompt_shell_box[dimension], answer_shell_box[dimension], delta=0.5)
         self.assertTrue(
             all(entry['opacity'] < 1 for entry in reveal_entries.values()),
             reveal_entries,
         )
+        self.assertTrue(
+            all(entry['shellPainted'] for entry in reveal_entries.values()),
+            reveal_entries,
+        )
+        self.assertEqual(reveal_entries['A']['animationDelay'], '0s', reveal_entries)
         self.assertTrue(all(entry['transform'] != 'none' for entry in reveal_entries.values()))
         self.assertEqual(
             sorted(reveal_entries, key=lambda key: reveal_entries[key]['at']),
@@ -3229,6 +3464,72 @@ class QuizPlayScoreBoxTests(TransactionTestCase):
             html=True,
         )
 
+    def test_quiz_play_result_reload_keeps_authoritative_question_number(self):
+        question_one = self._create_question('Question one', 'True')
+        question_two = self._create_question('Question two', 'False')
+        question_three = self._create_question('Question three', 'True')
+        self.quiz.selected_questions.set([question_one, question_two, question_three])
+        self.quiz.question_order = [question_one.id, question_two.id, question_three.id]
+        self.quiz.status = 'active'
+        self.quiz.save(update_fields=['question_order', 'status'])
+        QuizSession.objects.create(
+            quiz=self.quiz,
+            current_question_number=2,
+            total_questions_sent=2,
+        )
+        runtime = get_runtime_state('quiz', self.quiz.room_code, self.participant.hub_session_code)
+        runtime.public_snapshot = {
+            'completed_question_id': str(question_three.id),
+        }
+        runtime.save(update_fields=['public_snapshot', 'updated_at'])
+
+        response = self.client.get(
+            reverse('quiz:play', args=[self.quiz.room_code, self.participant.name]),
+            {'hub_session': self.participant.hub_session_code},
+        )
+
+        self.assertEqual(response.context['current_question_id'], question_three.id)
+        self.assertEqual(response.context['current_question_number'], 2)
+        self.assertContains(
+            response,
+            '<span id="vhsQuizProgress" hidden aria-hidden="true">2/3</span>',
+            html=True,
+        )
+        self.assertContains(
+            response,
+            'this.setCurrentQuestion(endedQuestionId, data?.question_number);',
+        )
+
+    def test_quiz_monitor_prepared_counter_uses_next_send_number(self):
+        question_one = self._create_question('Question one', 'True')
+        question_two = self._create_question('Question two', 'False')
+        question_three = self._create_question('Question three', 'True')
+        self.quiz.selected_questions.set([question_one, question_two, question_three])
+        self.quiz.question_order = [question_one.id, question_two.id, question_three.id]
+        self.quiz.status = 'active'
+        self.quiz.save(update_fields=['question_order', 'status'])
+        QuizSession.objects.create(
+            quiz=self.quiz,
+            current_question_number=1,
+            total_questions_sent=1,
+        )
+        runtime = get_runtime_state('quiz', self.quiz.room_code)
+        runtime.public_snapshot = {
+            'prepared_question_id': str(question_three.id),
+            'question_shell_prepared': True,
+        }
+        runtime.save(update_fields=['public_snapshot', 'updated_at'])
+        self.user.is_staff = True
+        self.user.save(update_fields=['is_staff'])
+        self.client.force_login(self.user)
+
+        response = self.client.get(
+            reverse('admin_dashboard:quiz_monitor', args=[self.quiz.room_code]),
+        )
+
+        self.assertEqual(response.context['prepared_question_number'], 2)
+        self.assertContains(response, 'question.question_number ?? source.question_number')
+
     def test_quiz_play_hides_active_question_answer_until_question_end(self):
         question_one = self._create_question('Question one', 'True')
         question_two = self._create_question('Question two', 'False')
@@ -3721,7 +4022,12 @@ class QuizHostManualCorrectTests(TransactionTestCase):
             current_question=question,
             question_start_time=timezone.now(),
         )
-        QuizSession.objects.create(quiz=quiz, is_question_active=True)
+        QuizSession.objects.create(
+            quiz=quiz,
+            current_question_number=2,
+            total_questions_sent=2,
+            is_question_active=True,
+        )
         participant = QuizParticipant.objects.create(quiz=quiz, name='Bob', is_active=True)
         answer = QuizAnswer.objects.create(
             quiz=quiz,
@@ -3744,6 +4050,7 @@ class QuizHostManualCorrectTests(TransactionTestCase):
             if message['type'] == 'question_ended'
         )
         self.assertEqual(question_ended['correct_answer']['question_id'], question.id)
+        self.assertEqual(question_ended['question_number'], 2)
         self.assertEqual(
             question_ended['answer_results'],
             [{

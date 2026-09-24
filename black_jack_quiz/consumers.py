@@ -38,6 +38,7 @@ from games_hub.unit_tutorial_runtime import (
     start_unit_tutorial_if_needed,
     validate_unit_tutorial_request,
 )
+from QuizGame.presentation import question_typewriter_timing
 
 
 class BlackJackConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
@@ -329,6 +330,8 @@ class BlackJackConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
                 'question_phase',
                 'question_presented_at',
                 'question_visible_at',
+                'question_presentation_duration_ms',
+                'question_reveal_ms_per_character',
                 'content_revealed_at',
                 'answering_started_at',
                 'answering_deadline_at',
@@ -989,6 +992,7 @@ class BlackJackConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
             action=action,
             answer_duration_seconds=answer_duration_seconds,
             at=at,
+            **question_typewriter_timing(question.question_text),
         )
         if decision.accepted and not decision.duplicate:
             session.prepare_question(

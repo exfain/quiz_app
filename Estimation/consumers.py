@@ -33,6 +33,7 @@ from games_hub.unit_tutorial_runtime import (
     start_unit_tutorial_if_needed,
     validate_unit_tutorial_request,
 )
+from QuizGame.presentation import question_typewriter_timing
 
 
 class EstimationConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
@@ -132,6 +133,7 @@ class EstimationConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer)
         if quiz:
             show_tutorial = bool(data.get('show_tutorial', False))
             play_tutorial = bool(data.get('play_tutorial', False))
+            reset_for_fresh_start = quiz.status == 'waiting' or quiz.started_at is None
             hub_session_code = await self._get_hub_session_code_for_room()
             unit_tutorial_validation = await database_sync_to_async(validate_unit_tutorial_request)(
                 'estimation',
@@ -164,7 +166,7 @@ class EstimationConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer)
                 play_tutorial,
                 validate=False,
             )
-            await self.start_quiz_db(quiz.id)
+            await self.start_quiz_db(quiz.id, reset_for_fresh_start=reset_for_fresh_start)
             await database_sync_to_async(reset_question_flow)(
                 game_key='estimation',
                 room_code=self.room_code,
@@ -422,6 +424,8 @@ class EstimationConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer)
                 'question_phase',
                 'question_presented_at',
                 'question_visible_at',
+                'question_presentation_duration_ms',
+                'question_reveal_ms_per_character',
                 'content_revealed_at',
                 'answering_started_at',
                 'answering_deadline_at',
@@ -1061,19 +1065,18 @@ class EstimationConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer)
             return None
 
     @database_sync_to_async
-    def start_quiz_db(self, quiz_id):
+    def start_quiz_db(self, quiz_id, reset_for_fresh_start=None):
         try:
             quiz = EstimationQuiz.objects.get(id=quiz_id)
-            # Hub activation sets the game active before this consumer callback.
-            # A missing started_at still identifies the first authoritative start.
-            is_fresh_start = quiz.status == 'waiting' or quiz.started_at is None
+            if reset_for_fresh_start is None:
+                reset_for_fresh_start = quiz.status == 'waiting' or quiz.started_at is None
             quiz.status = 'active'
             quiz.started_at = timezone.now()
-            if is_fresh_start:
+            if reset_for_fresh_start:
                 quiz.current_question = None
                 quiz.question_start_time = None
             quiz.save()
-            if is_fresh_start:
+            if reset_for_fresh_start:
                 session, _ = EstimationSession.objects.get_or_create(quiz=quiz)
                 session.current_question_number = 0
                 session.total_questions_sent = 0
@@ -1128,6 +1131,7 @@ class EstimationConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer)
             action=action,
             answer_duration_seconds=answer_duration_seconds,
             at=at,
+            **question_typewriter_timing(question.question_text),
         )
         if decision.accepted and not decision.duplicate:
             runtime = get_runtime_state('estimation', self.room_code, hub_session_code)
@@ -1191,6 +1195,7 @@ class EstimationConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer)
         snapshot.pop('question', None)
         snapshot.pop('answer_options', None)
         snapshot.pop('answer_duration_seconds', None)
+        snapshot.pop('completed_question_id', None)
         snapshot['prepared_question_id'] = requested_id
         snapshot['question_shell_prepared'] = True
         snapshot['revealed'] = False

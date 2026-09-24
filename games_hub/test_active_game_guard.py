@@ -135,6 +135,25 @@ class ActiveGameGuardTests(TransactionTestCase):
         self.assertEqual(self.active_session.current_question_number, 3)
         self.assertEqual(self.target_estimation.status, 'active')
 
+    def test_activation_persists_intro_before_active_game_is_observable(self):
+        response = self._activate_target(action='inactive')
+
+        self.assertEqual(response.status_code, 200)
+        self.target_estimation.refresh_from_db()
+        self.target_step.refresh_from_db()
+
+        self.assertEqual(self.target_estimation.status, 'active')
+        self.assertIsNotNone(self.target_step.intro_started_at)
+        self.assertIsNotNone(self.target_step.intro_ends_at)
+        self.assertEqual(self.target_step.intro_state_revision, 1)
+
+        spectator = self.client.get(
+            reverse('games_hub:spectate_session_state', args=[self.session.code])
+        ).json()['game']
+        self.assertEqual(spectator['game_key'], 'estimation')
+        self.assertTrue(spectator['intro']['intro_active'])
+        self.assertEqual(spectator['intro']['state_revision'], 1)
+
     def test_activate_endpoint_cleans_up_multiple_active_games_to_single_active_game(self):
         extra_quiz = Quiz.objects.create(
             creator=self.user,

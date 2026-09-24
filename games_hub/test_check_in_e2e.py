@@ -547,8 +547,14 @@ class SessionCheckInBrowserE2ETest(_BaseLiveServerTestCase):
                 '#questionState:not(.d-none)', timeout=self.LONG_TIMEOUT
             )
             spectator_page.wait_for_function(
-                "() => document.querySelector('#stage')?.textContent.includes('Welche Person ist abgebildet?')",
+                """() => document.querySelector(
+                    '[data-spectator-game="who_that"] .spectator-media'
+                )?.getAttribute('src')?.includes('who-that-start')""",
                 timeout=self.LONG_TIMEOUT,
+            )
+            self.assertNotIn(
+                who_question.question_text,
+                spectator_page.locator('#stage').inner_text(),
             )
         finally:
             spectator_page.close()

@@ -931,11 +931,18 @@
     background: var(--participant-effective-accent-color, var(--participant-accent-color, #a3a88d));
     color: var(--participant-effective-text-color, var(--participant-theme-text, #000));
     box-shadow: 0 14px 34px rgba(0, 0, 0, 0.16);
-    cursor: pointer;
+    cursor: grab;
     font: inherit;
     font-weight: 800;
     line-height: 1;
     padding: 0.48rem 0.85rem;
+    touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+
+  .qa-score-widget.is-dragging .qa-score-widget__toggle {
+    cursor: grabbing;
   }
 
   .qa-score-widget__body {
@@ -2303,7 +2310,7 @@ html[data-participant-theme="arcade"] .qa-arcade-wait-loader-10::before {
             <option value="top-right">rechts oben</option>
             <option value="bottom-right">rechts unten</option>
           </select>
-          <small class="participant-score-position-vhs-hint" hidden>Im VHS-Theme fest positioniert</small>
+          <small class="participant-score-position-vhs-hint" hidden>Im VHS-Theme direkt am Punkt verschiebbar</small>
         </div>
         <div class="participant-options-control">
           <label class="participant-options-check" for="participant-custom-colors-enabled">
@@ -2510,6 +2517,7 @@ html[data-participant-theme="arcade"] .qa-arcade-wait-loader-10::before {
   var LS_FONT_SCALE = 'participant_interface_font_scale';
   var LS_THEME = 'participant_interface_theme';
   var LS_SCORE_POSITION = 'participant_interface_score_position';
+  var LS_SCORE_DRAG_POSITION = 'participant_interface_score_drag_position';
   var LS_SCORE_COLLAPSED = 'participant_interface_score_collapsed';
   var LS_CUSTOM_COLORS_ENABLED = 'participant_interface_custom_colors_enabled';
   var LS_BACKGROUND_COLOR = 'participant_interface_background_color';
@@ -2526,12 +2534,17 @@ html[data-participant-theme="arcade"] .qa-arcade-wait-loader-10::before {
   var THEMES = ['standard', 'arcade', 'vhs'];
   var DEFAULT_SCORE_POSITION = 'bottom-left';
   var SCORE_POSITIONS = ['bottom-left', 'top-left', 'top-right', 'bottom-right'];
+  var SCORE_DRAG_THRESHOLD = 7;
   var DEFAULT_BACKGROUND_COLOR = '#d0d6b4';
   var DEFAULT_TEXT_COLOR = '#111827';
   var DEFAULT_ACCENT_COLOR = '#a3a88d';
   var DEFAULT_ACCENT_COLOR_2 = '#f24b3d';
   var scoreWidget = null;
   var scoreWidgetButton = null;
+  var scoreWidgetLayoutFrame = null;
+  var scoreWidgetPositionFrame = null;
+  var scoreWidgetDragState = null;
+  var suppressScoreWidgetClick = false;
   var vhsThemeShell = null;
   var vhsThemeObserver = null;
   var vhsSyncFrame = null;
@@ -3269,6 +3282,8 @@ html[data-participant-theme="arcade"] .qa-arcade-wait-loader-10::before {
     if (!vhsThemeShell && !vhsThemeObserver) return;
     if (vhsSyncFrame !== null) window.cancelAnimationFrame(vhsSyncFrame);
     vhsSyncFrame = null;
+    if (scoreWidgetLayoutFrame !== null) window.cancelAnimationFrame(scoreWidgetLayoutFrame);
+    scoreWidgetLayoutFrame = null;
     if (vhsThemeObserver) vhsThemeObserver.disconnect();
     vhsThemeObserver = null;
     restoreVhsQuestions();
@@ -3296,6 +3311,14 @@ html[data-participant-theme="arcade"] .qa-arcade-wait-loader-10::before {
       scoreWidget.querySelectorAll('.vhs-points-panel, .vhs-points-list, .vhs-points-row, .vhs-points-round, .vhs-points-value, .vhs-points-fraction, .vhs-points-unit').forEach(function (element) {
         element.classList.remove('vhs-points-panel', 'vhs-points-list', 'vhs-points-row', 'vhs-points-round', 'vhs-points-value', 'vhs-points-fraction', 'vhs-points-unit');
       });
+      var scorePanel = scoreWidget.querySelector('.qa-score-widget__body');
+      if (scorePanel) {
+        scorePanel.style.removeProperty('left');
+        scorePanel.style.removeProperty('top');
+        scorePanel.style.removeProperty('max-width');
+        scorePanel.style.removeProperty('max-height');
+        delete scorePanel.dataset.scorePlacement;
+      }
       document.body.appendChild(scoreWidget);
     }
     if (scorePositionSelect) scorePositionSelect.disabled = false;
@@ -3390,35 +3413,7 @@ html[data-participant-theme="arcade"] .qa-arcade-wait-loader-10::before {
   function syncVhsScoreWidget(shell) {
     var widget = ensureScoreWidget();
     if (!widget) return;
-    var shortAnswerResponse = Array.from(shell.querySelectorAll('.quick-quiz-response-area'))
-      .find(function (response) {
-        return isVhsElementVisible(response) && response.querySelector('.quick-quiz-short-answer-form');
-      });
-    var estimationResponse = Array.from(shell.querySelectorAll('#questionState .estimation-interaction-area'))
-      .find(isVhsElementVisible);
-    var assignResponse = Array.from(shell.querySelectorAll('#questionState .assign-workspace'))
-      .find(isVhsElementVisible);
-    var revealState = Array.from(shell.querySelectorAll('#correctAnswerState'))
-      .find(isVhsElementVisible);
-    if (shortAnswerResponse) {
-      if (widget.parentNode !== shortAnswerResponse.parentNode || widget.nextSibling !== shortAnswerResponse) {
-        shortAnswerResponse.parentNode.insertBefore(widget, shortAnswerResponse);
-      }
-    } else if (estimationResponse) {
-      if (widget.parentNode !== estimationResponse.parentNode || widget.nextSibling !== estimationResponse) {
-        estimationResponse.parentNode.insertBefore(widget, estimationResponse);
-      }
-    } else if (assignResponse) {
-      if (widget.parentNode !== assignResponse.parentNode || widget.nextSibling !== assignResponse) {
-        assignResponse.parentNode.insertBefore(widget, assignResponse);
-      }
-    } else if (revealState) {
-      if (widget.parentNode !== revealState.parentNode || widget.nextSibling !== revealState) {
-        revealState.parentNode.insertBefore(widget, revealState);
-      }
-    } else if (widget.parentNode !== shell) {
-      shell.insertBefore(widget, shell.querySelector('.vhs-theme-footer'));
-    }
+    if (widget.parentNode !== document.body) document.body.appendChild(widget);
     if (scoreWidgetButton) setVhsText(scoreWidgetButton, 'P');
     if (scorePositionSelect) scorePositionSelect.disabled = true;
     if (scorePositionVhsHint) scorePositionVhsHint.hidden = false;
@@ -3535,6 +3530,7 @@ html[data-participant-theme="arcade"] .qa-arcade-wait-loader-10::before {
       }
       list.replaceChildren(fragment);
     }
+    scheduleVhsScoreWidgetLayout();
   }
 
   function syncVhsPresentation() {
@@ -3692,8 +3688,100 @@ html[data-participant-theme="arcade"] .qa-arcade-wait-loader-10::before {
     return SCORE_POSITIONS.indexOf(stored) === -1 ? DEFAULT_SCORE_POSITION : stored;
   }
 
+  function readScoreDragPosition() {
+    var stored = getStoredValue(LS_SCORE_DRAG_POSITION);
+    if (!stored) return null;
+    try {
+      var position = JSON.parse(stored);
+      var xRatio = Number(position.xRatio);
+      var yRatio = Number(position.yRatio);
+      if (!Number.isFinite(xRatio) || !Number.isFinite(yRatio)) return null;
+      return {
+        xRatio: Math.max(0, Math.min(1, xRatio)),
+        yRatio: Math.max(0, Math.min(1, yRatio)),
+      };
+    } catch (error) {
+      return null;
+    }
+  }
+
   function readScoreCollapsed() {
     return readStoredBoolean(LS_SCORE_COLLAPSED);
+  }
+
+  function positionVhsScoreWidgetPanel() {
+    if (
+      document.documentElement.dataset.participantTheme !== 'vhs'
+      || !scoreWidget
+      || scoreWidget.classList.contains('is-collapsed')
+    ) return;
+    var panel = scoreWidget.querySelector('.qa-score-widget__body');
+    if (!panel || !scoreWidgetButton) return;
+
+    var viewportWidth = Math.max(document.documentElement.clientWidth, window.innerWidth || 0);
+    var viewportHeight = Math.max(document.documentElement.clientHeight, window.innerHeight || 0);
+    var inset = 16;
+    var gap = 12;
+    var maxPanelWidth = Math.max(0, Math.min(620, viewportWidth - inset * 2));
+    var maxPanelHeight = Math.max(0, Math.min(330, viewportHeight - inset * 2));
+    panel.style.maxWidth = maxPanelWidth + 'px';
+    panel.style.maxHeight = maxPanelHeight + 'px';
+
+    var toggleRect = scoreWidgetButton.getBoundingClientRect();
+    var panelRect = panel.getBoundingClientRect();
+    var panelWidth = Math.min(panelRect.width, maxPanelWidth);
+    var panelHeight = Math.min(panelRect.height, maxPanelHeight);
+    var leftSpace = toggleRect.left - gap - inset;
+    var rightSpace = viewportWidth - toggleRect.right - gap - inset;
+    var aboveSpace = toggleRect.top - gap - inset;
+    var belowSpace = viewportHeight - toggleRect.bottom - gap - inset;
+    var placement;
+
+    if (leftSpace >= panelWidth) placement = 'left';
+    else if (rightSpace >= panelWidth) placement = 'right';
+    else if (belowSpace >= panelHeight) placement = 'below';
+    else if (aboveSpace >= panelHeight) placement = 'above';
+    else placement = belowSpace >= aboveSpace ? 'below' : 'above';
+
+    var availableHeight = placement === 'below'
+      ? Math.max(0, belowSpace)
+      : placement === 'above'
+        ? Math.max(0, aboveSpace)
+        : maxPanelHeight;
+    panel.style.maxHeight = Math.min(maxPanelHeight, availableHeight || maxPanelHeight) + 'px';
+    panelRect = panel.getBoundingClientRect();
+    panelWidth = Math.min(panelRect.width, maxPanelWidth);
+    panelHeight = Math.min(panelRect.height, maxPanelHeight);
+
+    var left;
+    var top;
+    if (placement === 'left') {
+      left = toggleRect.left - gap - panelWidth;
+      top = toggleRect.top;
+    } else if (placement === 'right') {
+      left = toggleRect.right + gap;
+      top = toggleRect.top;
+    } else if (placement === 'above') {
+      left = toggleRect.right - panelWidth;
+      top = toggleRect.top - gap - panelHeight;
+    } else {
+      left = toggleRect.right - panelWidth;
+      top = toggleRect.bottom + gap;
+    }
+
+    left = Math.max(inset, Math.min(left, viewportWidth - inset - panelWidth));
+    top = Math.max(inset, Math.min(top, viewportHeight - inset - panelHeight));
+    panel.style.left = left + 'px';
+    panel.style.top = top + 'px';
+    panel.dataset.scorePlacement = placement;
+  }
+
+  function scheduleVhsScoreWidgetLayout() {
+    if (scoreWidgetLayoutFrame !== null) return;
+    scoreWidgetLayoutFrame = window.requestAnimationFrame(function () {
+      scoreWidgetLayoutFrame = null;
+      positionVhsScoreWidgetPanel();
+    });
   }
 
   function findScoreElement() {
@@ -3758,11 +3846,20 @@ html[data-participant-theme="arcade"] .qa-arcade-wait-loader-10::before {
     scoreWidget.appendChild(scoreWidgetBody);
     document.body.appendChild(scoreWidget);
 
-    scoreWidgetButton.addEventListener('click', function () {
+    scoreWidgetButton.addEventListener('click', function (event) {
+      if (suppressScoreWidgetClick) {
+        suppressScoreWidgetClick = false;
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        return;
+      }
       var collapsed = !scoreWidget.classList.contains('is-collapsed');
       setStoredBoolean(LS_SCORE_COLLAPSED, collapsed);
       applyScoreWidgetCollapsed(collapsed);
     });
+    enableScoreWidgetDragging();
+    window.addEventListener('resize', scheduleScoreWidgetPositionRestore);
+    window.addEventListener('orientationchange', scheduleScoreWidgetPositionRestore);
 
     applyScoreWidgetPosition(readScorePosition());
     applyScoreWidgetCollapsed(readScoreCollapsed());
@@ -3776,11 +3873,181 @@ html[data-participant-theme="arcade"] .qa-arcade-wait-loader-10::before {
     SCORE_POSITIONS.forEach(function (scorePosition) {
       scoreWidget.classList.toggle('qa-score-widget--' + scorePosition, scorePosition === normalized);
     });
+    if (readScoreDragPosition()) restoreScoreWidgetDragPosition();
+    else clearScoreWidgetDragPositionStyles();
     return normalized;
   }
 
   function saveScorePosition(position) {
+    removeStoredValue(LS_SCORE_DRAG_POSITION);
+    clearScoreWidgetDragPositionStyles();
     setStoredValue(LS_SCORE_POSITION, applyScoreWidgetPosition(position));
+  }
+
+  function getScoreDragBounds() {
+    var viewportWidth = Math.max(document.documentElement.clientWidth, window.innerWidth || 0);
+    var viewportHeight = Math.max(document.documentElement.clientHeight, window.innerHeight || 0);
+    var container = document.querySelector('.vhs-theme-shell') || findVhsPageRoot();
+    if (!container) {
+      return { left: 0, top: 0, right: viewportWidth, bottom: viewportHeight };
+    }
+
+    var rect = container.getBoundingClientRect();
+    var bounds = {
+      left: Math.max(0, rect.left),
+      top: Math.max(0, rect.top),
+      right: Math.min(viewportWidth, rect.right),
+      bottom: Math.min(viewportHeight, rect.bottom),
+    };
+    if (bounds.right <= bounds.left || bounds.bottom <= bounds.top) {
+      return { left: 0, top: 0, right: viewportWidth, bottom: viewportHeight };
+    }
+    return bounds;
+  }
+
+  function getScoreWidgetDragSize() {
+    return {
+      width: scoreWidgetButton ? scoreWidgetButton.offsetWidth : 0,
+      height: scoreWidgetButton ? scoreWidgetButton.offsetHeight : 0,
+    };
+  }
+
+  function clampScoreWidgetPosition(left, top, bounds) {
+    var size = getScoreWidgetDragSize();
+    var maxLeft = Math.max(bounds.left, bounds.right - size.width);
+    var maxTop = Math.max(bounds.top, bounds.bottom - size.height);
+    return {
+      left: Math.max(bounds.left, Math.min(left, maxLeft)),
+      top: Math.max(bounds.top, Math.min(top, maxTop)),
+    };
+  }
+
+  function updateScoreWidgetPanelAnchor(left, top, bounds) {
+    var size = getScoreWidgetDragSize();
+    var onLeft = left + size.width / 2 <= bounds.left + (bounds.right - bounds.left) / 2;
+    var onTop = top + size.height / 2 <= bounds.top + (bounds.bottom - bounds.top) / 2;
+    var anchor = (onTop ? 'top' : 'bottom') + '-' + (onLeft ? 'left' : 'right');
+    SCORE_POSITIONS.forEach(function (scorePosition) {
+      scoreWidget.classList.toggle('qa-score-widget--' + scorePosition, scorePosition === anchor);
+    });
+  }
+
+  function applyScoreWidgetDragPixels(left, top, bounds) {
+    if (!scoreWidget) return null;
+    var activeBounds = bounds || getScoreDragBounds();
+    var position = clampScoreWidgetPosition(left, top, activeBounds);
+    scoreWidget.classList.add('qa-score-widget--custom-position');
+    scoreWidget.style.setProperty('left', position.left + 'px', 'important');
+    scoreWidget.style.setProperty('top', position.top + 'px', 'important');
+    scoreWidget.style.setProperty('right', 'auto', 'important');
+    scoreWidget.style.setProperty('bottom', 'auto', 'important');
+    updateScoreWidgetPanelAnchor(position.left, position.top, activeBounds);
+    scheduleVhsScoreWidgetLayout();
+    return position;
+  }
+
+  function clearScoreWidgetDragPositionStyles() {
+    if (!scoreWidget) return;
+    scoreWidget.classList.remove('qa-score-widget--custom-position', 'is-dragging');
+    ['left', 'top', 'right', 'bottom'].forEach(function (property) {
+      scoreWidget.style.removeProperty(property);
+    });
+  }
+
+  function restoreScoreWidgetDragPosition() {
+    if (!scoreWidget) return false;
+    var stored = readScoreDragPosition();
+    if (!stored) {
+      clearScoreWidgetDragPositionStyles();
+      return false;
+    }
+    var bounds = getScoreDragBounds();
+    var size = getScoreWidgetDragSize();
+    var availableWidth = Math.max(0, bounds.right - bounds.left - size.width);
+    var availableHeight = Math.max(0, bounds.bottom - bounds.top - size.height);
+    applyScoreWidgetDragPixels(
+      bounds.left + stored.xRatio * availableWidth,
+      bounds.top + stored.yRatio * availableHeight,
+      bounds
+    );
+    return true;
+  }
+
+  function scheduleScoreWidgetPositionRestore() {
+    scheduleVhsScoreWidgetLayout();
+    if (scoreWidgetPositionFrame !== null) return;
+    scoreWidgetPositionFrame = window.requestAnimationFrame(function () {
+      scoreWidgetPositionFrame = null;
+      restoreScoreWidgetDragPosition();
+    });
+  }
+
+  function saveScoreWidgetDragPosition() {
+    if (!scoreWidget) return;
+    var bounds = getScoreDragBounds();
+    var rect = scoreWidget.getBoundingClientRect();
+    var size = getScoreWidgetDragSize();
+    var availableWidth = Math.max(0, bounds.right - bounds.left - size.width);
+    var availableHeight = Math.max(0, bounds.bottom - bounds.top - size.height);
+    setStoredValue(LS_SCORE_DRAG_POSITION, JSON.stringify({
+      xRatio: availableWidth ? (rect.left - bounds.left) / availableWidth : 0,
+      yRatio: availableHeight ? (rect.top - bounds.top) / availableHeight : 0,
+    }));
+  }
+
+  function finishScoreWidgetDrag(event) {
+    if (!scoreWidgetDragState || event.pointerId !== scoreWidgetDragState.pointerId) return;
+    var wasDragging = scoreWidgetDragState.dragging;
+    if (scoreWidgetButton && scoreWidgetButton.hasPointerCapture(event.pointerId)) {
+      scoreWidgetButton.releasePointerCapture(event.pointerId);
+    }
+    scoreWidgetDragState = null;
+    if (!wasDragging) return;
+    event.preventDefault();
+    suppressScoreWidgetClick = true;
+    scoreWidget.classList.remove('is-dragging');
+    saveScoreWidgetDragPosition();
+    scheduleVhsScoreWidgetLayout();
+    window.setTimeout(function () { suppressScoreWidgetClick = false; }, 0);
+  }
+
+  function enableScoreWidgetDragging() {
+    if (!scoreWidgetButton) return;
+    scoreWidgetButton.addEventListener('pointerdown', function (event) {
+      if (!event.isPrimary || (event.pointerType === 'mouse' && event.button !== 0)) return;
+      var rect = scoreWidget.getBoundingClientRect();
+      suppressScoreWidgetClick = false;
+      scoreWidgetDragState = {
+        pointerId: event.pointerId,
+        startX: event.clientX,
+        startY: event.clientY,
+        startLeft: rect.left,
+        startTop: rect.top,
+        dragging: false,
+      };
+      try {
+        scoreWidgetButton.setPointerCapture(event.pointerId);
+      } catch (error) {
+        // Synthetic pointer events used by tests do not create native capture state.
+      }
+    });
+    scoreWidgetButton.addEventListener('pointermove', function (event) {
+      if (!scoreWidgetDragState || event.pointerId !== scoreWidgetDragState.pointerId) return;
+      var deltaX = event.clientX - scoreWidgetDragState.startX;
+      var deltaY = event.clientY - scoreWidgetDragState.startY;
+      if (!scoreWidgetDragState.dragging && Math.hypot(deltaX, deltaY) < SCORE_DRAG_THRESHOLD) return;
+      if (!scoreWidgetDragState.dragging) {
+        scoreWidgetDragState.dragging = true;
+        scoreWidget.classList.add('is-dragging');
+      }
+      event.preventDefault();
+      applyScoreWidgetDragPixels(
+        scoreWidgetDragState.startLeft + deltaX,
+        scoreWidgetDragState.startTop + deltaY
+      );
+    });
+    scoreWidgetButton.addEventListener('pointerup', finishScoreWidgetDrag);
+    scoreWidgetButton.addEventListener('pointercancel', finishScoreWidgetDrag);
   }
 
   function applyScoreWidgetCollapsed(collapsed) {
@@ -3791,7 +4058,10 @@ html[data-participant-theme="arcade"] .qa-arcade-wait-loader-10::before {
     }
     var scoreWidgetBody = scoreWidget.querySelector('.qa-score-widget__body');
     if (scoreWidgetBody) scoreWidgetBody.setAttribute('aria-hidden', collapsed ? 'true' : 'false');
-    if (document.documentElement.dataset.participantTheme === 'vhs') scheduleVhsSync();
+    if (document.documentElement.dataset.participantTheme === 'vhs') {
+      positionVhsScoreWidgetPanel();
+      scheduleVhsSync();
+    }
   }
 
   function observeScoreWidgetTarget() {
@@ -4001,6 +4271,7 @@ html[data-participant-theme="arcade"] .qa-arcade-wait-loader-10::before {
     removeStoredValue(LS_FONT_SCALE);
     removeStoredValue(LS_THEME);
     removeStoredValue(LS_SCORE_POSITION);
+    removeStoredValue(LS_SCORE_DRAG_POSITION);
     removeStoredValue(LS_SCORE_COLLAPSED);
     removeStoredValue(LS_CUSTOM_COLORS_ENABLED);
     removeStoredValue(LS_BACKGROUND_COLOR);

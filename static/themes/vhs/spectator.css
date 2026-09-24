@@ -302,6 +302,26 @@ html[data-participant-theme="vhs"] .spectator-shell .vhs-theme-header {
   font: 700 clamp(14px, 1.1vw, 25px)/1.35 Georgia, "Times New Roman", serif;
 }
 
+.spectator-estimation-unit {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.45em;
+}
+
+.spectator-estimation-unit__label {
+  color: var(--vhs-muted);
+  font-size: 0.72em;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+}
+
+.spectator-estimation-unit__value {
+  color: var(--vhs-yellow);
+  font-size: 1.2em;
+  font-weight: 900;
+  letter-spacing: 0.02em;
+}
+
 .spectator-grid,
 .spectator-list,
 .spectator-pairs,
@@ -608,6 +628,10 @@ html[data-participant-theme="vhs"] .spectator-shell .vhs-theme-footer {
 
 .spectator-shell .vhs-theme-timer-track {
   width: clamp(180px, 18vw, 460px);
+}
+
+.spectator-shell .vhs-theme-timer > .spectator-card-label {
+  margin-bottom: 0;
 }
 
 .spectator-time {

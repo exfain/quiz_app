@@ -68,6 +68,15 @@ def _get_ordered_quiz_questions(quiz, session_code=None):
     return ordered_questions
 
 
+def _get_total_quiz_questions(quiz, session_code=None):
+    tutorial_question_ids = get_scorebox_excluded_tutorial_question_ids(
+        'where',
+        quiz.room_code,
+        session_code,
+    )
+    return quiz.selected_questions.exclude(id__in=tutorial_question_ids).count()
+
+
 def _is_current_question_active(quiz, question_id):
     if not quiz.current_question_id or quiz.current_question_id != question_id:
         return False
@@ -312,6 +321,14 @@ def where_play(request, room_code, participant_name):
             participant,
             session_code,
         )
+        current_question_number = next(
+            (
+                entry['number']
+                for entry in question_scoreboard
+                if entry['id'] == current_question_id
+            ),
+            0,
+        )
         
         context = {
             'quiz': quiz,
@@ -321,6 +338,8 @@ def where_play(request, room_code, participant_name):
             'question_scoreboard': question_scoreboard,
             'initial_progress_history': initial_progress_history,
             'current_question_id': current_question_id,
+            'current_question_number': current_question_number,
+            'total_question_count': _get_total_quiz_questions(quiz, session_code),
             'current_unit_is_tutorial': is_current_unit_tutorial_question('where', quiz.room_code, session_code, quiz.current_question_id),
             'score_total_earned': sum(entry['points'] for entry in initial_progress_history),
             'score_total_max': sum(entry['max_points'] for entry in initial_progress_history),

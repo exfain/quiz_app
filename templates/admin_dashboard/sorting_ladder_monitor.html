@@ -1487,21 +1487,6 @@ document.addEventListener('DOMContentLoaded', function() {
             if (this.websocket && this.websocket.readyState === WebSocket.OPEN) {
                 const qs = new URLSearchParams(window.location.search);
                 const hub = qs.get('hub_session') || window.__hubCode || (function(){ try { return sessionStorage.getItem("_hub_admin"); } catch(_) { return null; } })();
-                // Also notify hub directly (in case backend mirror is unavailable)
-                try {
-                    if (hub) {
-                        const hubWs = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws/hub/' + hub + '/');
-                        console.log('{{quiz.room_code}}');
-                        hubWs.onopen = () => {
-                            hubWs.send(JSON.stringify({
-                                type: 'navigate_direct',
-                                game_key: 'sorting_ladder',
-                                room_code: '{{ quiz.room_code }}'
-                            }));
-                            setTimeout(() => hubWs.close(), 100);
-                        };
-                    }
-                } catch(_) {}
                 const showTutorial = document.getElementById('showTutorialToggle')?.checked ?? false;
                 const playTutorial = document.getElementById('playTutorialToggle')?.checked ?? false;
                 if (playTutorial && !{{ quiz.tutorial_question_id|yesno:"true,false" }}) {

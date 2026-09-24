@@ -30,6 +30,7 @@ from games_hub.unit_tutorial_runtime import (
 )
 
 from .models import WannWarDasGame, WannWarDasParticipant, WannWarDasQuestion
+from QuizGame.presentation import question_typewriter_timing
 
 
 class WannWarDasConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
@@ -402,6 +403,7 @@ class WannWarDasConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer)
             action=action,
             answer_duration_seconds=answer_duration_seconds,
             at=at,
+            **question_typewriter_timing(question.question_text),
         )
         if decision.accepted and not decision.duplicate:
             if not game.prepare_question(question, hub_session, is_tutorial_round):

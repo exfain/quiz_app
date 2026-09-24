@@ -254,7 +254,7 @@ class SortingLadderGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketCo
         quiz = await self.get_quiz()
         if not quiz:
             return
-        fresh_start = quiz.status == 'waiting'
+        fresh_start = quiz.status in {'waiting', 'completed', 'cancelled'}
         show_tutorial = bool(data.get('show_tutorial', False))
         play_tutorial = bool(data.get('play_tutorial', False))
         hub_session_code = (

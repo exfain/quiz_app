@@ -39,6 +39,30 @@
                 </div>
             </div>
             <div>
+                <label class="form-label fw-semibold" for="quizMcAnswerRevealSpeed">
+                    Quick Quiz: MC-Antworten-Einblendgeschwindigkeit
+                </label>
+                <input
+                    class="form-range"
+                    id="quizMcAnswerRevealSpeed"
+                    name="quiz_mc_answer_reveal_stagger_ms"
+                    type="range"
+                    min="120"
+                    max="1000"
+                    step="20"
+                    value="{{ dashboard_settings.quiz_mc_answer_reveal_stagger_ms }}"
+                    aria-describedby="quizMcAnswerRevealSpeedHelp quizMcAnswerRevealSpeedValue"
+                    oninput="document.getElementById('quizMcAnswerRevealSpeedValue').textContent = this.value + ' ms Abstand'"
+                >
+                <div class="d-flex justify-content-between gap-3">
+                    <small id="quizMcAnswerRevealSpeedHelp" class="text-muted">Schnell</small>
+                    <output id="quizMcAnswerRevealSpeedValue" for="quizMcAnswerRevealSpeed">
+                        {{ dashboard_settings.quiz_mc_answer_reveal_stagger_ms }} ms Abstand
+                    </output>
+                    <small class="text-muted">Langsam</small>
+                </div>
+            </div>
+            <div>
                 <button class="btn btn-primary" type="submit">SPEICHERN</button>
             </div>
         </form>

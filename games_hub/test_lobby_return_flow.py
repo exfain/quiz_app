@@ -392,6 +392,41 @@ class LobbyReturnFlowTests(TransactionTestCase):
                 self.assertIn('data-host-game-start', button.group(0))
                 self.assertEqual(source.count('data-host-game-start'), 1)
 
+    def test_legacy_monitors_have_one_authoritative_start_path(self):
+        legacy_monitors = (
+            'templates/admin_dashboard/quiz_monitor.html',
+            'templates/admin_dashboard/assign_monitor.html',
+            'templates/admin_dashboard/estimation_monitor.html',
+            'templates/admin_dashboard/where_monitor.html',
+            'templates/admin_dashboard/who_lying_monitor.html',
+            'templates/admin_dashboard/who_that_monitor.html',
+            'templates/admin_dashboard/blackjack_monitor.html',
+            'templates/admin_dashboard/sorting_ladder_monitor.html',
+            'templates/admin_dashboard/clue_rush_monitor.html',
+        )
+
+        for relative_path in legacy_monitors:
+            with self.subTest(relative_path=relative_path):
+                source = Path(settings.BASE_DIR / relative_path).read_text(encoding='utf-8')
+                start_source = source.split('        startQuiz() {', 1)[1].split(
+                    '        endQuiz() {',
+                    1,
+                )[0]
+                self.assertIn("type: 'admin_start_quiz'", start_source)
+                self.assertNotIn("type: 'navigate_direct'", source)
+                self.assertNotIn('location.reload()', start_source)
+
+    def test_quiz_and_where_monitors_reload_only_after_start_ack(self):
+        for relative_path in (
+            'templates/admin_dashboard/quiz_monitor.html',
+            'templates/admin_dashboard/where_monitor.html',
+        ):
+            with self.subTest(relative_path=relative_path):
+                source = Path(settings.BASE_DIR / relative_path).read_text(encoding='utf-8')
+                started_handler = source.split("case 'quiz_started':", 1)[1].split('break;', 1)[0]
+                self.assertIn('location.reload()', started_handler)
+                self.assertNotIn('updateQuizStatus', started_handler)
+
     def test_shared_start_and_leave_guards_are_not_bound_to_legacy_ids(self):
         source = Path(settings.BASE_DIR / 'templates/admin_dashboard/base.html').read_text(encoding='utf-8')
 

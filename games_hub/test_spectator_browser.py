@@ -327,6 +327,14 @@ class HubSpectatorBrowserTests(unittest.TestCase):
                     self.assertTrue(page.locator('#timerShell').is_visible())
                     self.assertEqual(page.locator('#progressText').inner_text(), 'FRAGE 3 / 10')
                     self.assertTrue(page.evaluate('document.documentElement.scrollWidth <= window.innerWidth'))
+                    timer_alignment = page.locator('#timerShell').evaluate(
+                        """element => Array.from(element.children).map(child => {
+                            const bounds = child.getBoundingClientRect();
+                            return bounds.top + (bounds.height / 2);
+                        })"""
+                    )
+                    self.assertAlmostEqual(timer_alignment[0], timer_alignment[1], delta=0.75)
+                    self.assertAlmostEqual(timer_alignment[0], timer_alignment[2], delta=0.75)
                     shell = page.locator('.spectator-shell').bounding_box()
                     self.assertLessEqual(shell['x'] + shell['width'], width + 1)
                     self.assertLessEqual(shell['y'] + shell['height'], height + 1)
@@ -402,6 +410,129 @@ class HubSpectatorBrowserTests(unittest.TestCase):
             self.assertEqual(page.locator('#progressText').inner_text(), 'FRAGE 1 / 3')
             self.assertTrue(page.locator('#phaseText').is_hidden())
             self.assertNotIn('AUFLOESUNG', page.locator('.vhs-theme-footer').inner_text())
+        finally:
+            page.close()
+            context.close()
+
+    def test_true_false_options_use_single_localized_spectator_labels(self):
+        game = {
+            'game_key': 'quiz',
+            'label': 'Quick Quiz',
+            'room_code': 'BOOL1',
+            'title': 'Wahr oder falsch',
+            'game_number': 1,
+            'game_instance_id': 'quiz:BOOL1:1',
+            'state_revision': 5,
+            'phase': 'question',
+            'message': 'Aktuelle Frage',
+            'question_phase': 'answering_open',
+            'timer': {'active': False, 'seconds_left': None, 'ends_at': None},
+            'question': {
+                'type': 'true_false',
+                'text': 'Ist die Erde rund?',
+                'options': [
+                    {'key': 'True', 'text': 'True'},
+                    {'key': 'False', 'text': 'False'},
+                ],
+            },
+            'progress': {'kind': 'question', 'current': 1, 'total': 1},
+            'response_count': 0,
+            'intro': {'state_revision': 0},
+        }
+        context, page = self._open_game({'width': 1920, 'height': 1080}, game)
+        try:
+            cards = page.locator('.spectator-grid--options .spectator-card')
+            self.assertEqual(cards.all_inner_texts(), ['Stimmt', 'Stimmt Nicht'])
+            self.assertEqual(cards.locator('.spectator-card__key').count(), 0)
+            self.assertNotIn('True', page.locator('#stage').inner_text())
+            self.assertNotIn('False', page.locator('#stage').inner_text())
+        finally:
+            page.close()
+            context.close()
+
+        reveal_game = {
+            **game,
+            'phase': 'reveal',
+            'message': 'Aufloesung',
+            'question': {**game['question'], 'correct_answer': 'True'},
+        }
+        context, page = self._open_game({'width': 1920, 'height': 1080}, reveal_game)
+        try:
+            self.assertEqual(
+                page.locator('.spectator-reveal-answer').inner_text(),
+                'Stimmt',
+            )
+        finally:
+            page.close()
+            context.close()
+
+    def test_quiz_reveal_marks_only_the_exact_correct_option(self):
+        game = {
+            'game_key': 'quiz',
+            'label': 'Quick Quiz',
+            'room_code': 'EXACT1',
+            'title': 'Eindeutige Aufloesung',
+            'game_number': 1,
+            'game_instance_id': 'quiz:EXACT1:1',
+            'state_revision': 8,
+            'phase': 'reveal',
+            'message': 'Aufloesung',
+            'question_phase': 'completed',
+            'timer': {'active': False, 'seconds_left': None, 'ends_at': None},
+            'question': {
+                'type': 'multiple_choice',
+                'text': 'Welches Land ist gesucht?',
+                'options': [
+                    {'key': 'A', 'text': 'Frankreich'},
+                    {'key': 'B', 'text': 'Kanada'},
+                    {'key': 'C', 'text': 'Belgien'},
+                    {'key': 'D', 'text': 'Daenemark'},
+                ],
+                'correct_answer': 'B. Kanada',
+            },
+            'progress': {'kind': 'question', 'current': 1, 'total': 1},
+            'response_count': 2,
+            'intro': {'state_revision': 0},
+        }
+        context, page = self._open_game({'width': 1920, 'height': 1080}, game)
+        try:
+            cards = page.locator('.spectator-grid--options .spectator-card')
+            self.assertEqual(cards.count(), 4)
+            self.assertEqual(page.locator('.spectator-card--correct').count(), 1)
+            self.assertFalse(cards.nth(0).evaluate('(element) => element.classList.contains("spectator-card--correct")'))
+            self.assertTrue(cards.nth(1).evaluate('(element) => element.classList.contains("spectator-card--correct")'))
+        finally:
+            page.close()
+            context.close()
+
+    def test_prepared_quick_quiz_uses_blank_spectator_question_screen(self):
+        game = {
+            'game_key': 'quiz',
+            'label': 'Quick Quiz',
+            'room_code': 'PREP1',
+            'title': 'Natur und Wissenschaft',
+            'game_number': 2,
+            'game_instance_id': 'quiz:PREP1:1',
+            'state_revision': 6,
+            'phase': 'question_prepared',
+            'message': 'Frage wird vorbereitet',
+            'question_phase': None,
+            'timer': {'active': False, 'seconds_left': None, 'ends_at': None},
+            'question': None,
+            'response_count': 0,
+            'intro': {'state_revision': 0},
+        }
+        context, page = self._open_game({'width': 1920, 'height': 1080}, game)
+        try:
+            self.assertEqual(page.locator('[data-spectator-game="quiz"]').count(), 1)
+            self.assertEqual(
+                page.locator('.spectator-kicker').inner_text(),
+                'SPIEL 2 - NATUR UND WISSENSCHAFT',
+            )
+            self.assertEqual(page.locator('.spectator-question').count(), 1)
+            self.assertEqual(page.locator('.spectator-question__text').inner_text(), '')
+            self.assertEqual(page.locator('.spectator-waiting').count(), 0)
+            self.assertEqual(page.locator('.spectator-card').count(), 0)
         finally:
             page.close()
             context.close()
@@ -591,15 +722,110 @@ class HubSpectatorBrowserTests(unittest.TestCase):
                     page.close()
                     context.close()
 
+    def test_estimation_unit_value_is_more_prominent_than_its_label(self):
+        game = {
+            'game_key': 'estimation',
+            'label': 'Estimation',
+            'room_code': 'ESTU1',
+            'title': 'Einheiten',
+            'game_number': 1,
+            'game_instance_id': 'estimation:ESTU1:1',
+            'state_revision': 2,
+            'phase': 'question',
+            'message': 'Aktuelle Frage',
+            'question_phase': 'answering_open',
+            'timer': {'active': False, 'seconds_left': None, 'ends_at': None},
+            'question': {
+                'text': 'Wie lang ist die Strecke?',
+                'unit': 'km',
+            },
+            'progress': {'kind': 'question', 'current': 1, 'total': 1},
+            'response_count': 0,
+            'intro': {'state_revision': 0},
+        }
+        context, page = self._open_game({'width': 1920, 'height': 1080}, game)
+        try:
+            label = page.locator('.spectator-estimation-unit__label')
+            value = page.locator('.spectator-estimation-unit__value')
+            styles = page.locator('.spectator-estimation-unit').evaluate(
+                """element => {
+                    const label = getComputedStyle(element.querySelector('.spectator-estimation-unit__label'));
+                    const value = getComputedStyle(element.querySelector('.spectator-estimation-unit__value'));
+                    return {
+                        labelSize: parseFloat(label.fontSize),
+                        labelWeight: Number(label.fontWeight),
+                        valueSize: parseFloat(value.fontSize),
+                        valueWeight: Number(value.fontWeight),
+                    };
+                }"""
+            )
+
+            self.assertEqual(label.inner_text(), 'EINHEIT')
+            self.assertEqual(value.inner_text(), 'km')
+            self.assertGreater(styles['valueSize'], styles['labelSize'])
+            self.assertGreater(styles['valueWeight'], styles['labelWeight'])
+        finally:
+            page.close()
+            context.close()
+
+    def test_who_that_renders_loaded_image_without_question_text(self):
+        image_url = (
+            'data:image/svg+xml,'
+            '%3Csvg xmlns="http://www.w3.org/2000/svg" width="320" height="240"%3E'
+            '%3Crect width="320" height="240" fill="%23d9d9d9"/%3E%3C/svg%3E'
+        )
+        game = {
+            'game_key': 'who_that',
+            'label': 'Who is that',
+            'room_code': 'WHOIMG1',
+            'title': 'Personen erkennen',
+            'game_number': 1,
+            'game_instance_id': 'who_that:WHOIMG1:1',
+            'state_revision': 2,
+            'phase': 'question',
+            'message': 'Wer ist das?',
+            'question_phase': 'answering_open',
+            'timer': {'active': False, 'seconds_left': None, 'ends_at': None},
+            'question': {
+                'id': 1,
+                'text': 'Dieser Fragetext darf nicht sichtbar sein.',
+                'image_url': image_url,
+                'category': 'Wissenschaft',
+            },
+            'progress': {'kind': 'question', 'current': 1, 'total': 1},
+            'response_count': 0,
+            'intro': {'state_revision': 0},
+        }
+        context, page = self._open_game({'width': 1920, 'height': 1080}, game)
+        try:
+            image = page.locator('[data-spectator-game="who_that"] .spectator-media')
+            self.assertEqual(image.count(), 1)
+            self.assertTrue(image.is_visible())
+            self.assertTrue(image.evaluate('element => element.complete && element.naturalWidth > 0'))
+            self.assertNotIn('Dieser Fragetext darf nicht sichtbar sein.', page.locator('body').inner_text())
+            self.assertEqual(page.locator('.spectator-question').count(), 0)
+            self.assertIn('KATEGORIE Wissenschaft', page.locator('body').inner_text())
+        finally:
+            page.close()
+            context.close()
+
     def test_spectator_noise_uses_shared_texture_behind_qr_layer(self):
         context, page = self._open_game({'width': 1920, 'height': 1080}, False)
         try:
             styles = page.locator('.spectator-shell').evaluate(
                 """element => {
+                    const surface = getComputedStyle(element, '::before');
                     const noise = getComputedStyle(element, '::after');
                     const stageFrame = getComputedStyle(element.querySelector('.spectator-stage-frame'));
                     const qr = getComputedStyle(element.querySelector('.spectator-join-area'));
                     return {
+                        shellBackgroundImage: getComputedStyle(element).backgroundImage,
+                        shellBackgroundColor: getComputedStyle(element).backgroundColor,
+                        shellBackgroundClip: getComputedStyle(element).backgroundClip,
+                        surfaceBackgroundImage: surface.backgroundImage,
+                        borderStyle: getComputedStyle(element).borderStyle,
+                        borderWidth: getComputedStyle(element).borderWidth,
+                        borderColor: getComputedStyle(element).borderColor,
                         backgroundImage: noise.backgroundImage,
                         opacity: noise.opacity,
                         pointerEvents: noise.pointerEvents,
@@ -609,11 +835,52 @@ class HubSpectatorBrowserTests(unittest.TestCase):
                     };
                 }"""
             )
+            self.assertIn('linear-gradient(153deg', styles['shellBackgroundImage'])
+            self.assertEqual(styles['shellBackgroundClip'], 'padding-box')
+            self.assertIn('repeating-linear-gradient', styles['surfaceBackgroundImage'])
+            self.assertIn('radial-gradient', styles['surfaceBackgroundImage'])
+            self.assertIn('120deg', styles['surfaceBackgroundImage'])
+            self.assertEqual(styles['borderStyle'], 'solid')
+            self.assertEqual(styles['borderWidth'], '1px')
+            self.assertNotEqual(styles['borderColor'], 'rgba(0, 0, 0, 0)')
             self.assertIn('noise.png', styles['backgroundImage'])
             self.assertEqual(styles['opacity'], '1')
             self.assertEqual(styles['pointerEvents'], 'none')
             self.assertLess(styles['noiseZIndex'], styles['stageZIndex'])
             self.assertLess(styles['noiseZIndex'], styles['qrZIndex'])
+        finally:
+            page.close()
+            context.close()
+
+    def test_spectator_intro_transition_keeps_all_five_animated_bars(self):
+        context, page = self._open_game({'width': 1920, 'height': 1080}, False)
+        try:
+            page.evaluate(
+                """() => {
+                    document.documentElement.style.setProperty('--qa-vhs-transition-elapsed', '1000ms');
+                    document.documentElement.classList.add(
+                        'is-session-game-intro-active',
+                        'qa-vhs-transition--active'
+                    );
+                }"""
+            )
+            styles = page.locator('.spectator-shell').evaluate(
+                """element => {
+                    const transition = getComputedStyle(element, '::before');
+                    return {
+                        backgroundImage: transition.backgroundImage,
+                        backgroundPosition: transition.backgroundPosition,
+                        animationName: transition.animationName,
+                    };
+                }"""
+            )
+
+            self.assertEqual(styles['backgroundImage'].count('linear-gradient(153deg'), 5)
+            self.assertEqual(len(styles['backgroundPosition'].split(', ')), 5)
+            self.assertEqual(
+                [name.strip() for name in styles['animationName'].split(',')],
+                [f'qa-vhs-transition-bar-{index}' for index in range(1, 6)],
+            )
         finally:
             page.close()
             context.close()

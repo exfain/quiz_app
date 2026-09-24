@@ -9,9 +9,9 @@ from .models import Quiz, QuizParticipant, QuizQuestion, QuizAnswer, QuizSession
 from .presentation import (
     QUIZ_ANSWER_REVEAL_ANIMATION_MS,
     QUIZ_ANSWER_REVEAL_PAUSE_MS,
-    QUIZ_ANSWER_REVEAL_STAGGER_MS,
     multiple_choice_answering_starts_at,
     question_typewriter_duration_ms,
+    quiz_answer_reveal_stagger_ms,
     quiz_answers_open_automatically,
 )
 from admin_dashboard.models import DashboardSettings
@@ -41,6 +41,7 @@ from games_hub.tutorial_runtime import (
 from games_hub.unit_tutorial_runtime import (
     finish_current_unit_tutorial,
     get_scorebox_excluded_tutorial_question_ids,
+    get_unit_tutorial_state,
     is_unit_tutorial_question,
     prepare_unit_tutorial_runtime,
     start_unit_tutorial_if_needed,
@@ -51,6 +52,14 @@ from games_hub.unit_tutorial_runtime import (
 class QuizConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
     authoritative_game_key = 'quiz'
     authoritative_required_actions = frozenset({'participant_submit_answer'})
+
+    def public_question_number(self, session, hub_session_code=None):
+        tutorial_state = get_unit_tutorial_state('quiz', self.room_code, hub_session_code)
+        tutorial_was_started = tutorial_state.get('requested') and (
+            tutorial_state.get('current_unit_is_tutorial')
+            or tutorial_state.get('tutorial_has_been_played')
+        )
+        return max(0, session.current_question_number - int(bool(tutorial_was_started)))
 
     async def connect(self):
         self.room_code = self.scope['url_route']['kwargs']['room_code']
@@ -492,7 +501,10 @@ class QuizConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
                 'type': 'question_content_revealed',
                 'question': question_payload,
                 **self.question_lifecycle_fields(decision.snapshot),
-                **self.answer_reveal_fields(),
+                **self.answer_reveal_fields(
+                    question_payload.get('question_type'),
+                    decision.snapshot,
+                ),
             },
         )
 
@@ -580,9 +592,13 @@ class QuizConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
         }
 
     @staticmethod
-    def answer_reveal_fields():
+    def answer_reveal_fields(question_type=None, snapshot=None):
+        snapshot = snapshot or {}
+        stagger_ms = snapshot.get('answer_reveal_stagger_ms')
+        if stagger_ms is None:
+            stagger_ms = quiz_answer_reveal_stagger_ms(question_type)
         return {
-            'answer_reveal_stagger_ms': QUIZ_ANSWER_REVEAL_STAGGER_MS,
+            'answer_reveal_stagger_ms': int(stagger_ms),
             'answer_reveal_animation_ms': QUIZ_ANSWER_REVEAL_ANIMATION_MS,
             'answer_reveal_pause_ms': QUIZ_ANSWER_REVEAL_PAUSE_MS,
         }
@@ -615,6 +631,7 @@ class QuizConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
             answer_results = finalization['answer_results']
             auto_finalized_answers = finalization['auto_finalized_answers']
             is_tutorial_round = finalization['is_tutorial_round']
+            question_number = finalization['question_number']
             if ended_question_id:
                 await database_sync_to_async(finish_question_flow)(
                     game_key='quiz',
@@ -633,6 +650,7 @@ class QuizConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
                     'answer_results': answer_results,
                     'auto_finalized_answers': auto_finalized_answers,
                     'is_tutorial_round': is_tutorial_round,
+                    'question_number': question_number,
                 }
             )
 
@@ -644,6 +662,7 @@ class QuizConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
                 'answer_results': answer_results,
                 'auto_finalized_answers': auto_finalized_answers,
                 'is_tutorial_round': is_tutorial_round,
+                'question_number': question_number,
             })
 
     async def handle_admin_end_quiz(self, data):
@@ -1062,6 +1081,7 @@ class QuizConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
             effective_time_limit = int(stored_question.get('time_limit') or q.time_limit)
             return {
                 'id': q.id,
+                'question_number': self.public_question_number(session, hub_session_code),
                 'question_text': q.question_text,
                 'question_type': q.get_effective_question_type(),
                 'options': options,
@@ -1088,7 +1108,10 @@ class QuizConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
                     )
                 ),
                 'total_questions': self._total_question_count(quiz, hub_session_code),
-                **self.answer_reveal_fields(),
+                **self.answer_reveal_fields(
+                    q.get_effective_question_type(),
+                    snapshot,
+                ),
                 **self.question_lifecycle_fields(snapshot),
             }
         except Quiz.DoesNotExist:
@@ -1325,6 +1348,7 @@ class QuizConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
             public_snapshot = dict(runtime.public_snapshot or {})
             public_snapshot.pop('prepared_question_id', None)
             public_snapshot.pop('question_shell_prepared', None)
+            public_snapshot.pop('answer_reveal_stagger_ms', None)
             runtime.public_snapshot = public_snapshot
             runtime.save(update_fields=['public_snapshot', 'updated_at'])
             session, _ = QuizSession.objects.select_for_update().get_or_create(quiz=quiz)
@@ -1382,6 +1406,7 @@ class QuizConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
         snapshot.pop('question', None)
         snapshot.pop('answer_options', None)
         snapshot.pop('answer_duration_seconds', None)
+        snapshot.pop('completed_question_id', None)
         snapshot['prepared_question_id'] = requested_id
         snapshot['question_shell_prepared'] = True
         snapshot['revealed'] = False
@@ -1489,9 +1514,13 @@ class QuizConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
         revealed_at = parse_datetime(
             revealed.snapshot.get('content_revealed_at') or ''
         )
+        answer_reveal_stagger = quiz_answer_reveal_stagger_ms(
+            question.get_effective_question_type()
+        )
         answering_started_at = multiple_choice_answering_starts_at(
             revealed_at,
             2 if question.question_type == 'true_false' else len(question.get_options()),
+            answer_reveal_stagger,
         )
         if not answering_started_at:
             transaction.set_rollback(True)
@@ -1519,6 +1548,14 @@ class QuizConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
         if not opened.accepted:
             transaction.set_rollback(True)
             return opened
+
+        runtime = get_runtime_state('quiz', self.room_code, hub_session_code)
+        runtime = GameRuntimeState.objects.select_for_update().get(pk=runtime.pk)
+        public_snapshot = dict(runtime.public_snapshot or {})
+        public_snapshot['answer_reveal_stagger_ms'] = answer_reveal_stagger
+        runtime.public_snapshot = public_snapshot
+        runtime.save(update_fields=['public_snapshot', 'updated_at'])
+        opened.snapshot['answer_reveal_stagger_ms'] = answer_reveal_stagger
 
         session, _ = QuizSession.objects.select_for_update().get_or_create(quiz=quiz)
         session.open_answering(
@@ -1854,6 +1891,7 @@ class QuizConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
             'answer_results': answer_results,
             'auto_finalized_answers': auto_finalized_answers,
             'is_tutorial_round': bool(is_tutorial_round),
+            'question_number': self.public_question_number(session, hub_session_code),
         }
         quiz.current_question = None
         quiz.question_start_time = None
