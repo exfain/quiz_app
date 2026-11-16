@@ -1,5 +1,6 @@
 import json
 import uuid
+from html.parser import HTMLParser
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -1523,6 +1524,33 @@ class WhoLyingResultViewTests(TestCase):
 
 
 class WhoLyingMonitorViewTests(TestCase):
+    def test_score_dialog_is_real_html_outside_script_blocks(self):
+        class ElementIds(HTMLParser):
+            def __init__(self):
+                super().__init__()
+                self.ids = []
+                self.in_main = False
+                self.dialog_inside_main = None
+
+            def handle_starttag(self, tag, attrs):
+                element_id = dict(attrs).get('id')
+                self.ids.append(element_id)
+                if tag == 'main':
+                    self.in_main = True
+                if element_id == 'editScoreModal':
+                    self.dialog_inside_main = self.in_main
+
+            def handle_endtag(self, tag):
+                if tag == 'main':
+                    self.in_main = False
+
+        response = self.client.get(reverse('admin_dashboard:who_monitor', args=[self.quiz.room_code]))
+        parser = ElementIds()
+        parser.feed(response.content.decode('utf-8'))
+        for element_id in ('editScoreModal', 'editScoreName', 'editScoreInput', 'editScoreSave'):
+            self.assertEqual(parser.ids.count(element_id), 1, element_id)
+        self.assertIs(parser.dialog_inside_main, False)
+
     def setUp(self):
         self.user = User.objects.create_user(
             username='who-monitor',
@@ -2437,8 +2465,21 @@ class WhoLyingHubParticipantLifecycleTests(TransactionTestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "step.game_key === 'who'")
-        self.assertContains(response, 'Who join failed; keeping participant in the hub lobby.')
+        self.assertContains(response, "who: { join: '/who/join/', play: '/who/play/' }")
+        # Who uses the common acknowledged join path now. Failed joins must
+        # throw before navigation and leave the lobby available for a retry.
+        content = response.content.decode()
+        navigation = content.split('if (step.room_code && routes[step.game_key]) {', 1)[1]
+        failure = navigation.index('if (!response.ok || !payload.success)')
+        redirect = navigation.index('window.location.href = playUrl.toString();')
+        catch = navigation.index('} catch (error) {')
+        self.assertLess(failure, redirect)
+        self.assertLess(redirect, catch)
+        self.assertIn('throw new Error(payload.error', navigation[failure:redirect])
+        error_path = navigation[catch:navigation.index('})();', catch)]
+        self.assertIn("activeGameNavigationKey = '';", error_path)
+        self.assertIn('showStatus(', error_path)
+        self.assertNotIn('window.location', error_path)
 
 class WhoLyingScoreBoxViewTests(TestCase):
     def setUp(self):

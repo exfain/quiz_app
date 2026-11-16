@@ -1,0 +1,17 @@
+{% load static %}
+<!doctype html><html lang="de" data-participant-theme="vhs"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Quick Quiz Duell</title>
+<link rel="stylesheet" href="{% static 'theme.css' %}"><link rel="stylesheet" href="{% static 'themes/vhs/vhs.css' %}"><link rel="stylesheet" href="{% static 'css/duel.css' %}"><link rel="stylesheet" href="{% static 'css/duel-quiz.css' %}"><script src="{% static 'js/authoritative-game-state.js' %}"></script></head>
+<body class="quiz-play-page"><main class="vhs-theme-shell duel-shell" id="duel-match" data-code="{{ session.code }}" data-role="{{ role }}" data-instance="{{ instance_id }}" data-api="{% url 'duel:quiz_match_api' session.code instance_id role %}">
+<header class="vhs-theme-header"><h1>Quick Quiz · Duell</h1><p id="names"></p></header>{% csrf_token %}
+<p id="error" role="alert"></p><p id="phase" aria-live="polite">Verbinde …</p>
+<section id="waiting" hidden>{% include 'includes/_participant_start_waiting.html' with waiting_game_title='Quick Quiz' %}</section>
+<section id="question-card" class="question-card qa-active-answer-card" hidden><h2 id="question" class="question-text"></h2><p id="timer" role="timer"></p><p id="answer-right" aria-live="polite"></p>
+{% if role == 'participant' %}<button id="buzz" hidden>BUZZ!</button><form id="answer-form" hidden><div id="options" class="duel-options"></div><button id="commit" disabled>Einloggen</button></form><p id="own-status"></p>{% endif %}</section>
+<section id="answers-card" hidden><h2>Abgegebene Antworten</h2><p id="answers"></p></section>
+<section id="solution-card" hidden><h2>Richtige Lösung</h2><p id="solution"></p></section>
+<section id="result-card" hidden><h2>Ergebnis</h2><p id="result"></p><div id="score"></div></section>
+{% if role == 'host' %}<section id="host-controls"><label>Frage <select id="question-select"><option value="">Bitte auswählen</option></select></label><button id="prepare">Frage vorbereiten</button>
+<button id="start" hidden>Frage starten</button><div id="judgment" hidden><p id="host-solution"></p><button id="correct">Richtig</button><button id="incorrect">Falsch</button></div>
+<button id="show_answers" hidden>Antworten zeigen</button><button id="show_solution" hidden>Lösung zeigen</button><button id="show_result" hidden>Ergebnis zeigen</button><button id="complete" hidden>Präsentation abschließen</button></section>{% endif %}
+<p><a id="return" href="{% if role == 'host' %}{% url 'games_hub:monitor' session.code %}{% elif role == 'spectator' %}{% url 'games_hub:spectate_session' session.code %}{% else %}{% url 'games_hub:lobby' session.code %}{% endif %}" hidden>Zurück zur Lobby / zum Hub</a></p>
+</main>{% include 'includes/_session_game_start_intro.html' %}<script src="{% static 'js/duel-client.js' %}"></script><script src="{% static 'js/duel-quiz.js' %}"></script>{% include 'includes/_duel_tournament_pair.html' %}{% include 'includes/_duel_match_status.html' %}</body></html>

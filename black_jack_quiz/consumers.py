@@ -5,6 +5,9 @@ from channels.db import database_sync_to_async
 from django.db import models, transaction
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
+from . import runtime
+from .identity import valid_player_token
+from games_hub.host_permissions import authorize_game_host
 from .models import (
     BlackJackAnswer,
     BlackJackParticipant,
@@ -44,6 +47,71 @@ from QuizGame.presentation import question_typewriter_timing
 class BlackJackConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
     authoritative_game_key = 'blackjack'
     authoritative_required_actions = frozenset({'participant_submit_answer'})
+
+    @staticmethod
+    def _is_state_payload(payload):
+        # Only build_state observes the complete public context. Partial join/answer
+        # events must not alter the shared context or invalidate other players.
+        return False
+
+    @database_sync_to_async
+    def get_quiz_model(self):
+        return BlackJackQuiz.objects.get(room_code=self.room_code)
+
+    @database_sync_to_async
+    def is_host(self):
+        if self._authoritative_participant_name():
+            return False
+        return authorize_game_host(getattr(self, 'scope', {}).get('user'), 'blackjack', self.room_code,
+            self._authoritative_session_code() or None).allowed
+
+    async def authorized_participant(self, data):
+        name = self._authoritative_participant_name() or data.get('participant_name') or data.get('name')
+        if data.get('participant_name', data.get('name', name)) != name:
+            return None
+        code = self._authoritative_session_code() or data.get('hub_session') or data.get('hub_session_code') or ''
+        def lookup():
+            return BlackJackParticipant.objects.filter(quiz__room_code=self.room_code, name=name).filter(runtime.pool_filter(code)).first()
+        participant = await database_sync_to_async(lookup)()
+        token = getattr(self, '_player_token', None) or data.get('player_token')
+        if not participant or not valid_player_token(token, participant):
+            return None
+        self._player_token = token
+        return participant
+
+    async def websocket_receive(self, message):
+        try:
+            data = json.loads(message.get('text') or '{}')
+        except (TypeError, ValueError):
+            data = {}
+        kind = data.get('type', '')
+        if kind.startswith('participant_') or kind == 'tutorial_completed' or (kind in {'get_state', 'snapshot_request'} and not await self.is_host()):
+            if not await self.authorized_participant(data):
+                await self.send(text_data=json.dumps({'type': 'error', 'message': 'Teilnahme nicht bestaetigt.'}))
+                return
+        await super().websocket_receive(message)
+
+    async def send_state(self, data):
+        quiz = await self.get_quiz_model()
+        participant = None
+        if self._authoritative_participant_name() or not await self.is_host():
+            participant = await self.authorized_participant(data)
+            if not participant:
+                return
+        code = participant.hub_session_code if participant else (data.get('hub_session') or quiz.active_hub_session_code or None)
+        state = await database_sync_to_async(runtime.build_state)(quiz, code, participant, host=participant is None)
+        await self.send(text_data=json.dumps({'type': 'blackjack_state', **state}))
+
+    async def state_updated(self, event):
+        if self._authoritative_participant_name():
+            await self.send_state({})
+
+    async def event_matches_pool(self, event):
+        if not self._authoritative_participant_name() and not await self.is_host():
+            return False
+        quiz = await self.get_quiz_model()
+        code = self._authoritative_session_code() or quiz.active_hub_session_code
+        return (event.get('hub_session_code', quiz.active_hub_session_code) or '') == (code or '')
 
     async def connect(self):
         self.room_code = self.scope['url_route']['kwargs']['room_code']
@@ -104,6 +172,8 @@ class BlackJackConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
             elif message_type == 'admin_hide_leaderboard':
                 await self.handle_admin_hide_leaderboard()
 
+        except (ValueError, TypeError) as exc:
+            await self.send(text_data=json.dumps({'type': 'error', 'message': str(exc)}))
         except json.JSONDecodeError:
             await self.send(text_data=json.dumps({
                 'type': 'error',
@@ -112,9 +182,21 @@ class BlackJackConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
 
     async def handle_admin_start_quiz(self, data):
         """Handle admin starting the quiz"""
+        existing = await self.get_quiz_model()
+        code = data.get('hub_session') or data.get('hub_session_code') or await self._get_hub_session_code_for_room()
+        existing_code = await database_sync_to_async(runtime.pool_code)(existing)
+        if existing.started_at and existing.status in {'active', 'inactive'} and (code or '') == existing_code:
+            activation = await database_sync_to_async(resolve_session_game_activation_for_room)('blackjack', self.room_code, session_code=code)
+            if not activation.get('success'):
+                raise ValueError(activation.get('message') or activation.get('error'))
+            await database_sync_to_async(runtime.start_game)(await self.get_quiz_model(), code)
+            await self.channel_layer.group_send(self.room_group_name, {'type': 'state_updated'})
+            await self.send(text_data=json.dumps({'type': 'quiz_started', 'status': 'active', 'started_at': existing.started_at.isoformat(), 'hub_session_code': code, 'message': 'Spiel fortgesetzt.'}))
+            return
         lobby_ready = await database_sync_to_async(ensure_session_players_ready_for_game_start_for_room)(
             'blackjack',
             self.room_code,
+            session_code=code,
         )
         if not lobby_ready.get('allowed', True):
             await self.send(text_data=json.dumps({
@@ -128,7 +210,7 @@ class BlackJackConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
         if quiz:
             show_tutorial = bool(data.get('show_tutorial', False))
             play_tutorial = bool(data.get('play_tutorial', False))
-            hub_session_code = await self._get_hub_session_code_for_room()
+            hub_session_code = data.get('hub_session') or data.get('hub_session_code') or await self._get_hub_session_code_for_room()
             unit_tutorial_validation = await database_sync_to_async(validate_unit_tutorial_request)(
                 'blackjack',
                 self.room_code,
@@ -143,6 +225,7 @@ class BlackJackConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
             activation = await database_sync_to_async(resolve_session_game_activation_for_room)(
                 'blackjack',
                 self.room_code,
+                session_code=hub_session_code,
             )
             if not activation.get('success'):
                 payload = {
@@ -160,7 +243,8 @@ class BlackJackConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
                 play_tutorial,
                 validate=False,
             )
-            started_quiz = await self.start_quiz_db(quiz.get('id'))
+            await database_sync_to_async(runtime.start_game)(await self.get_quiz_model(), hub_session_code)
+            started_quiz = await self.get_quiz()
             await database_sync_to_async(reset_question_flow)(
                 game_key='blackjack',
                 room_code=self.room_code,
@@ -201,77 +285,16 @@ class BlackJackConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
                 )
 
     async def handle_admin_send_question(self, data):
-        """Handle admin sending a new question"""
-        # Optional per-send override for time limit (seconds)
-        try:
-            custom_time_limit = int(data.get('custom_time_limit')) if data.get('custom_time_limit') is not None else None
-            if custom_time_limit is not None and custom_time_limit <= 0:
-                custom_time_limit = None
-        except (TypeError, ValueError):
-            custom_time_limit = None
-
-        question_id = data.get('question_id')
-        selected_set_number = data.get('selected_set_number')
         quiz = await self.get_quiz()
-        
-        if not quiz:
+        if await self.guard_tutorial_before_first_unit(data, quiz['id']):
             return
-            
-        question = await self.get_question(question_id)
-        if not question:
-            return
-
-        if await self.guard_tutorial_before_first_unit(data, quiz.get('id')):
-            return
-
-        hub_session = data.get('hub_session') or data.get('hub_session_code') or await self._get_hub_session_code_for_room()
-        unit_tutorial = await self.start_unit_tutorial_if_needed(hub_session)
-        is_tutorial_round = bool(unit_tutorial.get('is_tutorial_round'))
-        if is_tutorial_round and str(unit_tutorial.get('tutorial_question_id') or '') != str(question.id):
-            question = await self.get_question(unit_tutorial.get('tutorial_question_id'))
-            if not question:
-                return
-
-        if not is_tutorial_round:
-            send_error = await self.get_next_question_send_error(quiz.get('id'), question.id, selected_set_number)
-            if send_error:
-                await self.send(text_data=json.dumps({
-                    'type': 'error',
-                    'message': send_error
-                }))
-                return
-
-        # Determine the effective time limit for this send (do NOT persist on the question)
-        effective_time_limit = custom_time_limit if custom_time_limit is not None else question.time_limit
-        await self.set_tutorial_active_db(quiz.get('id'), False)
-        phase_action = dict(data)
-        phase_action['question_id'] = question.id
-        decision = await self.present_blackjack_question(
-            quiz.get('id'),
-            question.id,
-            hub_session,
-            phase_action,
-            effective_time_limit,
-            is_tutorial_round=is_tutorial_round,
-        )
+        code = data.get('hub_session') or data.get('hub_session_code') or await self._get_hub_session_code_for_room()
+        decision = await self.present_blackjack_question(quiz['id'], data.get('question_id'), code, data, data.get('custom_time_limit'))
         if not decision.accepted:
-            await self.send_question_phase_rejection(decision, question.id)
+            await self.send_question_phase_rejection(decision, data.get('question_id'))
             return
-        current_question_data = await self.get_current_question_data()
-        if not current_question_data:
-            return
-        current_question_data['time_limit'] = effective_time_limit
-        current_question_data['is_tutorial_round'] = is_tutorial_round
-        
-        # Broadcast new question to all participants
-        await self.channel_layer.group_send(
-            self.room_group_name,
-            {
-                'type': 'question_started',
-                'question': current_question_data,
-                **self.question_lifecycle_fields(decision.snapshot),
-            }
-        )
+        await self.channel_layer.group_send(self.room_group_name, {'type': 'question_started',
+            'question': decision.snapshot['question'], 'hub_session_code': code, **self.question_lifecycle_fields(decision.snapshot)})
 
     async def handle_admin_open_answering(self, data):
         quiz = await self.get_quiz()
@@ -344,257 +367,64 @@ class BlackJackConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
         }
 
     async def handle_admin_end_question(self, data):
-        """Handle admin ending current question"""
-        await self.finish_current_question()
+        await self.finish_current_question(data)
 
     async def handle_participant_question_timeout(self, data):
-        """Let a participant trigger the authoritative server timeout path."""
-        timeout_state = await self.get_question_timeout_state(data.get('question_id'))
-        if not timeout_state.get('expired'):
-            await self.send(text_data=json.dumps({
-                'type': 'question_timeout_sync',
-                'active': timeout_state.get('active', False),
-                'expired': timeout_state.get('expired', False),
-                'current_question_id': timeout_state.get('current_question_id'),
-                'time_left': timeout_state.get('time_left'),
-            }))
-            return
+        # The host owns question closure; participant clocks never grade a round.
+        await self.send_state(data)
 
-        await self.finish_current_question()
-
-    async def finish_current_question(self):
-        """End the active question and broadcast the same transition to every client."""
-        quiz = await self.get_quiz()
-        if quiz:
-            hub_session = await self._get_hub_session_code_for_room()
-            phase_snapshot = await database_sync_to_async(current_snapshot)(
-                'blackjack', self.room_code, hub_session,
-            )
-            if (
-                phase_snapshot.get('question_flow_mode')
-                == GameRuntimeState.QUESTION_FLOW_MANUAL_THREE_PHASE
-                and phase_snapshot.get('question_phase')
-                != GameRuntimeState.QUESTION_PHASE_ANSWERING_OPEN
-            ):
-                await self.send(text_data=json.dumps({
-                    'type': 'error',
-                    'message': 'Die Frage kann vor der Freigabe nicht beendet werden.',
-                }))
-                return None
-            # Get the correct answer before clearing the question
-            correct_answer_data = await self.get_current_question_answer(quiz)
-            ending_question_id = correct_answer_data.get('question_id') if correct_answer_data else None
-
-            if ending_question_id:
-                await self.channel_layer.group_send(
-                    self.room_group_name,
-                    {
-                        'type': 'question_ending',
-                        'question_id': ending_question_id,
-                    }
-                )
-                await asyncio.sleep(0.5)
-            
-            transition = await self.clear_current_question(quiz.get('id'), expected_question_id=ending_question_id)
-            if transition.get('already_ended'):
-                return transition
-            if ending_question_id:
-                await database_sync_to_async(finish_question_flow)(
-                    game_key='blackjack',
-                    room_code=self.room_code,
-                    session_code=hub_session,
-                    question_id=ending_question_id,
-                )
-            quiz_complete = transition.get('quiz_complete', False)
-            final_scores = await self.get_final_scores() if quiz_complete else []
-            
-            await self.channel_layer.group_send(
-                self.room_group_name,
-                {
-                    'type': 'question_ended',
-                    'message': 'Time\'s up!',
-                    'correct_answer': correct_answer_data,
-                    'quiz_complete': quiz_complete,
-                    'set_complete': transition.get('set_complete', False),
-                    'set_number': transition.get('set_number'),
-                    'set_results': transition.get('participants', []),
-                    'no_answer_bust_participants': transition.get('no_answer_bust_participants', []),
-                    'final_scores': final_scores,
-                    'is_tutorial_round': bool(transition.get('is_tutorial_round')),
-                }
-            )
-
-            if quiz_complete:
-                await self.hub_mirror_event('quiz_ended', {
-                    'room_code': self.room_code,
-                    'game_key': 'blackjack',
-                    'message': 'Quiz has ended. Thank you for participating!',
-                    'final_scores': final_scores,
-                })
-            return transition
+    async def finish_current_question(self, data=None):
+        quiz = await self.get_quiz_model()
+        code = (data or {}).get('hub_session') or await self._get_hub_session_code_for_room()
+        result = await database_sync_to_async(runtime.end_question)(quiz, code=code, data=data)
+        await database_sync_to_async(runtime.build_state)(await self.get_quiz_model(), code)
+        await self.channel_layer.group_send(self.room_group_name, result)
+        if result.get('quiz_complete'):
+            await self.hub_mirror_event('quiz_ended', {'game_key': 'blackjack', 'room_code': self.room_code, 'final_scores': result['final_scores']})
+        return result
 
     async def handle_admin_end_quiz(self, data):
-        """Handle admin ending the quiz"""
-        quiz = await self.get_quiz()
-        if quiz:
-            await self.end_quiz_db(quiz.get('id'))
-            hub_session = (
-                data.get('hub_session')
-                or data.get('hub_session_code')
-                or await self._get_hub_session_code_for_room()
-            )
-            await database_sync_to_async(reset_question_flow)(
-                game_key='blackjack',
-                room_code=self.room_code,
-                session_code=hub_session,
-                mode=GameRuntimeState.QUESTION_FLOW_MANUAL_THREE_PHASE,
-            )
-            # Collect final totals (BlackJack uses total_points)
-            final_scores = await self.get_final_scores()
-            
-            await self.channel_layer.group_send(
-                self.room_group_name,
-                {
-                    'type': 'quiz_ended',
-                    'message': 'BlackJack Quiz has ended. Thank you for playing!',
-                    'final_scores': final_scores
-                }
-            )
-
-            # Mirror to hub to auto-advance session
-            # await self.hub_mirror_event('game_ended', {
-            #     'room_code': self.room_code,
-            #     'game_key': 'blackjack'
-            # })
-            # Mirror to hub so hub can advance to next step or end session
-            await self.hub_mirror_event('quiz_ended', {
-                'room_code': self.room_code,
-                'game_key': 'blackjack',
-                'message': 'Quiz has ended. Thank you for participating!',
-                'final_scores': final_scores
-            })
+        quiz = await self.get_quiz_model()
+        code = data.get('hub_session') or await self._get_hub_session_code_for_room()
+        result = await database_sync_to_async(runtime.end_game)(quiz, code=code, data=data)
+        await database_sync_to_async(runtime.build_state)(await self.get_quiz_model(), code)
+        await self.channel_layer.group_send(self.room_group_name, {**result, 'hub_session_code': code})
+        await self.hub_mirror_event('quiz_ended', {'game_key': 'blackjack', 'room_code': self.room_code, 'final_scores': result.get('final_scores', [])})
 
     async def handle_admin_set_inactive(self, data):
-        """Pause the quiz without clearing its current progress."""
-        quiz = await self.get_quiz()
-        if quiz and quiz.get('status') == 'active':
-            await self.set_quiz_inactive_db(quiz.get('id'))
-            await self.channel_layer.group_send(
-                self.room_group_name,
-                {
-                    'type': 'quiz_inactive',
-                    'message': 'Quiz has been set inactive.'
-                }
-            )
+        quiz = await self.get_quiz_model()
+        await database_sync_to_async(runtime.set_paused)(quiz, True)
+        await self.channel_layer.group_send(self.room_group_name, {'type': 'quiz_inactive', 'message': 'Spiel pausiert.', 'hub_session_code': quiz.active_hub_session_code})
+        await self.channel_layer.group_send(self.room_group_name, {'type': 'state_updated'})
 
     async def handle_participant_submit_answer(self, data):
-        """Handle participant submitting their answer"""
-        participant_name = data.get('participant_name')
-        hub_session = data.get('hub_session')
-        user_answer = data.get('user_answer')
-        time_taken = data.get('time_taken', 0)
-        question_id = data.get('question_id')
-
-        # Save the answer
-        answer_result = await self.save_participant_answer(
-            participant_name,hub_session, user_answer, time_taken, question_id=question_id
-        )
-        
-        if answer_result:
-            # Send confirmation to participant
-            await self.send(text_data=json.dumps({
-                'type': 'answer_submitted',
-                'message': 'Answer submitted successfully',
-                'points_earned': answer_result['points_earned'],
-                'user_answer': answer_result['user_answer'],
-                'difference': answer_result['difference'],
-                'total_points': answer_result['total_points'],
-                'overall_points': answer_result['overall_points'],
-                'is_busted': answer_result['is_busted'],
-                'is_tutorial_round': answer_result.get('is_tutorial_round', False),
-                'questions_remaining': max(0, answer_result['set_question_count'] - answer_result['questions_answered'])
-            }))
-
-            # Broadcast to admin dashboard (live answers)
-            await self.channel_layer.group_send(
-                self.room_group_name,
-                {
-                    'type': 'participant_answered',
-                    'answer': {
-                        'participant_name': participant_name,
-                        'user_answer': answer_result['user_answer'],
-                        'points_earned': answer_result['points_earned'],
-                        'difference': answer_result['difference'],
-                        'total_points': answer_result['total_points'],
-                        'is_busted': answer_result['is_busted'],
-                        'is_tutorial_round': answer_result.get('is_tutorial_round', False),
-                        'status': answer_result['status'],
-                        'time_taken': answer_result['time_taken'],
-                        'question_number': answer_result['question_number']
-                    }
-                }
-            )
+        participant = await self.authorized_participant(data)
+        if not participant:
+            raise ValueError('Teilnahme nicht bestaetigt.')
+        answer = await database_sync_to_async(runtime.submit)(await self.get_quiz_model(), participant, data.get('user_answer'), data=data)
+        await database_sync_to_async(runtime.build_state)(await self.get_quiz_model(), participant.hub_session_code)
+        await self.send(text_data=json.dumps({'type': 'answer_submitted', 'user_answer': answer.user_answer, 'answer_locked': True}))
+        await self.send_state(data)
+        await self.channel_layer.group_send(self.room_group_name, {'type': 'state_updated'})
+        await self.channel_layer.group_send(self.room_group_name, {'type': 'participant_answered',
+            'hub_session_code': participant.hub_session_code or '', 'answer': {'participant_name': participant.name,
+            'user_answer': answer.user_answer, 'points_earned': answer.points_earned, 'difference': answer.points_earned}})
 
     async def handle_participant_join(self, data):
-        """Handle new participant joining"""
-        participant_name = data.get('participant_name')
-        hub_session = data.get('hub_session')
-        participant = await self.get_participant_by_name(participant_name, hub_session)
-
-        if participant:
-            await self.ensure_runtime_scoped_to_hub_session(hub_session)
-            await self.mark_participant_active(participant['id'])
-            
-            # Broadcast to admin
-            await self.channel_layer.group_send(
-                self.room_group_name,
-                {
-                    'type': 'participant_joined',
-                    'participant': {
-                        'name': participant['name'],
-                        'total_points': participant['total_points'],
-                        'is_busted': participant['is_busted'],
-                        'status': participant['status']
-                    }
-                }
-            )
-
-            # If quiz is already active, send quiz_started directly to this participant
-            quiz = await self.get_quiz()
-            if quiz and quiz.get('status') == 'active':
-                await self.send(text_data=json.dumps({
-                    'type': 'quiz_started',
-                    'message': 'Quiz is already in progress',
-                    'status': quiz.get('status'),
-                    'started_at': quiz.get('started_at'),
-                    'timestamp': quiz.get('started_at'),
-                }))
-                tutorial_payload = await self.get_tutorial_payload(
-                    quiz.get('id'),
-                    hub_session,
-                    participant_name=participant_name,
-                )
-                if tutorial_payload:
-                    await self.send(text_data=json.dumps({
-                        'type': 'tutorial_start',
-                        **tutorial_payload,
-                    }))
-                current_question_data = await self.get_current_question_data()
-                if current_question_data:
-                    await self.send(text_data=json.dumps({
-                        'type': 'question_started',
-                        'question': current_question_data
-                    }))
-                    existing_answer = await self.get_current_participant_answer(
-                        participant['id'],
-                        current_question_data['id'],
-                    )
-                    if existing_answer:
-                        await self.send(text_data=json.dumps({
-                            'type': 'answer_submitted',
-                            'message': 'Answer already submitted',
-                            **existing_answer,
-                        }))
+        participant = await self.authorized_participant(data)
+        if not participant:
+            raise ValueError('Teilnahme nicht bestaetigt.')
+        self._authoritative_participant = participant.name
+        self._authoritative_session = participant.hub_session_code or ''
+        await self.mark_participant_active(participant.pk)
+        await self.send_state(data)
+        tutorial = await self.get_tutorial_payload(participant.quiz_id, participant.hub_session_code, participant.name)
+        if tutorial:
+            await self.send(text_data=json.dumps({'type': 'tutorial_start', **tutorial}))
+        await self.channel_layer.group_send(self.room_group_name, {'type': 'participant_joined',
+            'participant': {'id': participant.pk, 'name': participant.name,
+                'total_points': participant.total_points, 'is_busted': participant.is_busted},
+            'hub_session_code': participant.hub_session_code or ''})
 
     async def handle_tutorial_completed(self, data):
         participant_name = data.get('participant_name') or data.get('name')
@@ -612,6 +442,8 @@ class BlackJackConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
         )
 
     async def show_leaderboard(self, event):
+        if not await self.event_matches_pool(event):
+            return
         await self.send(text_data=json.dumps({'type': 'show_leaderboard'}))
 
     async def handle_admin_hide_leaderboard(self):
@@ -621,6 +453,8 @@ class BlackJackConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
         )
 
     async def hide_leaderboard(self, event):
+        if not await self.event_matches_pool(event):
+            return
         await self.send(text_data=json.dumps({'type': 'hide_leaderboard'}))
 
     async def handle_ping(self):
@@ -631,16 +465,20 @@ class BlackJackConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
 
     # Event handlers for group messages
     async def quiz_started(self, event):
+        if not await self.event_matches_pool(event):
+            return
         """Send quiz started message"""
         await self.send(text_data=json.dumps({
             'type': 'quiz_started',
-            'message': event['message'],
+            'message': event.get('message', 'Spiel beendet.'),
             'status': event.get('status', 'active'),
             'started_at': event.get('started_at'),
             'timestamp': event.get('timestamp') or event.get('started_at'),
         }))
 
     async def question_started(self, event):
+        if not await self.event_matches_pool(event):
+            return
         """Send new question to client"""
         await self.send(text_data=json.dumps({
             'type': 'question_started',
@@ -649,6 +487,8 @@ class BlackJackConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
         }))
 
     async def question_answering_opened(self, event):
+        if not await self.event_matches_pool(event):
+            return
         await self.send(text_data=json.dumps({
             'type': 'question_answering_opened',
             'question': event['question'],
@@ -656,12 +496,16 @@ class BlackJackConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
         }))
 
     async def question_ending(self, event):
+        if not await self.event_matches_pool(event):
+            return
         await self.send(text_data=json.dumps({
             'type': 'question_ending',
             'question_id': event.get('question_id'),
         }))
 
     async def question_ended(self, event):
+        if not await self.event_matches_pool(event):
+            return
         """Send question ended message"""
         await self.send(text_data=json.dumps({
             'type': 'question_ended',
@@ -723,73 +567,36 @@ class BlackJackConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
         return False
 
     async def quiz_ended(self, event):
+        if not await self.event_matches_pool(event):
+            return
         """Send quiz ended message"""
         await self.send(text_data=json.dumps({
             'type': 'quiz_ended',
-            'message': event['message'],
+            'message': event.get('message', 'Spiel beendet.'),
             'final_scores': event.get('final_scores', [])
         }))
 
     async def quiz_inactive(self, event):
+        if not await self.event_matches_pool(event):
+            return
         await self.send(text_data=json.dumps({
             'type': 'quiz_inactive',
             'message': event.get('message', 'Quiz has been set inactive.')
         }))
 
     async def participant_answered(self, event):
-        """Send participant answer to admin"""
-        await self.send(text_data=json.dumps({
-            'type': 'participant_answered',
-            'answer': event['answer']
-        }))
+        if await self.is_host() and await self.event_matches_pool(event):
+            await self.send(text_data=json.dumps({'type': 'participant_answered', 'answer': event['answer']}))
 
     async def participant_joined(self, event):
-        """Send new participant info to admin"""
-        await self.send(text_data=json.dumps({
-            'type': 'participant_joined',
-            'participant': event['participant']
-        }))
+        if await self.is_host() and await self.event_matches_pool(event):
+            await self.send(text_data=json.dumps({'type': 'participant_joined', 'participant': event['participant']}))
 
     # Database operations
     @database_sync_to_async
     def get_current_question_data(self):
-        """Return serialised question data for the currently active question, or None."""
-        try:
-            quiz = BlackJackQuiz.objects.select_related('current_question').get(room_code=self.room_code)
-            question = quiz.current_question
-            if not question:
-                return None
-            session = getattr(quiz, 'session', None)
-            hub_session = self._get_hub_session_code_for_room_sync()
-            runtime = current_snapshot('blackjack', self.room_code, hub_session)
-            is_tutorial_round = is_unit_tutorial_question('blackjack', self.room_code, hub_session, question.id)
-            payload = {
-                'id': question.id,
-                'question_text': question.question_text,
-                'time_limit': int(runtime.get('answer_duration_seconds') or question.time_limit),
-                'question_end_time': session.question_end_time.isoformat() if session and session.question_end_time else None,
-                'starts_at': (
-                    quiz.question_start_time.isoformat()
-                    if quiz.question_start_time
-                    else None
-                ),
-                'ends_at': (
-                    session.question_end_time.isoformat()
-                    if session and session.question_end_time
-                    else None
-                ),
-                'server_now': timezone.now().isoformat(),
-                'question_number': quiz.current_question_number,
-                'question_in_set': quiz.get_current_question_position_in_set(),
-                'set_question_count': quiz.get_set_question_count(question_id=question.id),
-                'set_number': quiz.get_current_set_number(),
-                'total_sets': quiz.get_total_sets(),
-                'is_tutorial_round': is_tutorial_round,
-            }
-            payload.update(self.question_lifecycle_fields(runtime))
-            return payload
-        except BlackJackQuiz.DoesNotExist:
-            return None
+        quiz = BlackJackQuiz.objects.get(room_code=self.room_code)
+        return runtime.build_state(quiz).get('question')
 
     @database_sync_to_async
     def get_current_participant_answer(self, participant_id, question_id):
@@ -904,23 +711,11 @@ class BlackJackConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
 
     @database_sync_to_async
     def end_quiz_db(self, quiz_id):
-        try:
-            quiz = BlackJackQuiz.objects.get(id=quiz_id)
-            quiz.status = 'completed'
-            quiz.ended_at = timezone.now()
-            quiz.current_question = None
-            quiz.save()
-        except BlackJackQuiz.DoesNotExist:
-            pass
+        return runtime.end_game(BlackJackQuiz.objects.get(pk=quiz_id))
 
     @database_sync_to_async
     def set_quiz_inactive_db(self, quiz_id):
-        try:
-            quiz = BlackJackQuiz.objects.get(id=quiz_id)
-            quiz.status = 'inactive'
-            quiz.save(update_fields=['status'])
-        except BlackJackQuiz.DoesNotExist:
-            pass
+        return runtime.set_paused(BlackJackQuiz.objects.get(pk=quiz_id), True)
 
     @database_sync_to_async
     def set_tutorial_active_db(self, quiz_id, active):
@@ -970,142 +765,19 @@ class BlackJackConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
         return finish_current_unit_tutorial('blackjack', self.room_code, hub_session_code)
 
     @database_sync_to_async
-    @transaction.atomic
-    def present_blackjack_question(
-        self,
-        quiz_id,
-        question_id,
-        hub_session_code,
-        action,
-        answer_duration_seconds,
-        *,
-        is_tutorial_round=False,
-        at=None,
-    ):
-        quiz = BlackJackQuiz.objects.select_for_update().get(id=quiz_id)
-        question = BlackJackQuestion.objects.get(id=question_id)
-        session, _ = BlackJackSession.objects.select_for_update().get_or_create(quiz=quiz)
-        decision = present_question(
-            game_key='blackjack',
-            room_code=self.room_code,
-            session_code=hub_session_code,
-            action=action,
-            answer_duration_seconds=answer_duration_seconds,
-            at=at,
-            **question_typewriter_timing(question.question_text),
-        )
-        if decision.accepted and not decision.duplicate:
-            session.prepare_question(
-                question,
-                track_progress=not is_tutorial_round,
-            )
-        return decision
+    def present_blackjack_question(self, quiz_id, question_id, hub_session_code, action, answer_duration_seconds, *, is_tutorial_round=False, at=None):
+        return runtime.present(BlackJackQuiz.objects.get(pk=quiz_id), question_id, hub_session_code, action, answer_duration_seconds, at=at)
 
     @database_sync_to_async
-    @transaction.atomic
-    def open_blackjack_answering(
-        self,
-        quiz_id,
-        question_id,
-        hub_session_code,
-        action,
-        at=None,
-    ):
-        quiz = (
-            BlackJackQuiz.objects.select_for_update()
-            .select_related('current_question')
-            .get(id=quiz_id)
-        )
-        session = BlackJackSession.objects.select_for_update().get(quiz=quiz)
-        if quiz.current_question_id != question_id:
-            return open_answering(
-                game_key='blackjack',
-                room_code=self.room_code,
-                session_code=hub_session_code,
-                action=action,
-            )
-        opened_at = at or timezone.now()
-        decision = open_answering(
-            game_key='blackjack',
-            room_code=self.room_code,
-            session_code=hub_session_code,
-            action=action,
-            at=opened_at,
-        )
-        if decision.accepted and not decision.duplicate:
-            started_at = parse_datetime(decision.snapshot.get('answering_started_at') or '')
-            deadline = parse_datetime(decision.snapshot.get('answering_deadline_at') or '')
-            if not started_at or not deadline:
-                raise ValueError('Authoritative answering timestamps are missing.')
-            session.open_answering(
-                quiz.current_question,
-                started_at=started_at,
-                answer_duration_seconds=(deadline - started_at).total_seconds(),
-            )
-        return decision
+    def open_blackjack_answering(self, quiz_id, question_id, hub_session_code, action, at=None):
+        return runtime.open_question(BlackJackQuiz.objects.get(pk=quiz_id), hub_session_code, action, at=at)
 
     @database_sync_to_async
     def clear_current_question(self, quiz_id, expected_question_id=None):
-        try:
-            quiz = BlackJackQuiz.objects.get(id=quiz_id)
-            if expected_question_id and quiz.current_question_id != expected_question_id:
-                return {
-                    'already_ended': True,
-                    'set_complete': False,
-                    'set_number': quiz.get_current_set_number(),
-                    'quiz_complete': quiz.is_quiz_complete(),
-                }
-            resolved_session_code = self._get_hub_session_code_for_room_sync()
-            if quiz.current_question_id and is_unit_tutorial_question(
-                'blackjack',
-                self.room_code,
-                resolved_session_code,
-                quiz.current_question_id,
-            ):
-                try:
-                    session = quiz.session
-                except Exception:
-                    session = None
-                quiz.current_question = None
-                quiz.question_start_time = None
-                quiz.save(update_fields=['current_question', 'question_start_time'])
-                if session:
-                    session.is_question_active = False
-                    session.question_end_time = None
-                    session.total_responses_current_question = 0
-                    session.average_points_current_question = 0
-                    session.save(update_fields=[
-                        'is_question_active',
-                        'question_end_time',
-                        'total_responses_current_question',
-                        'average_points_current_question',
-                    ])
-                unit_tutorial = finish_current_unit_tutorial('blackjack', self.room_code, resolved_session_code)
-                return {
-                    'set_complete': False,
-                    'set_number': quiz.get_current_set_number(),
-                    'quiz_complete': False,
-                    'participants': [],
-                    'no_answer_bust_participants': [],
-                    'is_tutorial_round': bool(unit_tutorial.get('is_tutorial_round')),
-                }
-            if hasattr(quiz, 'session'):
-                return quiz.session.end_current_question()
-
-            quiz.current_question = None
-            quiz.question_start_time = None
-            quiz.save()
-            return {
-                'set_complete': False,
-                'set_number': quiz.get_current_set_number(),
-                'quiz_complete': quiz.is_quiz_complete(),
-            }
-        except BlackJackQuiz.DoesNotExist:
-            return {
-                'set_complete': False,
-                'set_number': None,
-                'quiz_complete': False,
-            }
+        quiz = BlackJackQuiz.objects.get(pk=quiz_id)
+        if expected_question_id and quiz.current_question_id != expected_question_id:
+            return {'already_ended': True}
+        return runtime.end_question(quiz)
 
     @database_sync_to_async
     def get_current_question_answer(self, quiz_data):
@@ -1177,128 +849,21 @@ class BlackJackConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
         }
 
     @database_sync_to_async
-    @transaction.atomic
     def save_participant_answer(self, participant_name, hub_session_code, user_answer, time_taken, question_id=None):
-        try:
-            quiz = (
-                BlackJackQuiz.objects.select_for_update()
-                .select_related('current_question')
-                .get(room_code=self.room_code)
-            )
-            participant = BlackJackParticipant.objects.select_for_update().get(
-                quiz=quiz,
-                name=participant_name,
-                hub_session_code=hub_session_code,
-            )
-            
-            if quiz.status != 'active':
-                return None
-            if participant.is_busted:
-                return None
-
-            normalized_question_id = None
-            try:
-                normalized_question_id = int(question_id) if question_id is not None else None
-            except (TypeError, ValueError):
-                normalized_question_id = None
-
-            if (
-                not quiz.current_question
-                or normalized_question_id is None
-                or normalized_question_id != quiz.current_question_id
-            ):
-                return None
-            target_question = quiz.current_question
-            session = BlackJackSession.objects.select_for_update().filter(quiz=quiz).first()
-            received_at = timezone.now()
-            if (
-                not session
-                or not session.is_question_active
-                or not quiz.question_start_time
-                or received_at < quiz.question_start_time
-                or (
-                    session.question_end_time
-                    and received_at >= session.question_end_time
-                )
-            ):
-                return None
-            is_tutorial_answer = is_unit_tutorial_question(
-                'blackjack',
-                self.room_code,
-                hub_session_code,
-                target_question.id,
-            )
-            
-            # Check if answer already exists
-            existing_answer = BlackJackAnswer.objects.filter(
-                quiz=quiz,
-                participant=participant,
-                question=target_question
-            ).first()
-            
-            if existing_answer:
-                return None  # Already answered
-            
-            # Convert user answer to integer
-            try:
-                user_answer_int = int(user_answer)
-            except (ValueError, TypeError):
-                return None
-            
-            previous_participant_state = {
-                'total_points': participant.total_points,
-                'overall_points': participant.overall_points,
-                'questions_answered': participant.questions_answered,
-                'is_busted': participant.is_busted,
-                'final_score': participant.final_score,
-            }
-            server_time_taken = (
-                max(0.0, (received_at - quiz.question_start_time).total_seconds())
-                if quiz.question_start_time
-                else 0.0
-            )
-
-            # Create new answer
-            answer, created = BlackJackAnswer.objects.get_or_create(
-                quiz=quiz,
-                participant=participant,
-                question=target_question,
-                defaults={
-                    'user_answer': user_answer_int,
-                    'time_taken': server_time_taken,
-                    'question_number': quiz.current_question_number,
-                },
-            )
-            if not created:
-                return None
-            if is_tutorial_answer:
-                if answer.points_earned:
-                    answer.points_earned = 0
-                    answer.save(update_fields=['points_earned'])
-                for field, value in previous_participant_state.items():
-                    setattr(participant, field, value)
-                participant.save(update_fields=list(previous_participant_state.keys()))
-            
-            # Refresh participant data after score calculation
-            participant.refresh_from_db()
-            
-            return {
-                'points_earned': answer.points_earned,
-                'user_answer': answer.user_answer,
-                'difference': answer.get_difference(),
-                'total_points': participant.total_points,
-                'overall_points': participant.overall_points,
-                'is_busted': participant.is_busted,
-                'status': participant.get_status(),
-                'questions_answered': participant.questions_answered,
-                'question_number': answer.question_number,
-                'set_question_count': quiz.get_set_question_count(question_number=quiz.current_question_number),
-                'is_tutorial_round': is_tutorial_answer,
-                'time_taken': answer.time_taken,
-            }
-            
-        except (BlackJackQuiz.DoesNotExist, BlackJackParticipant.DoesNotExist):
+        quiz = BlackJackQuiz.objects.get(room_code=self.room_code)
+        if str(question_id) != str(quiz.current_question_id):
             return None
+        participant = quiz.participants.filter(name=participant_name).filter(runtime.pool_filter(hub_session_code)).first()
+        try:
+            answer = runtime.submit(quiz, participant, user_answer)
+        except ValueError:
+            return None
+        participant.refresh_from_db()
+        return {'user_answer': answer.user_answer, 'points_earned': answer.points_earned, 'difference': answer.points_earned,
+            'total_points': participant.total_points, 'overall_points': participant.overall_points, 'is_busted': participant.is_busted,
+            'questions_answered': participant.questions_answered, 'question_number': answer.question_number,
+            'set_question_count': quiz.get_set_question_count(question_id=answer.question_id), 'time_taken': answer.time_taken,
+            'status': participant.get_status(), 'is_tutorial_round': runtime.current_run(quiz.session)['is_tutorial']}
 
     @database_sync_to_async
     def mark_participant_active(self, participant_id):
@@ -1312,32 +877,14 @@ class BlackJackConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
 
     @database_sync_to_async
     def get_final_scores(self):
-        try:
-            quiz = BlackJackQuiz.objects.get(room_code=self.room_code)
-            # Filter by hub session code if available via HubGameStep
-            try:
-                qs = HubGameStep.objects.select_related('session').filter(game_key='blackjack', room_code=self.room_code)
-                active = qs.filter(session__ended_at__isnull=True).order_by('-id').first()
-                step = active or qs.order_by('-id').first()
-                session_code = step.session.code if step else None
-            except Exception:
-                session_code = None
-
-            qs = quiz.participants
-            if session_code:
-                qs = qs.filter(hub_session_code=session_code)
-            return list(qs.order_by('-overall_points', 'name').values(
-                'name',
-                'total_points',
-                'overall_points',
-                total_score=models.F('overall_points'),
-            ))
-        except BlackJackQuiz.DoesNotExist:
-            return []
+        return runtime.final_scores(BlackJackQuiz.objects.get(room_code=self.room_code))
 
     # --- Hub mirroring helpers ---
     def _get_hub_session_code_for_room_sync(self):
         try:
+            game = BlackJackQuiz.objects.get(room_code=self.room_code)
+            if game.active_hub_session_code or (getattr(game, 'session', None) and game.session.set_rounds):
+                return game.active_hub_session_code or None
             qs = HubGameStep.objects.select_related('session').filter(game_key='blackjack', room_code=self.room_code)
             active = qs.filter(session__ended_at__isnull=True).order_by('-id').first()
             step = active or qs.order_by('-id').first()

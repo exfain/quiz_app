@@ -269,28 +269,37 @@ class HubConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
         })
 
     async def navigate(self, event):
+        step = event.get('step') or {}
+        if await self.is_duel_navigation(step):
+            return  # Signed, per-party HTTP routing handles these slots.
         await self.send_json({'type': 'navigate', 'step': event.get('step')})
+
+    @database_sync_to_async
+    def is_duel_navigation(self, step):
+        from duel.encounters import active_encounter
+        from duel.tournaments import active_tournament
+        session = HubSession.objects.filter(code=self.session_code).first()
+        return step.get('game_format') in {'duel', 'tournament'} or bool(session and (active_encounter(session) or active_tournament(session)))
+
+    async def text_matching_updated(self, event):
+        await self.send_json({'type': 'text_matching_updated', 'threshold': event['threshold'], 'locked': event['locked']})
 
     async def hub_event(self, event):
         ev = event.get('event', {})
         etype = ev.get('type')
-        print("Hub Consumer:", etype, "event", ev)
-
+        if etype == 'quiz_started' and await self.is_duel_navigation(ev):
+            return
         # Generate a per-connection event key so duplicate suppression does not
         # block delivery to other clients in the same hub session.
         event_key = f"{self.channel_name}:{etype}:{ev.get('game_key')}:{ev.get('room_code')}"
 
         # Check if this event was already processed recently
         if cache.get(event_key):
-            print(f"Duplicate event ignored: {event_key}")
             return  # ignore duplicate
 
         # Mark this event as processed for 5 seconds (adjust as needed)
         cache.set(event_key, True, timeout=5)
 
-        print("Hub Consumer: event_key", event_key)
-        print("Hub Consumer: etype", etype)
-        print("Hub Consumer: ev", ev)
         # If a game ended, ensure we add/record it as a step for Game Flow when launched via navigate_direct
         if etype in ('quiz_started', 'game_ended') and ev.get('game_key') and ev.get('room_code'):
             await self.ensure_step_for_room(ev.get('game_key'), ev.get('room_code'), ev.get('title', ''))
@@ -313,7 +322,9 @@ class HubConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
                     'title': ev.get('title', ''),
                     'intro': {'intro_active': False},
                 }
-            await self.channel_layer.group_send(self.group_name, {'type': 'navigate', 'step': step})
+            # This event already reaches every hub connection. Rebroadcasting
+            # here would produce one group navigation for each participant.
+            await self.send_json({'type': 'navigate', 'step': step})
 
         # If a game signals it ended, auto-advance or end session
         # if etype in ('quiz_ended', 'game_ended'):
@@ -400,12 +411,17 @@ class HubConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
             return
 
         for model in self.get_game_model_map().values():
-            model.objects.filter(
+            games = model.objects.filter(
                 status='active',
                 room_code__in=HubGameStep.objects.filter(
                     session__code__in=inactive_session_codes
                 ).exclude(room_code='').values_list('room_code', flat=True),
-            ).update(status='inactive')
+            )
+            if any(field.name == 'active_hub_session_code' for field in model._meta.fields):
+                games = games.filter(active_hub_session_code__in=inactive_session_codes)
+            for game in games:
+                from .active_game_guard import _set_game_status
+                _set_game_status(game, 'inactive')
 
     @database_sync_to_async
     def advance_step_db(self):
@@ -670,18 +686,25 @@ class HubConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
             session = HubSession.objects.get(code=self.session_code)
         except HubSession.DoesNotExist:
             return
-
-        session_room_codes = list(
-            session.steps.exclude(room_code='').values_list('room_code', flat=True)
-        )
-        if not session_room_codes:
+        if session.ended_at:
             return
 
-        for model in self.get_game_model_map().values():
-            model.objects.filter(
-                room_code__in=session_room_codes,
-                status__in=['active', 'inactive'],
-            ).update(status='completed', ended_at=timezone.now())
+        from .active_game_guard import _end_game_cleanly
+        from .session_results import freeze_step_result
+        models = self.get_game_model_map()
+        for step in session.steps.exclude(room_code=''):
+            model = models.get(step.game_key)
+            game = model.objects.filter(room_code=step.room_code).first() if model else None
+            if not game:
+                continue
+            owner_code = getattr(game, 'active_hub_session_code', '')
+            if owner_code and owner_code != session.code:
+                continue
+            if game.status in {'active', 'inactive'}:
+                _end_game_cleanly(game)
+                game.refresh_from_db()
+            if game.status == 'completed':
+                freeze_step_result(step, game)
 
     @database_sync_to_async
     def start_check_in_db(self):
@@ -729,6 +752,7 @@ class HubConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
             check_in_state = get_check_in_state(session)
             voting_state = get_voting_state(session)
             readiness_state = get_readiness_state(session)
+            from .text_matching import settings_locked
             return {
                 'session': {'code': session.code, 'name': session.name, 'started_at': session.started_at is not None},
                 'participants': participants,
@@ -737,6 +761,7 @@ class HubConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
                 'next_game_number': next_game_number,
                 'next_game_complete': next_game_number is None,
                 'scoreboard_visible': session.scoreboard_visible,
+                'text_matching': {'threshold': session.text_match_threshold, 'locked': settings_locked(session)},
                 **voting_state,
                 **check_in_state,
                 **readiness_state,
@@ -815,12 +840,13 @@ class HubConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
         }
         try:
             session = HubSession.objects.get(code=self.session_code)
-            for step in session.steps.filter(room_code__isnull=False).exclude(room_code='').order_by('order'):
+            for step in session.steps.filter(room_code__isnull=False, game_format='standard').exclude(room_code='').order_by('order'):
                 model = model_map.get(step.game_key)
                 if not model:
                     continue
                 game = model.objects.filter(room_code=step.room_code).first()
-                if is_game_routable_for_hub_auto_redirect(game):
+                from .session_results import step_status
+                if step_status(step, game) == 'active' and is_game_routable_for_hub_auto_redirect(game):
                     return step.game_key, step.room_code
             return None, None
         except HubSession.DoesNotExist:

@@ -105,6 +105,18 @@ class WhoThatConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
 
     async def handle_admin_start_quiz(self, data):
         """Handle admin starting the quiz"""
+        quiz = await self.get_quiz()
+        if quiz and quiz.status == 'active' and quiz.started_at:
+            await self.send(text_data=json.dumps({'type': 'quiz_started', 'message': 'Quiz is already active.'}))
+            return
+        if quiz and quiz.status == 'inactive' and quiz.started_at:
+            activation = await database_sync_to_async(resolve_session_game_activation_for_room)(
+                'who_that', self.room_code, check_only=True)
+            if not activation.get('success'):
+                await self.send(text_data=json.dumps({'type': 'active_game_conflict', **activation}))
+                return
+            await database_sync_to_async(quiz.start_quiz)(session_code=data.get('hub_session') or None)
+            return
         lobby_ready = await database_sync_to_async(ensure_session_players_ready_for_game_start_for_room)(
             'who_that',
             self.room_code,
@@ -204,10 +216,12 @@ class WhoThatConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
         quiz = await self.get_quiz()
 
         if not quiz:
+            await self.send(text_data=json.dumps({'type': 'error', 'message': 'Spiel nicht gefunden.'}))
             return
 
         question = await self.get_question(question_id)
         if not question:
+            await self.send(text_data=json.dumps({'type': 'error', 'message': 'Frage nicht gefunden.'}))
             return
 
         # If quiz has a predefined set, enforce membership
@@ -310,54 +324,12 @@ class WhoThatConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
 
     async def handle_admin_end_question(self, data):
         """Handle admin ending current question"""
+        from .runtime import end_question
         quiz = await self.get_quiz()
         if quiz:
-            hub_session = (
-                data.get('hub_session')
-                or data.get('hub_session_code')
-                or await self._get_hub_session_code_for_room()
-            )
-            phase_snapshot = await database_sync_to_async(current_snapshot)(
-                'who_that',
-                self.room_code,
-                hub_session,
-            )
-            if (
-                phase_snapshot.get('question_flow_mode')
-                == GameRuntimeState.QUESTION_FLOW_MANUAL_THREE_PHASE
-                and phase_snapshot.get('question_phase')
-                != GameRuntimeState.QUESTION_PHASE_ANSWERING_OPEN
-            ):
-                await self.send(text_data=json.dumps({
-                    'type': 'error',
-                    'message': 'Die Frage kann vor der Freigabe nicht beendet werden.',
-                }))
-                return
-            # Get the correct answer before clearing the question
-            ended_question_id = quiz.current_question_id
-            correct_answer_data = await self.get_current_question_answer(quiz)
-            evaluated_pending_answers = await self.finalize_pending_answers(quiz.id)
-            unit_tutorial = await self.finish_current_unit_tutorial(hub_session)
-
-            await self.clear_current_question(quiz.id)
-            if ended_question_id:
-                await database_sync_to_async(finish_question_flow)(
-                    game_key='who_that',
-                    room_code=self.room_code,
-                    session_code=hub_session,
-                    question_id=ended_question_id,
-                )
-
-            await self.channel_layer.group_send(
-                self.room_group_name,
-                {
-                    'type': 'question_ended',
-                    'message': 'Time\'s up!',
-                    'correct_answer': correct_answer_data,
-                    'evaluated_pending_answers': evaluated_pending_answers,
-                    'is_tutorial_round': bool(unit_tutorial.get('is_tutorial_round')),
-                }
-            )
+            await database_sync_to_async(end_question)(quiz.id,
+                data.get('hub_session') or await self._get_hub_session_code_for_room(),
+                question_id=data.get('question_id'), round_number=data.get('round_number'))
 
     async def handle_admin_end_quiz(self, data):
         """Handle admin ending the quiz"""
@@ -394,18 +366,11 @@ class WhoThatConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
         quiz = await self.get_quiz()
         if quiz and quiz.status == 'active':
             await self.set_quiz_inactive_db(quiz.id)
-            await self.channel_layer.group_send(
-                self.room_group_name,
-                {
-                    'type': 'quiz_inactive',
-                    'message': 'Quiz has been set inactive.'
-                }
-            )
 
     async def handle_participant_submit_answer(self, data):
         """Handle participant submitting their answer"""
         participant_name = data.get('participant_name')
-        hub_session = data.get('hub_session')
+        hub_session = data.get('hub_session') or None
         user_answer = data.get('user_answer')
         time_taken = data.get('time_taken', 0)
         question_id = data.get('question_id')
@@ -416,15 +381,9 @@ class WhoThatConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
         )
 
         if answer:
-            # Send confirmation to participant
             await self.send(text_data=json.dumps({
-                'type': 'answer_submitted',
-                'message': 'Answer submitted successfully',
-                'is_correct': answer['is_correct'],
-                'points_earned': answer['points_earned'],
-                'is_tutorial_round': answer['is_tutorial_round'],
-                'accuracy_percentage': answer['accuracy_percentage'],
-                'match_quality': answer['match_quality']
+                'type': 'answer_submitted', 'question_id': answer['question_id'],
+                'user_answer': answer['user_answer'], 'answer_locked': True,
             }))
 
             # Broadcast to admin dashboard (live answers)
@@ -452,20 +411,29 @@ class WhoThatConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
                     }
                 }
             )
+        else:
+            await self.send(text_data=json.dumps({
+                'type': 'answer_rejected', 'message': 'Antwort wurde nicht gespeichert. Bitte erneut versuchen.',
+                'question_id': question_id,
+            }))
 
     async def handle_participant_update_pending_answer(self, data):
         """Persist the latest typed answer so it can be evaluated at question end."""
-        await self.save_pending_answer(
+        saved = await self.save_pending_answer(
             data.get('participant_name'),
             data.get('hub_session'),
             data.get('user_answer', ''),
             data.get('question_id'),
         )
+        await self.send(text_data=json.dumps({
+            'type': 'pending_answer_saved' if saved else 'pending_answer_rejected',
+            'question_id': data.get('question_id'), 'user_answer': (data.get('user_answer') or '').strip() if isinstance(data.get('user_answer'), str) else '',
+        }))
 
     async def handle_participant_join(self, data):
         """Handle new participant joining"""
         participant_name = data.get('participant_name')
-        hub_session = data.get('hub_session')
+        hub_session = data.get('hub_session') or None
         participant = await self.get_participant_by_name(participant_name, hub_session)
 
         if participant:
@@ -477,6 +445,8 @@ class WhoThatConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
                 {
                     'type': 'participant_joined',
                     'participant': {
+                        'id': participant['id'],
+                        'hub_session_code': hub_session,
                         'name': participant['name'],
                         'total_score': participant['total_score']
                     }
@@ -526,8 +496,16 @@ class WhoThatConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
         )
 
     async def send_current_question_state(self, hub_session, participant_id=None):
+        host = await self.is_host()
+        if host:
+            from .runtime import end_question
+            quiz = await self.get_quiz()
+            if quiz:
+                await database_sync_to_async(end_question)(quiz.id, hub_session, expired_only=True)
         state = await self.get_current_question_state(hub_session)
         if not state:
+            if not host:
+                await self.send_reveal_state(hub_session, participant_id)
             return
         event_type = (
             'question_started'
@@ -550,6 +528,36 @@ class WhoThatConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
                     'message': 'Answer already submitted',
                     **existing_answer,
                 }))
+            else:
+                draft = await self.get_pending_answer(participant_id, state['question']['id'])
+                if draft is not None:
+                    await self.send(text_data=json.dumps({'type': 'pending_answer_restored',
+                        'question_id': state['question']['id'], 'user_answer': draft}))
+
+    async def is_host(self):
+        from games_hub.host_permissions import authorize_game_host
+        decision = await database_sync_to_async(authorize_game_host)(
+            getattr(self, 'scope', {}).get('user'), 'who_that', self.room_code,
+            self._authoritative_session_code() or None)
+        return decision.allowed
+
+    async def send_reveal_state(self, hub_session, participant_id):
+        event = await self.get_reveal_state(hub_session, participant_id)
+        if event:
+            await self.send(text_data=json.dumps(event))
+
+    @database_sync_to_async
+    def get_reveal_state(self, hub_session, participant_id):
+        from .runtime import reveal_state
+        return reveal_state(self.room_code, hub_session, participant_id)
+
+    @database_sync_to_async
+    def get_pending_answer(self, participant_id, question_id):
+        session = WhoThatSession.objects.filter(quiz__room_code=self.room_code).first()
+        entry = (session.pending_answers or {}).get(str(participant_id), {}) if session else {}
+        if str(entry.get('question_id')) == str(question_id):
+            return entry.get('user_answer', '')
+        return None
 
     async def handle_tutorial_completed(self, data):
         participant_name = data.get('participant_name') or data.get('name')
@@ -655,9 +663,18 @@ class WhoThatConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
 
     async def question_ended(self, event):
         """Send question ended message"""
+        event = dict(event)
+        if not await self.is_host():
+            event['evaluated_pending_answers'] = [row for row in event.get('evaluated_pending_answers', [])
+                if row.get('participant_name') == self._authoritative_participant_name()
+                and (row.get('hub_session_code') or '') == self._authoritative_session_code()]
         await self.send(text_data=json.dumps({
             'type': 'question_ended',
             'message': event['message'],
+            'question_id': event.get('question_id'),
+            'round_number': event.get('round_number'),
+            'question_number': event.get('question_number'),
+            'is_tutorial_round': event.get('is_tutorial_round', False),
             'correct_answer': event.get('correct_answer'),
             'evaluated_pending_answers': event.get('evaluated_pending_answers', []),
         }))
@@ -675,9 +692,14 @@ class WhoThatConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
             'type': 'quiz_inactive',
             'message': event.get('message', 'Quiz has been set inactive.')
         }))
+    async def quiz_resumed(self, event):
+        await self.send(text_data=json.dumps({'type': 'quiz_resumed'}))
+
 
     async def participant_answered(self, event):
         """Send participant answer to admin"""
+        if not await self.is_host():
+            return
         await self.send(text_data=json.dumps({
             'type': 'participant_answered',
             'answer': event['answer']
@@ -685,11 +707,22 @@ class WhoThatConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
 
     async def answer_corrected(self, event):
         """Broadcast a manual host correction to all clients."""
+        if not await self.is_host():
+            quiz = await self.get_quiz()
+            if quiz and quiz.current_question_id == event.get('question_id'):
+                from games_hub.quiz_rounds import current_round
+                active_round = await database_sync_to_async(current_round)(quiz)
+                if not event.get('round_number') or active_round == event.get('round_number'):
+                    return
+            if (event.get('participant_name') != self._authoritative_participant_name()
+                    or (event.get('hub_session_code') or '') != self._authoritative_session_code()):
+                return
         await self.send(text_data=json.dumps({
             'type': 'answer_corrected',
             'participant_id': event.get('participant_id'),
             'participant_name': event.get('participant_name'),
             'question_id': event.get('question_id'),
+            'round_number': event.get('round_number'),
             'is_correct': event.get('is_correct', True),
             'points_earned': event.get('points_earned', 0),
             'match_quality': event.get('match_quality', 'Manual override'),
@@ -704,6 +737,17 @@ class WhoThatConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
         }))
 
     # Database operations
+    @staticmethod
+    def round_metadata(quiz, hub_session_code=None):
+        from games_hub.quiz_rounds import progress, current_round, scoreboard
+        from games_hub.unit_tutorial_runtime import is_current_unit_tutorial_question
+        state = progress(quiz, 'who_that', hub_session_code, question_id=quiz.current_question_id)
+        tutorial = is_current_unit_tutorial_question('who_that', quiz.room_code, hub_session_code, quiz.current_question_id)
+        return {'question_number': state['current'], 'total_questions': state['total'], 'points': 0 if tutorial else 1,
+            'paused': quiz.status == 'inactive',
+            'round_number': current_round(quiz), 'scoreboard': scoreboard(quiz, 'who_that', hub_session_code),
+            'is_tutorial_round': is_current_unit_tutorial_question('who_that', quiz.room_code, hub_session_code, quiz.current_question_id)}
+
     @database_sync_to_async
     def get_current_question_state(self, hub_session_code=None):
         """Return phase-safe state without exposing content before visibility."""
@@ -732,7 +776,7 @@ class WhoThatConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
             safe_question = {
                 'id': question.id,
                 'points': 1,
-                'question_number': session.current_question_number if session else 0,
+                **self.round_metadata(quiz, hub_session_code),
                 'time_limit': duration,
             }
             if content_visible:
@@ -804,7 +848,7 @@ class WhoThatConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
                 'question_text': question.question_text,
                 'image_url': question.image.url if question.image else None,
                 'points': 1,
-                'question_number': session.current_question_number if session else 0,
+                **self.round_metadata(quiz, hub_session_code),
                 'time_limit': duration,
                 'time_left': time_left,
                 'question_end_time': question_end_time,
@@ -818,19 +862,23 @@ class WhoThatConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
         except WhoThatQuiz.DoesNotExist:
             return None
 
+    def current_round_number(self):
+        from games_hub.quiz_rounds import current_round
+        return current_round(WhoThatQuiz.objects.get(room_code=self.room_code))
+
     @database_sync_to_async
     def get_current_participant_answer(self, participant_id, question_id):
         answer = WhoThatAnswer.objects.filter(
             quiz__room_code=self.room_code,
             participant_id=participant_id,
             question_id=question_id,
+            round_number=self.current_round_number(),
         ).first()
         if not answer:
             return None
         return {
             'question_id': answer.question_id,
             'user_answer': answer.user_answer,
-            'points_earned': answer.points_earned,
             'time_taken': answer.time_taken,
             'answer_locked': True,
         }
@@ -937,16 +985,7 @@ class WhoThatConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
     def end_quiz_db(self, quiz_id):
         try:
             quiz = WhoThatQuiz.objects.get(id=quiz_id)
-            quiz.status = 'completed'
-            quiz.ended_at = timezone.now()
-            quiz.current_question = None
-            quiz.question_start_time = None
-            quiz.save(update_fields=['status', 'ended_at', 'current_question', 'question_start_time'])
-            if hasattr(quiz, 'session'):
-                quiz.session.is_question_active = False
-                quiz.session.question_end_time = None
-                quiz.session.pending_answers = {}
-                quiz.session.save(update_fields=['is_question_active', 'question_end_time', 'pending_answers', 'updated_at'])
+            quiz.end_quiz()
         except WhoThatQuiz.DoesNotExist:
             pass
 
@@ -954,54 +993,22 @@ class WhoThatConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
     def set_quiz_inactive_db(self, quiz_id):
         try:
             quiz = WhoThatQuiz.objects.get(id=quiz_id)
-            quiz.status = 'inactive'
-            quiz.save(update_fields=['status'])
+            from games_hub.quiz_pause import pause
+            pause(quiz, 'who_that')
         except WhoThatQuiz.DoesNotExist:
             pass
 
     @database_sync_to_async
     def get_current_question_number(self, quiz_id):
-        session = WhoThatSession.objects.filter(quiz_id=quiz_id).first()
-        return session.current_question_number if session else 0
+        from games_hub.quiz_rounds import progress
+        from games_hub.quiz_pause import session_code_for
+        quiz = WhoThatQuiz.objects.get(pk=quiz_id)
+        return progress(quiz, 'who_that', session_code_for(quiz, 'who_that'), question_id=quiz.current_question_id)['current']
 
     @database_sync_to_async
-    @transaction.atomic
-    def present_who_that_question(
-        self,
-        quiz_id,
-        question_id,
-        hub_session_code,
-        action,
-        answer_duration_seconds,
-        at=None,
-    ):
-        quiz = WhoThatQuiz.objects.select_for_update().get(id=quiz_id)
-        question = WhoThatQuestion.objects.get(id=question_id)
-        session, _ = WhoThatSession.objects.select_for_update().get_or_create(quiz=quiz)
-        decision = present_question(
-            game_key='who_that',
-            room_code=self.room_code,
-            session_code=hub_session_code,
-            action=action,
-            answer_duration_seconds=answer_duration_seconds,
-            at=at,
-        )
-        if decision.accepted and not decision.duplicate:
-            session.prepare_question(question)
-            started_at = parse_datetime(
-                decision.snapshot.get('answering_started_at') or ''
-            )
-            deadline = parse_datetime(
-                decision.snapshot.get('answering_deadline_at') or ''
-            )
-            if not started_at or not deadline:
-                raise ValueError('Authoritative answering timestamps are missing.')
-            session.open_answering(
-                question,
-                started_at=started_at,
-                answer_duration_seconds=(deadline - started_at).total_seconds(),
-            )
-        return decision
+    def present_who_that_question(self, quiz_id, question_id, hub_session_code, action, answer_duration_seconds, at=None):
+        from .runtime import present
+        return present(self.room_code, quiz_id, question_id, hub_session_code, action, answer_duration_seconds, at)
 
     @database_sync_to_async
     def clear_current_question(self, quiz_id):
@@ -1032,233 +1039,19 @@ class WhoThatConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
         }
 
     @database_sync_to_async
-    @transaction.atomic
     def save_participant_answer(self, participant_name, hub_session_code, user_answer, time_taken, question_id=None):
-        try:
-            quiz = (
-                WhoThatQuiz.objects.select_for_update()
-                .select_related('current_question')
-                .get(room_code=self.room_code)
-            )
-            participant = WhoThatParticipant.objects.select_for_update().get(
-                quiz=quiz,
-                name=participant_name,
-                hub_session_code=hub_session_code,
-            )
-
-            if quiz.status != 'active':
-                return None
-            if not quiz.current_question:
-                return None
-            if question_id is None or str(quiz.current_question_id) != str(question_id):
-                return None
-            session = WhoThatSession.objects.select_for_update().filter(quiz=quiz).first()
-            received_at = timezone.now()
-            if (
-                not session
-                or not session.is_question_active
-                or not quiz.question_start_time
-                or received_at < quiz.question_start_time
-                or not session.question_end_time
-                or (
-                    received_at >= session.question_end_time
-                )
-            ):
-                return None
-
-            # Check if answer already exists
-            existing_answer = WhoThatAnswer.objects.filter(
-                quiz=quiz,
-                participant=participant,
-                question=quiz.current_question
-            ).first()
-
-            if existing_answer:
-                return None  # Already answered
-
-            server_time_taken = (
-                max(0.0, (received_at - quiz.question_start_time).total_seconds())
-                if quiz.question_start_time
-                else 0.0
-            )
-
-            # Create new answer
-            answer, created = WhoThatAnswer.objects.get_or_create(
-                quiz=quiz,
-                participant=participant,
-                question=quiz.current_question,
-                defaults={
-                    'user_answer': user_answer,
-                    'time_taken': server_time_taken,
-                },
-            )
-            if not created:
-                return None
-            is_tutorial_answer = is_unit_tutorial_question(
-                'who_that',
-                self.room_code,
-                hub_session_code,
-                quiz.current_question_id,
-            )
-            if is_tutorial_answer and answer.points_earned:
-                answer.points_earned = 0
-                answer.save(update_fields=['points_earned', 'updated_at'])
-
-            # Record stats in session
-            if session:
-                session.record_answer(answer.is_correct, server_time_taken)
-                pending_answers = dict(session.pending_answers or {})
-                pending_answers.pop(str(participant.id), None)
-                session.pending_answers = pending_answers
-                session.save(update_fields=['pending_answers', 'updated_at'])
-
-            return {
-                'answer_id': answer.id,
-                'game_id': quiz.id,
-                'question_id': answer.question_id,
-                'participant_id': participant.id,
-                'hub_session_code': participant.hub_session_code,
-                'user_answer': answer.user_answer,
-                'is_correct': answer.is_correct,
-                'can_mark_correct': not is_tutorial_answer and not answer.is_correct,
-                'points_earned': answer.points_earned,
-                'is_tutorial_round': is_tutorial_answer,
-                'accuracy_percentage': answer.get_accuracy_percentage(),
-                'match_quality': answer.get_match_quality(),
-                'time_taken': answer.time_taken,
-                'submitted_at': answer.submitted_at.isoformat(),
-            }
-
-        except (WhoThatQuiz.DoesNotExist, WhoThatParticipant.DoesNotExist):
-            return None
+        from .runtime import save_answer
+        return save_answer(self.room_code, participant_name, hub_session_code, user_answer, time_taken, question_id)
 
     @database_sync_to_async
-    @transaction.atomic
     def save_pending_answer(self, participant_name, hub_session_code, user_answer, question_id=None):
-        try:
-            quiz = WhoThatQuiz.objects.select_for_update().get(room_code=self.room_code)
-            if quiz.status != 'active':
-                return False
-            if not quiz.current_question:
-                return False
-            if question_id is None or str(quiz.current_question_id) != str(question_id):
-                return False
-
-            participant = quiz.participants.select_for_update().get(
-                name=participant_name,
-                hub_session_code=hub_session_code,
-            )
-            session = WhoThatSession.objects.select_for_update().filter(quiz=quiz).first()
-            now = timezone.now()
-            if (
-                not session
-                or not session.is_question_active
-                or not quiz.question_start_time
-                or now < quiz.question_start_time
-                or not session.question_end_time
-                or now >= session.question_end_time
-            ):
-                return False
-            pending_answers = dict(session.pending_answers or {})
-            entry_key = str(participant.id)
-            cleaned_answer = (user_answer or '').strip()
-
-            if cleaned_answer:
-                pending_answers[entry_key] = {
-                    'question_id': quiz.current_question_id,
-                    'user_answer': cleaned_answer,
-                    'updated_at': now.isoformat(),
-                    'participant_name': participant.name,
-                    'hub_session_code': participant.hub_session_code,
-                }
-            else:
-                pending_answers.pop(entry_key, None)
-
-            session.pending_answers = pending_answers
-            session.save(update_fields=['pending_answers', 'updated_at'])
-            return True
-        except (WhoThatQuiz.DoesNotExist, WhoThatParticipant.DoesNotExist):
-            return False
+        from .runtime import save_pending
+        return save_pending(self.room_code, participant_name, hub_session_code, user_answer, question_id)
 
     @database_sync_to_async
     def finalize_pending_answers(self, quiz_id):
-        try:
-            quiz = WhoThatQuiz.objects.select_related('current_question', 'session').get(id=quiz_id)
-        except WhoThatQuiz.DoesNotExist:
-            return []
-
-        question = quiz.current_question
-        session = getattr(quiz, 'session', None)
-        if not question or not session:
-            return []
-
-        pending_answers = dict(session.pending_answers or {})
-        finalized = []
-        changed = False
-
-        for participant_id, pending in list(pending_answers.items()):
-            if str(pending.get('question_id')) != str(question.id):
-                continue
-
-            user_answer = (pending.get('user_answer') or '').strip()
-            if not user_answer:
-                pending_answers.pop(participant_id, None)
-                changed = True
-                continue
-
-            try:
-                participant = quiz.participants.get(id=int(participant_id))
-            except (WhoThatParticipant.DoesNotExist, ValueError, TypeError):
-                pending_answers.pop(participant_id, None)
-                changed = True
-                continue
-
-            existing_answer = WhoThatAnswer.objects.filter(
-                quiz=quiz,
-                participant=participant,
-                question=question,
-            ).first()
-
-            if existing_answer:
-                pending_answers.pop(participant_id, None)
-                changed = True
-                continue
-
-            updated_at = parse_datetime(pending.get('updated_at') or '')
-            if updated_at and timezone.is_naive(updated_at):
-                updated_at = timezone.make_aware(updated_at, timezone.get_current_timezone())
-
-            time_taken = 0
-            if quiz.question_start_time and updated_at:
-                time_taken = max(0, (updated_at - quiz.question_start_time).total_seconds())
-
-            answer = WhoThatAnswer.objects.create(
-                quiz=quiz,
-                participant=participant,
-                question=question,
-                user_answer=user_answer,
-                time_taken=time_taken,
-            )
-
-            session.record_answer(answer.is_correct, time_taken)
-
-            finalized.append({
-                'participant_name': participant.name,
-                'hub_session_code': participant.hub_session_code,
-                'is_correct': answer.is_correct,
-                'points_earned': answer.points_earned,
-                'accuracy_percentage': answer.get_accuracy_percentage(),
-                'match_quality': answer.get_match_quality(),
-            })
-
-            pending_answers.pop(participant_id, None)
-            changed = True
-
-        if changed:
-            session.pending_answers = pending_answers
-            session.save(update_fields=['pending_answers', 'updated_at'])
-
-        return finalized
+        from .runtime import finalize_pending
+        return finalize_pending(self.room_code, quiz_id)
 
     @database_sync_to_async
     def mark_participant_active(self, participant_id):

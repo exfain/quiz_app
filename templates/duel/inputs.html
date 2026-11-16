@@ -1,0 +1,22 @@
+{% load static %}
+<!doctype html><html lang="de" data-participant-theme="vhs"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{{ title }} · Duell</title>
+<link rel="stylesheet" href="{% static 'theme.css' %}"><link rel="stylesheet" href="{% static 'themes/vhs/vhs.css' %}"><link rel="stylesheet" href="{% static 'css/duel.css' %}"><link rel="stylesheet" href="{% static 'css/duel-quiz.css' %}"><link rel="stylesheet" href="{% static 'css/duel-inputs.css' %}"><script src="{% static 'js/authoritative-game-state.js' %}"></script></head>
+<body><main id="duel-match" class="vhs-theme-shell duel-shell" data-code="{{ session.code }}" data-role="{{ role }}" data-game="{{ game_key }}" data-instance="{{ instance_id }}" data-api="{{ match_api_url }}">
+<header class="vhs-theme-header"><h1>{{ title }} · Duell</h1><p id="names"></p></header>{% csrf_token %}
+<p id="error" role="alert"></p><p id="phase" aria-live="polite">Verbinde …</p>
+<section id="waiting" hidden>{% include 'includes/_participant_start_waiting.html' with waiting_game_title=title %}</section>
+<section id="question-card" class="question-card qa-active-answer-card" hidden><h2 id="question"></h2><p id="question-number"></p><p id="hint"></p><p id="timer" role="timer"></p>
+{% if game_key == 'where' %}<img id="question-image" alt="Fragebild" hidden><div id="map" class="duel-map"></div><div class="map-controls"><button id="zoom-in" aria-label="Vergrößern">+</button><button id="zoom-out" aria-label="Verkleinern">−</button><button id="zoom-reset">Standardzoom</button></div>{% endif %}
+{% if role == 'participant' %}<form id="answer-form" hidden>{% if game_key == 'blackjack' %}<label>Deine Schätzung <input id="estimate" type="number" step="1" min="-2147483648" max="2147483647" required inputmode="numeric"></label>{% endif %}<button id="commit" type="submit">Einloggen</button></form><p id="own-status"></p>{% endif %}
+</section>
+{% if role == 'host' %}<section id="host-controls"><label>Frage / Set <select id="question-select"><option value="">Bitte auswählen</option></select></label><button id="prepare">Runde vorbereiten</button><button id="start" hidden>Frage starten</button>
+{% if game_key == 'where' %}<button id="reveal" hidden>Karte auflösen</button>{% else %}<button id="show_answers" hidden>Antworten zeigen</button><button id="show_solution" hidden>Lösung zeigen</button>{% endif %}
+<button id="evaluate" hidden>Werten und Ergebnis zeigen</button><button id="next" hidden>Nächste Frage im Set</button><button id="complete" hidden>Rundenpräsentation abschließen</button></section>{% endif %}
+<section id="answers-card" hidden><h2>Abgegebene Antworten</h2><p id="answers"></p></section>
+<section id="solution-card" hidden><h2>Auflösung</h2><p id="solution"></p><p id="distances"></p><p id="explanation"></p></section>
+<section id="stars-card" hidden><h2>Sterne im Set</h2><p id="stars" aria-live="polite"></p></section>
+<section id="result-card" hidden><h2>Rundenergebnis</h2><p id="result"></p></section><section id="score" aria-label="Matchstand"></section>
+<p><a id="return" href="{% if role == 'host' %}{% url 'games_hub:monitor' session.code %}{% elif role == 'spectator' %}{% url 'games_hub:spectate_session' session.code %}{% else %}{% url 'games_hub:lobby' session.code %}{% endif %}" hidden>Zurück zur Lobby / zum Hub</a></p>
+</main>{% include 'includes/_session_game_start_intro.html' %}
+{% if game_key == 'where' %}<script src="{% static 'vendor/proj4/proj4.js' %}"></script><script src="{% static 'js/where-map.js' %}"></script>{% endif %}
+<script src="{% static 'js/duel-client.js' %}"></script><script src="{% static 'js/duel-inputs.js' %}"></script>{% include 'includes/_duel_tournament_pair.html' %}{% include 'includes/_duel_match_status.html' %}</body></html>

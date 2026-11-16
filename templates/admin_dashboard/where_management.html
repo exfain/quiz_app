@@ -146,7 +146,7 @@
                         <select class="form-select" id="customQuizScoringMode">
                             <option value="zones" selected>Zielzonen</option>
                             <option value="rank">Ranking</option>
-                        </select>
+                        </select><div class="row mt-2"><div class="col"><label for="whereZoneCount">Anzahl der Zonen</label><input class="form-control" id="whereZoneCount" type="number" min="1" max="50" value="5"></div><div class="col"><label for="whereZoneWidth">Zonenbreite in km</label><input class="form-control" id="whereZoneWidth" type="number" min="0.001" step="any" value="50"></div></div><p class="form-text">Im Zonenmodus: innen N Punkte, außen 1 Punkt; außerhalb 0. Im Ranking entscheidet die Entfernung, bei Gleichstand die fr?here Abgabe.</p>
                     </div>
                 </div>
                 <div class="table-responsive">
@@ -391,6 +391,7 @@
 }
 </style>
 
+<script src="{% static 'vendor/proj4/proj4.js' %}"></script><script src="{% static 'js/where-map.js' %}"></script>
 <script>
     function getCookie(name) {
         let cookieValue = null;
@@ -434,6 +435,7 @@
         const submitQuestionBtn = document.getElementById('submitQuestionBtn');
         const confirmDeleteBtn = document.getElementById('confirmDeleteBtn');
 
+        for(const id of ['points','perfectDistance']) document.getElementById(id)?.closest('.col-6')?.setAttribute('hidden','');
         // Map state
         let locationMap = null;
         let selectedMarker = null;
@@ -452,76 +454,27 @@
         const imagePreviewContainer = document.getElementById('imagePreviewContainer');
         const removeImageBtn = document.getElementById('removeImageBtn');
 
-        function loadStaticMap(container) {
-            if (!container || container.dataset.loaded === '1') return;
-            const stage = container.querySelector('.svg-map-stage');
-            const mapUrl = container.dataset.mapUrl;
-            if (!stage || !mapUrl) return;
-            fetch(mapUrl)
-                .then(response => response.text())
-                .then(svg => {
-                    stage.innerHTML = svg;
-                    const svgElement = stage.querySelector('svg');
-                    if (svgElement) {
-                        svgElement.setAttribute('preserveAspectRatio', 'none');
-                        svgElement.setAttribute('aria-hidden', 'true');
-                    }
-                    container.dataset.loaded = '1';
-                })
-                .catch(error => console.warn('Unable to load static map:', error));
+        let picker = null;
+        function normToLatLng(x,y) {return {lat:Math.atan(Math.sinh(Math.PI*(1-2*y)))*180/Math.PI,lon:x*360-180};}
+        function latLngToNorm(lat,lon) {return {x:(lon+180)/360,y:.5-Math.log(Math.tan(Math.PI/4+lat*Math.PI/360))/(2*Math.PI)};}
+        function pickerState(point) {
+            return {question:{map_type:document.getElementById('mapType').value},current_round_id:'editor',phase:'question',can_answer:true,
+                    pending_input:point,answers:[]};
         }
-
-        function eventToNorm(container, event) {
-            const rect = container.getBoundingClientRect();
-            if (!rect.width || !rect.height) return null;
-            const x = (event.clientX - rect.left) / rect.width;
-            const y = (event.clientY - rect.top) / rect.height;
-            if (x < 0 || x > 1 || y < 0 || y > 1) return null;
-            return { x, y };
-        }
-
-        function normToLatLng(xNorm, yNorm) {
-            const lon = Number(xNorm) * 360 - 180;
-            const mercY = Math.PI * (1 - 2 * Number(yNorm));
-            const lat = Math.atan(Math.sinh(mercY)) * 180 / Math.PI;
-            return { lat, lon };
-        }
-
-        function latLngToNorm(lat, lng) {
-            const clampedLat = Math.max(-85.05112878, Math.min(85.05112878, Number(lat)));
-            const longitude = Number(lng);
-            const latRad = clampedLat * Math.PI / 180;
-            return {
-                x: (longitude + 180) / 360,
-                y: (1 - Math.log(Math.tan(latRad) + (1 / Math.cos(latRad))) / Math.PI) / 2,
-            };
-        }
-
-        function setStaticMarker(xNorm, yNorm) {
-            selectedMarker = document.getElementById('locationMarker');
-            if (!selectedMarker) return;
-            selectedMarker.style.left = `${Number(xNorm) * 100}%`;
-            selectedMarker.style.top = `${Number(yNorm) * 100}%`;
-            selectedMarker.classList.remove('d-none');
-        }
-
+        function setStaticMarker(x,y) {if(picker)picker.update(pickerState({x_norm:x,y_norm:y}));}
         function initMap() {
-            locationMap = document.getElementById('locationMap');
-            if (!locationMap || locationMap.dataset.clickBound === '1') {
-                if (locationMap) loadStaticMap(locationMap);
-                return;
-            }
-            loadStaticMap(locationMap);
-            locationMap.addEventListener('click', function(event) {
-                const norm = eventToNorm(locationMap, event);
-                if (!norm) return;
-                const coords = normToLatLng(norm.x, norm.y);
-                document.getElementById('latitude').value = coords.lat.toFixed(6);
-                document.getElementById('longitude').value = coords.lon.toFixed(6);
-                setStaticMarker(norm.x, norm.y);
-            });
-            locationMap.dataset.clickBound = '1';
+            locationMap=document.getElementById('locationMap');
+            if(!picker) picker=new WhereMap(locationMap,{onSelect(point){
+                document.getElementById('latitude').value=point.latitude.toFixed(6);
+                document.getElementById('longitude').value=point.longitude.toFixed(6);
+                picker.update(pickerState(point));
+            }});
+            const lat=Number(document.getElementById('latitude').value),lon=Number(document.getElementById('longitude').value);
+            const point=document.getElementById('latitude').value&&document.getElementById('longitude').value?{latitude:lat,longitude:lon}:null;
+            picker.update(pickerState(point));
         }
+        document.getElementById('mapType').addEventListener('change',initMap);
+        for(const id of ['latitude','longitude'])document.getElementById(id).addEventListener('change',initMap);
 
         // Initialize map when the modal shows
         document.getElementById('editQuestionModal').addEventListener('shown.bs.modal', function() {
@@ -826,6 +779,8 @@
                 if (titleInput) titleInput.value = quizTitle;
                 const scoringInput = document.getElementById('customQuizScoringMode');
                 if (scoringInput) scoringInput.value = data.scoring_mode === 'rank' ? 'rank' : 'zones';
+                document.getElementById('whereZoneCount').value = data.zone_count || 5;
+                document.getElementById('whereZoneWidth').value = data.zone_width_km || 50;
                 const btnPrimary = document.getElementById('createCustomQuizBtn');
                 if (btnPrimary) btnPrimary.innerHTML = '<i data-lucide="check"></i> Update Quiz';
 
@@ -852,6 +807,8 @@
                 if (titleInput) titleInput.value = 'Custom Quiz';
                 const scoringInput = document.getElementById('customQuizScoringMode');
                 if (scoringInput) scoringInput.value = 'zones';
+                document.getElementById('whereZoneCount').value = 5;
+                document.getElementById('whereZoneWidth').value = 50;
             });
         }
 
@@ -906,6 +863,7 @@
         createCustomQuizBtn.addEventListener('click', function() {
             const title = document.getElementById('customQuizTitle').value.trim() || 'Custom Quiz';
             const scoringMode = document.getElementById('customQuizScoringMode')?.value || 'zones';
+            const zoneCount = Number(document.getElementById('whereZoneCount').value), zoneWidth = Number(document.getElementById('whereZoneWidth').value);
             const btn = this;
             btn.classList.add('loading');
             const csrfToken = getCookie('csrftoken');
@@ -913,7 +871,7 @@
                 fetch("{% url 'admin_dashboard:update_where_custom_quiz' %}", {
                     method: 'POST',
                     headers: { 'X-CSRFToken': csrfToken, 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ quiz_id: whereCurrentQuizId, title, question_ids: Array.from(whereSelectedIds), scoring_mode: scoringMode })
+                    body: JSON.stringify({ quiz_id: whereCurrentQuizId, title, question_ids: Array.from(whereSelectedIds), scoring_mode: scoringMode, zone_count: zoneCount, zone_width_km: zoneWidth })
                 })
                 .then(r => r.json())
                 .then(data => {
@@ -927,7 +885,7 @@
                 fetch("{% url 'admin_dashboard:create_where_custom_quiz' %}", {
                     method: 'POST',
                     headers: { 'X-CSRFToken': csrfToken, 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ title, question_ids: selected, scoring_mode: scoringMode })
+                    body: JSON.stringify({ title, question_ids: selected, scoring_mode: scoringMode, zone_count: zoneCount, zone_width_km: zoneWidth })
                 })
                 .then(r => r.json())
                 .then(data => {
@@ -1063,7 +1021,7 @@
                             <div class="row">
                                 <div class="col-6">
                                     <div class="mb-3">
-                                        <label for="points" class="form-label">Max Points</label>
+                                        <label for="points" class="form-label">Alte Punkteskala</label>
                                         <input type="number" class="form-control" id="points" name="points"
                                                value="100" min="10" max="500" required>
                                     </div>
@@ -1107,23 +1065,23 @@
                                         </div>
                                     </div>
                                     <div class="map-container mb-3">
-                                        <div id="locationMap" class="location-map" data-map-url="{% static 'where_is_this/maps/world_web_mercator_blank_landmasses.svg' %}">
+                                        <p class="form-text">Die Punktewertung wird bei der Spielerstellung gewählt.</p><div id="locationMap" class="location-map">
                                             <div class="svg-map-stage"></div>
                                             <div id="locationMarker" class="map-marker d-none"></div>
                                         </div>
                                         <div class="map-instructions">
                                             <i data-lucide="mouse-pointer"></i>
-                                            <span>Click on the world map to select the correct location</span>
+                                            <span>Auf die Karte klicken, um den Zielort festzulegen. Mit dem Mausrad oder zwei Fingern zoomen.</span>
                                         </div>
                                     </div>
                                     <div class="mb-3">
                                         <label for="mapType" class="form-label">Karte</label>
                                         <select class="form-select" id="mapType" name="map_type">
-                                            <option value="world_mercator" selected>Weltkarte</option>
+                                            <option value="world_mercator" selected>Weltkarte</option><option value="germany">Deutschland</option><option value="europe">Europa</option>
                                         </select>
                                     </div>
-                                    <div class="distance-thresholds">
-                                        <h6>Distance Thresholds</h6>
+                                    <div class="distance-thresholds" hidden>
+                                        <h6>Kompatibilität mit älteren Spielen</h6>
                                         <div class="row">
                                             <div class="col-4">
                                                 <label for="goodDistance" class="form-label">Good (75%)</label>
@@ -1152,7 +1110,7 @@
   {"min_distance_km": 100, "max_distance_km": 500, "points": 50, "label": "Okay"},
   {"min_distance_km": 500, "max_distance_km": 2000, "points": 25, "label": "Weit entfernt"}
 ]</textarea>
-                                            <div class="form-text">Untere Grenze inklusiv, obere Grenze exklusiv. LÃ¼cken ergeben 0 Punkte.</div>
+                                            <div class="form-text">Untere Grenze inklusiv, obere Grenze exklusiv. Lücken ergeben 0 Punkte.</div>
                                         </div>
                                     </div>
                                 </div>

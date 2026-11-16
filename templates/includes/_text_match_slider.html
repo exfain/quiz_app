@@ -1,0 +1,9 @@
+<div>
+    <label for="{{ slider_id }}" class="form-label fw-semibold">Automatische Bewertung von Freitextantworten</label>
+    <input id="{{ slider_id }}" name="text_match_threshold" type="range" class="form-range"
+           min="65" max="100" step="1" value="{{ threshold }}" {% if locked %}disabled{% endif %}
+           aria-describedby="{{ slider_id }}Help"
+           oninput="this.nextElementSibling.value = this.value + ' %'">
+    <output for="{{ slider_id }}">{{ threshold }} %</output>
+    <p id="{{ slider_id }}Help" class="text-muted small mb-0">Mindestübereinstimmung: 65–100 %. Bei 100 % zählt nur exakter Text. Zahlenantworten bleiben unverändert; Zahlen innerhalb eines Textes müssen exakt stimmen.</p>
+</div>

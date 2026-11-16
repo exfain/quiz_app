@@ -9,6 +9,8 @@ from django.utils import timezone
 from games_hub.models import HubGameParticipantSnapshot, HubGameStep, HubParticipant, HubSession
 from games_hub.views import get_leaderboard_data
 
+from games_hub.test_manual_repairs import with_transport_context
+
 from .consumers import BuzzerConsumer
 from .models import BuzzerGame, BuzzerParticipant, BuzzerRound
 
@@ -60,7 +62,7 @@ class BuzzerStartFlowTests(TransactionTestCase):
             sent_messages.append(json.loads(text_data))
 
         consumer.send = fake_send
-        return consumer, sent_messages
+        return with_transport_context(consumer, self.game, self.session.code), sent_messages
 
     def test_monitor_and_player_hydration_before_start_remain_waiting(self):
         client = Client()
@@ -161,6 +163,8 @@ class BuzzerStartFlowTests(TransactionTestCase):
         self.assertTrue(bob_state['can_buzz'])
         self.assertEqual(alice.total_score, 0)
 
+        consumer._authoritative_participant = ''
+        consumer._manual_player_token = ''
         async_to_sync(consumer.handle_participant_buzz)({
             'hub_session': self.session.code,
             'participant_name': 'Bob',
@@ -309,7 +313,7 @@ class BuzzerEndFlowTests(TransactionTestCase):
             sent_messages.append(json.loads(text_data))
 
         consumer.send = fake_send
-        return consumer, sent_messages
+        return with_transport_context(consumer, self.game, self.session.code), sent_messages
 
     def test_host_and_player_views_have_working_lobby_routes(self):
         admin_client = Client()
@@ -350,7 +354,8 @@ class BuzzerEndFlowTests(TransactionTestCase):
         self.assertEqual(response.status_code, 200)
         self.assertFalse(self.alice.is_active)
         self.assertContains(lobby_response, 'returnedToLobby')
-        self.assertContains(lobby_response, 'if (returnedToLobby)')
+        from .test_lobby_return_browser import assert_lobby_join_navigation
+        assert_lobby_join_navigation(self, lobby_response)
 
     def test_end_game_does_not_reactivate_returned_participant_and_only_finalizes_once(self):
         self.alice.is_active = False
@@ -575,14 +580,14 @@ class BuzzerGameTests(TestCase):
         self.assertEqual(alice_state['round_results'], [{
             'number': 1,
             'status': 'answered',
-            'points_earned': 1,
-            'max_points': 1,
+            'points_earned': 2,
+            'max_points': 2,
         }])
         self.assertEqual(bob_state['round_results'], [{
             'number': 1,
             'status': 'answered',
             'points_earned': 0,
-            'max_points': 1,
+            'max_points': 2,
         }])
 
     def test_buzzer_player_template_has_vhs_identity_and_scorebox_hooks(self):
@@ -604,7 +609,7 @@ class BuzzerGameTests(TestCase):
             html=True,
         )
         self.assertContains(response, 'setBuzzedState(button, Boolean(participant.has_answer_right));')
-        self.assertContains(response, 'if (button.disabled || button.classList.contains(\'is-buzzed\')) return;')
+        self.assertContains(response, "if (socket?.readyState !== WebSocket.OPEN || button.disabled || button.classList.contains('is-buzzed')) return;")
         self.assertNotContains(
             response,
             'window.setTimeout(() => button.classList.remove(\'is-buzzed\'), 260)',

@@ -1,4 +1,5 @@
 from __future__ import annotations
+from functools import wraps
 
 from django.db import transaction
 from django.utils import timezone
@@ -11,11 +12,21 @@ from .models import (
     ClueRushGame,
     ClueRushSession,
 )
+from .progress import current_round, record_round
+from games_hub.authoritative_state import finish_question_flow, get_runtime_state, reset_question_flow, _retry_sqlite_locked
+from games_hub.models import GameRuntimeState
 from games_hub.models import HubGameStep
 from games_hub.unit_tutorial_runtime import (
     finish_current_unit_tutorial,
     is_unit_tutorial_question,
 )
+
+
+def retry_locked(operation):
+    @wraps(operation)
+    def run(*args, **kwargs):
+        return _retry_sqlite_locked(lambda: operation(*args, **kwargs))
+    return run
 
 
 def _timestamp(value):
@@ -76,6 +87,7 @@ def _build_schedule(question, *, starts_at, duration_override=None):
     return raw_schedule, cursor, total_duration
 
 
+@retry_locked
 @transaction.atomic
 def prepare_question_schedule(*, quiz_id, question_id, duration_override=None):
     quiz = ClueRushGame.objects.select_for_update().get(pk=quiz_id)
@@ -125,6 +137,7 @@ def prepare_question_schedule(*, quiz_id, question_id, duration_override=None):
         'clue_start_time',
         'updated_at',
     ])
+    record_round(session, question)
     session.current_question_number += 1
     session.total_questions_sent += 1
     session.is_question_active = False
@@ -147,6 +160,7 @@ def prepare_question_schedule(*, quiz_id, question_id, duration_override=None):
     }
 
 
+@retry_locked
 @transaction.atomic
 def start_prepared_question_schedule(*, quiz_id, question_id, starts_at):
     quiz = ClueRushGame.objects.select_for_update().get(pk=quiz_id)
@@ -207,6 +221,7 @@ def start_prepared_question_schedule(*, quiz_id, question_id, starts_at):
     }
 
 
+@retry_locked
 @transaction.atomic
 def start_question_schedule(*, quiz_id, question_id, duration_override=None):
     quiz = ClueRushGame.objects.select_for_update().get(pk=quiz_id)
@@ -243,6 +258,7 @@ def start_question_schedule(*, quiz_id, question_id, duration_override=None):
         'clue_start_time',
         'updated_at',
     ])
+    record_round(session, question)
     session.current_question_number += 1
     session.total_questions_sent += 1
     session.is_question_active = True
@@ -266,6 +282,7 @@ def start_question_schedule(*, quiz_id, question_id, duration_override=None):
     }
 
 
+@retry_locked
 @transaction.atomic
 def _reconcile_clue_schedule_state(room_code, *, at=None):
     now = at or timezone.now()
@@ -319,6 +336,19 @@ def _reconcile_clue_schedule_state(room_code, *, at=None):
             'updated_at',
         ])
 
+    # Every caller, including HTTP and spectator reads, publishes transitions.
+    # The row lock ensures that only the caller advancing the cursor publishes.
+    for entry in new_entries:
+        broadcast('clue_started', {
+            'clue': {**entry, 'server_now': now.isoformat()},
+            'phase': 'question_active', 'current_question_id': quiz.current_question_id,
+            'current_round_id': entry['order'], 'starts_at': entry['starts_at'],
+            'ends_at': session.answer_deadline.isoformat() if session.answer_deadline else None,
+        }, room_code)
+
+    if new_entries and not new_entries[-1].get('has_next_clue'):
+        broadcast('clue_sequence_completed', {'message': 'All clues have been sent.'}, room_code)
+
     return {
         'new_clues': [
             {
@@ -369,11 +399,13 @@ def _resolve_hub_session_code(room_code):
     return step.session.code if step else None
 
 
+@retry_locked
 @transaction.atomic
 def finalize_clue_question(
     room_code,
     *,
     expected_question_id=None,
+    expected_round_number=None,
     hub_session_code=None,
     at=None,
     force=False,
@@ -394,6 +426,8 @@ def finalize_clue_question(
             'code': 'invalid_phase',
         }
 
+    if expected_round_number is not None and str(current_round(quiz)) != str(expected_round_number):
+        return {'newly_finalized': False, 'question_id': quiz.current_question_id, 'code': 'stale_action'}
     if (
         expected_question_id is not None
         and str(quiz.current_question_id or session.finalized_question_id or '')
@@ -438,15 +472,14 @@ def finalize_clue_question(
         resolved_session_code,
         question.id,
     )
-    participants = quiz.participants.filter(is_active=True)
-    if resolved_session_code is not None:
-        participants = participants.filter(hub_session_code=resolved_session_code)
+    participants = quiz.participants.filter(is_active=True, hub_session_code=resolved_session_code or None)
     participants = list(participants.select_for_update().order_by('name'))
     existing_answers = {
         answer.participant_id: answer
         for answer in ClueAnswer.objects.filter(
             quiz=quiz,
             question=question,
+            round_number=current_round(quiz),
             participant__in=participants,
         )
     }
@@ -458,8 +491,7 @@ def finalize_clue_question(
             participant__in=participants,
         )
     }
-    total_clues = question.clues.count()
-    current_clue_number = min(session.current_clue_number, total_clues)
+    current_clue_number, total_clues = submission_position(quiz, at=now)
     if current_clue_number <= 0 and total_clues:
         current_clue_number = 1
     answer_ids = []
@@ -471,18 +503,12 @@ def finalize_clue_question(
                 quiz=quiz,
                 participant=participant,
                 question=question,
-                answer_text=((pending.answer_text if pending else '') or '')[:200],
+                round_number=current_round(quiz),
+                is_tutorial=tutorial_round,
+                answer_text=((pending.answer_text if pending else '') or ''),
                 time_taken=pending.time_taken if pending else None,
-                submitted_clue_number=(
-                    pending.submitted_clue_number
-                    if pending and pending.submitted_clue_number
-                    else current_clue_number
-                ),
-                total_clues_at_submission=(
-                    pending.total_clues_at_input
-                    if pending and pending.total_clues_at_input
-                    else total_clues
-                ),
+                submitted_clue_number=current_clue_number,
+                total_clues_at_submission=total_clues,
             )
         if tutorial_round and answer.points_earned:
             answer.points_earned = 0
@@ -532,6 +558,8 @@ def finalize_clue_question(
         room_code,
         resolved_session_code,
     )
+    finish_question_flow(game_key='clue_rush', room_code=room_code,
+                         session_code=resolved_session_code, question_id=question.id)
     return {
         'newly_finalized': True,
         'question_id': question.id,
@@ -541,16 +569,99 @@ def finalize_clue_question(
     }
 
 
-def reconcile_clue_schedule(room_code, *, at=None):
+def reconcile_clue_schedule(room_code, *, at=None, finalize=False):
     now = at or timezone.now()
     result = _reconcile_clue_schedule_state(room_code, at=now)
-    if result.get('deadline_reached') and result.get('question_id'):
+    if finalize and result.get('deadline_reached') and result.get('question_id'):
         result['finalization'] = finalize_clue_question(
             room_code,
             expected_question_id=result['question_id'],
             at=now,
         )
     return result
+
+
+def submission_position(quiz, *, at=None):
+    session = quiz.session
+    schedule = list(session.clue_schedule or [])
+    if schedule:
+        now = at or (session.paused_at if quiz.status == 'inactive' else None) or timezone.now()
+        return min(len(schedule), sum(bool(_timestamp(entry.get('starts_at')) and _timestamp(entry['starts_at']) <= now) for entry in schedule)), len(schedule)
+    question = quiz.current_question
+    total = question.clues.count() if question else 0
+    return min(total, max(1, session.current_clue_number)), total
+
+
+def broadcast(event_type, payload, room_code):
+    from asgiref.sync import async_to_sync
+    from channels.layers import get_channel_layer
+    layer = get_channel_layer()
+    if layer:
+        transaction.on_commit(lambda: async_to_sync(layer.group_send)(
+            f'cluerush_{room_code}', {'type': event_type, **payload}))
+
+
+@retry_locked
+@transaction.atomic
+def set_paused(quiz_id, paused, *, at=None):
+    quiz = ClueRushGame.objects.select_for_update().get(pk=quiz_id)
+    session, _ = ClueRushSession.objects.select_for_update().get_or_create(quiz=quiz)
+    if quiz.status != ('active' if paused else 'inactive'):
+        return False
+    now = at or timezone.now()
+    runtime = get_runtime_state('clue_rush', quiz.room_code, _resolve_hub_session_code(quiz.room_code))
+    runtime = GameRuntimeState.objects.select_for_update().get(pk=runtime.pk)
+    snapshot = dict(runtime.public_snapshot or {})
+    if paused:
+        session.paused_at = now
+        snapshot['_paused_at'] = now.isoformat()
+    else:
+        delta = max(now - (session.paused_at or now), timezone.timedelta(0))
+        for obj, names in ((quiz, ('question_start_time', 'clue_start_time')),
+                           (session, ('question_end_time', 'clue_end_time', 'answer_deadline')),
+                           (runtime, ('question_presented_at', 'content_revealed_at', 'starts_at', 'ends_at'))):
+            for name in names:
+                if getattr(obj, name):
+                    setattr(obj, name, getattr(obj, name) + delta)
+        schedule = [dict(entry) for entry in session.clue_schedule or []]
+        for entry in schedule:
+            for name in ('starts_at', 'end_time', 'sequence_end_time'):
+                value = _timestamp(entry.get(name))
+                if value:
+                    entry[name] = (value + delta).isoformat()
+        session.clue_schedule = schedule
+        session.paused_at = None
+        snapshot.pop('_paused_at', None)
+    runtime.public_snapshot = snapshot
+    runtime.state_revision += 1
+    runtime.context_revision = runtime.state_revision
+    runtime.save()
+    session.save()
+    quiz.status = 'inactive' if paused else 'active'
+    quiz.save()
+    return True
+
+
+@retry_locked
+@transaction.atomic
+def end_game(quiz_id):
+    quiz = ClueRushGame.objects.select_for_update().get(pk=quiz_id)
+    session, _ = ClueRushSession.objects.select_for_update().get_or_create(quiz=quiz)
+    quiz.status = 'completed'
+    quiz.ended_at = timezone.now()
+    quiz.current_question = quiz.current_clue = None
+    quiz.question_start_time = quiz.clue_start_time = None
+    quiz.save()
+    session.is_question_active = session.is_clue_active = False
+    session.question_end_time = session.clue_end_time = session.answer_deadline = session.paused_at = None
+    session.clue_schedule = []
+    session.current_clue_number = 0
+    session.save()
+    CluePendingInput.objects.filter(quiz=quiz).delete()
+    code = _resolve_hub_session_code(quiz.room_code)
+    reset_question_flow(game_key='clue_rush', room_code=quiz.room_code, session_code=code,
+                        mode=GameRuntimeState.QUESTION_FLOW_MANUAL_THREE_PHASE)
+    return quiz
 
 
 def current_clue_runtime(room_code):

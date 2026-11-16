@@ -27,7 +27,7 @@
 <body class="wann-war-das-play-page"
       data-authoritative-paint-gate
       data-vhs-progress-kind="question"
-      data-vhs-progress-source="#questionNumber">
+      data-vhs-progress-source="#questionProgress">
 <main class="game-shell" data-participant-name="{{ participant.name }}">
     {% include 'includes/_unit_tutorial_notice.html' with tutorial_notice_label='Tutorialfrage' %}
     <div class="game-card">
@@ -38,7 +38,7 @@
                     <h1 class="h3 mb-1 qa-game-title-font">{{ game.title }}</h1>
                     {% include 'includes/_session_game_number.html' with game_key='wann_war_das' room_code=game.room_code %}
                 </div>
-                <div class="wann-war-das-round-meta text-secondary">Runde <span id="questionNumber">{{ game.current_question_number|default:0 }}</span></div>
+                <div id="questionProgress" class="wann-war-das-round-meta text-secondary">Runde <span id="questionNumber">{{ game.current_question_number|default:0 }}</span> / <span id="totalQuestionCount">0</span></div>
             </div>
             <div class="wann-war-das-score-metric metric text-end">
                 <div class="wann-war-das-score-total">
@@ -121,6 +121,8 @@
             </div>
         </div>
 
+        <button type="button" id="continueRevealBtn" class="btn btn-primary w-100 mt-3 d-none">Zum Gesamtergebnis</button>
+
         <div class="d-none" id="returnToLobbyActions" hidden>
             <button type="button" class="btn btn-outline-light btn-sm" id="returnToLobbyBtn" disabled aria-hidden="true">Zur Lobby zurückkehren</button>
         </div>
@@ -139,6 +141,9 @@ let socket = null;
 let currentState = null;
 let toleranceBoundaryTimer = null;
 let currentQuestionId = null;
+let pendingInputTimer = null;
+let draftDirty = false;
+function revealAckKey(state) { return ["wann-reveal", ROOM_CODE, HUB_SESSION, PARTICIPANT_NAME, state.current_round_id, state.question?.id].join(":"); }
 const lobbyReturnController = createHubLobbyReturnController({
     sessionCode: '{{ hub_session|default_if_none:""|escapejs }}',
     gameKey: 'wann_war_das',
@@ -335,7 +340,11 @@ function renderState(state) {
     currentState = state;
     const gameEnded = state.event_type === 'game_ended' || state.game?.status === 'completed';
     setReturnToLobbyAvailable(gameEnded);
-    if (gameEnded) {
+    let acknowledged = false;
+    try { acknowledged = localStorage.getItem(revealAckKey(state)) === '1'; } catch (_) {}
+    const showFinalReveal = gameEnded && state.question && state.question_state === 'revealed' && !acknowledged;
+    document.getElementById('continueRevealBtn').classList.toggle('d-none', !showFinalReveal);
+    if (gameEnded && !showFinalReveal) {
         window.location.href = `/wann-war-das/result/${ROOM_CODE}/${encodeURIComponent(PARTICIPANT_NAME)}/?hub_session=${encodeURIComponent(HUB_SESSION)}`;
         return;
     }
@@ -350,9 +359,11 @@ function renderState(state) {
     const ownAnswer = state.own_answer;
     const isActive = question && state.question_state === 'active';
     const isReveal = question && state.question_state === 'revealed';
-    const nextQuestionId = String(state.current_question_id || preparedQuestion?.id || '');
+    const nextQuestionId = String(state.current_question_id || preparedQuestion?.id || '') + ':' + String(state.current_round_id ?? '');
     if (nextQuestionId !== currentQuestionId) {
         currentQuestionId = nextQuestionId;
+        draftDirty = false;
+        clearTimeout(pendingInputTimer);
         document.getElementById('answerInput').value = '';
         document.getElementById('submittedAlert').classList.add('d-none');
         document.getElementById('revealArea').classList.add('d-none');
@@ -360,6 +371,7 @@ function renderState(state) {
     document.getElementById('ownScore').textContent = own.score ?? 0;
     renderRoundScores(state);
     document.getElementById('questionNumber').textContent = state.question_number || 0;
+    document.getElementById('totalQuestionCount').textContent = state.progress?.total ?? 0;
     document.getElementById('questionArea').classList.toggle('d-none', !question);
     document.getElementById('waitingArea').classList.toggle('d-none', !!question);
     window.AuthoritativeGameState?.markInitialPaintReady?.();
@@ -395,6 +407,7 @@ function renderState(state) {
     submitButton.setAttribute('aria-pressed', ownAnswer ? 'true' : 'false');
     document.getElementById('submittedAlert').classList.toggle('d-none', !ownAnswer || isReveal);
     if (ownAnswer) document.getElementById('answerInput').value = ownAnswer.raw_answer || '';
+    else if (!draftDirty && state.pending_answer !== null) document.getElementById('answerInput').value = state.pending_answer || '';
     document.getElementById('revealArea').classList.toggle('d-none', !isReveal);
     if (isReveal) {
         document.getElementById('correctAnswerText').textContent = fmt(question.correct_answer);
@@ -419,7 +432,23 @@ function connect() {
     socket.onclose = () => setTimeout(connect, 2000);
 }
 
+document.getElementById('answerInput').addEventListener('input', () => {
+    draftDirty = true;
+    clearTimeout(pendingInputTimer);
+    const question = currentState?.question?.id;
+    const round = currentState?.current_round_id;
+    pendingInputTimer = setTimeout(() => {
+        if (currentState?.can_answer && currentState.question?.id === question && currentState.current_round_id === round) {
+            send({type: 'participant_input_changed', answer: document.getElementById('answerInput').value});
+        }
+    }, 120);
+});
+document.getElementById('continueRevealBtn').addEventListener('click', () => {
+    try { localStorage.setItem(revealAckKey(currentState), '1'); } catch (_) {}
+    window.location.href = `/wann-war-das/result/${ROOM_CODE}/${encodeURIComponent(PARTICIPANT_NAME)}/?hub_session=${encodeURIComponent(HUB_SESSION)}`;
+});
 document.getElementById('submitBtn').addEventListener('click', () => {
+    clearTimeout(pendingInputTimer);
     send({ type: 'participant_submit_answer', answer: document.getElementById('answerInput').value });
 });
 setReturnToLobbyAvailable(false);

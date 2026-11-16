@@ -5,6 +5,7 @@
 {% block page_subtitle %}All created game instances{% endblock %}
 
 {% block content %}
+<p class="m-3"><a class="btn btn-outline-primary" href="{% url 'admin_dashboard:bid_management' %}">Gebotsspiel: Spiele und Aufgaben verwalten</a></p>
 <div class="container-fluid py-4">
 
     <div class="d-flex justify-content-between align-items-center mb-4">
@@ -130,6 +131,9 @@
                 </select>
                 <input type="text" class="form-control form-control-sm" id="qbSearch"
                        placeholder="Search…" style="width:180px;" disabled>
+                <button type="button" class="btn btn-sm btn-outline-danger text-nowrap" id="qbDeleteSelectedBtn" disabled>
+                    Löschen (<span id="qbSelectedCount">0</span>)
+                </button>
             </div>
         </div>
         <div class="card-body p-0">
@@ -161,14 +165,14 @@ const QB_CONFIG = {
     who:            { url: '/admin-dashboard/who/questions/',            dataKey: 'questions', columns: [{key:'statement',label:'Statement'},{key:'people_count',label:'People'},{key:'points',label:'Points'}] },
     who_that:       { url: '/admin-dashboard/who-that/questions/',       dataKey: 'questions', columns: [{key:'question_text',label:'Question'},{key:'correct_answer',label:'Answer'}] },
     blackjack:      { url: '/admin-dashboard/black-jack/questions/',     dataKey: 'questions', columns: [{key:'question_text',label:'Question'},{key:'correct_answer',label:'Answer'},{key:'time_limit',label:'Time (s)'}] },
-    clue_rush:      { url: '/admin-dashboard/clue-rush/questions/',      dataKey: 'questions', columns: [{key:'question_text',label:'Question'},{key:'answer',label:'Answer'},{key:'points',label:'Points'}] },
+    clue_rush:      { url: '/admin-dashboard/clue-rush/questions/',      dataKey: 'questions', columns: [{key:'question_text',label:'Question'},{key:'answer',label:'Answer'},{key:'clue_count',label:'Hinweise / Max. Punkte'}] },
     sorting_ladder: { url: '/admin-dashboard/sorting-ladder/topics/',    dataKey: 'topics',    columns: [{key:'title',label:'Topic'},{key:'description',label:'Description'},{key:'item_count',label:'Items'}] },
     wer_weiss_mehr: { url: '/admin-dashboard/wer-weiss-mehr/questions/', dataKey: 'questions', columns: [{key:'question_text',label:'Question'},{key:'answer_count',label:'Answers'},{key:'round_time_limit',label:'Time (s)'}] },
 };
 
 // Detail + update URL config per game type
 const QB_EDIT_CFG = {
-    quiz:           { detail: id => `/admin-dashboard/quiz/question/${id}/`,          update: '/admin-dashboard/quiz/update-question/',         json: true },
+    quiz:           { detail: id => `/admin-dashboard/quiz/question/${id}/`,          update: '/admin-dashboard/quiz/update-question/',         json: false },
     estimation:     { detail: id => `/admin-dashboard/estimation/question/${id}/`,    update: '/admin-dashboard/estimation/update-question/',   json: true },
     assign:         { detail: id => `/admin-dashboard/assign/question/${id}/`,        update: '/admin-dashboard/assign/update-question/',       json: true },
     where:          { detail: id => `/admin-dashboard/where/question/${id}/`,         update: '/admin-dashboard/where/question/update/',        json: false },
@@ -183,8 +187,110 @@ const QB_EDIT_CFG = {
 let qbCurrentEditId = null;
 
 let qbType = null, qbPage = 1, qbTimer = null;
+let qbLoadRevision = 0, qbPendingDelete = null, qbDeleteBusy = false;
+const qbSelectedIds = new Set();
+const QB_DELETE_CFG = {
+    quiz:           { url: '{% url "admin_dashboard:delete_quiz_question" %}', key: 'question_id' },
+    estimation:     { url: '{% url "admin_dashboard:delete_estimation_question" %}', key: 'question_id' },
+    assign:         { url: '{% url "admin_dashboard:delete_assign_question" %}', key: 'question_id' },
+    where:          { url: '{% url "admin_dashboard:delete_where_question" %}', key: 'question_id' },
+    who:            { url: '{% url "admin_dashboard:delete_who_question" %}', key: 'question_id' },
+    who_that:       { url: '{% url "admin_dashboard:delete_who_that_question" %}', key: 'question_id' },
+    blackjack:      { url: '{% url "admin_dashboard:delete_blackjack_question" %}', key: 'question_id' },
+    clue_rush:      { url: '{% url "admin_dashboard:delete_clue_rush_question" %}', key: 'question_id' },
+    sorting_ladder: { url: '{% url "admin_dashboard:delete_sorting_topic" %}', key: 'topic_id' },
+    wer_weiss_mehr: { url: '{% url "admin_dashboard:delete_wer_weiss_mehr_question" %}', key: 'question_id' },
+};
+
+function updateQBSelection() {
+    document.getElementById('qbSelectedCount').textContent = qbSelectedIds.size;
+    document.getElementById('qbDeleteSelectedBtn').disabled = !qbSelectedIds.size || qbDeleteBusy;
+    const checkboxes = Array.from(document.querySelectorAll('#qbBody .qb-select-cb'));
+    const selectAll = document.getElementById('qbSelectAll');
+    if (selectAll) {
+        selectAll.checked = checkboxes.length > 0 && checkboxes.every(cb => cb.checked);
+        selectAll.indeterminate = qbSelectedIds.size > 0 && !selectAll.checked;
+        selectAll.disabled = !checkboxes.length;
+    }
+}
+
+function resetQBSelection() {
+    qbSelectedIds.clear();
+    document.querySelectorAll('#qbBody .qb-select-cb').forEach(cb => { cb.checked = false; });
+    updateQBSelection();
+}
+
+function openQBDelete(ids) {
+    if (qbDeleteBusy || !ids.length || !QB_DELETE_CFG[qbType]) return;
+    // Freeze type and IDs so reloads or a later type selection cannot retarget a deletion.
+    qbPendingDelete = { type: qbType, ids: [...ids] };
+    document.getElementById('qbDeleteCount').textContent = ids.length;
+    document.getElementById('qbDeleteError').hidden = true;
+    bootstrap.Modal.getOrCreateInstance(document.getElementById('qbDeleteModal'), {
+        backdrop: 'static', keyboard: false,
+    }).show();
+}
+
+async function confirmQBDelete() {
+    if (qbDeleteBusy || !qbPendingDelete) return;
+    qbDeleteBusy = true;
+    const modal = document.getElementById('qbDeleteModal');
+    const controls = modal.querySelectorAll('button');
+    controls.forEach(button => button.disabled = true);
+    updateQBSelection();
+    document.getElementById('qbDeleteError').hidden = true;
+    const pending = qbPendingDelete;
+    const cfg = QB_DELETE_CFG[pending.type];
+    try {
+        const results = await Promise.all(pending.ids.map(async id => {
+            try {
+                const response = await fetch(cfg.url, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'X-CSRFToken': getCookie('csrftoken') },
+                    body: JSON.stringify({ [cfg.key]: id }),
+                });
+                if (response.redirected || response.status === 401) {
+                    throw new Error('Bitte erneut anmelden und die Löschung wiederholen.');
+                }
+                if (!(response.headers.get('content-type') || '').includes('application/json')) {
+                    if (response.status === 403) throw new Error('Keine Berechtigung zum Löschen. Bitte Anmeldung und Berechtigung prüfen.');
+                    if (response.status === 404) throw new Error('Die Frage wurde nicht gefunden.');
+                    throw new Error(`Unerwartete Serverantwort beim Löschen (HTTP ${response.status}). Bitte erneut versuchen.`);
+                }
+                let data;
+                try {
+                    data = await response.json();
+                } catch (_) {
+                    throw new Error('Ungültige Serverantwort beim Löschen. Bitte erneut versuchen.');
+                }
+                if (!response.ok || !data.success) throw new Error(data.error || 'Löschen fehlgeschlagen.');
+                return { id, success: true };
+            } catch (error) {
+                return { id, success: false, error: error.message };
+            }
+        }));
+        const failed = results.filter(result => !result.success);
+        if (failed.length) {
+            // A retry must never resend questions that were already deleted.
+            qbPendingDelete = { type: pending.type, ids: failed.map(result => result.id) };
+            document.getElementById('qbDeleteCount').textContent = failed.length;
+            const error = document.getElementById('qbDeleteError');
+            error.textContent = `${failed.length} Frage(n) konnten nicht gelöscht werden: ${failed[0].error}`;
+            error.hidden = false;
+        } else {
+            bootstrap.Modal.getInstance(modal).hide();
+            qbPendingDelete = null;
+        }
+        loadQB(qbPage);
+    } finally {
+        qbDeleteBusy = false;
+        controls.forEach(button => button.disabled = false);
+        updateQBSelection();
+    }
+}
 
 document.getElementById('qbTypeSelect').addEventListener('change', function () {
+    clearTimeout(qbTimer);
     qbType = this.value;
     qbPage = 1;
     document.getElementById('qbSearch').value = '';
@@ -194,18 +300,33 @@ document.getElementById('qbTypeSelect').addEventListener('change', function () {
 
 document.getElementById('qbSearch').addEventListener('input', function () {
     clearTimeout(qbTimer);
+    // Invalidate any pending response and selection as soon as the filter changes.
+    qbLoadRevision++;
+    resetQBSelection();
     qbTimer = setTimeout(() => loadQB(1), 350);
 });
 
 function loadQB(page) {
     if (!qbType) return;
+    const requestType = qbType;
+    const revision = ++qbLoadRevision;
+    resetQBSelection();
     qbPage = page;
-    const cfg = QB_CONFIG[qbType];
+    const cfg = QB_CONFIG[requestType];
     const search = document.getElementById('qbSearch').value.trim();
 
     // Render header
     document.getElementById('qbHead').innerHTML =
-        cfg.columns.map(c => `<th>${c.label}</th>`).join('');
+        '<th style="width:36px;"><input type="checkbox" id="qbSelectAll" aria-label="Alle Fragen auf dieser Seite auswählen" disabled></th>' +
+        cfg.columns.map(c => `<th>${c.label}</th>`).join('') + '<th>Aktionen</th>';
+    document.getElementById('qbSelectAll').addEventListener('change', function () {
+        document.querySelectorAll('#qbBody .qb-select-cb').forEach(cb => {
+            cb.checked = this.checked;
+            if (cb.checked) qbSelectedIds.add(Number(cb.dataset.questionId));
+            else qbSelectedIds.delete(Number(cb.dataset.questionId));
+        });
+        updateQBSelection();
+    });
 
     document.getElementById('qbBody').innerHTML =
         '<tr><td colspan="6" class="text-center py-4"><div class="spinner-border spinner-border-sm text-secondary"></div> Loading…</td></tr>';
@@ -213,14 +334,16 @@ function loadQB(page) {
     fetch(`${cfg.url}?page=${page}&search=${encodeURIComponent(search)}`)
     .then(r => r.json())
     .then(data => {
+        if (revision !== qbLoadRevision || requestType !== qbType) return;
         const items = data[cfg.dataKey] || [];
-        if (qbType === 'estimation') {
+        if (requestType === 'estimation') {
             items.forEach(item => {
                 item.points_display = item.use_manual_points ? item.max_points : (item.zone_count ?? item.max_points);
             });
         }
         const total = data.count || 0;
         const pages = data.pages || 1;
+        qbPage = data.current_page || page;
 
         document.getElementById('qbCountBadge').textContent = total;
         document.getElementById('qbInfo').textContent = `${total} items`;
@@ -233,18 +356,34 @@ function loadQB(page) {
             return;
         }
 
-        document.getElementById('qbBody').innerHTML = items.map(item =>
-            `<tr style="cursor:${item.id ? 'pointer' : 'default'}" data-item-id="${item.id || ''}">` +
-            cfg.columns.map(c =>
-                `<td>${item[c.key] !== undefined && item[c.key] !== null ? item[c.key] : '—'}</td>`
-            ).join('') + '</tr>'
-        ).join('');
-
-        document.querySelectorAll('#qbBody tr[data-item-id]').forEach(tr => {
-            const id = tr.dataset.itemId;
-            if (!id) return;
-            tr.addEventListener('click', () => openQBEdit(id));
+        const body = document.getElementById('qbBody');
+        body.replaceChildren();
+        items.forEach(item => {
+            const tr = document.createElement('tr');
+            tr.dataset.itemId = item.id;
+            tr.style.cursor = 'pointer';
+            tr.innerHTML = `<td><input type="checkbox" class="qb-select-cb" data-question-id="${Number(item.id)}" aria-label="Frage auswählen"></td>`;
+            cfg.columns.forEach(column => {
+                const cell = document.createElement('td');
+                cell.textContent = item[column.key] ?? '—';
+                tr.appendChild(cell);
+            });
+            const actions = document.createElement('td');
+            actions.innerHTML = '<button type="button" class="btn btn-sm btn-outline-danger qb-delete-btn" aria-label="Frage löschen"><i data-lucide="trash-2" style="width:14px;height:14px;"></i></button>';
+            tr.appendChild(actions);
+            tr.addEventListener('click', event => {
+                if (!event.target.closest('button, input')) openQBEdit(item.id);
+            });
+            tr.querySelector('.qb-select-cb').addEventListener('change', function () {
+                if (this.checked) qbSelectedIds.add(Number(item.id));
+                else qbSelectedIds.delete(Number(item.id));
+                updateQBSelection();
+            });
+            tr.querySelector('.qb-delete-btn').addEventListener('click', () => openQBDelete([Number(item.id)]));
+            body.appendChild(tr);
         });
+        updateQBSelection();
+        lucide.createIcons();
 
         const pag = document.getElementById('qbPagination');
         pag.innerHTML = '';
@@ -259,6 +398,7 @@ function loadQB(page) {
         );
     })
     .catch(() => {
+        if (revision !== qbLoadRevision || requestType !== qbType) return;
         document.getElementById('qbBody').innerHTML =
             '<tr><td colspan="6" class="text-center py-4 text-danger">Failed to load</td></tr>';
     });
@@ -371,6 +511,9 @@ function openQBEdit(id) {
 }
 
 document.addEventListener('DOMContentLoaded', function() {
+    document.getElementById('qbDeleteSelectedBtn').addEventListener('click', () => openQBDelete([...qbSelectedIds]));
+    document.getElementById('qbConfirmDeleteBtn').addEventListener('click', confirmQBDelete);
+    document.getElementById('qbDeleteModal').addEventListener('hidden.bs.modal', () => { qbPendingDelete = null; });
     ['qbe-answer', 'qbe-tolerance', 'qbe-zone-count', 'qbe-points', 'qbe-manual-points'].forEach(id => {
         const el = document.getElementById(id);
         if (!el) return;
@@ -572,7 +715,6 @@ const qbPopulate = {
         document.getElementById('qbcr-id').value = q.id;
         document.getElementById('qbcr-text').value = q.question_text || '';
         document.getElementById('qbcr-answer').value = q.answer || '';
-        document.getElementById('qbcr-points').value = q.points || '';
         const container = document.getElementById('qbcr-clues');
         container.innerHTML = '';
         (q.clues || []).forEach(c => qbAddClueRow(container, c.clue_text, c.order, c.duration));
@@ -706,7 +848,6 @@ const qbCollect = {
             question_id: document.getElementById('qbcr-id').value,
             question_text: document.getElementById('qbcr-text').value.trim(),
             answer: document.getElementById('qbcr-answer').value.trim(),
-            points: parseInt(document.getElementById('qbcr-points').value) || 0,
             clues,
         };
     },
@@ -780,46 +921,9 @@ function qbAddClueRow(container, text = '', order = '', duration = 10) {
 }
 </script>
 
-<!-- Delete Selected Games Modal -->
-<div class="modal fade" id="deleteSelectedGamesModal" tabindex="-1" aria-hidden="true">
-    <div class="modal-dialog">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h5 class="modal-title">Ausgewählte Spiele löschen</h5>
-                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
-            </div>
-            <div class="modal-body">
-                <p>Sollen wirklich <strong id="deleteSelectedModalCount"></strong> ausgewählte Spiel(e) gelöscht werden?</p>
-                <p class="text-muted small">Die Fragen in der Question Bank bleiben erhalten. Diese Aktion kann nicht rückgängig gemacht werden.</p>
-            </div>
-            <div class="modal-footer">
-                <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Abbrechen</button>
-                <button type="button" class="btn btn-danger" id="confirmDeleteSelectedBtn">Löschen</button>
-            </div>
-        </div>
-    </div>
-</div>
+{% endblock %}
 
-<!-- Delete Game Modal -->
-<div class="modal fade" id="deleteGameModal" tabindex="-1" aria-hidden="true">
-    <div class="modal-dialog">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h5 class="modal-title">Spiel löschen</h5>
-                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
-            </div>
-            <div class="modal-body">
-                <p>Soll <strong id="deleteGameTitle"></strong> wirklich gelöscht werden?</p>
-                <p class="text-muted small">Die Fragen in der Question Bank bleiben erhalten.</p>
-            </div>
-            <div class="modal-footer">
-                <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Abbrechen</button>
-                <button type="button" class="btn btn-danger" id="confirmDeleteGameBtn">Löschen</button>
-            </div>
-        </div>
-    </div>
-</div>
-
+{% block modals %}
 <!-- QB Edit Modal -->
 <div class="modal fade" id="qbEditModal" tabindex="-1" aria-hidden="true">
     <div class="modal-dialog modal-lg">
@@ -985,7 +1089,6 @@ function qbAddClueRow(container, text = '', order = '', duration = 10) {
                         <textarea class="form-control" id="qbcr-text" rows="2"></textarea></div>
                     <div class="row g-3 mb-3">
                         <div class="col-md-6"><label class="form-label">Correct Answer *</label><input type="text" class="form-control" id="qbcr-answer"></div>
-                        <div class="col-md-6"><label class="form-label">Points</label><input type="number" class="form-control" id="qbcr-points"></div>
                     </div>
                     <label class="form-label">Clues <small class="text-muted">(text · duration s)</small></label>
                     <div id="qbcr-clues"></div>
@@ -1033,4 +1136,62 @@ function qbAddClueRow(container, text = '', order = '', duration = 10) {
     </div>
 </div>
 
+<!-- Delete Selected Games Modal -->
+<div class="modal fade" id="deleteSelectedGamesModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Ausgewählte Spiele löschen</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <p>Sollen wirklich <strong id="deleteSelectedModalCount"></strong> ausgewählte Spiel(e) gelöscht werden?</p>
+                <p class="text-muted small">Die Fragen in der Question Bank bleiben erhalten. Diese Aktion kann nicht rückgängig gemacht werden.</p>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Abbrechen</button>
+                <button type="button" class="btn btn-danger" id="confirmDeleteSelectedBtn">Löschen</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Delete Game Modal -->
+<div class="modal fade" id="deleteGameModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Spiel löschen</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <p>Soll <strong id="deleteGameTitle"></strong> wirklich gelöscht werden?</p>
+                <p class="text-muted small">Die Fragen in der Question Bank bleiben erhalten.</p>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Abbrechen</button>
+                <button type="button" class="btn btn-danger" id="confirmDeleteGameBtn">Löschen</button>
+            </div>
+        </div>
+    </div>
+</div>
+<div class="modal fade" id="qbDeleteModal" tabindex="-1" aria-labelledby="qbDeleteModalTitle" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="qbDeleteModalTitle">Fragen löschen</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Schließen"></button>
+            </div>
+            <div class="modal-body">
+                <p>Sollen wirklich <strong id="qbDeleteCount"></strong> Frage(n) aus der Question Bank gelöscht werden?</p>
+                <p class="text-muted small">Diese Aktion kann nicht rückgängig gemacht werden. Bereits verwendete Fragen werden gegebenenfalls nur deaktiviert.</p>
+                <div class="alert alert-danger" id="qbDeleteError" role="alert" hidden></div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Abbrechen</button>
+                <button type="button" class="btn btn-danger" id="qbConfirmDeleteBtn">Löschen</button>
+            </div>
+        </div>
+    </div>
+</div>
 {% endblock %}

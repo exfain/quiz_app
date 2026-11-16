@@ -42,6 +42,7 @@ class BlackJackQuiz(SyncBase):
     # Optional predefined set of questions for this quiz session
     selected_questions = models.ManyToManyField('BlackJackQuestion', blank=True, related_name='quizzes')
     tutorial_set_number = models.PositiveIntegerField(null=True, blank=True)
+    active_hub_session_code = models.CharField(max_length=16, blank=True, default='')
     
     class Meta:
         ordering = ['-created_at']
@@ -58,16 +59,16 @@ class BlackJackQuiz(SyncBase):
                 return code
     
     def get_participant_count(self, session_code=None):
-        if session_code:
-            return self.participants.filter(hub_session_code=session_code).count()
-        return self.participants.count()
+        from .runtime import participants
+        return participants(self, session_code).count()
 
     def get_current_run_answers(self):
+        from .runtime import pool_code, pool_filter
         if self.status == 'waiting':
             return self.blackjack_answers.none()
-        answers = self.blackjack_answers.all()
+        answers = self.blackjack_answers.filter(pool_filter(pool_code(self), 'participant__'))
         if self.started_at:
-            answers = answers.filter(submitted_at__gte=self.started_at)
+            answers = answers.filter(models.Q(set_round_number__gt=0) | models.Q(submitted_at__gte=self.started_at))
         return answers
 
     def get_hub_session_for_runtime(self, hub_session_code=None):
@@ -152,67 +153,27 @@ class BlackJackQuiz(SyncBase):
             session.reset_for_new_run()
 
     def ensure_runtime_scoped_to_hub_session(self, hub_session_code=None):
-        if self.is_runtime_stale_for_hub_session(hub_session_code):
-            self.reset_runtime_state_for_new_hub_session()
-            return True
+        # Reading a page in another hub must never reset a running game.
         return False
 
     def get_active_participants(self, session_code=None):
-        if session_code:
-            return self.participants.filter(is_active=True, hub_session_code=session_code)
-        return self.participants.filter(is_active=True)
+        from .runtime import participants
+        return participants(self, session_code, active_only=True)
 
-    def start_quiz(self):
-        try:
-            session = self.session
-        except BlackJackSession.DoesNotExist:
-            session = None
-
-        has_active_question_state = bool(
-            self.current_question_id
-            or self.question_start_time is not None
-            or (session and session.is_question_active)
-        )
-        should_reset_runtime_state = (
-            self.status in {'waiting', 'completed', 'cancelled'}
-            or (
-                self.status in {'active', 'inactive'}
-                and not has_active_question_state
-                and self.current_question_number == 0
-            )
-        )
-
-        if should_reset_runtime_state:
-            self.blackjack_answers.all().delete()
-            self.participants.update(
-                total_points=0,
-                overall_points=0,
-                questions_answered=0,
-                is_busted=False,
-                final_score=0,
-            )
-            self.current_question = None
-            self.current_question_number = 0
-            self.question_start_time = None
-            self.ended_at = None
-            self.save(update_fields=[
-                'current_question',
-                'current_question_number',
-                'question_start_time',
-                'ended_at',
-            ])
-            try:
-                self.session.reset_for_new_run()
-            except BlackJackSession.DoesNotExist:
-                pass
-        self.status = 'active'
-        self.started_at = timezone.now()
-        self.save()
+    def start_quiz(self, session_code=None):
+        from .runtime import start_game
+        result = start_game(self, session_code)
+        self.refresh_from_db()
+        return result
     
     def end_quiz(self, status='completed'):
-        self.status = status
-        self.ended_at = timezone.now()
-        self.save()
+        from .runtime import end_game
+        result = end_game(self)
+        self.refresh_from_db()
+        if status != 'completed':
+            self.status = status
+            self.save(update_fields=['status'])
+        return result
     
     def get_questions_per_set(self):
         return max(1, int(self.total_questions or 1))
@@ -353,8 +314,7 @@ class BlackJackQuiz(SyncBase):
         filtered_sets = []
         for question_set in explicit_sets:
             active_question_set = [question_id for question_id in question_set if question_id in allowed_ids]
-            if active_question_set:
-                filtered_sets.append(active_question_set)
+            filtered_sets.append(active_question_set)
         return filtered_sets
 
     def get_configured_question_ids(self, active_only=True):
@@ -433,6 +393,10 @@ class BlackJackQuiz(SyncBase):
                 remaining_questions -= len(question_set)
             return len(explicit_sets)
         return ((question_number - 1) // self.get_questions_per_set()) + 1
+
+    def get_current_set_id(self):
+        session = getattr(self, 'session', None)
+        return session.current_set_round_number if session and session.current_set_round_number else self.get_current_set_number()
 
     def get_current_set_number(self):
         if self.current_question_id:
@@ -542,7 +506,7 @@ class BlackJackQuiz(SyncBase):
         if self.current_question_id or (session and session.is_question_active):
             return 'A question is already active for this quiz.'
 
-        if self.current_question_number >= self.get_total_game_questions():
+        if not self.has_configured_question_pool() and self.current_question_number >= self.get_total_game_questions():
             return 'All questions in this quiz have already been asked.'
 
         if self.has_configured_question_pool() and session:
@@ -587,6 +551,15 @@ class BlackJackQuiz(SyncBase):
 
     def is_quiz_complete(self):
         """Check if all configured questions have been asked."""
+        from .runtime import configured_sets, pool_code
+        session = getattr(self, 'session', None)
+        if session and session.set_rounds:
+            code = pool_code(self)
+            entries = [r for r in session.set_rounds if (r.get('hub_session_code') or '') == code and not r['is_tutorial']]
+            regular = [i for i, ids in enumerate(configured_sets(self), 1) if ids and i != self.tutorial_set_number
+                and BlackJackQuestion.objects.filter(pk__in=ids, is_active=True).exists()]
+            completed = {r['configured_number'] for r in entries if r['status'] == 'completed'}
+            return bool(regular) and all(i in completed for i in regular) and not any(r['status'] == 'open' for r in entries)
         try:
             session = self.session
         except Exception:
@@ -612,12 +585,15 @@ class BlackJackQuiz(SyncBase):
         return True
 
     def get_ordered_participants(self, active_only=False, session_code=None):
+        from .runtime import pool_code, pool_filter
+        if session_code is None:
+            session_code = pool_code(self)
         qs = self.participants.all()
         if session_code is not None:
-            qs = qs.filter(hub_session_code=session_code)
+            qs = qs.filter(pool_filter(session_code))
         if active_only:
             qs = qs.filter(is_active=True)
-        if self.is_quiz_complete():
+        if self.status == 'completed' or self.is_quiz_complete():
             return list(qs.order_by('-overall_points', 'name'))
         if self.uses_ranking_mode():
             return list(qs.filter(is_busted=False).order_by('final_score', 'name')) + list(
@@ -626,28 +602,10 @@ class BlackJackQuiz(SyncBase):
         return list(qs.order_by('-total_points', 'name'))
 
     def get_set_ranking_points(self, participants=None):
-        ranked_participants = list(participants if participants is not None else self.participants.all())
-        if not ranked_participants:
-            return {}
-
-        ranked_participants.sort(
-            key=lambda participant: (participant.is_busted, participant.final_score, participant.name)
-        )
-
-        max_points = len(ranked_participants)
-        ranking_points = {}
-        previous_rank_key = None
-        current_rank = 0
-
-        for position, participant in enumerate(ranked_participants, start=1):
-            rank_key = (participant.is_busted, participant.final_score)
-            if previous_rank_key is None or rank_key != previous_rank_key:
-                current_rank = position
-                previous_rank_key = rank_key
-            current_points = max(max_points - (current_rank - 1), 0)
-            ranking_points[participant.id] = current_points
-
-        return ranking_points
+        from .runtime import participants as scoped, award
+        roster = list(participants if participants is not None else scoped(self))
+        entry = {'states': {str(p.pk): {'raw_stars': p.total_points, 'adjustment': 0, 'busted': p.is_busted} for p in roster}}
+        return {int(key): value for key, value in award(self, entry).items()}
     
     def __str__(self):
         return f"{self.title} ({self.room_code})"
@@ -719,6 +677,10 @@ class BlackJackParticipant(SyncBase):
     
     def calculate_score(self):
         """Recalculate the current set stars and determine if the player busted in this set."""
+        from .runtime import calculate_participant
+        value = calculate_participant(self)
+        if value is not None:
+            return value
         from games_hub.unit_tutorial_runtime import get_scorebox_excluded_tutorial_question_ids
 
         tutorial_question_ids = get_scorebox_excluded_tutorial_question_ids(
@@ -775,9 +737,10 @@ class BlackJackParticipant(SyncBase):
     
     def get_rank(self):
         """Get participant's rank in the quiz."""
-        if self.quiz.is_quiz_complete():
+        if self.quiz.status == 'completed' or self.quiz.is_quiz_complete():
             better_scores = BlackJackParticipant.objects.filter(
                 quiz=self.quiz,
+                hub_session_code=self.hub_session_code,
                 overall_points__gt=self.overall_points,
             ).values('overall_points').distinct().count()
             return better_scores + 1
@@ -785,6 +748,7 @@ class BlackJackParticipant(SyncBase):
         if not self.quiz.uses_ranking_mode():
             better_scores = BlackJackParticipant.objects.filter(
                 quiz=self.quiz,
+                hub_session_code=self.hub_session_code,
                 total_points__gt=self.total_points,
             ).values('total_points').distinct().count()
             return better_scores + 1
@@ -793,12 +757,14 @@ class BlackJackParticipant(SyncBase):
             # Rank among busted players by who got closest to 21 before busting
             busted_ranks = BlackJackParticipant.objects.filter(
                 quiz=self.quiz,
+                hub_session_code=self.hub_session_code,
                 is_busted=True,
                 final_score__lt=self.final_score
             ).count()
             # Add all non-busted players + busted players with lower points
             non_busted_count = BlackJackParticipant.objects.filter(
                 quiz=self.quiz,
+                hub_session_code=self.hub_session_code,
                 is_busted=False
             ).count()
             return non_busted_count + busted_ranks + 1
@@ -806,6 +772,7 @@ class BlackJackParticipant(SyncBase):
             # Rank among non-busted players by final_score (closer to 21 is better)
             better_scores = BlackJackParticipant.objects.filter(
                 quiz=self.quiz,
+                hub_session_code=self.hub_session_code,
                 is_busted=False,
                 final_score__lt=self.final_score
             ).count()
@@ -832,6 +799,7 @@ class BlackJackParticipant(SyncBase):
 
 
 class BlackJackAnswer(SyncBase):
+    set_round_number = models.PositiveIntegerField(default=0)
     quiz = models.ForeignKey(BlackJackQuiz, on_delete=models.CASCADE, related_name='blackjack_answers')
     participant = models.ForeignKey(BlackJackParticipant, on_delete=models.CASCADE, related_name='blackjack_answers')
     question = models.ForeignKey(BlackJackQuestion, on_delete=models.CASCADE, related_name='blackjack_answers')
@@ -843,13 +811,22 @@ class BlackJackAnswer(SyncBase):
     question_number = models.IntegerField(default=1)  # Which question number this was in the set
     
     class Meta:
-        unique_together = ['quiz', 'participant', 'question']
+        unique_together = ['quiz', 'participant', 'question', 'set_round_number']
         ordering = ['-submitted_at']
     
     def save(self, *args, **kwargs):
         # Auto-calculate points on creation
         if not self.pk:
-            self.points_earned = self.question.calculate_points(self.user_answer)
+            from .runtime import current_run, strict_integer
+            self.user_answer = strict_integer(self.user_answer)
+            session = getattr(self.quiz, 'session', None)
+            entry = current_run(session) if session else None
+            if entry and self.question_id in entry['question_ids']:
+                self.set_round_number = 0 if entry.get('legacy') else entry['number']
+                snapshot = next(q for q in entry['questions'] if q['id'] == self.question_id)
+                self.points_earned = 0 if entry['is_tutorial'] else abs(self.user_answer - snapshot['correct_answer'])
+            else:
+                self.points_earned = self.question.calculate_points(self.user_answer)
             # Set question number based on current quiz state
             self.question_number = self.quiz.current_question_number
         super().save(*args, **kwargs)
@@ -859,7 +836,7 @@ class BlackJackAnswer(SyncBase):
     
     def get_difference(self):
         """Get the difference from the correct answer"""
-        return abs(self.user_answer - self.question.correct_answer)
+        return self.points_earned
     
     def get_difference_direction(self):
         """Get if the answer was high, low, or exact"""
@@ -883,6 +860,11 @@ class BlackJackSession(SyncBase):
     selected_set_number = models.IntegerField(default=1)
     asked_question_ids = models.JSONField(default=list, blank=True)
     finalized_set_numbers = models.JSONField(default=list, blank=True)
+    set_rounds = models.JSONField(default=list, blank=True)
+    current_set_round_number = models.PositiveIntegerField(default=0)
+    pending_inputs = models.JSONField(default=dict, blank=True)
+    last_reveal = models.JSONField(default=dict, blank=True)
+    paused_at = models.DateTimeField(null=True, blank=True)
     is_question_active = models.BooleanField(default=False)
     question_end_time = models.DateTimeField(null=True, blank=True)
     
@@ -1013,6 +995,8 @@ class BlackJackSession(SyncBase):
         return normalized_set_number
 
     def get_normalized_selected_set_number(self, active_only=True):
+        if self.set_rounds:
+            return int(self.selected_set_number or 1)
         if self.is_waiting_fresh_start_state() and self.has_saved_progress_state():
             return 1
         if self.quiz.current_question_id:
@@ -1034,6 +1018,11 @@ class BlackJackSession(SyncBase):
         self.selected_set_number = self.normalize_set_number(set_number, active_only=True)
 
     def get_sent_question_ids_for_set(self, set_number=None, active_only=True):
+        from .runtime import pool_code
+        number = int(set_number or self.selected_set_number or 1)
+        entry = next((r for r in reversed(self.set_rounds) if r['configured_number'] == number and (r.get('hub_session_code') or '') == pool_code(self.quiz)), None)
+        if entry:
+            return list(entry['asked_ids'])
         normalized_set_number = self.normalize_set_number(set_number, active_only=active_only)
         set_question_ids = self.quiz.get_set_question_ids(normalized_set_number, active_only=active_only)
         set_question_id_lookup = set(set_question_ids)
@@ -1062,12 +1051,26 @@ class BlackJackSession(SyncBase):
         return self.quiz.get_question_number_in_set(question_id=normalized_question_id)
 
     def get_remaining_question_ids_for_set(self, set_number=None, active_only=True):
+        from .runtime import pool_code
+        number = int(set_number or self.selected_set_number or 1)
+        entry = next((r for r in reversed(self.set_rounds) if r['configured_number'] == number and (r.get('hub_session_code') or '') == pool_code(self.quiz)), None)
+        if entry:
+            ids = entry['question_ids']
+            if entry['status'] != 'open':
+                ids = self.quiz.get_set_question_ids(number, active_only=active_only)
+                return [] if entry['is_tutorial'] else ids
+            return [pk for pk in ids if pk not in entry['asked_ids']]
         normalized_set_number = self.normalize_set_number(set_number, active_only=active_only)
         set_question_ids = self.quiz.get_set_question_ids(normalized_set_number, active_only=active_only)
         asked_ids = set(self.get_asked_question_ids())
         return [question_id for question_id in set_question_ids if question_id not in asked_ids]
 
     def is_set_complete(self, set_number=None, active_only=True):
+        from .runtime import pool_code
+        number = int(set_number or self.selected_set_number or 1)
+        entry = next((r for r in reversed(self.set_rounds) if r['configured_number'] == number and (r.get('hub_session_code') or '') == pool_code(self.quiz)), None)
+        if entry:
+            return len(entry['asked_ids']) >= entry.get('expected_count', len(entry['question_ids']))
         normalized_set_number = self.normalize_set_number(set_number, active_only=active_only)
         set_question_ids = self.quiz.get_set_question_ids(normalized_set_number, active_only=active_only)
         if not set_question_ids:
@@ -1113,24 +1116,13 @@ class BlackJackSession(SyncBase):
         return effective_time_limit
 
     def prepare_question(self, question, *, track_progress=True):
-        """Prepare a question without opening the participant answer window."""
-        if track_progress:
-            set_number = self.quiz.get_set_number_for_question_id(question.id, active_only=False)
-            self.set_selected_set_number(set_number)
-            self.mark_question_sent(question.id)
-        self.quiz.current_question = question
-        self.quiz.question_start_time = None
-        if track_progress:
-            self.current_question_number += 1
-            self.quiz.current_question_number = self.current_question_number
-            self.total_questions_sent += 1
-        self.is_question_active = False
-        self.question_end_time = None
-        self.total_responses_current_question = 0
-        self.average_points_current_question = 0
-
-        self.quiz.save()
-        self.save()
+        from .runtime import prepare_question
+        quiz = self.quiz
+        result = prepare_question(quiz, question, tutorial=not track_progress)
+        self.refresh_from_db()
+        quiz.refresh_from_db()
+        self.quiz = quiz
+        return result
 
     def open_answering(self, question, *, started_at, answer_duration_seconds):
         """Open the prepared question using authoritative phase timestamps."""
@@ -1159,20 +1151,27 @@ class BlackJackSession(SyncBase):
         )
     
     def finalize_completed_set(self):
+        from .runtime import participants as scoped_participants, current_run
+        entry = current_run(self)
+        if entry:
+            if entry['status'] != 'open' or len(entry['asked_ids']) < entry.get('expected_count', len(entry['question_ids'])):
+                return {'set_complete': False, 'set_number': entry['number'], 'participants': []}
+            event = self.end_current_question()
+            return {'set_complete': event['set_complete'], 'set_number': event['set_number'], 'participants': event['set_results']}
         current_set_number = self.quiz.get_current_set_number()
         if not self.quiz.is_set_complete(set_number=current_set_number):
             return {'set_complete': False, 'set_number': current_set_number, 'participants': []}
         if self.is_set_finalized(current_set_number):
             return {'set_complete': False, 'set_number': current_set_number, 'participants': []}
 
-        participants = list(self.quiz.participants.all())
+        participants = list(scoped_participants(self.quiz))
         ranking_points = self.quiz.get_set_ranking_points(participants) if self.quiz.uses_ranking_mode() else {}
         quiz_complete = self.quiz.is_quiz_complete()
         participant_updates = []
 
         for participant in participants:
             set_stars = participant.total_points
-            awarded_points = ranking_points.get(participant.id, 0) if self.quiz.uses_ranking_mode() else set_stars
+            awarded_points = 0 if participant.is_busted else ranking_points.get(participant.id, 0) if self.quiz.uses_ranking_mode() else set_stars
             participant.overall_points += awarded_points
             participant.questions_answered = 0
             participant.is_busted = False
@@ -1244,25 +1243,13 @@ class BlackJackSession(SyncBase):
         ]
 
     def end_current_question(self):
-        """End the current active question"""
-        no_answer_bust_participants = self.mark_unanswered_current_question_participants_busted()
-        set_result = self.finalize_completed_set()
-        self.is_question_active = False
-        self.question_end_time = None
-        self.quiz.current_question = None
-        self.quiz.question_start_time = None
-        
-        if self.quiz.is_quiz_complete():
-            self.quiz.status = 'completed'
-            self.quiz.ended_at = timezone.now()
-
-        self.quiz.save()
-        self.save()
-        return {
-            **set_result,
-            'no_answer_bust_participants': no_answer_bust_participants,
-            'quiz_complete': self.quiz.is_quiz_complete(),
-        }
+        from .runtime import end_question
+        quiz = self.quiz
+        result = end_question(quiz)
+        self.refresh_from_db()
+        quiz.refresh_from_db()
+        self.quiz = quiz
+        return result
     
     def record_answer(self, points_earned):
         """Record statistics for an answer"""

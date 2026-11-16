@@ -1,3 +1,4 @@
+from games_hub.team_names import validate_join_name
 from django.shortcuts import render, get_object_or_404, redirect
 from django.http import JsonResponse
 from django.views.decorators.http import require_http_methods, require_POST
@@ -22,6 +23,7 @@ def _build_participant_progress_history(quiz, participant, session_code=None):
     return build_participant_progress_history(quiz, participant, session_code)
 
 
+@validate_join_name('assign', 'assign/join.html')
 def assign_join_view(request):
     """Combined view for assign quiz join page (GET) and join action (POST)"""
     if request.method == 'GET':
@@ -81,7 +83,7 @@ def assign_join_view(request):
                 })
             
             # Check if name is already taken in this quiz (scope by session if provided)
-            name_qs = quiz.participants.filter(name__iexact=participant_name)
+            name_qs = quiz.participants.filter(name__iexact=participant_name, hub_session_code=hub_session)
             if hub_session:
                 name_qs = name_qs.filter(hub_session_code=hub_session)
             if name_qs.exists():
@@ -102,6 +104,7 @@ def assign_join_view(request):
                 participant, created = AssignParticipant.objects.get_or_create(
                     quiz=quiz,
                     name=participant_name,
+                    hub_session_code=None,
                     defaults={'is_active': True}
                 )
             
@@ -208,7 +211,7 @@ def assign_result(request, room_code, participant_name):
         participant = get_object_or_404(
             AssignParticipant, 
             quiz=quiz, 
-            name=participant_name
+            name=participant_name, hub_session_code=request.GET.get('hub_session') or None
         )
         
         # Get participant's answers
@@ -274,7 +277,7 @@ def assign_result(request, room_code, participant_name):
         participant_rank = participant.get_rank()
         
         # Get leaderboard (top 10)
-        leaderboard = quiz.participants.all().order_by('-total_score', 'name')[:10]
+        leaderboard = quiz.participants.filter(hub_session_code=participant.hub_session_code).order_by('-total_score', 'name')[:10]
         
         # Calculate performance insights
         average_time = None
@@ -319,79 +322,8 @@ def assign_result(request, room_code, participant_name):
 @require_POST
 @csrf_exempt
 def submit_answer(request, room_code, participant_name):
-    """Submit an answer for the current question"""
-    try:
-        session_code = request.GET.get('hub_session')
-        quiz = get_object_or_404(AssignQuiz, room_code=room_code)
-        participant = get_object_or_404(
-            AssignParticipant, 
-            quiz=quiz, 
-            name=participant_name,
-            hub_session_code=session_code
-        )
-        
-        # Check if there's an active question
-        if not quiz.current_question or quiz.status != 'active':
-            return JsonResponse({
-                'success': False,
-                'error': 'No active question available.'
-            })
-        
-        # Check if participant has already answered this question
-        existing_answer = AssignAnswer.objects.filter(
-            quiz=quiz,
-            participant=participant,
-            question=quiz.current_question
-        ).first()
-        
-        if existing_answer:
-            return JsonResponse({
-                'success': False,
-                'error': 'You have already answered this question.'
-            })
-        
-        data = json.loads(request.body)
-        user_matches = data.get('user_matches', {})
-        time_taken = data.get('time_taken', 0)
-        
-        if not user_matches:
-            return JsonResponse({
-                'success': False,
-                'error': 'Please make at least one match before submitting.'
-            })
-        
-        # Create answer
-        answer = AssignAnswer.objects.create(
-            quiz=quiz,
-            participant=participant,
-            question=quiz.current_question,
-            user_matches=user_matches,
-            time_taken=time_taken
-        )
-        
-        # Update participant's last activity
-        participant.last_activity = timezone.now()
-        participant.save()
-        
-        return JsonResponse({
-            'success': True,
-            'points_earned': answer.points_earned,
-            'correct_matches': answer.get_correct_matches_count(),
-            'total_matches': answer.get_total_matches_count(),
-            'accuracy': answer.get_accuracy_percentage(),
-            'correct_answers': quiz.current_question.correct_matches
-        })
-        
-    except json.JSONDecodeError:
-        return JsonResponse({
-            'success': False,
-            'error': 'Invalid request format.'
-        })
-    except Exception as e:
-        return JsonResponse({
-            'success': False,
-            'error': 'An error occurred while submitting your answer.'
-        })
+    return JsonResponse({'success': False, 'error': 'round_submission_required',
+                         'message': 'Bitte die aktuelle Runde verbindlich abgeben.'}, status=409)
 
 
 def get_quiz_status(request, room_code, participant_name):
@@ -434,7 +366,8 @@ def get_quiz_status(request, room_code, participant_name):
             has_answered = AssignAnswer.objects.filter(
                 quiz=quiz,
                 participant=participant,
-                question=question
+                question=question,
+                set_number=quiz.get_current_set_number() or 0,
             ).exists()
             status_data['has_answered'] = has_answered
         
@@ -481,7 +414,7 @@ def api_quiz_participants(request, room_code):
     try:
         quiz = get_object_or_404(AssignQuiz, room_code=room_code)
         
-        participants = quiz.participants.filter(is_active=True).order_by('-total_score', 'name')
+        participants = quiz.participants.filter(is_active=True, hub_session_code=request.GET.get('hub_session') or None).order_by('-total_score', 'name')
         
         participants_data = []
         for participant in participants:
@@ -511,7 +444,7 @@ def api_quiz_leaderboard(request, room_code):
         quiz = get_object_or_404(AssignQuiz, room_code=room_code)
         
         # Get top 10 participants
-        participants = quiz.participants.all().order_by('-total_score', 'name')[:10]
+        participants = quiz.participants.filter(hub_session_code=request.GET.get('hub_session') or None).order_by('-total_score', 'name')[:10]
         
         leaderboard_data = []
         for rank, participant in enumerate(participants, 1):

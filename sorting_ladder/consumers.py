@@ -7,6 +7,9 @@ from channels.db import database_sync_to_async
 from django.db import transaction
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
+from games_hub.matching_runtime import set_paused, end_game
+from games_hub.set_progress import ordered_sets, set_progress, scope_code
+from games_hub.host_permissions import authorize_game_host
 from games_hub.active_game_guard import resolve_session_game_activation_for_room
 from games_hub.authoritative_consumer import AuthoritativeGameConsumerMixin
 from games_hub.authoritative_state import (
@@ -62,6 +65,9 @@ def _set_number_for_game(quiz, question_id, hub_session_code=None):
         quiz.room_code,
         hub_session_code,
     )
+    session = getattr(quiz, 'session', None)
+    if session and session.current_set_number and str(quiz.current_question_id) == str(question_id):
+        return session.current_set_number
     selected_ids = list(
         quiz.selected_questions
         .filter(is_active=True)
@@ -108,9 +114,10 @@ class SortingLadderGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketCo
         return SortingPendingRoundSelection.objects.filter(
             quiz__room_code=room_code,
             question_id=question_id,
+            set_number=SortingLadderSession.objects.filter(quiz__room_code=room_code).values_list('current_set_number', flat=True).first() or 0,
             round_number=max(int(round_number or 0), 1),
             participant__name=participant_name,
-            participant__hub_session_code=hub_session_code,
+            participant__hub_session_code=hub_session_code or None,
         )
 
     @classmethod
@@ -129,7 +136,7 @@ class SortingLadderGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketCo
         participant = SortingLadderParticipant.objects.filter(
             quiz__room_code=room_code,
             name=participant_name,
-            hub_session_code=hub_session_code,
+            hub_session_code=hub_session_code or None,
         ).first()
         if not participant:
             return
@@ -137,6 +144,7 @@ class SortingLadderGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketCo
             quiz=participant.quiz,
             participant=participant,
             question_id=question_id,
+            set_number=SortingLadderSession.objects.filter(quiz__room_code=room_code).values_list('current_set_number', flat=True).first() or 0,
             round_number=max(int(round_number or 0), 1),
             defaults={'ordered_item_ids': list(ordered_item_ids or [])},
         )
@@ -239,6 +247,16 @@ class SortingLadderGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketCo
     # -------- Admin handlers --------
 
     async def handle_admin_start_quiz(self, data):
+        quiz = await self.get_quiz()
+        if quiz and quiz.status == 'active' and quiz.started_at:
+            return
+        if quiz and quiz.status == 'inactive':
+            activation = await database_sync_to_async(resolve_session_game_activation_for_room)('sorting_ladder', self.room_code)
+            if not activation.get('success'):
+                await self.send(text_data=json.dumps({'type': 'error', 'message': activation.get('error') or activation.get('message')}))
+                return
+            await database_sync_to_async(set_paused)(quiz, 'sorting_ladder', False)
+            return
         lobby_ready = await database_sync_to_async(ensure_session_players_ready_for_game_start_for_room)(
             'sorting_ladder',
             self.room_code,
@@ -338,58 +356,17 @@ class SortingLadderGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketCo
             )
 
     async def handle_admin_set_topic(self, data):
-        """
-        Admin chooses which SortingQuestion (topic) to play.
-        Also initializes the SortingLadderSession with 2 reference items.
-        """
-        topic_id = data.get('topic_id')
-        time_limit = data.get('time_limit_seconds')
-
-        quiz = await self.get_quiz()
-        if not quiz:
-            return
-
-        topic = await self.get_topic(topic_id)
-        if not topic:
-            await self.send(text_data=json.dumps({
-                'type': 'error',
-                'message': 'Invalid topic selected.'
-            }))
-            return
-
-        # Initialize session: two reference items + upcoming active items
-        session_payload = await self.initialize_session_for_topic(
-            quiz_id=quiz.id,
-            topic_id=topic.id,
-            time_limit_seconds=time_limit
-        )
-        if not session_payload:
-            await self.send(text_data=json.dumps({
-                'type': 'error',
-                'message': 'Not enough items for this topic (need at least 3).'
-            }))
-            return
-
-        await self.channel_layer.group_send(
-            self.room_group_name,
-            {
-                'type': 'topic_selected',
-                'topic': {
-                    'id': topic.id,
-                    'title': topic.question_text,
-                    'description': topic.description,
-                },
-                'session': session_payload,
-            }
-        )
-
-        await self.hub_mirror_event('topic_selected', {
-            'room_code': self.room_code,
-            'game_key': 'sorting_ladder',
-            'topic_id': topic.id,
+        # Keep the legacy transport on the same question lifecycle.
+        await self.handle_admin_send_question({
+            **data,
+            'question_id': data.get('question_id') or data.get('topic_id'),
+            'custom_time_limit': data.get('custom_time_limit', data.get('time_limit_seconds')),
         })
 
     async def handle_admin_start_round(self, data):
+        if not await self.validate_host_set_action(data):
+            await self.send(text_data=json.dumps({'type': 'action_rejected', 'code': 'stale_action'}))
+            return
         """
         Admin explicitly moves to the next round (next active element).
         """
@@ -430,7 +407,7 @@ class SortingLadderGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketCo
 
         await self.set_tutorial_active_db(quiz.id, False)
 
-        for auto_result in round_state.get('auto_results', []):
+        for auto_result in round_state.pop('auto_results', []):
             progress_history = await self.get_participant_progress_history_for_round_result(
                 auto_result['participant_name'],
                 auto_result['hub_session_code'],
@@ -440,6 +417,7 @@ class SortingLadderGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketCo
                 {
                     'type': 'round_result',
                     'participant_name': auto_result['participant_name'],
+                    'hub_session_code': auto_result['hub_session_code'],
                     **auto_result['result'],
                     'progress_history': progress_history,
                 }
@@ -461,6 +439,9 @@ class SortingLadderGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketCo
         await self.broadcast_round_answer_status(quiz.id)
 
     async def handle_admin_end_round(self, data):
+        if not await self.validate_host_set_action(data):
+            await self.send(text_data=json.dumps({'type': 'action_rejected', 'code': 'stale_action'}))
+            return
         """
         Ends the current round: freeze submissions and show who is still alive.
         """
@@ -515,17 +496,9 @@ class SortingLadderGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketCo
         })
 
     async def handle_admin_set_inactive(self, data):
-        """Pause the game without clearing its current progress."""
         quiz = await self.get_quiz()
-        if quiz and quiz.status == 'active':
+        if quiz:
             await self.set_quiz_inactive_db(quiz.id)
-            await self.channel_layer.group_send(
-                self.room_group_name,
-                {
-                    'type': 'quiz_inactive',
-                    'message': 'Game has been set inactive.',
-                }
-            )
 
     async def handle_admin_send_question(self, data):
         """Admin selects a SortingQuestion to play for this quiz.
@@ -537,7 +510,8 @@ class SortingLadderGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketCo
         custom_time_limit = data.get('custom_time_limit')
 
         quiz = await self.get_quiz()
-        if not quiz:
+        if not quiz or quiz.status != 'active':
+            await self.send(text_data=json.dumps({'type': 'action_rejected', 'code': 'invalid_phase', 'message': 'Das Spiel ist nicht aktiv.'}))
             return
 
         if await self.guard_tutorial_before_first_unit(data, quiz.id):
@@ -703,6 +677,9 @@ class SortingLadderGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketCo
         }
 
     async def handle_admin_end_question(self, data):
+        if not await self.validate_host_set_action(data):
+            await self.send(text_data=json.dumps({'type': 'action_rejected', 'code': 'stale_action'}))
+            return
         """Complete the final round, or clear an already revealed set."""
         quiz = await self.get_quiz()
         if not quiz:
@@ -753,6 +730,7 @@ class SortingLadderGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketCo
                 {
                     'type': 'round_result',
                     'participant_name': auto_result['participant_name'],
+                    'hub_session_code': auto_result['hub_session_code'],
                     **auto_result['result'],
                     'progress_history': progress_history,
                 }
@@ -775,6 +753,9 @@ class SortingLadderGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketCo
         })
 
     async def handle_admin_show_solution(self, data):
+        if not await self.validate_host_set_action(data):
+            await self.send(text_data=json.dumps({'type': 'action_rejected', 'code': 'stale_action'}))
+            return
         """Reveal the completed set exactly once."""
         quiz = await self.get_quiz()
         if not quiz:
@@ -802,93 +783,23 @@ class SortingLadderGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketCo
     # -------- Participant handlers --------
 
     async def handle_participant_join(self, data):
-        """
-        Player joins the room.
-        """
-        name = data.get('name')
-        hub_session_code = data.get('hub_session_code')
-
-        if not name:
-            await self.send(text_data=json.dumps({
-                'type': 'error',
-                'message': 'Name is required to join.'
-            }))
+        name = data.get('name') or data.get('participant_name') or self._authoritative_participant_name()
+        code = data.get('hub_session_code') or data.get('hub_session') or self._authoritative_session_code() or None
+        participant = await self.get_or_create_participant(name, code)
+        if not participant:
+            await self.send(text_data=json.dumps({'type': 'error', 'message': 'Teilnahme nicht bestaetigt.'}))
             return
-
-        participant_payload = await self.get_or_create_participant(name, hub_session_code)
-        if not participant_payload:
-            await self.send(text_data=json.dumps({
-                'type': 'error',
-                'message': 'Unable to join game.'
-            }))
-            return
-
-        await self.channel_layer.group_send(
-            self.room_group_name,
-            {
-                'type': 'participant_joined',
-                'participant': participant_payload
-            }
-        )
-
-        await self.hub_mirror_event('participant_joined', {
-            'room_code': self.room_code,
-            'game_key': 'sorting_ladder',
-            'participant': participant_payload,
-        })
-
-        progress_history = await self.get_participant_progress_history(name, hub_session_code)
-        await self.send(text_data=json.dumps({
-            'type': 'progress_history',
-            'history': progress_history,
-        }))
-
-        # If game is already active, send quiz_started directly to this participant
-        game = await self.get_quiz()
-        if game and game.status == 'active':
-            await self.send(text_data=json.dumps({
-                'type': 'quiz_started',
-                'message': 'Game is already in progress'
-            }))
-            tutorial_payload = await self.get_tutorial_payload(
-                game.id,
-                hub_session_code,
-                participant_name=name,
-            )
-            if tutorial_payload:
-                await self.send(text_data=json.dumps({
-                    'type': 'tutorial_start',
-                    **tutorial_payload,
-                }))
-            snapshot = await self.get_rejoin_snapshot(name, hub_session_code)
-            if snapshot.get('question_payload'):
-                await self.send(text_data=json.dumps({
-                    'type': 'question_started',
-                    **snapshot['question_payload'],
-                }))
-            if snapshot.get('latest_round_result'):
-                await self.send(text_data=json.dumps({
-                    'type': 'round_result',
-                    'participant_name': name,
-                    **snapshot['latest_round_result'],
-                }))
-            if snapshot.get('reveal_state') == SortingLadderSession.REVEAL_AWAITING:
-                await self.send(text_data=json.dumps({
-                    'type': 'question_rounds_complete',
-                    'message': 'Set abgeschlossen. Warte auf die Reveal-Freigabe.',
-                    'reveal_state': SortingLadderSession.REVEAL_AWAITING,
-                }))
-            elif snapshot.get('reveal_state') == SortingLadderSession.REVEAL_REVEALED:
-                await self.send(text_data=json.dumps({
-                    'type': 'show_solution',
-                    'correct_order_ids': snapshot.get('reveal_order_ids', []),
-                    'reveal_state': SortingLadderSession.REVEAL_REVEALED,
-                }))
-            if snapshot.get('round_started'):
-                await self.send(text_data=json.dumps({
-                    'type': 'round_started',
-                    'round': snapshot['round_started'],
-                }))
+        self._authoritative_participant = str(name)
+        self._authoritative_session = str(code or '')
+        await self.channel_layer.group_send(self.room_group_name, {'type': 'participant_joined', 'participant': participant})
+        quiz = await self.get_quiz()
+        if quiz and quiz.status in {'active', 'inactive'}:
+            if quiz.status == 'active':
+                await self.send(text_data=json.dumps({'type': 'quiz_started', 'quiz': {'id': quiz.id}}))
+            await self.send_state({'participant_name': name, 'hub_session': code})
+        tutorial = await self.get_tutorial_payload(quiz.id, code, participant_name=name) if quiz else None
+        if tutorial:
+            await self.send(text_data=json.dumps({'type': 'tutorial_start', **tutorial}))
 
     async def handle_tutorial_completed(self, data):
         participant_name = data.get('participant_name') or data.get('name')
@@ -910,11 +821,11 @@ class SortingLadderGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketCo
         - placed_before_id (or null)
         """
         participant_name = data.get('participant_name')
-        hub_session_code = data.get('hub_session_code')
+        hub_session_code = data.get('hub_session_code') or None
         placed_after_id = data.get('placed_after_id')
         placed_before_id = data.get('placed_before_id')
 
-        if not participant_name or not hub_session_code:
+        if not participant_name:
             await self.send(text_data=json.dumps({
                 'type': 'error',
                 'message': 'Invalid participant.'
@@ -923,7 +834,7 @@ class SortingLadderGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketCo
 
         result = await self.save_round_submission(
             participant_name=participant_name,
-            hub_session_code=hub_session_code,
+            hub_session_code=hub_session_code or None,
             placed_after_id=placed_after_id,
             placed_before_id=placed_before_id,
         )
@@ -962,11 +873,11 @@ class SortingLadderGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketCo
         - ordered_item_ids: list of SortingItem IDs in the order the player chose
         """
         participant_name = data.get('participant_name')
-        hub_session_code = data.get('hub_session_code')
+        hub_session_code = data.get('hub_session_code') or None
         ordered_item_ids = data.get('ordered_item_ids') or []
         round_time_out = data.get('round_time_out', False)
 
-        if not participant_name or not hub_session_code or not isinstance(ordered_item_ids, list):
+        if not participant_name or not isinstance(ordered_item_ids, list):
             await self.send(text_data=json.dumps({
                 'type': 'error',
                 'message': 'Invalid round submission.',
@@ -975,7 +886,7 @@ class SortingLadderGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketCo
 
         result = await self.save_round_full_order(
             participant_name=participant_name,
-            hub_session_code=hub_session_code,
+            hub_session_code=hub_session_code or None,
             ordered_item_ids=ordered_item_ids,
             round_time_out=round_time_out,
         )
@@ -1000,6 +911,7 @@ class SortingLadderGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketCo
             {
                 'type': 'round_result',
                 'participant_name': participant_name,
+                'hub_session_code': hub_session_code,
                 **result,
             }
         )
@@ -1017,15 +929,15 @@ class SortingLadderGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketCo
     async def handle_participant_update_selection(self, data):
         """Persist the current, not-yet-logged ladder state for host-side early round ends."""
         participant_name = data.get('participant_name')
-        hub_session_code = data.get('hub_session_code')
+        hub_session_code = data.get('hub_session_code') or None
         ordered_item_ids = data.get('ordered_item_ids') or []
 
-        if not participant_name or not hub_session_code or not isinstance(ordered_item_ids, list):
+        if not participant_name or not isinstance(ordered_item_ids, list):
             return
 
         updated = await self.update_pending_round_selection_db(
             participant_name=participant_name,
-            hub_session_code=hub_session_code,
+            hub_session_code=hub_session_code or None,
             ordered_item_ids=ordered_item_ids,
         )
         if not updated:
@@ -1215,6 +1127,9 @@ class SortingLadderGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketCo
         }))
 
     async def round_result(self, event):
+        if not await self.is_host() and (event.get('participant_name') != self._authoritative_participant_name()
+                or str(event.get('hub_session_code') or '') != self._authoritative_session_code()):
+            return
         await self.send(text_data=json.dumps({
             'type': 'round_result',
             'participant_name': event['participant_name'],
@@ -1307,20 +1222,11 @@ class SortingLadderGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketCo
 
     @database_sync_to_async
     def end_quiz_db(self, quiz_id):
-        try:
-            quiz = SortingLadderGame.objects.get(id=quiz_id)
-            quiz.end_quiz()
-        except SortingLadderGame.DoesNotExist:
-            pass
+        end_game(SortingLadderGame.objects.get(pk=quiz_id), 'sorting_ladder')
 
     @database_sync_to_async
     def set_quiz_inactive_db(self, quiz_id):
-        try:
-            quiz = SortingLadderGame.objects.get(id=quiz_id)
-            quiz.status = 'inactive'
-            quiz.save(update_fields=['status'])
-        except SortingLadderGame.DoesNotExist:
-            pass
+        set_paused(SortingLadderGame.objects.get(pk=quiz_id), 'sorting_ladder', True)
 
     @database_sync_to_async
     def get_topic(self, topic_id):
@@ -1380,6 +1286,7 @@ class SortingLadderGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketCo
             'active_element': None,
         }
 
+    @transaction.atomic
     def _initialize_question_for_quiz_sync(
         self,
         quiz_id,
@@ -1405,11 +1312,12 @@ class SortingLadderGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketCo
             hub_session_code,
             question.id,
         )
-        set_number = (
-            None
-            if is_tutorial_round
-            else _set_number_for_game(quiz, question.id, hub_session_code)
-        )
+        set_number = _set_number_for_game(quiz, question.id, hub_session_code)
+
+        if quiz.status != 'active':
+            return None
+        if quiz.selected_questions.exists() and not quiz.selected_questions.filter(pk=question.pk).exists() and not is_tutorial_round:
+            return None
 
         elements = list(question.elements.all())
         if len(elements) < 2:
@@ -1427,6 +1335,13 @@ class SortingLadderGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketCo
         shuffled_ids = [str(e.id) for e in shuffled]
 
         session, _ = SortingLadderSession.objects.get_or_create(quiz=quiz)
+        history = list(session.question_rounds or [])
+        if not history:
+            known = quiz.submissions.filter(set_number=0, participant__hub_session_code=hub_session_code or None).order_by('submitted_at', 'id').values_list('question_id', flat=True)
+            history = list(dict.fromkeys(known))
+        history.append(question.pk)
+        session.question_rounds = history
+        session.current_set_number = len(history)
         session.shuffled_item_ids = ",".join(shuffled_ids)
         session.current_round = 1
         session.is_round_active = bool(start_answering)
@@ -1461,12 +1376,12 @@ class SortingLadderGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketCo
 
         # Replay-safety: if the same question is started again in the same quiz,
         # old submissions for that (quiz, question) must not leak into the new run.
-        RoundSubmission.objects.filter(quiz=quiz, question=question).delete()
+        # Previous sets keep their submissions and earned points.
 
         # Elimination is scoped to the current question/set. Reset it when a
         # new question starts so participants can play the next set.
-        quiz.participants.filter(is_eliminated=True).update(is_eliminated=False)
-        for participant in quiz.participants.all():
+        quiz.participants.filter(is_eliminated=True, hub_session_code=hub_session_code or None).update(is_eliminated=False)
+        for participant in quiz.participants.filter(hub_session_code=hub_session_code or None):
             try:
                 participant.calculate_total_score()
             except Exception:
@@ -1475,6 +1390,9 @@ class SortingLadderGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketCo
         quiz.current_question = question
         quiz.save(update_fields=['current_question'])
 
+        quiz.refresh_from_db()
+        set_number = session.current_set_number
+        display_progress = set_progress(quiz, 'sorting_ladder', hub_session_code)
         return {
             'question': {
                 'id': question.id,
@@ -1483,7 +1401,8 @@ class SortingLadderGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketCo
                 'description': question.description,
                 'upper_label': question.upper_label,
                 'lower_label': question.lower_label,
-                'points': 0 if is_tutorial_round else question.points,
+                'points': 0 if is_tutorial_round else max(len(elements) - 1, 0),
+                'display_set_number': display_progress['current'],
                 'time_limit': effective_time_limit,
                 'is_tutorial_round': is_tutorial_round,
             },
@@ -1615,7 +1534,8 @@ class SortingLadderGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketCo
         # Do not accept submissions if question is no longer active.
         now = timezone.now()
         if (
-            not session.is_round_active
+            quiz.status != 'active'
+            or not session.is_round_active
             or session.reveal_state != SortingLadderSession.REVEAL_ACTIVE
         ):
             return None
@@ -1636,6 +1556,7 @@ class SortingLadderGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketCo
                 quiz=quiz,
                 participant=participant,
                 question=question,
+                set_number=session.current_set_number,
                 round_number=round_number,
             ).exists():
                 return None
@@ -1643,8 +1564,9 @@ class SortingLadderGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketCo
                 quiz=quiz,
                 participant=participant,
                 question=question,
+                set_number=session.current_set_number,
                 round_number=round_number,
-                defaults={'all_elements': []},
+                defaults={'all_elements': [], 'is_tutorial': is_tutorial_round},
             )
             if not created:
                 return None
@@ -1656,6 +1578,7 @@ class SortingLadderGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketCo
                 quiz=quiz,
                 participant=participant,
                 question=question,
+                set_number=session.current_set_number,
                 is_correct=True,
             ).count()
             points_for_question = 0 if is_tutorial_round else correct_rounds_for_question
@@ -1664,6 +1587,7 @@ class SortingLadderGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketCo
                 quiz=quiz,
                 participant=participant,
                 question=question,
+                set_number=session.current_set_number,
             ).count()
 
             if not is_tutorial_round:
@@ -1711,6 +1635,7 @@ class SortingLadderGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketCo
             quiz=quiz,
             participant=participant,
             question=question,
+            set_number=session.current_set_number,
         ).count()
         max_rounds = max(len(shuffled_ids) - 1, 0)
         if played_rounds >= max_rounds:
@@ -1721,6 +1646,7 @@ class SortingLadderGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketCo
             quiz=quiz,
             participant=participant,
             question=question,
+            set_number=session.current_set_number,
             round_number=expected_round,
         ).exists():
             return None
@@ -1734,6 +1660,7 @@ class SortingLadderGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketCo
                 quiz=quiz,
                 participant=participant,
                 question=question,
+                set_number=session.current_set_number,
                 is_correct=True,
                 round_number__lt=expected_round,
             )
@@ -1762,8 +1689,9 @@ class SortingLadderGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketCo
             quiz=quiz,
             participant=participant,
             question=question,
+            set_number=session.current_set_number,
             round_number=expected_round,
-            defaults={'all_elements': visible_ids},
+            defaults={'all_elements': visible_ids, 'is_tutorial': is_tutorial_round},
         )
         if not created:
             return None
@@ -1788,6 +1716,7 @@ class SortingLadderGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketCo
             quiz=quiz,
             participant=participant,
             question=question,
+            set_number=session.current_set_number,
         ).count()
         set_has_more_rounds = expected_round < max_rounds
         has_more_rounds = (not participant.is_eliminated) and set_has_more_rounds
@@ -1796,6 +1725,7 @@ class SortingLadderGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketCo
             quiz=quiz,
             participant=participant,
             question=question,
+            set_number=session.current_set_number,
             is_correct=True,
         ).count()
         points_for_question = 0 if is_tutorial_round else correct_rounds_for_question
@@ -1826,6 +1756,7 @@ class SortingLadderGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketCo
             quiz=quiz,
             participant=participant,
             question=question,
+            set_number=session.current_set_number,
             round_number=current_round,
         ).exists()
         if already_submitted:
@@ -1878,6 +1809,7 @@ class SortingLadderGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketCo
             'result': result,
         }
 
+    @transaction.atomic
     def _start_next_round_sync(self, quiz_id, *, start_answering=True):
         """
         Chooses the next active element and starts the round.
@@ -1893,7 +1825,7 @@ class SortingLadderGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketCo
         except (SortingLadderGame.DoesNotExist, SortingLadderSession.DoesNotExist, AttributeError):
             return None
 
-        if not topic:
+        if quiz.status != 'active' or not topic:
             return None
         if session.reveal_state != SortingLadderSession.REVEAL_ACTIVE:
             return None
@@ -1911,7 +1843,7 @@ class SortingLadderGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketCo
 
             auto_results = []
             active_participants = list(
-                quiz.participants.filter(is_active=True, is_eliminated=False)
+                quiz.participants.filter(is_active=True, is_eliminated=False, hub_session_code=self._get_hub_session_code_for_room_sync() or None)
             )
             for participant in active_participants:
                 auto_result = self._finalize_pending_round_for_participant(quiz, session, topic, participant)
@@ -2251,7 +2183,7 @@ class SortingLadderGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketCo
         except ValueError:
             shuffled_ids = []
         expected_count = min(current_round + 1, len(shuffled_ids)) if shuffled_ids else 0
-        active_participants_qs = quiz.participants.filter(is_active=True, is_eliminated=False)
+        active_participants_qs = quiz.participants.filter(is_active=True, is_eliminated=False, hub_session_code=self._get_hub_session_code_for_room_sync() or None)
         active_hub_session_code = self._get_hub_session_code_for_room_sync()
         if active_hub_session_code:
             active_participants_qs = active_participants_qs.filter(hub_session_code=active_hub_session_code)
@@ -2265,6 +2197,7 @@ class SortingLadderGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketCo
                 quiz=quiz,
                 participant_id=participant['id'],
                 question=question,
+                set_number=session.current_set_number,
             ).count()
             pending_order = self._get_pending_round_order(
                 quiz.room_code,
@@ -2289,6 +2222,7 @@ class SortingLadderGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketCo
         }
 
     @database_sync_to_async
+    @transaction.atomic
     def end_round_db(self, quiz_id):
         """
         Ends the current round and returns list of surviving participants.
@@ -2299,10 +2233,13 @@ class SortingLadderGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketCo
         except (SortingLadderGame.DoesNotExist, SortingLadderSession.DoesNotExist, AttributeError):
             return []
 
+        if quiz.current_question and session.is_round_active:
+            for participant in quiz.participants.filter(is_active=True, is_eliminated=False, hub_session_code=self._get_hub_session_code_for_room_sync() or None):
+                self._finalize_pending_round_for_participant(quiz, session, quiz.current_question, participant)
         session.end_round()
 
         survivors = list(
-            quiz.participants.filter(is_eliminated=False, is_active=True)
+            quiz.participants.filter(is_eliminated=False, is_active=True, hub_session_code=self._get_hub_session_code_for_room_sync() or None)
             .values('id', 'name', 'rounds_survived')
         )
 
@@ -2364,7 +2301,7 @@ class SortingLadderGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketCo
             auto_results = []
             if session.is_round_active:
                 active_participants = list(
-                    quiz.participants.filter(is_active=True, is_eliminated=False)
+                    quiz.participants.filter(is_active=True, is_eliminated=False, hub_session_code=self._get_hub_session_code_for_room_sync() or None)
                 )
                 for participant in active_participants:
                     auto_result = self._finalize_pending_round_for_participant(
@@ -2486,25 +2423,40 @@ class SortingLadderGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketCo
 
     @database_sync_to_async
     def get_or_create_participant(self, name, hub_session_code):
-        try:
-            quiz = SortingLadderGame.objects.get(room_code=self.room_code)
-        except SortingLadderGame.DoesNotExist:
+        participant = SortingLadderParticipant.objects.filter(quiz__room_code=self.room_code, name=name, hub_session_code=hub_session_code or None).first()
+        if not participant:
             return None
-
-        participant, _ = SortingLadderParticipant.objects.get_or_create(
-            quiz=quiz,
-            name=name,
-            hub_session_code=hub_session_code,
-        )
         participant.is_active = True
-        participant.save()
+        participant.save(update_fields=['is_active', 'last_activity'])
+        return {'id': participant.pk, 'name': participant.name, 'total_score': participant.total_score,
+                'rounds_survived': participant.rounds_survived, 'is_eliminated': participant.is_eliminated}
 
-        return {
-            'id': participant.id,
-            'name': participant.name,
-            'rounds_survived': participant.rounds_survived,
-            'is_eliminated': participant.is_eliminated,
-        }
+    async def send_state(self, data):
+        name = data.get('participant_name') or data.get('name') or self._authoritative_participant_name()
+        code = data.get('hub_session_code') or data.get('hub_session') or self._authoritative_session_code() or None
+        snapshot = await self.get_rejoin_snapshot(name, code) if name else await database_sync_to_async(current_snapshot)('sorting_ladder', self.room_code, code)
+        quiz = await self.get_quiz()
+        await self.send(text_data=json.dumps({'type': 'sorting_state', 'game': {'id': quiz.id, 'status': quiz.status}, **snapshot}))
+
+    async def quiz_resumed(self, event):
+        if self._authoritative_participant_name():
+            await self.send_state({})
+        else:
+            await self.send(text_data=json.dumps({'type': 'quiz_resumed'}))
+
+    @database_sync_to_async
+    def is_host(self):
+        return bool(getattr(self, 'room_code', None)) and not self._authoritative_participant_name() and authorize_game_host(getattr(self, 'scope', {}).get('user'), 'sorting_ladder', self.room_code).allowed
+
+    @database_sync_to_async
+    def validate_host_set_action(self, data):
+        quiz = SortingLadderGame.objects.select_related('session').get(room_code=self.room_code)
+        if not quiz.current_question_id or not hasattr(quiz, 'session'):
+            return False
+        number = _set_number_for_game(quiz, quiz.current_question_id, self._get_hub_session_code_for_room_sync())
+        return (quiz.status == 'active' and str(data.get('question_id') or '') == str(quiz.current_question_id or '')
+                and str(data.get('expected_set', data.get('set_id')) or 0) == str(number or 0)
+                and str(data.get('expected_round', data.get('round_id')) or '') == str(quiz.session.current_round))
 
     @database_sync_to_async
     def get_rejoin_snapshot(self, participant_name, hub_session_code):
@@ -2513,7 +2465,7 @@ class SortingLadderGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketCo
             quiz = SortingLadderGame.objects.select_related('session', 'current_question').get(room_code=self.room_code)
             session = quiz.session
             question = quiz.current_question
-            participant = quiz.participants.get(name=participant_name, hub_session_code=hub_session_code)
+            participant = quiz.participants.get(name=participant_name, hub_session_code=hub_session_code or None)
         except (SortingLadderGame.DoesNotExist, SortingLadderSession.DoesNotExist, SortingLadderParticipant.DoesNotExist, AttributeError):
             return {}
 
@@ -2537,11 +2489,7 @@ class SortingLadderGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketCo
             hub_session_code,
             question.id,
         )
-        set_number = (
-            None
-            if is_tutorial_round
-            else _set_number_for_game(quiz, question.id, hub_session_code)
-        )
+        set_number = _set_number_for_game(quiz, question.id, hub_session_code)
         phase_snapshot = current_snapshot(
             'sorting_ladder',
             self.room_code,
@@ -2560,7 +2508,8 @@ class SortingLadderGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketCo
                 'description': question.description,
                 'upper_label': question.upper_label,
                 'lower_label': question.lower_label,
-                'points': 0 if is_tutorial_round else question.points,
+                'points': 0 if is_tutorial_round else max(question.elements.count() - 1, 0),
+                'display_set_number': set_progress(quiz, 'sorting_ladder', hub_session_code)['current'],
                 'time_limit': session.time_limit_seconds,
                 'is_tutorial_round': is_tutorial_round,
             },
@@ -2597,6 +2546,7 @@ class SortingLadderGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketCo
                 quiz=quiz,
                 participant=participant,
                 question=question,
+                set_number=session.current_set_number,
             ).order_by('submitted_at')
         )
         latest_round_result = None
@@ -2729,14 +2679,18 @@ class SortingLadderGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketCo
             phase = 'waiting'
 
         return {
-            'phase': phase,
+            'phase': ('inactive' if quiz.status == 'inactive' else 'revealed' if session.reveal_state == SortingLadderSession.REVEAL_REVEALED else 'question_result' if session.reveal_state == SortingLadderSession.REVEAL_AWAITING else 'question_active'),
+            'participant_phase': phase,
+            'paused': quiz.status == 'inactive',
+            'game': {'id': quiz.id, 'status': quiz.status},
+            'set_progress': set_progress(quiz, 'sorting_ladder', hub_session_code),
             'question_payload': question_payload,
             'latest_round_result': latest_round_result,
             'round_started': round_started,
             'reveal_state': session.reveal_state,
             'reveal_order_ids': reveal_order_ids,
             'own_selection': pending_order or [],
-            'answer_locked': phase == 'answer_locked',
+            'answer_locked': any(sub.round_number == int(session.current_round or 0) for sub in submissions),
             'starts_at': (
                 session.round_start_time.isoformat()
                 if session.round_start_time
@@ -2769,6 +2723,11 @@ class SortingLadderGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketCo
             or session.reveal_state != SortingLadderSession.REVEAL_ACTIVE
             or participant.is_eliminated
         ):
+            return False
+
+        if session.round_end_time and timezone.now() >= session.round_end_time:
+            return False
+        if RoundSubmission.objects.filter(quiz=quiz, participant=participant, question=question, set_number=session.current_set_number, round_number=session.current_round).exists():
             return False
 
         try:
@@ -2816,7 +2775,7 @@ class SortingLadderGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketCo
             participant = SortingLadderParticipant.objects.select_for_update().get(
                 quiz=quiz,
                 name=participant_name,
-                hub_session_code=hub_session_code,
+                hub_session_code=hub_session_code or None,
             )
         except (SortingLadderGame.DoesNotExist, SortingLadderSession.DoesNotExist, SortingLadderParticipant.DoesNotExist, AttributeError):
             return None
@@ -2860,14 +2819,9 @@ class SortingLadderGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketCo
 
     @database_sync_to_async
     def get_final_scores(self):
-        try:
-            quiz = SortingLadderGame.objects.get(room_code=self.room_code)
-        except SortingLadderGame.DoesNotExist:
-            return []
-
-        qs = quiz.participants.order_by('-rounds_survived', 'name') \
-                              .values('name', 'rounds_survived', 'is_eliminated')
-        return list(qs)
+        quiz = SortingLadderGame.objects.get(room_code=self.room_code)
+        return list(quiz.participants.filter(hub_session_code=self._get_hub_session_code_for_room_sync() or None)
+                    .order_by('-total_score', 'name').values('name', 'total_score', 'rounds_survived', 'is_eliminated'))
 
     @database_sync_to_async
     def get_participant_progress_history(self, participant_name, hub_session_code):
@@ -2894,78 +2848,44 @@ class SortingLadderGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketCo
         )
 
     def _build_participant_progress_history_sync(self, quiz, participant, reveal_eliminated_current_question=False):
-        tutorial_question_ids = get_scorebox_excluded_tutorial_question_ids(
-            'sorting_ladder',
-            self.room_code,
-            participant.hub_session_code,
-        )
-        submissions = (
-            RoundSubmission.objects
-            .filter(quiz=quiz, participant=participant)
-            .select_related('question')
-            .order_by('submitted_at', 'id')
-        )
-
-        grouped = {}
-        for sub in submissions:
-            if sub.question_id in tutorial_question_ids:
-                continue
-            qid = sub.question_id
-            entry = grouped.get(qid)
-            if not entry:
-                max_rounds = max(sub.question.elements.count() - 1, 0)
-                entry = {
-                    'question_id': qid,
-                    'first_submitted_at': sub.submitted_at,
-                    'survived_rounds': 0,
-                    'max_rounds': max_rounds,
-                    'submission_count': 0,
-                }
-                grouped[qid] = entry
-            entry['submission_count'] += 1
-            if sub.is_correct:
-                entry['survived_rounds'] += 1
-
-        try:
-            session = quiz.session
-            current_round = int(session.current_round or 0)
-        except (SortingLadderSession.DoesNotExist, AttributeError, TypeError, ValueError):
-            current_round = 0
-
-        completed = []
-        current_question_id = quiz.current_question_id
-        for entry in grouped.values():
-            is_current_question = entry['question_id'] == current_question_id
-            if not is_current_question:
-                completed.append(entry)
-                continue
-
-            if participant.is_eliminated:
-                should_reveal_current = (
-                    reveal_eliminated_current_question
-                    or current_round > entry['submission_count']
-                )
-                if should_reveal_current:
-                    completed.append(entry)
-                continue
-
-            if entry['submission_count'] >= entry['max_rounds']:
-                completed.append(entry)
-
-        completed.sort(key=lambda e: (e['first_submitted_at'], e['question_id']))
-
+        submissions = list(RoundSubmission.objects.filter(
+            quiz=quiz, participant=participant, is_tutorial=False,
+        ).select_related('question').order_by('submitted_at', 'id'))
+        session = getattr(quiz, 'session', None)
+        current_set = session.current_set_number if session else 0
+        current_round = int(session.current_round or 0) if session else 0
         history = []
-        for index, entry in enumerate(completed, start=1):
+        for row in ordered_sets(quiz, 'sorting_ladder', participant.hub_session_code):
+            if not row['played']:
+                continue
+            own = [sub for sub in submissions if sub.question_id == row['question'].pk and sub.set_number == row['set_number']]
+            # Existing submissions predate set identities and belong to the first occurrence.
+            if not own and row['set_number'] and not any(entry['question_id'] == row['question'].pk for entry in history):
+                own = [sub for sub in submissions if sub.question_id == row['question'].pk and sub.set_number == 0]
+            if not own:
+                continue
+            max_rounds = max(row['question'].elements.count() - 1, 0)
+            is_current = row['question'].pk == quiz.current_question_id and row['set_number'] == current_set
+            if is_current and len(own) < max_rounds:
+                if not participant.is_eliminated:
+                    continue
+                if not reveal_eliminated_current_question and current_round <= max(sub.round_number for sub in own):
+                    continue
             history.append({
-                'question_number': index,
-                'survived_rounds': entry['survived_rounds'],
-                'max_rounds': entry['max_rounds'],
+                'question_number': row['number'],
+                'survived_rounds': sum(sub.is_correct for sub in own),
+                'max_rounds': max_rounds,
+                'question_id': row['question'].pk,
+                'set_number': row['set_number'],
             })
-        return history
+        # Keep the established public scorebox shape; question_number identifies each played set.
+        return [{key: value for key, value in entry.items() if key not in {'question_id', 'set_number'}} for entry in history]
 
     # --- Hub mirroring helpers ---
 
     def _get_hub_session_code_for_room_sync(self):
+        if self._authoritative_session_code():
+            return self._authoritative_session_code()
         try:
             qs = HubGameStep.objects.select_related('session') \
                 .filter(game_key='sorting_ladder', room_code=self.room_code)
@@ -2980,6 +2900,8 @@ class SortingLadderGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketCo
         return self._get_hub_session_code_for_room_sync()
 
     async def hub_mirror_event(self, event_type: str, payload: dict):
+        if event_type == 'round_result':
+            payload = {key: value for key, value in payload.items() if key not in {'correct_order_ids', 'progress_history', 'auto_results'}}
         session_code = await self._get_hub_session_code_for_room()
         if not session_code:
             return

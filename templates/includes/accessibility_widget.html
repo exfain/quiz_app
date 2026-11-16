@@ -2299,7 +2299,7 @@ html[data-participant-theme="arcade"] .qa-arcade-wait-loader-10::before {
           <select class="participant-theme-select" id="participant-theme-select">
             <option value="standard">Standard</option>
             <option value="arcade">Arcade</option>
-            <option value="vhs">VHS</option>
+            <option value="vhs" selected>VHS</option>
           </select>
         </div>
         <div class="participant-options-control">
@@ -2359,7 +2359,7 @@ html[data-participant-theme="arcade"] .qa-arcade-wait-loader-10::before {
 <script>
 (function () {
   var LS_THEME = 'participant_interface_theme';
-  var DEFAULT_THEME = 'standard';
+  var DEFAULT_THEME = 'vhs';
   var ARCADE_THEME = 'arcade';
   var VHS_THEME = 'vhs';
   var standardLoaderVariants = [
@@ -2407,8 +2407,8 @@ html[data-participant-theme="arcade"] .qa-arcade-wait-loader-10::before {
   function getActiveTheme() {
     var datasetTheme = document.documentElement.dataset.participantTheme;
     var storedTheme = readStoredTheme();
-    if ([DEFAULT_THEME, ARCADE_THEME, VHS_THEME].indexOf(datasetTheme) !== -1) return datasetTheme;
-    return [ARCADE_THEME, VHS_THEME].indexOf(storedTheme) !== -1 ? storedTheme : DEFAULT_THEME;
+    if (['standard', ARCADE_THEME, VHS_THEME].indexOf(datasetTheme) !== -1) return datasetTheme;
+    return ['standard', ARCADE_THEME, VHS_THEME].indexOf(storedTheme) !== -1 ? storedTheme : DEFAULT_THEME;
   }
 
   function clearWaitLoaderVariantClasses(loader) {
@@ -2530,7 +2530,7 @@ html[data-participant-theme="arcade"] .qa-arcade-wait-loader-10::before {
   var MIN_FONT_SCALE = 0.85;
   var MAX_FONT_SCALE = 1.3;
   var FONT_SCALE_STEP = 0.05;
-  var DEFAULT_THEME = 'standard';
+  var DEFAULT_THEME = 'vhs';
   var THEMES = ['standard', 'arcade', 'vhs'];
   var DEFAULT_SCORE_POSITION = 'bottom-left';
   var SCORE_POSITIONS = ['bottom-left', 'top-left', 'top-right', 'bottom-right'];

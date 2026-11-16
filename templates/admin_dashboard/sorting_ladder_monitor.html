@@ -51,7 +51,7 @@
                                 <label class="form-check-label" for="playTutorialToggle">Tutorial spielen</label>
                             </div>
                             {% endif %}
-                            <button class="btn btn-success" id="startQuizBtn" data-host-game-start>
+                            <button class="btn btn-success" id="startQuizBtn" data-host-game-start data-host-game-resume="{% if quiz.status == 'inactive' %}true{% else %}false{% endif %}">
                                 <i data-lucide="play"></i>
                                 {% if quiz.status == 'inactive' %}Spiel reaktivieren{% else %}Spiel starten{% endif %}
                             </button>
@@ -946,6 +946,7 @@ document.addEventListener('DOMContentLoaded', function() {
             this.currentPhaseLabel = 'Warte auf Antworten';
             this.totalRoundsForQuestion = parseInt(activeQuestion?.dataset?.totalRounds || '0', 10) || 0;
             this.currentRoundNumber = parseInt(activeQuestion?.dataset?.currentRound || '0', 10) || 0;
+            this.currentQuestionId = '{{ quiz.current_question_id|default:"" }}';
             this.currentSetNumber = parseInt(activeQuestion?.dataset?.currentSet || '0', 10) || 0;
             this.revealState = activeQuestion?.dataset?.revealState || 'active';
             this.questionPhase = activeQuestion?.dataset?.questionPhase || '{{ question_runtime.question_phase|default:""|escapejs }}';
@@ -1049,6 +1050,10 @@ document.addEventListener('DOMContentLoaded', function() {
                 this.stateRevision = revision;
             }
             if (source.game_id) this.gameId = String(source.game_id);
+            const questionId = source.current_question_id || source.question_id || source.question?.id;
+            if (questionId) this.currentQuestionId = String(questionId);
+            const setNumber = source.question?.set_number || source.set_number || source.current_set_id;
+            if (setNumber) this.currentSetNumber = Number(setNumber);
             if (source.question_phase !== undefined && source.question_phase !== null) {
                 this.questionPhase = String(source.question_phase);
             }
@@ -1098,7 +1103,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
         hostActionContext(questionId) {
             return {
-                question_id: questionId,
+                question_id: questionId || this.currentQuestionId,
                 game_id: this.gameId || null,
                 state_revision: this.stateRevision,
                 client_action_id: window.AuthoritativeGameState?.createActionId?.(),
@@ -1330,6 +1335,9 @@ document.addEventListener('DOMContentLoaded', function() {
                     window.hostEndState?.apply({ message: data.message, event: data });
                     break;
 
+                case 'quiz_resumed':
+                    location.reload();
+                    break;
                 case 'quiz_inactive':
                     console.log('Game set inactive:', data.message);
                     this.isActive = false;
@@ -1585,7 +1593,8 @@ document.addEventListener('DOMContentLoaded', function() {
         endCurrentQuestion() {
             if (this.websocket && this.websocket.readyState === WebSocket.OPEN) {
                 this.websocket.send(JSON.stringify({
-                    type: 'admin_end_question'
+                    type: 'admin_end_question',
+                    ...this.hostActionContext()
                 }));
             }
         }
@@ -1597,7 +1606,8 @@ document.addEventListener('DOMContentLoaded', function() {
             }
             if (this.websocket && this.websocket.readyState === WebSocket.OPEN) {
                 this.websocket.send(JSON.stringify({
-                    type: 'admin_show_solution'
+                    type: 'admin_show_solution',
+                    ...this.hostActionContext()
                 }));
             }
         }
@@ -1646,7 +1656,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 }
                 this.websocket.send(JSON.stringify({
                     type: 'admin_start_round',
-                    ...this.hostActionContext('{{ quiz.current_question_id|default:"" }}'),
+                    ...this.hostActionContext(),
                 }));
             }
         }
@@ -2055,6 +2065,7 @@ document.addEventListener('DOMContentLoaded', function() {
 (function() {
     const modal = document.getElementById('editScoreModal');
     if (!modal) return;
+    document.body.appendChild(modal);
     let currentParticipantId = null;
     document.addEventListener('click', function(e) {
         const btn = e.target.closest('.edit-score-btn');

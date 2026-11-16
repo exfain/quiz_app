@@ -4,6 +4,10 @@ from django.conf import settings
 from django.db import models, transaction
 from games_website.models import SyncBase
 from django.utils import timezone
+from django.core.validators import MinValueValidator, MaxValueValidator
+from duel.contracts import GameFormat, SessionType
+from duel.matches import MatchConfig, parse_match_config
+from .text_matching import default_text_match_threshold
 
 
 class HubSession(SyncBase):
@@ -42,6 +46,14 @@ class HubSession(SyncBase):
 
     code = models.CharField(max_length=16, unique=True)
     name = models.CharField(max_length=100, blank=True)
+    # Configuration only. Future authorized planning updates must lock this
+    # row and reject type changes once started_at is set, using the same
+    # transaction boundary as activate_exclusive(). No lifecycle guard yet.
+    session_type = models.CharField(
+        max_length=20,
+        choices=[(kind.value, kind.name.replace('_', ' ').title()) for kind in SessionType],
+        default=SessionType.MULTIPLAYER.value,
+    )
     creator = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         related_name='created_hub_sessions',
@@ -55,6 +67,10 @@ class HubSession(SyncBase):
     is_active = models.BooleanField(default=True)
     current_step_index = models.IntegerField(default=0)
     games_weight = models.FloatField(default=2.0)
+    text_match_threshold = models.PositiveSmallIntegerField(
+        default=default_text_match_threshold,
+        validators=[MinValueValidator(65), MaxValueValidator(100)],
+    )
     scoreboard_visible = models.BooleanField(default=False)
     overall_scoring_mode = models.CharField(
         max_length=20,
@@ -88,6 +104,14 @@ class HubSession(SyncBase):
     lobby_return_countdown_ends_at = models.DateTimeField(null=True, blank=True)
     lobby_return_countdown_duration_seconds = models.PositiveIntegerField(null=True, blank=True)
 
+    class Meta:
+        constraints = [
+            models.CheckConstraint(
+                condition=models.Q(session_type__in=[kind.value for kind in SessionType]),
+                name='hub_session_valid_type',
+            ),
+        ]
+
     @staticmethod
     def _get_game_model_map():
         from QuizGame.models import Quiz as QuizGameModel
@@ -101,6 +125,7 @@ class HubSession(SyncBase):
         from sorting_ladder.models import SortingLadderGame
         from wer_weiss_mehr.models import WerWeissMehrGame
         from buzzer.models import BuzzerGame
+        from duel.models import BidGame
         from host_points.models import HostPointsGame
         from wann_war_das.models import WannWarDasGame
 
@@ -115,6 +140,7 @@ class HubSession(SyncBase):
             'clue_rush': ClueRushGame,
             'sorting_ladder': SortingLadderGame,
             'wer_weiss_mehr': WerWeissMehrGame,
+            'bid': BidGame,
             'buzzer': BuzzerGame,
             'host_points': HostPointsGame,
             'wann_war_das': WannWarDasGame,
@@ -133,6 +159,48 @@ class HubSession(SyncBase):
         for game_key, room_codes in room_codes_by_game.items():
             model = cls._get_game_model_map().get(game_key)
             if not model or not room_codes:
+                continue
+            if game_key in {'buzzer', 'host_points'}:
+                from .manual_game_runtime import set_status
+                for game in model.objects.filter(room_code__in=room_codes, status='active',
+                        active_hub_session_code__in=session_codes):
+                    set_status(game, 'inactive')
+                continue
+            if game_key == 'blackjack':
+                from black_jack_quiz.runtime import set_paused, broadcast
+                for game in model.objects.filter(room_code__in=room_codes, status='active'):
+                    if set_paused(game, True):
+                        broadcast(game, {'type': 'state_updated'})
+                continue
+            if game_key == 'wer_weiss_mehr':
+                from wer_weiss_mehr.runtime import set_paused
+                for game in model.objects.filter(room_code__in=room_codes, status='active'):
+                    set_paused(game, True)
+                continue
+            if game_key in {'assign', 'sorting_ladder'}:
+                from .matching_runtime import set_paused
+                for game in model.objects.filter(room_code__in=room_codes, status='active'):
+                    set_paused(game, game_key, True)
+                continue
+            if game_key == 'clue_rush':
+                from clue_rush.runtime import set_paused, broadcast
+                for game in model.objects.filter(room_code__in=room_codes, status='active'):
+                    if set_paused(game.pk, True):
+                        broadcast('quiz_inactive', {}, game.room_code)
+                continue
+            if game_key == 'wann_war_das':
+                for game in model.objects.filter(room_code__in=room_codes, status='active'):
+                    game.set_paused(True)
+                continue
+            if game_key == 'where':
+                from where_is_this.runtime import set_paused
+                for game in model.objects.filter(room_code__in=room_codes, status='active', active_hub_session_code__in=session_codes):
+                    set_paused(game, True)
+                continue
+            if game_key in {'quiz', 'who', 'who_that', 'estimation'}:
+                from .quiz_pause import pause
+                for game in model.objects.filter(room_code__in=room_codes, status='active'):
+                    pause(game, game_key)
                 continue
             model.objects.filter(
                 room_code__in=room_codes,
@@ -180,7 +248,8 @@ class HubSession(SyncBase):
         for step in self.steps.order_by('order', 'id'):
             model = model_map.get(step.game_key)
             game = model.objects.filter(room_code=step.room_code).first() if model and step.room_code else None
-            if getattr(game, 'status', None) == 'completed':
+            from .session_results import step_status
+            if step_status(step, game) == 'completed':
                 continue
             return step
         return None
@@ -190,6 +259,8 @@ class HubSession(SyncBase):
         return step.order + 1 if step else None
 
     def has_started_game(self):
+        if self.session_type == SessionType.DUEL.value:
+            return self.duel_instances.exists()
         model_map = self._get_game_model_map()
         for step in self.steps.exclude(room_code='').order_by('order'):
             model = model_map.get(step.game_key)
@@ -361,6 +432,7 @@ class HubGameUnitTutorialRuntime(SyncBase):
 
 
 class HubGameStep(SyncBase):
+    DUEL_ONLY_GAME_KEYS = frozenset({"bid"})
     GAME_CHOICES = [
         ('quiz', 'QuizGame'),
         ('assign', 'Assign'),
@@ -371,6 +443,7 @@ class HubGameStep(SyncBase):
         ('blackjack', 'Black Jack Quiz'),
         ('sorting_ladder', 'Sorting Ladder'),
         ('clue_rush', 'Clue Rush'),
+        ('bid', 'Gebotsspiel'),
         ('buzzer', 'Buzzer'),
         ('host_points', 'Host-Punktevergabe'),
         ('wann_war_das', 'Wann war das?'),
@@ -379,18 +452,59 @@ class HubGameStep(SyncBase):
     session = models.ForeignKey(HubSession, related_name='steps', on_delete=models.CASCADE)
     order = models.PositiveIntegerField()
     game_key = models.CharField(max_length=20, choices=GAME_CHOICES)
+    # Persistence only: even a not-yet-started DUEL session may temporarily
+    # contain STANDARD steps. That is not a playable duel configuration.
+    # Before enabling duel play, authorized planning/activation must select the
+    # type-dependent default and validate compatibility under a session lock.
+    # Do not add global save validation or dispatch rules in this model step.
+    game_format = models.CharField(
+        max_length=20,
+        choices=[(kind.value, kind.name.replace('_', ' ').title()) for kind in GameFormat],
+        default=GameFormat.STANDARD.value,
+        db_default=GameFormat.STANDARD.value,
+    )
+    # Planning metadata only. {} means explicitly unconfigured, never a default
+    # best-of/target. The later authorized start path must validate under its
+    # transaction and freeze this configuration in the new DuelGameInstance.
+    # Neither save() nor this field starts a match or changes the game format.
+    duel_match_config = models.JSONField(default=dict, db_default={}, blank=True)
     room_code = models.CharField(max_length=16, blank=True)
     title = models.CharField(max_length=100, blank=True)
     intro_started_at = models.DateTimeField(null=True, blank=True)
     intro_ends_at = models.DateTimeField(null=True, blank=True)
     intro_state_revision = models.PositiveBigIntegerField(default=0)
+    result_snapshot = models.JSONField(default=dict, blank=True)
 
     class Meta:
         ordering = ['order']
         unique_together = ('session', 'order')
+        constraints = [
+            models.CheckConstraint(
+                condition=models.Q(game_format__in=[kind.value for kind in GameFormat]),
+                name='hub_step_valid_format',
+            ),
+        ]
 
     def __str__(self):
         return f"{self.order}: {self.get_game_key_display()} ({self.session.code})"
+
+    def get_duel_match_config(self) -> MatchConfig:
+        """Parse the plan with the existing rules; an empty plan raises ValueError."""
+        return parse_match_config({"match": self.duel_match_config})
+
+    def clean(self):
+        super().clean()
+        from django.core.exceptions import ValidationError
+        if type(self.duel_match_config) is not dict:
+            raise ValidationError({"duel_match_config": "Die Duell-Matchkonfiguration muss ein JSON-Objekt sein."})
+        if self.duel_match_config:
+            try:
+                self.get_duel_match_config()
+            except (TypeError, ValueError) as exc:
+                raise ValidationError({"duel_match_config": (
+                    "Gib entweder Best of N mit einer positiven ungeraden Rundenzahl "
+                    "oder eine positive ganzzahlige Zielpunktzahl an."
+                )}) from exc
 
 
 class HubReadinessCheck(SyncBase):

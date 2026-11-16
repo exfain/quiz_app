@@ -2,7 +2,7 @@ import json
 import asyncio
 from channels.generic.websocket import AsyncWebsocketConsumer
 from channels.db import database_sync_to_async
-from django.db import IntegrityError, transaction
+from django.db import IntegrityError, OperationalError, transaction
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 from .models import (
@@ -15,12 +15,16 @@ from .models import (
 )
 from .runtime import (
     current_clue_runtime,
+    retry_locked,
+    submission_position, set_paused, end_game,
     finalize_clue_question,
     prepare_question_schedule,
     reconcile_clue_schedule,
     start_prepared_question_schedule,
     start_question_schedule,
 )
+from .progress import current_round, question_progress, score_history
+from games_hub.host_permissions import authorize_game_host
 from games_hub.active_game_guard import resolve_session_game_activation_for_room
 from games_hub.authoritative_consumer import AuthoritativeGameConsumerMixin
 from games_hub.authoritative_state import (
@@ -58,41 +62,21 @@ except Exception:
 
 
 def _question_number_for_game(quiz, question_id, hub_session_code=None):
-    excluded_ids = get_scorebox_excluded_tutorial_question_ids(
-        'clue_rush',
-        quiz.room_code,
-        hub_session_code,
-    )
-    selected_ids = list(
-        quiz.selected_questions
-        .filter(is_active=True)
-        .exclude(id__in=excluded_ids)
-        .order_by('id')
-        .values_list('id', flat=True)
-    )
-    selected_id_set = set(selected_ids)
-    ordered_ids = []
-    for raw_id in quiz.question_order or []:
-        try:
-            normalized_id = int(raw_id)
-        except (TypeError, ValueError):
-            continue
-        if normalized_id in selected_id_set and normalized_id not in ordered_ids:
-            ordered_ids.append(normalized_id)
-    ordered_ids.extend(
-        question_id
-        for question_id in selected_ids
-        if question_id not in ordered_ids
-    )
-    try:
-        return ordered_ids.index(int(question_id)) + 1
-    except (TypeError, ValueError):
-        return None
+    return question_progress(quiz, hub_session_code, question_id)['current']
 
 
 class ClueRushGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
     authoritative_game_key = 'clue_rush'
     authoritative_required_actions = frozenset({'participant_submit_answer'})
+
+    async def send(self, text_data=None, bytes_data=None, close=False):
+        for attempt, delay in enumerate((0.02, 0.05, 0.1, 0.2, 0)):
+            try:
+                return await super().send(text_data=text_data, bytes_data=bytes_data, close=close)
+            except OperationalError as error:
+                if 'locked' not in str(error).lower() or attempt == 4:
+                    raise
+                await asyncio.sleep(delay)
 
     async def connect(self):
         self.room_code = self.scope['url_route']['kwargs']['room_code']
@@ -131,6 +115,9 @@ class ClueRushGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsume
         }))
 
     async def disconnect(self, close_code):
+        task = getattr(self, 'auto_clue_task', None)
+        if task and not task.done():
+            task.cancel()
         # Leave room group
         await self.channel_layer.group_discard(
             self.room_group_name,
@@ -144,7 +131,11 @@ class ClueRushGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsume
             message_type = text_data_json.get('type')
             
             print("ClueRushGame Consumer: ", message_type)
-            if message_type == 'admin_start_quiz':
+            if str(message_type or '').startswith('admin_'):
+                self._clue_host_socket = True
+            if message_type == 'admin_get_state':
+                await self.send_state(text_data_json)
+            elif message_type == 'admin_start_quiz':
                 await self.handle_admin_start_quiz(text_data_json)
             elif message_type == 'admin_send_question':
                 await self.handle_admin_send_question(text_data_json)
@@ -184,7 +175,20 @@ class ClueRushGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsume
             }))
 
     async def handle_admin_start_quiz(self, data):
-        """Handle admin starting the quiz"""
+        """Start a fresh game or resume its persisted pause."""
+        quiz = await self.get_quiz()
+        if quiz and quiz.status == 'active':
+            return
+        if quiz and quiz.status == 'inactive' and getattr(getattr(quiz, 'session', None), 'paused_at', None):
+            activation = await database_sync_to_async(resolve_session_game_activation_for_room)('clue_rush', self.room_code)
+            if not activation.get('success'):
+                await self.send(text_data=json.dumps({'type': 'error', 'message': activation.get('error') or activation.get('message') or 'Ein anderes Spiel ist aktiv.'}))
+                return
+            if await database_sync_to_async(set_paused)(quiz.id, False):
+                await self.channel_layer.group_send(self.room_group_name, {'type': 'quiz_resumed'})
+            if quiz.current_question_id:
+                self._ensure_clue_reconciliation_task(quiz.current_question_id)
+            return
         lobby_ready = await database_sync_to_async(ensure_session_players_ready_for_game_start_for_room)(
             'clue_rush',
             self.room_code,
@@ -338,9 +342,10 @@ class ClueRushGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsume
                 'question': {
                     'id': question.id,
                     'question_number': question_number,
+                    **(await self.question_progress_payload(quiz.id, hub_session)),
                     'question_text': question.question_text,
                     'time_limit': effective_time_limit,
-                    'points': 0 if is_tutorial_round else question.points,
+                    'points': 0 if is_tutorial_round else len(await self.question_clues(question.id)),
                     'is_tutorial_round': is_tutorial_round,
                     'question_started_at': question_started_at,
                     'starts_at': None,
@@ -357,9 +362,10 @@ class ClueRushGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsume
             'question': {
                 'id': question.id,
                 'question_number': question_number,
+                    **(await self.question_progress_payload(quiz.id, hub_session)),
                 'question_text': question.question_text,
                 'time_limit': effective_time_limit,
-                'points': 0 if is_tutorial_round else question.points,
+                'points': 0 if is_tutorial_round else len(await self.question_clues(question.id)),
                 'is_tutorial_round': is_tutorial_round,
                 'question_started_at': question_started_at,
                 'starts_at': None,
@@ -402,9 +408,10 @@ class ClueRushGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsume
         question_payload = {
             'id': question.id,
             'question_number': question_number,
+                    **(await self.question_progress_payload(quiz.id, hub_session)),
             'question_text': question.question_text,
             'time_limit': question.time_limit,
-            'points': question.points,
+            'points': len(await self.question_clues(question.id)),
             'question_started_at': decision.snapshot.get('answering_started_at'),
             'starts_at': decision.snapshot.get('answering_started_at'),
             'ends_at': decision.snapshot.get('answering_deadline_at'),
@@ -477,22 +484,23 @@ class ClueRushGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsume
                     'message': 'Die Frage kann vor dem Hinweisstart nicht beendet werden.',
                 }))
                 return
+            if str(data.get('question_id') or '') != str(quiz.current_question_id or ''):
+                await self.send_action_error('stale_action')
+                return
+            revision = data.get('state_revision')
+            if revision is not None and str(revision) != str(phase_snapshot['state_revision']):
+                await self.send_action_error('stale_action')
+                return
             # Stop automatic clue sending if running
             try:
                 if hasattr(self, 'auto_clue_task') and self.auto_clue_task and not self.auto_clue_task.done():
                     self.auto_clue_task.cancel()
             except Exception:
                 pass
-            ended_payload = await self.finalize_current_question_for_end(hub_session)
+            ended_payload = await self.finalize_current_question_for_end(hub_session, data.get('question_id'), data.get('round_number'))
             if not ended_payload.get('newly_finalized'):
                 return
             correct_payload = ended_payload.get('correct_answer')
-            await database_sync_to_async(finish_question_flow)(
-                game_key='clue_rush',
-                room_code=self.room_code,
-                session_code=hub_session,
-                question_id=correct_payload.get('question_id'),
-            )
             
             await self.channel_layer.group_send(
                 self.room_group_name,
@@ -608,10 +616,7 @@ class ClueRushGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsume
             await self.send(text_data=json.dumps({
                 'type': 'answer_submitted',
                 'message': 'Answer submitted successfully',
-                'is_correct': answer['is_correct'],
-                'points_earned': answer['points_earned'],
                 'is_tutorial_round': answer.get('is_tutorial_round', False),
-                'is_close': answer.get('is_close', False),
                 'progress_history': progress_history,
                 'answer': {
                     'answer_text': answer.get('answer_text', answer_text),
@@ -654,12 +659,15 @@ class ClueRushGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsume
             await self.send_action_error('invalid_participant')
             return
         answer_text = data.get('answer', '')
-        await self.store_pending_input(
+        saved = await self.store_pending_input(
             participant_name,
             hub_session,
             answer_text,
             data.get('question_id'),
+            data.get('round_id'),
         )
+        if saved:
+            await self.send(text_data=json.dumps({'type': 'input_saved', 'answer': answer_text, 'question_id': data.get('question_id')}))
 
     async def send_action_error(self, code):
         await self.send(text_data=json.dumps({
@@ -671,6 +679,7 @@ class ClueRushGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsume
 
     async def handle_participant_join(self, data):
         """Handle new participant joining"""
+        self._clue_participant_socket = True
         participant_name = data.get('participant_name')
         hub_session = data.get('hub_session')
         self._authoritative_participant = str(participant_name or '').strip()
@@ -686,7 +695,7 @@ class ClueRushGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsume
                 'type': 'progress_history',
                 'history': progress_history,
             }))
-            if quiz and quiz.status == 'active':
+            if quiz and quiz.status in {'active', 'inactive'}:
                 await self.send_state({
                     'participant_name': participant_name,
                     'hub_session': hub_session,
@@ -699,6 +708,7 @@ class ClueRushGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsume
                 {
                     'type': 'participant_joined',
                     'participant': {
+                        'id': participant['id'],
                         'name': participant['name'],
                         'total_score': participant['total_score']
                     }
@@ -872,7 +882,7 @@ class ClueRushGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsume
             'type': 'question_ended',
             'message': event['message'],
             'correct_answer': event.get('correct_answer'),
-            'answers': event.get('answers', []),
+            'answers': event.get('answers', []) if await self.is_game_host() else [answer for answer in event.get('answers', []) if answer.get('participant_name') == self._authoritative_participant_name() and str(answer.get('hub_session_code') or '') == self._authoritative_session_code()],
             'is_tutorial_round': event.get('is_tutorial_round', False),
         }))
 
@@ -890,14 +900,48 @@ class ClueRushGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsume
             'message': event.get('message', 'Quiz has been set inactive.')
         }))
 
+    async def quiz_resumed(self, event):
+        await self.send_state({})
+        await self.send(text_data=json.dumps({'type': 'quiz_resumed'}))
+
+    def _host_authorized(self):
+        if not getattr(self, '_clue_host_socket', False) or getattr(self, '_clue_participant_socket', False):
+            return False
+        return authorize_game_host(getattr(self, 'scope', {}).get('user'), 'clue_rush', self.room_code,
+                                   self._authoritative_session_code() or None).allowed
+
+    @database_sync_to_async
+    def is_game_host(self):
+        return self._host_authorized()
+
+    @database_sync_to_async
+    def question_progress_payload(self, quiz_id, code):
+        quiz = ClueRushGame.objects.get(pk=quiz_id)
+        return {'round_number': current_round(quiz), 'total_questions': question_progress(quiz, code, quiz.current_question_id)['total']}
+
+    @database_sync_to_async
+    def question_clues(self, question_id):
+        return list(ClueQuestion.objects.get(pk=question_id).clues.values_list('id', flat=True))
+
     async def participant_answered(self, event):
         """Send participant answer to admin"""
+        if not await self.is_game_host():
+            return
         await self.send(text_data=json.dumps({
             'type': 'participant_answered',
             'answer': event['answer']
         }))
 
     async def answer_corrected(self, event):
+        if not await self.is_game_host():
+            quiz = await self.get_quiz()
+            if quiz and quiz.current_question_id:
+                return
+        if not await self.is_game_host() and event.get('participant_name') != self._authoritative_participant_name():
+            return
+        target_code = (event.get('response') or {}).get('hub_session_code')
+        if not await self.is_game_host() and target_code is not None and str(target_code or '') != self._authoritative_session_code():
+            return
         await self.send(text_data=json.dumps({
             'type': 'answer_corrected',
             'response': event.get('response'),
@@ -910,6 +954,8 @@ class ClueRushGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsume
 
     async def participant_joined(self, event):
         """Send new participant info to admin"""
+        if not await self.is_game_host():
+            return
         await self.send(text_data=json.dumps({
             'type': 'participant_joined',
             'participant': event['participant']
@@ -919,7 +965,7 @@ class ClueRushGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsume
     @database_sync_to_async
     def get_quiz(self):
         try:
-            return ClueRushGame.objects.get(room_code=self.room_code)
+            return ClueRushGame.objects.select_related('session').get(room_code=self.room_code)
         except ClueRushGame.DoesNotExist:
             return None
 
@@ -988,7 +1034,7 @@ class ClueRushGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsume
             if session_code:
                 participant = quiz.participants.get(name=participant_name, hub_session_code=session_code)
             else:
-                participant = quiz.participants.get(name=participant_name)
+                participant = quiz.participants.get(name=participant_name, hub_session_code=None)
 
             if not quiz.current_question:
                 return None
@@ -996,7 +1042,8 @@ class ClueRushGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsume
             answer = ClueAnswer.objects.filter(
                 quiz=quiz,
                 participant=participant,
-                question=quiz.current_question
+                question=quiz.current_question,
+                round_number=current_round(quiz),
             ).first()
             if not answer:
                 return None
@@ -1057,7 +1104,7 @@ class ClueRushGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsume
             if session_code:
                 participant = quiz.participants.get(name=participant_name, hub_session_code=session_code)
             else:
-                participant = quiz.participants.get(name=participant_name)
+                participant = quiz.participants.get(name=participant_name, hub_session_code=None)
 
             if not quiz.current_question:
                 return None
@@ -1066,6 +1113,7 @@ class ClueRushGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsume
                 quiz=quiz,
                 participant=participant,
                 question=quiz.current_question,
+                round_number=current_round(quiz),
             ).first()
             if not answer:
                 return None
@@ -1117,31 +1165,6 @@ class ClueRushGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsume
         return result
 
     async def broadcast_reconciliation_result(self, result, *, include_clues=True):
-        for clue in (result.get('new_clues', []) if include_clues else []):
-            await self.channel_layer.group_send(
-                self.room_group_name,
-                {
-                    'type': 'clue_started',
-                    'clue': clue,
-                    'phase': 'question_active',
-                    'current_question_id': clue.get('question_id'),
-                    'current_round_id': clue.get('order'),
-                    'starts_at': clue.get('starts_at'),
-                    'ends_at': result.get('answer_deadline'),
-                },
-            )
-        if (
-            include_clues
-            and result.get('new_clues')
-            and not result['new_clues'][-1].get('has_next_clue')
-        ):
-            await self.channel_layer.group_send(
-                self.room_group_name,
-                {
-                    'type': 'clue_sequence_completed',
-                    'message': 'All clues have been sent.',
-                },
-            )
         if result.get('deadline_reached'):
             finalization = result.get('finalization') or {}
             ended = await self.get_finalized_question_payload(
@@ -1149,12 +1172,6 @@ class ClueRushGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsume
                 await self._get_hub_session_code_for_room(),
             )
             if ended.get('newly_finalized'):
-                await database_sync_to_async(finish_question_flow)(
-                    game_key='clue_rush',
-                    room_code=self.room_code,
-                    session_code=await self._get_hub_session_code_for_room(),
-                    question_id=finalization.get('question_id'),
-                )
                 await self.channel_layer.group_send(
                     self.room_group_name,
                     {
@@ -1168,7 +1185,7 @@ class ClueRushGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsume
 
     @database_sync_to_async
     def reconcile_clues_db(self):
-        return reconcile_clue_schedule(self.room_code)
+        return reconcile_clue_schedule(self.room_code, finalize=self._host_authorized())
 
     @database_sync_to_async
     def _has_current_question(self) -> bool:
@@ -1205,7 +1222,7 @@ class ClueRushGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsume
     def get_participant_by_name(self, participant_name, hub_session):
         try:
             quiz = ClueRushGame.objects.get(room_code=self.room_code)
-            participant = quiz.participants.get(name=participant_name, hub_session_code=hub_session)
+            participant = quiz.participants.get(name=participant_name, hub_session_code=hub_session or None)
             return {
                 'id': participant.id,
                 'name': participant.name,
@@ -1242,10 +1259,10 @@ class ClueRushGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsume
                 'current_question',
                 'session',
             ).get(room_code=self.room_code)
-            participant = quiz.participants.get(
-                name=participant_name,
-                hub_session_code=hub_session,
-            )
+            participant = (quiz.participants.get(name=participant_name, hub_session_code=hub_session or None)
+                           if participant_name else None)
+            if participant is None and not self._host_authorized():
+                raise ClueRushParticipant.DoesNotExist()
         except (ClueRushGame.DoesNotExist, ClueRushParticipant.DoesNotExist):
             return {
                 'type': 'clue_rush_state',
@@ -1262,11 +1279,12 @@ class ClueRushGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsume
         ]
         answer = None
         pending = None
-        if question:
+        if question and participant:
             answer = ClueAnswer.objects.filter(
                 quiz=quiz,
                 participant=participant,
                 question=question,
+                round_number=current_round(quiz),
             ).first()
             if not answer:
                 pending = CluePendingInput.objects.filter(
@@ -1274,7 +1292,7 @@ class ClueRushGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsume
                     participant=participant,
                     question=question,
                 ).first()
-        phase = 'question_active' if question and session.is_question_active else quiz.status
+        phase = 'question_active' if quiz.status == 'active' and question and session.is_question_active else quiz.status
         question_payload = None
         if question:
             is_tutorial_round = is_unit_tutorial_question(
@@ -1290,9 +1308,11 @@ class ClueRushGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsume
                     if is_tutorial_round
                     else _question_number_for_game(quiz, question.id, hub_session)
                 ),
+                'round_number': current_round(quiz),
+                'total_questions': question_progress(quiz, hub_session, question.id)['total'],
                 'question_text': question.question_text,
                 'time_limit': question.time_limit,
-                'points': 0 if is_tutorial_round else question.points,
+                'points': 0 if is_tutorial_round else question.clues.count(),
                 'is_tutorial_round': is_tutorial_round,
                 'question_started_at': (
                     quiz.question_start_time.isoformat()
@@ -1313,13 +1333,14 @@ class ClueRushGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsume
             }
 
         latest_reveal = None
-        if not question and session.finalized_question_id:
+        if not question and participant and session.finalized_question_id:
             latest_answer = (
                 ClueAnswer.objects
                 .filter(
                     quiz=quiz,
                     participant=participant,
                     question_id=session.finalized_question_id,
+                    round_number=current_round(quiz),
                 )
                 .select_related('question', 'participant')
                 .first()
@@ -1338,13 +1359,19 @@ class ClueRushGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsume
         serialized_answer = None
         if answer:
             serialized_answer = self._serialize_answer_for_event(answer)
+            if phase != 'revealed' and not self._host_authorized():
+                from .public import ungraded_answer
+                serialized_answer = ungraded_answer(serialized_answer)
         return {
             'type': 'clue_rush_state',
+            'round_number': current_round(quiz),
+            'total_questions': question_progress(quiz, hub_session, quiz.current_question_id)['total'],
+            'paused': quiz.status == 'inactive',
             'phase': phase,
             'game': {'id': quiz.id, 'status': quiz.status},
             'question': question_payload,
             'current_question_id': question.id if question else None,
-            'current_round_id': session.current_clue_number if question else None,
+            'current_round_id': current_round(quiz) if question else None,
             'starts_at': question_payload.get('starts_at') if question_payload else None,
             'ends_at': question_payload.get('ends_at') if question_payload else None,
             'server_now': now.isoformat(),
@@ -1363,13 +1390,13 @@ class ClueRushGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsume
                 ),
                 'answer_locked': bool(answer),
                 'timed_out': bool(answer and not answer.answer_text),
-                'points': answer.points_earned if answer else None,
+                'points': answer.points_earned if answer and phase == 'revealed' else None,
                 'next_state': phase,
             },
             'revealed': phase == 'revealed',
             'correct_answer': latest_reveal.get('correct_answer') if latest_reveal else None,
             'revealed_answer': latest_reveal.get('answer') if latest_reveal else None,
-            'progress_history': self._build_participant_score_history(quiz, participant),
+            'progress_history': self._build_participant_score_history(quiz, participant) if participant else [],
         }
 
     @database_sync_to_async
@@ -1382,25 +1409,14 @@ class ClueRushGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsume
 
     @database_sync_to_async
     def end_quiz_db(self, quiz_id):
-        try:
-            quiz = ClueRushGame.objects.get(id=quiz_id)
-            quiz.status = 'completed'
-            quiz.ended_at = timezone.now()
-            quiz.current_question = None
-            quiz.save()
-        except ClueRushGame.DoesNotExist:
-            pass
+        end_game(quiz_id)
 
     @database_sync_to_async
     def set_quiz_inactive_db(self, quiz_id):
-        try:
-            quiz = ClueRushGame.objects.get(id=quiz_id)
-            quiz.status = 'inactive'
-            quiz.save(update_fields=['status'])
-        except ClueRushGame.DoesNotExist:
-            pass
+        set_paused(quiz_id, True)
 
     @database_sync_to_async
+    @retry_locked
     @transaction.atomic
     def present_clue_question(
         self,
@@ -1444,6 +1460,7 @@ class ClueRushGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsume
         return decision
 
     @database_sync_to_async
+    @retry_locked
     @transaction.atomic
     def open_clue_answering(
         self,
@@ -1559,13 +1576,17 @@ class ClueRushGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsume
             pass
 
     @database_sync_to_async
+    @retry_locked
     def store_pending_input(
         self,
         participant_name,
         hub_session_code,
         answer_text,
         question_id,
+        round_number=None,
     ):
+        if not isinstance(answer_text, str) or len(answer_text) > 200:
+            return None
         try:
             with transaction.atomic():
                 quiz = (
@@ -1579,13 +1600,14 @@ class ClueRushGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsume
                     quiz.status != 'active'
                     or not quiz.current_question_id
                     or str(quiz.current_question_id) != str(question_id)
+                    or (round_number is not None and str(current_round(quiz)) != str(round_number))
                     or not session.is_question_active
                     or not session.answer_deadline
                     or timezone.now() >= session.answer_deadline
                 ):
                     return None
-                participant = quiz.participants.get(name=participant_name, hub_session_code=hub_session_code)
-                if ClueAnswer.objects.filter(quiz=quiz, participant=participant, question=quiz.current_question).exists():
+                participant = quiz.participants.get(name=participant_name, hub_session_code=hub_session_code or None)
+                if ClueAnswer.objects.filter(quiz=quiz, participant=participant, question=quiz.current_question, round_number=current_round(quiz)).exists():
                     CluePendingInput.objects.filter(quiz=quiz, participant=participant, question=quiz.current_question).delete()
                     return None
 
@@ -1595,7 +1617,7 @@ class ClueRushGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsume
                     participant=participant,
                     question=quiz.current_question,
                     defaults={
-                        'answer_text': (answer_text or '')[:200],
+                        'answer_text': answer_text,
                         'submitted_clue_number': submitted_clue_number,
                         'total_clues_at_input': total_clues,
                         'time_taken': max(
@@ -1613,11 +1635,13 @@ class ClueRushGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsume
         self,
         hub_session_code=None,
         expected_question_id=None,
+        expected_round_number=None,
     ):
         finalization = finalize_clue_question(
             self.room_code,
             expected_question_id=expected_question_id,
-            hub_session_code=hub_session_code,
+            expected_round_number=expected_round_number,
+            hub_session_code=hub_session_code or None,
             force=True,
         )
         return self._build_finalized_question_payload(
@@ -1652,9 +1676,10 @@ class ClueRushGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsume
         answers = ClueAnswer.objects.filter(
             quiz=quiz,
             question=question,
+            round_number=current_round(quiz),
         ).select_related('participant', 'question')
         if hub_session_code is not None:
-            answers = answers.filter(participant__hub_session_code=hub_session_code)
+            answers = answers.filter(participant__hub_session_code=hub_session_code or None)
         answer_payloads = [
             self._serialize_answer_for_event(answer)
             for answer in answers.order_by('participant__name')
@@ -1675,25 +1700,7 @@ class ClueRushGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsume
         }
 
     def _get_current_clue_submission_state(self, quiz, question):
-        current_clue = quiz.current_clue if (
-            quiz.current_clue_id and
-            quiz.current_clue and
-            quiz.current_clue.clue_question_id == question.id
-        ) else None
-        try:
-            session = quiz.session
-            current_clue_number = session.current_clue_number if session else None
-        except Exception:
-            current_clue_number = None
-
-        submitted_clue_number = question.get_revealed_clue_count(
-            current_clue=current_clue,
-            current_clue_order=current_clue_number,
-        )
-        total_clues = question.clues.count()
-        if submitted_clue_number <= 0 and total_clues > 0:
-            submitted_clue_number = 1
-        return submitted_clue_number, total_clues
+        return submission_position(quiz)
 
     def _serialize_answer_for_event(self, answer):
         is_tutorial_round = is_unit_tutorial_question(
@@ -1707,6 +1714,7 @@ class ClueRushGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsume
             'answer_id': answer.id,
             'participant_id': answer.participant_id,
             'participant_name': answer.participant.name,
+            'hub_session_code': answer.participant.hub_session_code,
             'question_id': answer.question_id,
             'answer_text': answer.answer_text,
             'is_correct': answer.is_correct,
@@ -1722,36 +1730,7 @@ class ClueRushGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsume
         }
 
     def _build_participant_score_history(self, quiz, participant):
-        tutorial_question_ids = get_scorebox_excluded_tutorial_question_ids(
-            'clue_rush',
-            self.room_code,
-            participant.hub_session_code,
-        )
-        answers = (
-            ClueAnswer.objects
-            .filter(quiz=quiz, participant=participant)
-            .select_related('question')
-            .order_by('submitted_at', 'id')
-        )
-        if quiz.started_at:
-            answers = answers.filter(submitted_at__gte=quiz.started_at)
-
-        history = []
-        for idx, answer in enumerate(
-            [answer for answer in answers if answer.question_id not in tutorial_question_ids],
-            start=1,
-        ):
-            max_points = answer.total_clues_at_submission or answer.question.clues.count()
-            achieved_points = 0
-            if answer.is_correct and max_points > 0:
-                achieved_points = max(0, min(answer.points_earned, max_points))
-            history.append({
-                'question_number': idx,
-                'correct_answer': answer.question.answer,
-                'achieved_points': achieved_points,
-                'max_points': max_points,
-            })
-        return history
+        return score_history(quiz, participant)
 
     def _coerce_positive_float(self, value):
         try:
@@ -1795,6 +1774,7 @@ class ClueRushGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsume
         })
 
     @database_sync_to_async
+    @retry_locked
     @transaction.atomic
     def save_participant_answer(
         self,
@@ -1803,6 +1783,8 @@ class ClueRushGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsume
         answer_text,
         question_id,
     ):
+        if not isinstance(answer_text, str) or not answer_text.strip() or len(answer_text) > 200:
+            return {'_error': 'invalid_answer'}
         try:
             quiz = (
                 ClueRushGame.objects
@@ -1813,7 +1795,7 @@ class ClueRushGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsume
             session = ClueRushSession.objects.select_for_update().get(quiz=quiz)
             participant = quiz.participants.select_for_update().get(
                 name=participant_name,
-                hub_session_code=hub_session_code,
+                hub_session_code=hub_session_code or None,
             )
             
             if (
@@ -1832,7 +1814,8 @@ class ClueRushGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsume
             existing_answer = ClueAnswer.objects.filter(
                 quiz=quiz,
                 participant=participant,
-                question=quiz.current_question
+                question=quiz.current_question,
+                round_number=current_round(quiz),
             ).first()
             
             if existing_answer:
@@ -1844,6 +1827,10 @@ class ClueRushGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsume
                     quiz=quiz,
                     participant=participant,
                     question=quiz.current_question,
+                    round_number=current_round(quiz),
+                    is_tutorial=is_unit_tutorial_question('clue_rush', self.room_code, hub_session_code, quiz.current_question_id),
+                    submitted_clue_number=submission_position(quiz, at=received_at)[0],
+                    total_clues_at_submission=submission_position(quiz, at=received_at)[1],
                     answer_text=answer_text,
                     time_taken=(
                         max(0, (received_at - quiz.question_start_time).total_seconds())
@@ -1925,9 +1912,7 @@ class ClueRushGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsume
             except Exception:
                 session_code = None
 
-            qs = quiz.participants
-            if session_code:
-                qs = qs.filter(hub_session_code=session_code)
+            qs = quiz.participants.filter(hub_session_code=session_code or None)
             return list(qs.values('name', 'total_score'))
         except ClueRushGame.DoesNotExist:
             return []
@@ -1988,7 +1973,7 @@ class ClueRushGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsume
                 ),
                 'question_text': current_question.question_text,
                 'time_limit': current_question.time_limit,
-                'points': 0 if is_tutorial_round else current_question.points,
+                'points': 0 if is_tutorial_round else current_question.clues.count(),
                 'is_tutorial_round': is_tutorial_round,
                 'question_started_at': quiz.question_start_time.isoformat() if quiz.question_start_time else None,
                 'starts_at': quiz.question_start_time.isoformat() if quiz.question_start_time else None,
@@ -2001,11 +1986,12 @@ class ClueRushGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsume
             ] if session else []
 
             try:
-                participant = quiz.participants.get(name=participant_name, hub_session_code=hub_session)
+                participant = quiz.participants.get(name=participant_name, hub_session_code=hub_session or None)
                 answer = ClueAnswer.objects.filter(
                     quiz=quiz,
                     participant=participant,
-                    question=current_question
+                    question=current_question,
+                    round_number=current_round(quiz),
                 ).first()
                 if answer:
                     participant_answer = {
@@ -2020,7 +2006,7 @@ class ClueRushGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsume
                 participant_answer = None
         else:
             try:
-                participant = quiz.participants.get(name=participant_name, hub_session_code=hub_session)
+                participant = quiz.participants.get(name=participant_name, hub_session_code=hub_session or None)
                 latest_answer_qs = ClueAnswer.objects.filter(
                     quiz=quiz,
                     participant=participant,
@@ -2058,39 +2044,7 @@ class ClueRushGameConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsume
     def get_participant_score_history(self, participant_name, hub_session_code):
         try:
             quiz = ClueRushGame.objects.get(room_code=self.room_code)
-            participant = quiz.participants.get(name=participant_name, hub_session_code=hub_session_code)
+            participant = quiz.participants.get(name=participant_name, hub_session_code=hub_session_code or None)
+            return score_history(quiz, participant)
         except (ClueRushGame.DoesNotExist, ClueRushParticipant.DoesNotExist):
             return []
-
-        answers = list(
-            ClueAnswer.objects
-            .filter(quiz=quiz, participant=participant)
-            .select_related('question')
-            .order_by('submitted_at', 'id')
-        )
-        tutorial_question_ids = get_scorebox_excluded_tutorial_question_ids(
-            'clue_rush',
-            self.room_code,
-            hub_session_code,
-        )
-
-        history = []
-        for idx, answer in enumerate(
-            [answer for answer in answers if answer.question_id not in tutorial_question_ids],
-            start=1,
-        ):
-            max_points = answer.total_clues_at_submission or answer.question.clues.count()
-            achieved_points = 0
-            if answer.is_correct and max_points > 0:
-                achieved_points = answer.points_earned
-                if achieved_points > max_points:
-                    achieved_points = answer.points_earned - answer.question.points
-                achieved_points = max(0, min(achieved_points, max_points))
-
-            history.append({
-                'question_number': idx,
-                'correct_answer': answer.question.answer,
-                'achieved_points': achieved_points,
-                'max_points': max_points,
-            })
-        return history

@@ -46,6 +46,12 @@ from .runtime import (
 )
 
 
+def _host_set_context(consumer):
+    quiz = SortingLadderGame.objects.get(room_code=consumer.room_code)
+    session, _ = SortingLadderSession.objects.get_or_create(quiz=quiz)
+    return {'question_id': quiz.current_question_id, 'expected_set': session.current_set_number, 'expected_round': session.current_round}
+
+
 class DummyChannelLayer:
     def __init__(self):
         self.sent = []
@@ -79,6 +85,7 @@ class SortingLadderPendingSelectionTest(TransactionTestCase):
             return None
 
         self.consumer.send = _noop_send
+        self.consumer._authoritative_session = self.participant.hub_session_code
 
     def _create_question_with_items(self, texts_and_ranks, starting_index):
         question = SortingQuestion.objects.create(
@@ -145,7 +152,7 @@ class SortingLadderPendingSelectionTest(TransactionTestCase):
         }])
 
         previous_count = len(self.consumer.channel_layer.sent)
-        async_to_sync(self.consumer.handle_admin_start_round)({})
+        async_to_sync(self.consumer.handle_admin_start_round)({**_host_set_context(self.consumer),})
         new_messages = [message for _, message in self.consumer.channel_layer.sent[previous_count:]]
 
         round_result = next(
@@ -224,7 +231,7 @@ class SortingLadderPendingSelectionTest(TransactionTestCase):
         self._update_pending_selection([earlier.id, later.id])
 
         previous_count = len(self.consumer.channel_layer.sent)
-        async_to_sync(self.consumer.handle_admin_end_question)({})
+        async_to_sync(self.consumer.handle_admin_end_question)({**_host_set_context(self.consumer),})
         new_messages = [message for _, message in self.consumer.channel_layer.sent[previous_count:]]
 
         round_result = next(
@@ -283,7 +290,7 @@ class SortingLadderPendingSelectionTest(TransactionTestCase):
         )
 
         reveal_start = len(self.consumer.channel_layer.sent)
-        async_to_sync(self.consumer.handle_admin_show_solution)({})
+        async_to_sync(self.consumer.handle_admin_show_solution)({**_host_set_context(self.consumer),})
         reveal_messages = [
             message for _, message in self.consumer.channel_layer.sent[reveal_start:]
         ]
@@ -297,7 +304,7 @@ class SortingLadderPendingSelectionTest(TransactionTestCase):
         )
 
         duplicate_start = len(self.consumer.channel_layer.sent)
-        async_to_sync(self.consumer.handle_admin_show_solution)({})
+        async_to_sync(self.consumer.handle_admin_show_solution)({**_host_set_context(self.consumer),})
         self.assertEqual(self.consumer.channel_layer.sent[duplicate_start:], [])
 
         self.quiz.session.refresh_from_db()
@@ -315,7 +322,7 @@ class SortingLadderPendingSelectionTest(TransactionTestCase):
         )
 
         clear_start = len(self.consumer.channel_layer.sent)
-        async_to_sync(self.consumer.handle_admin_end_question)({})
+        async_to_sync(self.consumer.handle_admin_end_question)({**_host_set_context(self.consumer),})
         clear_messages = [
             message for _, message in self.consumer.channel_layer.sent[clear_start:]
         ]
@@ -338,7 +345,7 @@ class SortingLadderPendingSelectionTest(TransactionTestCase):
         self._set_live_round(question, [items[1], items[0], items[2]], current_round=1)
 
         previous_count = len(self.consumer.channel_layer.sent)
-        async_to_sync(self.consumer.handle_admin_end_question)({})
+        async_to_sync(self.consumer.handle_admin_end_question)({**_host_set_context(self.consumer),})
         new_messages = [
             message for _, message in self.consumer.channel_layer.sent[previous_count:]
         ]
@@ -563,6 +570,7 @@ class SortingLadderScoreBoxTimingTests(TransactionTestCase):
             return None
 
         self.consumer.send = _noop_send
+        self.consumer._authoritative_session = self.participant.hub_session_code
 
     def _create_question_with_items(self, texts_and_ranks, starting_index):
         question = SortingQuestion.objects.create(
@@ -881,7 +889,7 @@ class SortingLadderVhsLayoutTemplateTests(TestCase):
             re.DOTALL,
         )
         self.assertIsNotNone(timer_match)
-        self.assertNotIn('setInteractionLock(true,', timer_match.group('body'))
+        self.assertIn('if (!this.hasSubmittedMove && !this.pendingRoundResult)', timer_match.group('body'))
 
     def test_wait_banner_and_submit_align_to_compact_source_column(self):
         self.assertIn(
@@ -1084,6 +1092,7 @@ class SortingLadderConsumerEventPayloadTests(TestCase):
                 direct_messages.append(json.loads(text_data))
 
         consumer.send = _capture_send
+        consumer._authoritative_participant = 'Alice'
 
         async_to_sync(consumer.round_result)({
             'participant_name': 'Alice',
@@ -1449,6 +1458,7 @@ class SortingLadderFinalScoreTests(TransactionTestCase):
                     [{
                         'name': self.participant.name,
                         'rounds_survived': survived_rounds,
+                        'total_score': survived_rounds,
                         'is_eliminated': False,
                     }],
                 )
@@ -2260,7 +2270,7 @@ class SortingLadderTutorialRuntimeTests(TransactionTestCase):
         self.quiz.tutorial_active = True
         self.quiz.save(update_fields=['status', 'tutorial_active'])
 
-        async_to_sync(self.consumer.handle_admin_start_round)({})
+        async_to_sync(self.consumer.handle_admin_start_round)({**_host_set_context(self.consumer),})
 
         self.quiz.refresh_from_db()
         self.assertTrue(self.quiz.tutorial_active)

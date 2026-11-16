@@ -69,6 +69,27 @@ def get_readiness_state(session):
 @transaction.atomic
 def start_readiness_check(session):
     session = HubSession.objects.select_for_update().get(pk=session.pk)
+    from .active_game_guard import _iter_session_games
+    from .lobby_return_flow import get_session_lobby_presence
+    from .session_results import step_status
+
+    if session.ended_at:
+        return {'success': False, 'error': 'Die Session ist bereits beendet.'}
+    if session.session_type == 'duel' and (
+        session.duel_instances.filter(match_status__in=['not_started', 'in_progress']).exists()
+        or session.duel_instances.filter(units__estimation_round_state__phase='show_result').exists()
+    ):
+        return {'success': False, 'error': 'Schließe zuerst das laufende Duell und dessen Präsentation ab.'}
+    if any(step_status(step, game) == 'active' for step, game in _iter_session_games(session)):
+        return {
+            'success': False,
+            'error': 'Der Bereitschaftscheck ist nur zwischen Spielen möglich. Beende zuerst das laufende Spiel und hole alle Teilnehmer in die Lobby zurück.',
+        }
+    if not get_session_lobby_presence(session.code)['all_in_lobby']:
+        return {
+            'success': False,
+            'error': 'Noch nicht alle Teilnehmer sind in der Lobby. Hole sie zuerst zurück, bevor du den Bereitschaftscheck startest.',
+        }
     HubReadinessCheck.objects.select_for_update().filter(
         session=session,
         active=True,

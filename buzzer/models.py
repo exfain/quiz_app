@@ -8,6 +8,7 @@ from django.utils import timezone
 from games_hub.authoritative_state import attach_snapshot_metadata
 
 from games_website.models import SyncBase
+from games_hub.manual_game_runtime import atomic_write, session_code as checked_session
 
 
 class BuzzerGame(SyncBase):
@@ -79,20 +80,17 @@ class BuzzerGame(SyncBase):
 
     def get_participant_count(self, session_code=None):
         qs = self.participants.all()
-        if session_code:
-            qs = qs.filter(hub_session_code=session_code)
+        qs = qs.filter(hub_session_code=self.active_hub_session_code if session_code is None else session_code)
         return qs.count()
 
     def get_active_participants(self, session_code=None):
         qs = self.participants.filter(is_active=True)
-        if session_code:
-            qs = qs.filter(hub_session_code=session_code)
+        qs = qs.filter(hub_session_code=self.active_hub_session_code if session_code is None else session_code)
         return qs
 
     def get_ordered_participants(self, session_code=None):
         qs = self.participants.all()
-        if session_code:
-            qs = qs.filter(hub_session_code=session_code)
+        qs = qs.filter(hub_session_code=self.active_hub_session_code if session_code is None else session_code)
         return qs.order_by('name')
 
     def _get_relevant_step(self, session_code=None):
@@ -106,14 +104,23 @@ class BuzzerGame(SyncBase):
         active = qs.filter(session__is_active=True, session__ended_at__isnull=True).order_by('-id').first()
         return active or qs.order_by('-id').first()
 
-    def ensure_snapshot_participants(self, session_code=None):
+    def ensure_snapshot_participants(self, session_code=None, *, freeze=False):
         step = self._get_relevant_step(session_code)
         if not step:
             return []
 
         from games_hub.models import HubGameParticipantSnapshot
 
-        snapshots = HubGameParticipantSnapshot.create_for_step(step)
+        snapshots = list(step.participant_snapshots.select_related('participant'))
+        if freeze and not (self.started_at and self.active_hub_session_code == step.session.code):
+            # This is the first actual start in this step. A previous preview
+            # must not freeze eligibility or leave/zero flags from the check-in.
+            step.participant_snapshots.all().delete()
+            snapshots = []
+        if not snapshots:
+            if not freeze and not (self.started_at and self.active_hub_session_code == step.session.code):
+                return []
+            snapshots = HubGameParticipantSnapshot.create_for_step(step)
         participants = []
         should_be_active = bool(
             self.status == 'active'
@@ -148,20 +155,25 @@ class BuzzerGame(SyncBase):
             included_in_scoring=True,
         ).exists()
 
-    @transaction.atomic
+    @atomic_write
     def start_quiz(self, session_code=None):
         game = BuzzerGame.objects.select_for_update().get(pk=self.pk)
-        session_code = session_code or game.active_hub_session_code or ''
-        if (
-            game.status == 'active'
-            and game.started_at
-            and game.active_hub_session_code == session_code
-        ):
+        code = checked_session(game, session_code, starting=True)
+        if game.started_at and game.active_hub_session_code == code:
+            if game.status == 'inactive':
+                game.status = 'active'
+                game.save(update_fields=['status', 'updated_at'])
+            self.refresh_from_db()
             return False
-        game.ensure_snapshot_participants(session_code or None)
-        if session_code:
-            game.participants.exclude(hub_session_code=session_code).update(is_active=False)
-            game.participants.filter(hub_session_code=session_code).update(total_score=0, is_active=True)
+        session_code = code
+        official_participants = game.ensure_snapshot_participants(code or None, freeze=True)
+        if code:
+            official_ids = [participant.id for participant in official_participants]
+            game.participants.exclude(hub_session_code=code).update(is_active=False)
+            game.participants.filter(hub_session_code=code).exclude(id__in=official_ids).update(is_active=False)
+            game.participants.filter(id__in=official_ids).update(total_score=0, is_active=True)
+        else:
+            game.participants.filter(hub_session_code='').update(total_score=0, is_active=True)
         game.status = 'active'
         game.started_at = timezone.now()
         game.ended_at = None
@@ -188,7 +200,7 @@ class BuzzerGame(SyncBase):
         self.refresh_from_db()
         return True
 
-    @transaction.atomic
+    @atomic_write
     def end_quiz(self, status='completed'):
         game = BuzzerGame.objects.select_for_update().get(pk=self.pk)
         if game.status == status and game.ended_at:
@@ -217,7 +229,7 @@ class BuzzerGame(SyncBase):
         self.refresh_from_db()
         return True
 
-    @transaction.atomic
+    @atomic_write
     def start_round(self, session_code=None):
         game = BuzzerGame.objects.select_for_update().get(pk=self.pk)
         session_code = session_code or game.active_hub_session_code or ''
@@ -257,7 +269,7 @@ class BuzzerGame(SyncBase):
         self.refresh_from_db()
         return round_obj
 
-    @transaction.atomic
+    @atomic_write
     def open_buzzer(self):
         game = BuzzerGame.objects.select_for_update().get(pk=self.pk)
         round_obj = game.current_round
@@ -283,7 +295,7 @@ class BuzzerGame(SyncBase):
         game.save(update_fields=['buzzer_open', 'current_buzz_participant', 'round_state', 'updated_at'])
         return True
 
-    @transaction.atomic
+    @atomic_write
     def accept_buzz(self, participant):
         game = BuzzerGame.objects.select_for_update().get(pk=self.pk)
         if not game.current_round_id:
@@ -338,7 +350,7 @@ class BuzzerGame(SyncBase):
         game.save(update_fields=['buzzer_open', 'round_state', 'current_buzz_participant', 'updated_at'])
         return True, buzz
 
-    @transaction.atomic
+    @atomic_write
     def mark_current_correct(self):
         game = BuzzerGame.objects.select_for_update().get(pk=self.pk)
         if game.status != 'active':
@@ -347,11 +359,12 @@ class BuzzerGame(SyncBase):
             return False
         round_obj = BuzzerRound.objects.select_for_update().get(pk=game.current_round_id)
         participant = BuzzerParticipant.objects.select_for_update().get(pk=game.current_buzz_participant_id)
-        if round_obj.status not in {'locked', 'open'}:
+        if round_obj.status != 'locked':
             return False
 
         participant.total_score += game.points_per_correct
         participant.save(update_fields=['total_score', 'updated_at'])
+        round_obj.points_awarded = game.points_per_correct
         round_obj.status = 'answered'
         round_obj.buzzer_open = False
         round_obj.correct_participant = participant
@@ -360,6 +373,7 @@ class BuzzerGame(SyncBase):
             'status',
             'buzzer_open',
             'correct_participant',
+            'points_awarded',
             'ended_at',
             'updated_at',
         ])
@@ -369,7 +383,7 @@ class BuzzerGame(SyncBase):
         game.save(update_fields=['buzzer_open', 'round_state', 'updated_at'])
         return True
 
-    @transaction.atomic
+    @atomic_write
     def mark_current_wrong(self):
         game = BuzzerGame.objects.select_for_update().get(pk=self.pk)
         if game.status != 'active':
@@ -377,6 +391,8 @@ class BuzzerGame(SyncBase):
         if not game.current_round_id or not game.current_buzz_participant_id:
             return False
         round_obj = BuzzerRound.objects.select_for_update().get(pk=game.current_round_id)
+        if round_obj.status != 'locked':
+            return False
         participant = BuzzerParticipant.objects.select_for_update().get(pk=game.current_buzz_participant_id)
         round_obj.buzzes.filter(participant=participant, status='accepted').update(status='wrong')
 
@@ -391,7 +407,7 @@ class BuzzerGame(SyncBase):
         game.save(update_fields=['current_buzz_participant', 'buzzer_open', 'round_state', 'updated_at'])
         return True
 
-    @transaction.atomic
+    @atomic_write
     def end_current_round(self):
         game = BuzzerGame.objects.select_for_update().get(pk=self.pk)
         if game.status != 'active':
@@ -415,8 +431,8 @@ class BuzzerGame(SyncBase):
         round_obj = round_obj or self.current_round
         qs = self.participants.filter(is_active=True)
         session_code = self.active_hub_session_code or (round_obj.hub_session_code if round_obj else '')
+        qs = qs.filter(hub_session_code=session_code)
         if session_code:
-            qs = qs.filter(hub_session_code=session_code)
             step = self._get_relevant_step(session_code)
             if step:
                 official_names = step.participant_snapshots.filter(
@@ -429,6 +445,7 @@ class BuzzerGame(SyncBase):
             qs = qs.exclude(id__in=blocked_ids)
         return qs
 
+    @atomic_write
     def serialize_state(self, session_code=None, participant_name=None):
         if self.pk:
             self.refresh_from_db()
@@ -468,7 +485,7 @@ class BuzzerGame(SyncBase):
             ]
 
         participants = []
-        for participant in self.get_ordered_participants(session_code or None):
+        for participant in self.get_ordered_participants(session_code):
             is_blocked = participant.name in blocked_names
             participants.append({
                 'id': participant.id,
@@ -476,7 +493,7 @@ class BuzzerGame(SyncBase):
                 'score': participant.total_score,
                 'is_active': participant.is_active,
                 'blocked': is_blocked,
-                'has_answer_right': bool(current_buzz_participant and current_buzz_participant.id == participant.id),
+                'has_answer_right': bool(round_state == 'locked' and current_buzz_participant and current_buzz_participant.id == participant.id),
                 'official': self.is_official_participant(participant),
             })
 
@@ -490,9 +507,9 @@ class BuzzerGame(SyncBase):
                     'number': buzzer_round.round_number,
                     'status': buzzer_round.status,
                     'points_earned': (
-                        1 if buzzer_round.correct_participant_id == own['id'] else 0
+                        (buzzer_round.points_awarded if buzzer_round.points_awarded is not None else self.points_per_correct) if buzzer_round.correct_participant_id == own['id'] else 0
                     ) if buzzer_round.status in completed_statuses else None,
-                    'max_points': 1,
+                    'max_points': buzzer_round.points_awarded if buzzer_round.points_awarded is not None else self.points_per_correct,
                 }
                 for buzzer_round in self.rounds.filter(
                     hub_session_code=session_code,
@@ -500,6 +517,7 @@ class BuzzerGame(SyncBase):
                     'round_number',
                     'status',
                     'correct_participant_id',
+                    'points_awarded',
                 ).order_by('round_number')
             ]
         round_open_for_participant = bool(
@@ -514,6 +532,7 @@ class BuzzerGame(SyncBase):
         )
 
         state = {
+            'hub_session_code': session_code,
             'game': {
                 'id': self.id,
                 'title': self.title,
@@ -531,6 +550,7 @@ class BuzzerGame(SyncBase):
                 'blocked_participants': blocked_names,
                 'available_count': self.available_participants(round_obj).count() if round_obj else 0,
                 'buzzes': buzzes,
+                'current_buzz_id': round_obj.buzzes.filter(status='accepted').values_list('id', flat=True).first() if round_obj and round_state == 'locked' else None,
             },
             'participants': participants,
             'participant': own,
@@ -582,6 +602,7 @@ class BuzzerRound(SyncBase):
         blank=True,
         related_name='active_buzzer_rounds',
     )
+    points_awarded = models.PositiveIntegerField(null=True, blank=True)
     correct_participant = models.ForeignKey(
         BuzzerParticipant,
         on_delete=models.SET_NULL,

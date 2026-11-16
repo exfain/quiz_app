@@ -1,0 +1,49 @@
+{% load static %}
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Clue Rush beitreten</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link rel="stylesheet" href="{% static 'theme.css' %}">
+    <script src="{% static 'js/team-names.js' %}"></script>
+</head>
+<body>
+<main class="container py-5" style="max-width: 520px">
+  <h1>Clue Rush</h1>
+  <form id="joinForm">
+    {% csrf_token %}
+    <label class="form-label" for="participantName">Dein Name</label>
+    <input class="form-control mb-3" id="participantName" maxlength="50" required autocomplete="nickname">
+    <label class="form-label" for="roomCode">Raumcode</label>
+    <input class="form-control mb-3" id="roomCode" pattern="[0-9]{4}" maxlength="4" inputmode="numeric" required>
+    <button class="btn btn-primary" type="submit">Beitreten</button>
+    <p id="joinError" class="text-danger mt-3" role="alert"></p>
+  </form>
+</main>
+<script>
+document.getElementById('joinForm').addEventListener('submit', async event => {
+  event.preventDefault();
+  const button = event.currentTarget.querySelector('button');
+  const name = document.getElementById('participantName').value.trim();
+  const room = document.getElementById('roomCode').value.trim();
+  const hub = new URLSearchParams(location.search).get('hub_session');
+  button.disabled = true;
+  try {
+    const response = await fetch('{% url "clue_rush:join" %}', {
+      method: 'POST', headers: {'Content-Type': 'application/json', 'X-CSRFToken': document.querySelector('[name=csrfmiddlewaretoken]').value},
+      body: JSON.stringify({participant_name: name, room_code: room, hub_session: hub})
+    });
+    const data = await response.json();
+    if (!data.success) throw new Error(data.error || 'Beitritt fehlgeschlagen.');
+    const target = new URL(`../play/${encodeURIComponent(room)}/${encodeURIComponent(name)}/`, location.href);
+    if (hub) target.searchParams.set('hub_session', hub);
+    location.assign(target.href);
+  } catch (error) {
+    document.getElementById('joinError').textContent = error.message;
+    button.disabled = false;
+  }
+});
+</script>
+</body>
+</html>

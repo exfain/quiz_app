@@ -67,6 +67,8 @@ class WannWarDasGame(SyncBase):
     question_state = models.CharField(max_length=20, choices=QUESTION_STATE_CHOICES, default='ready')
     question_started_at = models.DateTimeField(null=True, blank=True)
     question_ended_at = models.DateTimeField(null=True, blank=True)
+    paused_at = models.DateTimeField(null=True, blank=True)
+    question_rounds = models.JSONField(default=list, blank=True)
 
     class Meta:
         ordering = ['-created_at']
@@ -164,11 +166,17 @@ class WannWarDasGame(SyncBase):
             selected.sort(key=lambda question: order_map.get(question.id, len(order_ids)))
         return [question for question in selected if include_tutorial or question.id not in tutorial_ids]
 
+    @transaction.atomic
     def start_quiz(self, session_code=None):
-        session_code = session_code or self.active_hub_session_code or ''
+        self.refresh_from_db()
+        session_code = session_code if session_code is not None else self.active_hub_session_code or ''
+        if self.started_at and self.active_hub_session_code == session_code:
+            if self.status == 'inactive':
+                return self.set_paused(False)
+            if self.status in {'active', 'completed'}:
+                return False
         self.ensure_snapshot_participants(session_code or None)
-        if session_code:
-            self.participants.filter(hub_session_code=session_code).update(total_score=0, is_active=True)
+        self.participants.filter(hub_session_code=session_code).update(total_score=0, is_active=True)
         self.status = 'active'
         self.started_at = timezone.now()
         self.ended_at = None
@@ -179,21 +187,54 @@ class WannWarDasGame(SyncBase):
         self.question_state = 'ready'
         self.question_started_at = None
         self.question_ended_at = None
+        self.paused_at = None
+        self.question_rounds = []
         self.tutorial_active = False
-        self.save(update_fields=[
-            'status',
-            'started_at',
-            'ended_at',
-            'active_hub_session_code',
-            'current_question',
-            'current_question_number',
-            'current_question_is_tutorial',
-            'question_state',
-            'question_started_at',
-            'question_ended_at',
-            'tutorial_active',
-            'updated_at',
-        ])
+        self.save()
+        return True
+
+    @transaction.atomic
+    def set_paused(self, paused, *, at=None):
+        from games_hub.authoritative_state import get_runtime_state
+        game = type(self).objects.select_for_update().get(pk=self.pk)
+        if paused and game.status != 'active' or not paused and game.status != 'inactive':
+            return False
+        now = at or timezone.now()
+        runtime = get_runtime_state('wann_war_das', game.room_code, game.active_hub_session_code)
+        runtime = GameRuntimeState.objects.select_for_update().get(pk=runtime.pk)
+        public = dict(runtime.public_snapshot or {})
+        if paused:
+            game.paused_at = now
+            game.status = 'inactive'
+            public['_paused_at'] = now.isoformat()
+        else:
+            delta = max(now - game.paused_at, timezone.timedelta(0)) if game.paused_at else timezone.timedelta(0)
+            for field in ('question_started_at', 'question_ended_at'):
+                if getattr(game, field):
+                    setattr(game, field, getattr(game, field) + delta)
+            for field in ('question_presented_at', 'content_revealed_at', 'starts_at', 'ends_at'):
+                if getattr(runtime, field):
+                    setattr(runtime, field, getattr(runtime, field) + delta)
+            game.paused_at = None
+            game.status = 'active'
+            public.pop('_paused_at', None)
+        runtime.public_snapshot = public
+        runtime.state_revision += 1
+        runtime.context_revision = runtime.state_revision
+        runtime.save()
+        game.save(update_fields=['status', 'paused_at', 'question_started_at', 'question_ended_at', 'updated_at'])
+        self.refresh_from_db()
+        return True
+
+    def get_current_round_number(self):
+        return len(self.question_rounds or [])
+
+    def get_question_progress(self):
+        played = [entry for entry in self.question_rounds or [] if not entry.get('is_tutorial')]
+        selected = self.get_ordered_questions(self.active_hub_session_code)
+        seen = {entry.get('question_id') for entry in played}
+        return {'kind': 'question', 'current': len(played) if self.current_question_id and not self.current_question_is_tutorial else None,
+                'total': len(played) + sum(question.id not in seen for question in selected)}
 
     def prepare_question(self, question, session_code=None, is_tutorial_round=False):
         if self.status != 'active':
@@ -205,6 +246,10 @@ class WannWarDasGame(SyncBase):
         ):
             return False
         self.current_question = question
+        self.question_rounds = list(self.question_rounds or []) + [{
+            'question_id': question.id, 'is_tutorial': bool(is_tutorial_round),
+            'revealed': False, 'max_points': question.max_points,
+        }]
         self.current_question_is_tutorial = bool(is_tutorial_round)
         if not is_tutorial_round:
             self.current_question_number = (self.current_question_number or 0) + 1
@@ -215,6 +260,7 @@ class WannWarDasGame(SyncBase):
             'current_question',
             'current_question_number',
             'current_question_is_tutorial',
+            'question_rounds',
             'question_state',
             'question_started_at',
             'question_ended_at',
@@ -248,50 +294,65 @@ class WannWarDasGame(SyncBase):
             return False
         return self.open_answering(question, started_at=timezone.now())
 
-    def reveal_current_question(self, session_code=None):
-        if not self.current_question_id:
+    @transaction.atomic
+    def reveal_current_question(self, session_code=None, *, at=None):
+        game = type(self).objects.select_for_update().select_related('current_question').get(pk=self.pk)
+        if not game.current_question_id or game.question_state == 'revealed':
             return False
-        question_id = self.current_question_id
-        self.question_state = 'revealed'
-        self.question_ended_at = timezone.now()
-        self.save(update_fields=['question_state', 'question_ended_at', 'updated_at'])
-        session_code = session_code or self.active_hub_session_code or ''
-        phase_snapshot = current_snapshot('wann_war_das', self.room_code, session_code)
-        if (
-            phase_snapshot.get('question_flow_mode')
-            == GameRuntimeState.QUESTION_FLOW_MANUAL_THREE_PHASE
-            and phase_snapshot.get('question_phase')
-            == GameRuntimeState.QUESTION_PHASE_ANSWERING_OPEN
-            and str(phase_snapshot.get('current_question_id') or '') == str(question_id)
-        ):
-            finish_question_flow(
-                game_key='wann_war_das',
-                room_code=self.room_code,
-                session_code=session_code,
-                question_id=question_id,
-            )
+        now = at or game.paused_at or timezone.now()
+        if game.question_started_at:
+            deadline = game.question_started_at + timezone.timedelta(seconds=game.current_question.get_effective_time_limit())
+            effective_end = min(now, deadline)
+            for pending in game.pending_inputs.filter(round_number=game.get_current_round_number(),
+                    question=game.current_question, hub_session_code=game.active_hub_session_code).select_related('participant'):
+                game.submit_answer(pending.participant, pending.raw_answer, submitted_at=effective_end, finalizing=True)
+        game.question_state = 'revealed'
+        game.question_ended_at = now
+        rounds = list(game.question_rounds or [])
+        if rounds:
+            rounds[-1] = {**rounds[-1], 'revealed': True}
+        game.question_rounds = rounds
+        game.save(update_fields=['question_state', 'question_ended_at', 'question_rounds', 'updated_at'])
+        phase = current_snapshot('wann_war_das', game.room_code, session_code or game.active_hub_session_code)
+        if phase.get('question_flow_mode') == GameRuntimeState.QUESTION_FLOW_MANUAL_THREE_PHASE and phase.get('question_phase') == GameRuntimeState.QUESTION_PHASE_ANSWERING_OPEN:
+            finish_question_flow(game_key='wann_war_das', room_code=game.room_code,
+                session_code=session_code or game.active_hub_session_code, question_id=game.current_question_id)
+        self.refresh_from_db()
         return True
 
+    @transaction.atomic
     def end_quiz(self, status='completed'):
+        self.refresh_from_db()
+        if status == 'inactive':
+            return self.set_paused(True)
         if self.status == status and self.ended_at:
             return False
+        if self.current_question_id:
+            self.reveal_current_question(self.active_hub_session_code)
         self.status = status
         self.ended_at = timezone.now()
-        self.question_state = 'ended'
-        self.current_question = None
-        self.current_question_is_tutorial = False
-        self.question_started_at = None
-        self.question_ended_at = None
-        self.save(update_fields=[
-            'status',
-            'ended_at',
-            'question_state',
-            'current_question',
-            'current_question_is_tutorial',
-            'question_started_at',
-            'question_ended_at',
-            'updated_at',
-        ])
+        self.paused_at = None
+        # Keep the revealed question until the participant acknowledges it.
+        self.save(update_fields=['status', 'ended_at', 'paused_at', 'updated_at'])
+        return True
+
+    @transaction.atomic
+    def store_pending_answer(self, participant, raw_answer, question_id, round_number):
+        game = type(self).objects.select_for_update().select_related('current_question').get(pk=self.pk)
+        if not isinstance(raw_answer, str) or len(raw_answer) > 120 or not participant:
+            return False
+        if (game.status != 'active' or game.paused_at or game.question_state != 'active'
+                or str(game.current_question_id) != str(question_id)
+                or str(game.get_current_round_number()) != str(round_number)
+                or not game.is_official_participant(participant)):
+            return False
+        if not game.question_started_at or timezone.now() >= game.question_started_at + timezone.timedelta(seconds=game.current_question.get_effective_time_limit()):
+            return False
+        if game.answers.filter(participant=participant, round_number=game.get_current_round_number()).exists():
+            return False
+        WannWarDasPendingInput.objects.update_or_create(quiz=game, participant=participant,
+            hub_session_code=participant.hub_session_code, round_number=game.get_current_round_number(),
+            defaults={'question_id': game.current_question_id, 'raw_answer': raw_answer.strip()})
         return True
 
     def get_active_participants(self, session_code=None):
@@ -307,7 +368,7 @@ class WannWarDasGame(SyncBase):
         return qs.order_by('name')
 
     @transaction.atomic
-    def submit_answer(self, participant, raw_answer, submitted_at=None):
+    def submit_answer(self, participant, raw_answer, submitted_at=None, *, finalizing=False):
         submitted_at = submitted_at or timezone.now()
         if participant is None:
             return None, 'Teilnehmer ist nicht spielberechtigt.'
@@ -320,15 +381,15 @@ class WannWarDasGame(SyncBase):
             pk=participant.pk,
             quiz=game,
         )
-        if game.status != 'active' or game.question_state != 'active' or not game.current_question_id:
+        if game.status not in ({'active', 'inactive'} if finalizing else {'active'}) or game.question_state != 'active' or not game.current_question_id:
             return None, 'Die Frage ist nicht aktiv.'
-        if not game.is_official_participant(participant):
+        if not game.is_official_participant(participant) and not finalizing:
             return None, 'Teilnehmer ist nicht spielberechtigt.'
         if game.question_started_at:
             if submitted_at < game.question_started_at:
                 return None, 'Die Frage ist noch nicht freigegeben.'
             elapsed = max(0.0, (submitted_at - game.question_started_at).total_seconds())
-            if elapsed >= game.current_question.get_effective_time_limit():
+            if not finalizing and elapsed >= game.current_question.get_effective_time_limit():
                 return None, 'Die Frage ist bereits beendet.'
         if game.question_ended_at and submitted_at >= game.question_ended_at:
             return None, 'Die Frage ist bereits beendet.'
@@ -336,6 +397,7 @@ class WannWarDasGame(SyncBase):
             quiz=game,
             participant=participant,
             question=game.current_question,
+            round_number=game.get_current_round_number(),
             hub_session_code=participant.hub_session_code,
         ).first()
         if existing:
@@ -353,6 +415,7 @@ class WannWarDasGame(SyncBase):
             quiz=game,
             participant=participant,
             question=game.current_question,
+            round_number=game.get_current_round_number(),
             hub_session_code=participant.hub_session_code,
             defaults={
                 'raw_answer': '' if raw_answer is None else str(raw_answer).strip(),
@@ -370,186 +433,85 @@ class WannWarDasGame(SyncBase):
         )
         if not created:
             return answer, 'Antwort wurde bereits abgegeben.'
+        game.pending_inputs.filter(participant=participant, round_number=game.get_current_round_number()).delete()
         participant.calculate_score()
         return answer, None
 
-    def serialize_state(self, session_code=None, participant_name=None):
+    def serialize_state(self, session_code=None, participant_name=None, *, for_host=False):
         if self.pk:
             self.refresh_from_db()
         session_code = session_code or self.active_hub_session_code or ''
         self.ensure_snapshot_participants(session_code or None)
-        if session_code and self.active_hub_session_code and session_code != self.active_hub_session_code:
-            return attach_snapshot_metadata({
-                'game': {
-                    'id': self.id,
-                    'title': self.title,
-                    'room_code': self.room_code,
-                    'status': 'waiting',
-                },
-                'question': None,
-                'question_state': 'ready',
-                'question_number': 0,
-                'is_tutorial_round': False,
-                'started_at': None,
-                'ended_at': None,
-                'timer': None,
-                'participants': [],
-                'answers': [],
-                'scorebox': {'questions': [], 'rows': []},
-                'participant': None,
-                'own_answer': None,
-                'can_answer': False,
-                'server_now': timezone.now().isoformat(),
-            }, game_key='wann_war_das', room_code=self.room_code, session_code=session_code)
-        now = timezone.now()
-        question_flow = current_snapshot('wann_war_das', self.room_code, session_code)
-        manual_question_flow = (
-            question_flow.get('question_flow_mode')
-            == GameRuntimeState.QUESTION_FLOW_MANUAL_THREE_PHASE
-        )
-        question = self.current_question
-        if (
-            question
-            and self.question_state == 'active'
-            and self.question_started_at
-            and (now - self.question_started_at).total_seconds() >= question.get_effective_time_limit()
-        ):
-            self.reveal_current_question(session_code)
-            self.refresh_from_db()
-            question_flow = current_snapshot('wann_war_das', self.room_code, session_code)
-            question = self.current_question
-        timer = None
-        if (
-            question
-            and self.question_started_at
-            and self.question_state == 'active'
-            and (
-                not manual_question_flow
-                or question_flow.get('answering_allowed')
-            )
-        ):
-            timer = question.get_timer_state(self.question_started_at, now)
-
-        answers = []
-        if question:
-            answers_qs = self.answers.filter(
-                question=question,
-                hub_session_code=session_code,
-            ).select_related('participant').order_by('submitted_at', 'id')
-            answers = [answer.to_dict(reveal=self.question_state == 'revealed') for answer in answers_qs]
-
-        scorebox = self.build_scorebox(session_code)
-        participants = []
-        for participant in self.get_ordered_participants(session_code or None):
-            participants.append({
-                'id': participant.id,
-                'name': participant.name,
-                'score': participant.total_score,
-                'is_active': participant.is_active,
-                'official': self.is_official_participant(participant),
-            })
-
-        own = next((participant for participant in participants if participant['name'] == participant_name), None)
-        own_answer = None
-        if participant_name and question:
-            answer = self.answers.filter(
-                question=question,
-                participant__name=participant_name,
-                hub_session_code=session_code,
-            ).select_related('participant').first()
-            if answer:
-                own_answer = answer.to_dict(reveal=self.question_state == 'revealed')
-
-        can_answer = bool(
-            own
-            and own['official']
-            and self.status == 'active'
-            and self.question_state == 'active'
-            and question
-            and own_answer is None
-            and (
-                not manual_question_flow
-                or question_flow.get('answering_allowed')
-            )
-        )
-
+        mismatch = bool(session_code and self.active_hub_session_code and session_code != self.active_hub_session_code)
+        question = None if mismatch else self.current_question
+        revealed = bool(question and self.question_state == 'revealed')
+        round_number = self.get_current_round_number() if not mismatch else 0
+        now = self.paused_at or timezone.now()
+        timer = question.get_timer_state(self.question_started_at, now) if question and self.question_started_at and self.question_state == 'active' else None
+        current_answers = list(self.answers.filter(question=question, round_number=round_number,
+            hub_session_code=session_code).select_related('participant', 'question')) if question else []
+        own_answer = next((answer for answer in current_answers if answer.participant.name == participant_name), None)
+        pending = self.pending_inputs.filter(participant__name=participant_name, round_number=round_number,
+            hub_session_code=session_code).first() if question and participant_name and not own_answer else None
+        scorebox = self.build_scorebox(session_code, for_host=for_host)
+        hidden_points = {answer.participant_id: answer.points_earned for answer in current_answers} if not revealed and not for_host else {}
+        participants = [{'id': p.id, 'name': p.name,
+            'score': p.total_score - hidden_points.get(p.id, 0), 'is_active': p.is_active,
+            'official': self.is_official_participant(p)} for p in self.get_ordered_participants(session_code or None)]
+        own = next((p for p in participants if p['name'] == participant_name), None)
+        answers = current_answers if for_host or revealed else [answer for answer in current_answers if answer.participant.name == participant_name]
+        question_payload = question.to_dict(reveal=revealed or for_host) if question else None
         state = {
-            'game': {
-                'id': self.id,
-                'title': self.title,
-                'room_code': self.room_code,
-                'status': self.status,
-            },
-            'question': question.to_dict() if question else None,
-            'question_state': self.question_state,
-            'question_number': self.current_question_number,
-            'is_tutorial_round': self.current_question_is_tutorial,
-            'started_at': self.question_started_at.isoformat() if self.question_started_at else None,
-            'ended_at': self.question_ended_at.isoformat() if self.question_ended_at else None,
-            'timer': timer,
-            'participants': participants,
-            'answers': answers,
-            'scorebox': scorebox,
-            'participant': own,
-            'own_answer': own_answer,
-            'can_answer': can_answer,
-            'server_now': now.isoformat(),
+            'game': {'id': self.id, 'title': self.title, 'room_code': self.room_code, 'status': 'waiting' if mismatch else self.status},
+            'question': question_payload, 'question_state': 'ready' if mismatch else self.question_state,
+            'question_number': 0 if mismatch else self.current_question_number,
+            'progress': self.get_question_progress() if not mismatch else {'kind': 'question', 'current': None, 'total': len(self.get_ordered_questions(session_code))},
+            'current_round_id': round_number, 'is_tutorial_round': self.current_question_is_tutorial,
+            'started_at': self.question_started_at.isoformat() if question and self.question_started_at else None,
+            'ends_at': (self.question_started_at + timezone.timedelta(seconds=question.get_effective_time_limit())).isoformat()
+                if question and self.question_started_at and self.question_state == 'active' else None,
+            'ended_at': self.question_ended_at.isoformat() if question and self.question_ended_at else None,
+            'timer': timer, 'paused': bool(self.paused_at) if not mismatch else False,
+            'participants': participants, 'answers': [a.to_dict(reveal=revealed or for_host) for a in answers],
+            'response_count': len(current_answers), 'scorebox': scorebox, 'participant': own,
+            'own_answer': own_answer.to_dict(reveal=revealed or for_host) if own_answer else None,
+            'pending_answer': pending.raw_answer if pending else None,
+            'can_answer': bool(own and own['official'] and not mismatch and self.status == 'active' and not self.paused_at
+                and self.question_state == 'active' and question and not own_answer and timer and timer['remaining_seconds'] > 0),
+            'server_now': timezone.now().isoformat(),
         }
-        state['_revision_state'] = {
-            'game': state['game'],
-            'question': state['question'],
-            'question_state': state['question_state'],
-            'question_number': state['question_number'],
-            'participants': state['participants'],
-            'answers': state['answers'],
-            'scorebox': state['scorebox'],
-        }
-        return attach_snapshot_metadata(
-            state,
-            game_key='wann_war_das',
-            room_code=self.room_code,
-            session_code=session_code,
-        )
+        state['_revision_state'] = {'game': state['game'],
+            'question': question.to_dict(reveal=revealed) if question else None,
+            'question_state': state['question_state'], 'question_number': state['question_number'],
+            'current_round_id': round_number, 'response_count': len(current_answers),
+            'scorebox': self.build_scorebox(session_code, for_host=False)}
+        return attach_snapshot_metadata(state, game_key='wann_war_das', room_code=self.room_code, session_code=session_code)
 
-    def build_scorebox(self, session_code=None):
-        questions = self.get_ordered_questions(session_code)
-        participants = list(self.get_ordered_participants(session_code or None))
-        answers = {
-            (answer.participant_id, answer.question_id): answer
-            for answer in self.answers.filter(
-                hub_session_code=session_code or '',
-                is_tutorial=False,
-                question__in=questions,
-            ).select_related('participant', 'question')
-        }
+    def build_scorebox(self, session_code=None, *, for_host=False):
+        history = [(i, entry) for i, entry in enumerate(self.question_rounds or [], 1) if not entry.get('is_tutorial')]
+        seen = {entry.get('question_id') for _, entry in history}
+        rounds = [{'question_id': entry.get('question_id'), 'round_number': physical,
+            'max_points': entry.get('max_points', 0), 'revealed': entry.get('revealed', False)} for physical, entry in history]
+        rounds.extend({'question_id': q.id, 'round_number': None, 'max_points': q.max_points, 'revealed': False}
+            for q in self.get_ordered_questions(session_code) if q.id not in seen)
+        all_answers = list(self.answers.filter(hub_session_code=session_code or '', is_tutorial=False))
         rows = []
-        for participant in participants:
+        for participant in self.get_ordered_participants(session_code or None):
             entries = []
-            running_total = 0
-            for index, question in enumerate(questions, start=1):
-                answer = answers.get((participant.id, question.id))
-                if answer:
-                    running_total += int(answer.points_earned or 0)
-                entries.append({
-                    'question_id': question.id,
-                    'number': index,
-                    'points': int(answer.points_earned or 0) if answer else None,
-                    'correct': answer.is_correct if answer else None,
-                    'status': 'played' if answer else 'current' if self.current_question_id == question.id else 'upcoming',
-                })
-            rows.append({
-                'participant_id': participant.id,
-                'participant_name': participant.name,
-                'total_score': running_total,
-                'entries': entries,
-            })
-        return {
-            'questions': [
-                {'id': question.id, 'number': index, 'max_points': question.max_points}
-                for index, question in enumerate(questions, start=1)
-            ],
-            'rows': rows,
-        }
+            total = 0
+            for index, entry in enumerate(rounds, 1):
+                answer = next((a for a in all_answers if a.participant_id == participant.id
+                    and a.question_id == entry['question_id'] and a.round_number == entry['round_number']), None)
+                visible = bool(for_host or entry['revealed'])
+                if answer and visible:
+                    total += answer.points_earned
+                entries.append({'question_id': entry['question_id'], 'round_number': entry['round_number'],
+                    'number': index, 'points': answer.points_earned if answer and visible else None,
+                    'correct': answer.is_correct if answer and visible else None,
+                    'status': 'played' if entry['revealed'] else 'current' if entry['round_number'] == self.get_current_round_number() and self.current_question_id else 'upcoming'})
+            rows.append({'participant_id': participant.id, 'participant_name': participant.name, 'total_score': total, 'entries': entries})
+        return {'questions': [{'id': entry['question_id'], 'number': i, 'round_number': entry['round_number'], 'max_points': entry['max_points']} for i, entry in enumerate(rounds, 1)], 'rows': rows}
+
 
 
 class WannWarDasQuestion(SyncBase):
@@ -653,7 +615,9 @@ class WannWarDasQuestion(SyncBase):
         current_tolerance = self.tolerance_for_step(step_index)
         try:
             user_answer = float(raw)
-            is_numeric = True
+            is_numeric = math.isfinite(user_answer)
+            if not is_numeric:
+                user_answer = None
         except (TypeError, ValueError):
             user_answer = None
             is_numeric = False
@@ -683,8 +647,8 @@ class WannWarDasQuestion(SyncBase):
         value = self.format_number(self.correct_answer)
         return f'{value} {unit}'.strip()
 
-    def to_dict(self):
-        return {
+    def to_dict(self, reveal=True):
+        result = {
             'id': self.id,
             'question_text': self.question_text,
             'correct_answer': self.correct_answer,
@@ -699,6 +663,10 @@ class WannWarDasQuestion(SyncBase):
             'time_limit': self.get_effective_time_limit(),
             'explanation': self.explanation,
         }
+        if not reveal:
+            for field in ('correct_answer', 'formatted_correct_answer', 'explanation'):
+                result.pop(field, None)
+        return result
 
 
 class WannWarDasParticipant(SyncBase):
@@ -732,6 +700,7 @@ class WannWarDasAnswer(SyncBase):
     participant = models.ForeignKey(WannWarDasParticipant, related_name='answers', on_delete=models.CASCADE)
     question = models.ForeignKey(WannWarDasQuestion, related_name='answers', on_delete=models.CASCADE)
     hub_session_code = models.CharField(max_length=16, blank=True, default='')
+    round_number = models.PositiveIntegerField(default=0)
     raw_answer = models.CharField(max_length=120, blank=True, default='')
     user_answer = models.FloatField(null=True, blank=True)
     is_numeric = models.BooleanField(default=False)
@@ -745,7 +714,7 @@ class WannWarDasAnswer(SyncBase):
     submitted_at = models.DateTimeField(default=timezone.now)
 
     class Meta:
-        unique_together = ('quiz', 'participant', 'question', 'hub_session_code')
+        unique_together = ('quiz', 'participant', 'question', 'round_number', 'hub_session_code')
         ordering = ['submitted_at', 'id']
         indexes = [
             models.Index(fields=['quiz', 'hub_session_code']),
@@ -765,13 +734,26 @@ class WannWarDasAnswer(SyncBase):
             'user_answer': self.user_answer,
             'formatted_answer': self.question.format_number(self.user_answer) if self.user_answer is not None else self.raw_answer,
             'is_numeric': self.is_numeric,
-            'absolute_deviation': self.absolute_deviation,
+            'absolute_deviation': self.absolute_deviation if reveal else None,
             'tolerance_at_submit': self.tolerance_at_submit,
             'step_index': self.step_index,
-            'points_earned': self.points_earned,
+            'points_earned': self.points_earned if reveal else None,
             'is_correct': self.is_correct if reveal else None,
             'revealed': reveal,
             'time_taken': self.time_taken,
             'submitted_at': self.submitted_at.isoformat() if self.submitted_at else None,
             'is_tutorial': self.is_tutorial,
         }
+
+
+
+class WannWarDasPendingInput(SyncBase):
+    quiz = models.ForeignKey(WannWarDasGame, related_name='pending_inputs', on_delete=models.CASCADE)
+    participant = models.ForeignKey(WannWarDasParticipant, related_name='pending_inputs', on_delete=models.CASCADE)
+    question = models.ForeignKey(WannWarDasQuestion, on_delete=models.CASCADE)
+    hub_session_code = models.CharField(max_length=16, blank=True, default='')
+    round_number = models.PositiveIntegerField(default=0)
+    raw_answer = models.CharField(max_length=120, blank=True, default='')
+
+    class Meta:
+        unique_together = ('quiz', 'participant', 'round_number', 'hub_session_code')

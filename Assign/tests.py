@@ -52,6 +52,12 @@ except ImportError:
     from django.test import LiveServerTestCase as _BrowserLiveServerTestCase
 
 
+def _host_set_context(consumer):
+    quiz = AssignQuiz.objects.get(room_code=consumer.room_code)
+    session = AssignSession.objects.get(quiz=quiz)
+    return {'question_id': quiz.current_question_id, 'expected_set': session.current_question_number, 'expected_round': session.current_round_index}
+
+
 class DummyChannelLayer:
     def __init__(self):
         self.sent = []
@@ -283,7 +289,7 @@ class CheckRoundAnswerTest(TransactionTestCase):
         self.assertTrue(session.is_question_active)
 
         payloads = self._capture_consumer_send()
-        async_to_sync(self.consumer.handle_admin_end_question)({
+        async_to_sync(self.consumer.handle_admin_end_question)({**_host_set_context(self.consumer),
             'hub_session': self.participant.hub_session_code,
         })
         session.refresh_from_db()
@@ -303,7 +309,7 @@ class CheckRoundAnswerTest(TransactionTestCase):
             self.participant.hub_session_code,
         ))
 
-        async_to_sync(self.consumer.handle_admin_end_question)({
+        async_to_sync(self.consumer.handle_admin_end_question)({**_host_set_context(self.consumer),
             'hub_session': self.participant.hub_session_code,
         })
         session.refresh_from_db()
@@ -353,32 +359,14 @@ class CheckRoundAnswerTest(TransactionTestCase):
         )
         self.assertEqual(result, (False, None))
 
-    def test_save_participant_answer_correct_conversion(self):
-        """save_participant_answer konvertiert shuffled→original korrekt und speichert AssignAnswer."""
-        # current_question auf dem Quiz setzen (notwendig für save_participant_answer)
+    def test_legacy_full_set_save_cannot_bypass_round_grading(self):
         self.quiz.current_question = self.question
         self.quiz.save()
-
-        # Shuffled Matches für alle 3 korrekten Runden bauen
-        shuffled_matches = {}
-        for left_idx_str, correct_orig in self.question.correct_matches.items():
-            shuffled_pos = self._get_shuffled_pos_for_original(correct_orig)
-            shuffled_matches[left_idx_str] = shuffled_pos
-
         result = async_to_sync(self.consumer.save_participant_answer)(
-            'Alice', 'sess1', shuffled_matches, 12.0, self.question.id
+            'Alice', 'sess1', {'0': 0, '1': 1, '2': 2}, 12.0, self.question.id,
         )
-
-        self.assertIsNotNone(result, "save_participant_answer sollte ein Ergebnis-Dict zurückgeben")
-        self.assertEqual(result['correct_matches'], 3)
-        self.assertEqual(result['points_earned'], 3)
-        self.assertEqual(result['accuracy'], 100.0)
-
-        # Sicherstellen dass AssignAnswer in der DB gespeichert wurde
-        answer = AssignAnswer.objects.get(
-            quiz=self.quiz, participant=self.participant, question=self.question
-        )
-        self.assertEqual(answer.user_matches, {'0': 2, '1': 0, '2': 1})
+        self.assertIsNone(result)
+        self.assertFalse(AssignAnswer.objects.filter(participant=self.participant).exists())
 
     def test_assign_answer_score_calculation(self):
         """AssignAnswer berechnet den Score korrekt: 3 richtige Matches = 3."""
@@ -418,7 +406,7 @@ class CheckRoundAnswerTest(TransactionTestCase):
             user_match={'0': shuffled_pos},
         )
 
-        async_to_sync(self.consumer.handle_admin_next_round)({
+        async_to_sync(self.consumer.handle_admin_next_round)({**_host_set_context(self.consumer),
             'expected_round': 0,
             'expected_set': runtime.set_number,
         })
@@ -449,7 +437,7 @@ class CheckRoundAnswerTest(TransactionTestCase):
             user_match={'0': wrong_target},
         )
 
-        async_to_sync(self.consumer.handle_admin_next_round)({
+        async_to_sync(self.consumer.handle_admin_next_round)({**_host_set_context(self.consumer),
             'expected_round': 0,
             'expected_set': runtime.set_number,
         })
@@ -465,7 +453,7 @@ class CheckRoundAnswerTest(TransactionTestCase):
     def test_missing_assignment_emits_timeout_elimination_reason(self):
         runtime = self._start_runtime()
 
-        async_to_sync(self.consumer.handle_admin_next_round)({
+        async_to_sync(self.consumer.handle_admin_next_round)({**_host_set_context(self.consumer),
             'expected_round': 0,
             'expected_set': runtime.set_number,
         })
@@ -480,7 +468,7 @@ class CheckRoundAnswerTest(TransactionTestCase):
 
     def test_rejoin_restores_authoritative_elimination_reason(self):
         runtime = self._start_runtime()
-        async_to_sync(self.consumer.handle_admin_next_round)({
+        async_to_sync(self.consumer.handle_admin_next_round)({**_host_set_context(self.consumer),
             'expected_round': 0,
             'expected_set': runtime.set_number,
         })
@@ -499,7 +487,7 @@ class CheckRoundAnswerTest(TransactionTestCase):
 
     def test_elimination_survives_cache_loss_and_later_rounds_in_same_set(self):
         runtime = self._start_runtime()
-        async_to_sync(self.consumer.handle_admin_next_round)({
+        async_to_sync(self.consumer.handle_admin_next_round)({**_host_set_context(self.consumer),
             'expected_round': 0,
             'expected_set': runtime.set_number,
         })
@@ -546,8 +534,7 @@ class CheckRoundAnswerTest(TransactionTestCase):
         })
 
         self.assertFalse(AssignAnswer.objects.filter(participant=self.participant).exists())
-        self.assertEqual(payloads[-1]['type'], 'round_checked')
-        self.assertEqual(payloads[-1]['elimination_reason'], 'incorrect_assignment')
+        self.assertEqual(payloads[-2]['code'], 'round_submission_required')
 
     def test_new_set_resets_persisted_elimination_once(self):
         session = AssignSession.objects.create(
@@ -744,7 +731,7 @@ class CheckRoundAnswerTest(TransactionTestCase):
         self.assertEqual(runtime.current_round_index, 0)
         self.assertEqual(runtime.solved_matches, {})
 
-        async_to_sync(self.consumer.handle_admin_next_round)({
+        async_to_sync(self.consumer.handle_admin_next_round)({**_host_set_context(self.consumer),
             'expected_round': 0,
             'expected_set': runtime.set_number,
         })
@@ -780,7 +767,7 @@ class CheckRoundAnswerTest(TransactionTestCase):
         self.assertEqual(runtime.current_round_index, 0)
         self.assertEqual(runtime.solved_matches, {})
 
-        async_to_sync(self.consumer.handle_admin_next_round)({
+        async_to_sync(self.consumer.handle_admin_next_round)({**_host_set_context(self.consumer),
             'expected_round': 0,
             'expected_set': runtime.set_number,
         })
@@ -804,7 +791,7 @@ class CheckRoundAnswerTest(TransactionTestCase):
         })
 
         previous_count = len(self.consumer.channel_layer.sent)
-        async_to_sync(self.consumer.handle_admin_next_round)({
+        async_to_sync(self.consumer.handle_admin_next_round)({**_host_set_context(self.consumer),
             'expected_round': 0,
             'expected_set': runtime.set_number,
         })
@@ -852,7 +839,7 @@ class CheckRoundAnswerTest(TransactionTestCase):
         question = self._create_four_round_question()
         runtime = self._start_runtime(question)
 
-        async_to_sync(self.consumer.handle_admin_next_round)({
+        async_to_sync(self.consumer.handle_admin_next_round)({**_host_set_context(self.consumer),
             'expected_round': 0,
             'expected_set': runtime.set_number,
         })
@@ -884,7 +871,7 @@ class CheckRoundAnswerTest(TransactionTestCase):
             )
 
             previous_count = len(self.consumer.channel_layer.sent)
-            async_to_sync(self.consumer.handle_admin_next_round)({
+            async_to_sync(self.consumer.handle_admin_next_round)({**_host_set_context(self.consumer),
                 'expected_round': round_index,
                 'expected_set': runtime.set_number,
             })
@@ -943,7 +930,7 @@ class CheckRoundAnswerTest(TransactionTestCase):
                     ),
                 },
             )
-            async_to_sync(self.consumer.handle_admin_next_round)({
+            async_to_sync(self.consumer.handle_admin_next_round)({**_host_set_context(self.consumer),
                 'expected_round': round_index,
                 'expected_set': runtime.set_number,
             })
@@ -962,6 +949,7 @@ class CheckRoundAnswerTest(TransactionTestCase):
             [{
                 'question_id': self.question.id,
                 'question_number': 1,
+                'set_number': runtime.set_number,
                 'survived_rounds': 3,
                 'max_rounds': 3,
             }],
@@ -983,9 +971,8 @@ class CheckRoundAnswerTest(TransactionTestCase):
         for left_idx_str, correct_orig in question.correct_matches.items():
             shuffled_matches[left_idx_str] = self._get_shuffled_pos_for_original(correct_orig, question=question)
 
-        result = async_to_sync(self.consumer.save_participant_answer)(
-            'Alice', 'sess1', shuffled_matches, 12.0, question.id
-        )
+        AssignAnswer.objects.create(quiz=self.quiz, participant=self.participant, question=question, user_matches=question.correct_matches)
+        result = {'progress_history': async_to_sync(self.consumer.get_participant_progress_history)('Alice', 'sess1')}
 
         self.assertEqual(result['progress_history'], [{
             'question_id': question.id,
@@ -1036,13 +1023,8 @@ class CheckRoundAnswerTest(TransactionTestCase):
         for left_idx_str, correct_orig in question_two.correct_matches.items():
             shuffled_matches[left_idx_str] = self._get_shuffled_pos_for_original(correct_orig, question=question_two)
 
-        result = async_to_sync(self.consumer.save_participant_answer)(
-            'Alice',
-            'sess1',
-            shuffled_matches,
-            12.0,
-            question_two.id,
-        )
+        AssignAnswer.objects.create(quiz=self.quiz, participant=self.participant, question=question_two, user_matches=question_two.correct_matches)
+        result = {'progress_history': async_to_sync(self.consumer.get_participant_progress_history)('Alice', 'sess1')}
 
         self.assertEqual(result['progress_history'], [{
             'question_id': question_two.id,
@@ -1749,7 +1731,7 @@ class AssignManualQuestionPhaseTests(TransactionTestCase):
             opened['answering_deadline_at'],
         )
 
-    def test_legacy_submit_is_rejected_before_open_and_accepted_after_open(self):
+    def test_legacy_submit_is_rejected_before_and_after_open(self):
         presented_at = timezone.now()
         prompt = self.send_first_round(presented_at)
         payload = {
@@ -1767,7 +1749,7 @@ class AssignManualQuestionPhaseTests(TransactionTestCase):
             question=self.question,
         ).exists())
         self.assertEqual(self.sent_payloads[-2]['type'], 'action_rejected')
-        self.assertEqual(self.sent_payloads[-2]['code'], 'invalid_phase')
+        self.assertEqual(self.sent_payloads[-2]['code'], 'round_submission_required')
 
         visible_at = parse_datetime(prompt['question_visible_at'])
         self.reveal_round(prompt, visible_at)
@@ -1789,11 +1771,11 @@ class AssignManualQuestionPhaseTests(TransactionTestCase):
         with patch('Assign.runtime.timezone.now', return_value=opened_at):
             async_to_sync(self.consumer.handle_participant_submit_answer)(payload)
 
-        self.assertTrue(AssignAnswer.objects.filter(
+        self.assertFalse(AssignAnswer.objects.filter(
             participant=self.participant,
             question=self.question,
         ).exists())
-        self.assertEqual(self.sent_payloads[-1]['type'], 'answer_submitted')
+        self.assertEqual(self.sent_payloads[-2]['code'], 'round_submission_required')
 
     def test_next_internal_round_opens_directly_without_another_reveal(self):
         presented_at = timezone.now()
@@ -1824,7 +1806,7 @@ class AssignManualQuestionPhaseTests(TransactionTestCase):
             )
         self.assertTrue(stored.accepted)
 
-        async_to_sync(self.consumer.handle_admin_next_round)({
+        async_to_sync(self.consumer.handle_admin_next_round)({**_host_set_context(self.consumer),
             'expected_round': 0,
             'expected_set': runtime.set_number,
         })
@@ -1902,7 +1884,7 @@ class AssignManualQuestionPhaseTests(TransactionTestCase):
         runtime.refresh_from_db()
         self.assertEqual(runtime.current_round_index, 0)
 
-        async_to_sync(self.consumer.handle_admin_next_round)({
+        async_to_sync(self.consumer.handle_admin_next_round)({**_host_set_context(self.consumer),
             'expected_round': 0,
             'expected_set': runtime.set_number,
         })
@@ -1948,7 +1930,7 @@ class AssignManualQuestionPhaseTests(TransactionTestCase):
                 )
             self.assertTrue(stored.accepted)
 
-            async_to_sync(self.consumer.handle_admin_next_round)({
+            async_to_sync(self.consumer.handle_admin_next_round)({**_host_set_context(self.consumer),
                 'expected_round': round_index,
                 'expected_set': runtime.set_number,
             })
@@ -2970,6 +2952,7 @@ class AssignReloadBrowserLiveFlowTests(_BrowserLiveServerTestCase):
             timeout=self.LONG_TIMEOUT,
         )
 
+        self.assertEqual(current_snapshot('assign', self.first_quiz.room_code, self.session.code)['current_set_id'], '1')
         next_round_start = len(self.websocket_frames['player']['received'])
         self._drag_and_log(self.followup_question, left_index=0)
         self._drag_and_log(
@@ -3177,6 +3160,7 @@ class AssignReloadBrowserLiveFlowTests(_BrowserLiveServerTestCase):
         self._assert_vhs_workspace_layout()
         self.assertGreater(int(self.player_page.locator('#playerTimeLeft').inner_text()), 0)
 
+        self.assertEqual(current_snapshot('assign', self.first_quiz.room_code, self.session.code)['current_set_id'], '2')
         next_round_start = len(self.websocket_frames['player']['received'])
         self._drag_and_log(self.followup_question, left_index=0)
         self._drag_and_log(

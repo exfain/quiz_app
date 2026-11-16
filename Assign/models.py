@@ -62,8 +62,12 @@ class AssignQuiz(SyncBase):
     
     def start_quiz(self):
         self.status = 'active'
-        self.started_at = timezone.now()
+        self.started_at = self.started_at or timezone.now()
+        self.ended_at = None
         self.save()
+
+    def get_current_set_number(self):
+        return getattr(getattr(self, 'session', None), 'current_question_number', 0) or None
     
     def end_quiz(self, status='completed'):
         self.status = status
@@ -174,6 +178,7 @@ class AssignParticipant(SyncBase):
     joined_at = models.DateTimeField(auto_now_add=True)
     is_active = models.BooleanField(default=True)
     total_score = models.IntegerField(default=0)
+    score_adjustment = models.IntegerField(default=0)
     questions_answered = models.IntegerField(default=0)
     last_activity = models.DateTimeField(auto_now=True)
     hub_session_code = models.CharField(max_length=16, null=True, blank=True, db_index=True)
@@ -186,7 +191,7 @@ class AssignParticipant(SyncBase):
     
     def calculate_score(self):
         """Recalculate total score based on answers"""
-        total_score = sum(answer.points_earned for answer in self.assign_answers.all())
+        total_score = self.score_adjustment + sum(answer.points_earned for answer in self.assign_answers.filter(is_tutorial=False))
         self.total_score = total_score
         self.questions_answered = self.assign_answers.count()
         self.save()
@@ -196,6 +201,7 @@ class AssignParticipant(SyncBase):
         """Get participant's rank in the quiz"""
         higher_scores = AssignParticipant.objects.filter(
             quiz=self.quiz,
+            hub_session_code=self.hub_session_code,
             total_score__gt=self.total_score
         ).count()
         return higher_scores + 1
@@ -205,6 +211,8 @@ class AssignParticipant(SyncBase):
 
 
 class AssignAnswer(SyncBase):
+    set_number = models.PositiveIntegerField(default=0)
+    is_tutorial = models.BooleanField(default=False)
     quiz = models.ForeignKey(AssignQuiz, on_delete=models.CASCADE, related_name='assign_answers')
     participant = models.ForeignKey(AssignParticipant, on_delete=models.CASCADE, related_name='assign_answers')
     question = models.ForeignKey(AssignQuestion, on_delete=models.CASCADE, related_name='assign_answers')
@@ -216,13 +224,13 @@ class AssignAnswer(SyncBase):
     time_taken = models.FloatField(help_text="Time taken to answer in seconds", null=True, blank=True)
     
     class Meta:
-        unique_together = ['quiz', 'participant', 'question']
+        unique_together = ['quiz', 'participant', 'question', 'set_number']
         ordering = ['-submitted_at']
     
     def save(self, *args, **kwargs):
         # Auto-calculate points on creation
         if not self.pk:
-            self.points_earned = self.question.calculate_score(self.user_matches)
+            self.points_earned = 0 if self.is_tutorial else self.question.calculate_score(self.user_matches)
         super().save(*args, **kwargs)
         
         # Update participant's total score

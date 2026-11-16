@@ -130,7 +130,15 @@ function actionButton(payload) {
 
 function send(payload) {
     if (guardedAdminActions.has(payload.type)) {
-        hostRuntime.sendAction(payload, {button: actionButton(payload)});
+        const button = actionButton(payload);
+        hostRuntime.sendAction(payload, {
+            button,
+            // All score buttons share the same action context. Make the
+            // temporary lock visible instead of silently dropping other teams.
+            buttons: payload.type === 'admin_adjust_score'
+                ? Array.from(document.querySelectorAll('.score-btn'))
+                : (button ? [button] : []),
+        });
         return;
     }
     hostRuntime.send(payload);
@@ -147,6 +155,7 @@ function renderState(data) {
 }
 
 function applyState(data) {
+    document.getElementById('startQuizBtn').dataset.hostGameResume = String(data.game?.status === 'inactive');
     currentState = data;
     const game = data.game || {};
     const round = data.round || {};

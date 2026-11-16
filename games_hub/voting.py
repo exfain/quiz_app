@@ -90,7 +90,8 @@ def _step_game(step):
 
 def _step_game_status(step):
     game = _step_game(step)
-    return getattr(game, 'status', None) if game else None
+    from .session_results import step_status
+    return step_status(step, game)
 
 
 def is_step_votable(step):
@@ -98,7 +99,7 @@ def is_step_votable(step):
     if not game:
         return False
 
-    status = getattr(game, 'status', None)
+    status = _step_game_status(step)
     if status in VOTING_BLOCKED_STATUSES:
         return False
     return status in VOTING_STARTABLE_STATUSES

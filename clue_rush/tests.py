@@ -247,6 +247,9 @@ class ClueRushScoreBoxTests(TransactionTestCase):
 
         consumer = ClueRushGameConsumer()
         consumer.room_code = quiz.room_code
+        self.assertEqual(async_to_sync(consumer.get_participant_score_history)(participant.name, participant.hub_session_code), [])
+        quiz.current_question = None
+        quiz.save(update_fields=['current_question'])
         history = async_to_sync(consumer.get_participant_score_history)(
             participant.name,
             participant.hub_session_code,
@@ -990,10 +993,15 @@ class ClueRushPersistentRuntimeTests(TransactionTestCase):
             task = consumer.auto_clue_task
             await asyncio.sleep(0.15)
             await consumer.disconnect(1000)
-            self.assertFalse(
-                task.done(),
-                repr(task.exception()) if task.done() and not task.cancelled() else None,
-            )
+            try:
+                await asyncio.wait_for(task, timeout=1)
+            except asyncio.CancelledError:
+                pass
+            self.assertTrue(task.done())
+            reconnected = self._consumer()
+            reconnected.channel_layer = consumer.channel_layer
+            reconnected._ensure_clue_reconciliation_task(self.question.id)
+            task = reconnected.auto_clue_task
             await asyncio.sleep(2.35)
             task.cancel()
             try:
@@ -1002,7 +1010,10 @@ class ClueRushPersistentRuntimeTests(TransactionTestCase):
                 pass
             return consumer.channel_layer.sent
 
-        events = async_to_sync(run_sequence)()
+        layer = DummyClueChannelLayer()
+        with patch('channels.layers.get_channel_layer', return_value=layer):
+            async_to_sync(run_sequence)()
+        events = layer.sent
         clue_events = [
             message
             for _, message in events
@@ -1075,8 +1086,9 @@ class ClueRushPersistentRuntimeTests(TransactionTestCase):
         first.channel_layer = layer
         second.channel_layer = layer
 
-        async_to_sync(first.reconcile_and_broadcast_clues)()
-        async_to_sync(second.reconcile_and_broadcast_clues)()
+        with patch('channels.layers.get_channel_layer', return_value=layer):
+            async_to_sync(first.reconcile_and_broadcast_clues)()
+            async_to_sync(second.reconcile_and_broadcast_clues)()
 
         clue_events = [
             message
@@ -1235,7 +1247,7 @@ class ClueRushPersistentRuntimeTests(TransactionTestCase):
     def test_reconcile_after_worker_restart_finalizes_expired_question_once(self):
         first_worker = reconcile_clue_schedule(
             self.quiz.room_code,
-            at=self.started['answer_deadline'],
+            at=self.started['answer_deadline'], finalize=True,
         )
         second_worker = reconcile_clue_schedule(
             self.quiz.room_code,
@@ -1709,7 +1721,8 @@ class ClueRushManualQuestionPhaseTests(TransactionTestCase):
             self.consumer,
             '_ensure_clue_reconciliation_task',
         ) as ensure_task:
-            async_to_sync(self.consumer.handle_admin_start_clues)(action)
+            with patch('channels.layers.get_channel_layer', return_value=self.consumer.channel_layer):
+                async_to_sync(self.consumer.handle_admin_start_clues)(action)
 
         event_types = [message['type'] for _, message in self.consumer.channel_layer.sent]
         self.assertEqual(event_types[:2], [
@@ -1755,12 +1768,7 @@ class ClueRushManualQuestionPhaseTests(TransactionTestCase):
             'HUBCLUE',
             first.id,
         )
-        finish_question_flow(
-            game_key='clue_rush',
-            room_code=self.quiz.room_code,
-            session_code='HUBCLUE',
-            question_id=first.id,
-        )
+
 
         second_decision = self.present(second, at=timezone.now())
         self.quiz.refresh_from_db()

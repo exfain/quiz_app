@@ -138,6 +138,13 @@ class Quiz(SyncBase):
             self.reset_runtime_state(session_code=session_code)
 
     def start_quiz(self, session_code=None):
+        if self.status == 'inactive' and self.started_at:
+            from games_hub.quiz_pause import resume
+            resume(self, 'quiz', session_code)
+            self.refresh_from_db()
+            return
+        if self.status == 'active' and self.started_at:
+            return
         self.reset_runtime_state(session_code=session_code)
         self.status = 'active'
         self.started_at = timezone.now()
@@ -145,6 +152,11 @@ class Quiz(SyncBase):
         self.save(update_fields=['status', 'started_at', 'ended_at', 'updated_at'])
     
     def end_quiz(self, status='completed'):
+        if status == 'inactive':
+            from games_hub.quiz_pause import pause
+            pause(self, 'quiz')
+            self.refresh_from_db()
+            return
         if hasattr(self, 'session'):
             self.session.end_current_question()
         self.current_question = None
@@ -342,16 +354,14 @@ class QuizQuestion(SyncBase):
             return answer.upper().strip() == self.correct_answer.upper().strip()
         return all(field['is_correct'] for field in self.evaluate_short_answer_fields(answer))
 
-    def evaluate_short_answer_fields(self, answer):
+    def evaluate_short_answer_fields(self, answer, *, threshold=100):
+        from games_hub.text_matching import matches
         submitted = self.parse_short_answer_submission(answer)
-        expected = [
-            self.normalize_text_answer(field['correct_answer'])
-            for field in self.get_short_answer_fields()
-        ]
         results = []
         for index, field in enumerate(self.get_short_answer_fields()):
             submitted_value = submitted[index] if index < len(submitted) else ''
-            auto_correct = self.normalize_text_answer(submitted_value) == expected[index]
+            auto_correct = matches(submitted_value, field['correct_answer'], threshold=threshold,
+                                   normalizer=self.normalize_text_answer)
             results.append({
                 'index': field['index'],
                 'key': field['key'],
@@ -395,6 +405,7 @@ class QuizParticipant(SyncBase):
         """Get participant's rank in the quiz"""
         higher_scores = QuizParticipant.objects.filter(
             quiz=self.quiz,
+            hub_session_code=self.hub_session_code,
             total_score__gt=self.total_score
         ).count()
         return higher_scores + 1
@@ -404,6 +415,7 @@ class QuizParticipant(SyncBase):
 
 
 class QuizAnswer(SyncBase):
+    round_number = models.PositiveIntegerField(default=0)
     quiz = models.ForeignKey(Quiz, on_delete=models.CASCADE, related_name='quiz_answers')
     participant = models.ForeignKey(QuizParticipant, on_delete=models.CASCADE, related_name='quiz_answers')
     question = models.ForeignKey(QuizQuestion, on_delete=models.CASCADE, related_name='quiz_answers')
@@ -415,15 +427,18 @@ class QuizAnswer(SyncBase):
     time_taken = models.FloatField(help_text="Time taken to answer in seconds", null=True, blank=True)
     
     class Meta:
-        unique_together = ['quiz', 'participant', 'question']
+        unique_together = ['quiz', 'participant', 'question', 'round_number']
         ordering = ['-submitted_at']
     
     def save(self, *args, **kwargs):
         # Auto-check if answer is correct and assign points
         if not self.pk:  # Only on creation
+            from games_hub.quiz_rounds import current_round
+            self.round_number = self.round_number or current_round(self.quiz)
             if self.question.get_effective_question_type() == 'short_answer':
                 self.answer_text = self.question.serialize_short_answer_submission(self.answer_text)
-                self.field_results = self.question.evaluate_short_answer_fields(self.answer_text)
+                from games_hub.text_matching import threshold_for
+                self.field_results = self.question.evaluate_short_answer_fields(self.answer_text, threshold=threshold_for(self.participant))
                 self.is_correct = all(field['is_correct'] for field in self.field_results)
                 self.points_earned = self._points_from_short_answer_results(self.field_results)
             else:
@@ -452,6 +467,9 @@ class QuizAnswer(SyncBase):
         normalized = []
         for base in base_results:
             stored = stored_by_key.get(base['key']) or {}
+            if 'auto_correct' in stored:
+                base['auto_correct'] = bool(stored['auto_correct'])
+                base['is_correct'] = base['auto_correct']
             manual_override = bool(stored.get('manual_override', False))
             if manual_override:
                 base['is_correct'] = bool(stored.get('is_correct', base['is_correct']))
@@ -518,6 +536,7 @@ class QuizSession(SyncBase):
     is_question_active = models.BooleanField(default=False)
     question_end_time = models.DateTimeField(null=True, blank=True)
     pending_answers = models.JSONField(default=dict, blank=True)
+    question_rounds = models.JSONField(default=list, blank=True)
     last_question_result = models.JSONField(default=dict, blank=True)
     
     # Session statistics
@@ -528,6 +547,7 @@ class QuizSession(SyncBase):
     updated_at = models.DateTimeField(auto_now=True)
     
     def reset_runtime_state(self):
+        self.question_rounds = []
         self.current_question_number = 0
         self.total_questions_sent = 0
         self.is_question_active = False
@@ -537,6 +557,7 @@ class QuizSession(SyncBase):
         self.total_responses_current_question = 0
         self.correct_responses_current_question = 0
         self.save(update_fields=[
+            'question_rounds',
             'current_question_number',
             'total_questions_sent',
             'is_question_active',
@@ -554,6 +575,8 @@ class QuizSession(SyncBase):
         effective_time_limit = int(time_limit or question.time_limit)
         self.quiz.current_question = question
         self.quiz.question_start_time = now
+        from games_hub.quiz_rounds import record_round
+        record_round(self, question)
         self.current_question_number += 1
         self.total_questions_sent += 1
         self.is_question_active = True
@@ -565,6 +588,7 @@ class QuizSession(SyncBase):
         
         self.quiz.save(update_fields=['current_question', 'question_start_time', 'updated_at'])
         self.save(update_fields=[
+            'question_rounds',
             'current_question_number',
             'total_questions_sent',
             'is_question_active',
@@ -580,6 +604,8 @@ class QuizSession(SyncBase):
         """Persist a question before its answer window is opened."""
         self.quiz.current_question = question
         self.quiz.question_start_time = None
+        from games_hub.quiz_rounds import record_round
+        record_round(self, question)
         self.current_question_number += 1
         self.total_questions_sent += 1
         self.is_question_active = False
@@ -590,6 +616,7 @@ class QuizSession(SyncBase):
         self.correct_responses_current_question = 0
         self.quiz.save(update_fields=['current_question', 'question_start_time', 'updated_at'])
         self.save(update_fields=[
+            'question_rounds',
             'current_question_number',
             'total_questions_sent',
             'is_question_active',

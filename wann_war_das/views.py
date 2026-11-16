@@ -1,3 +1,4 @@
+from games_hub.team_names import validate_join_name
 import json
 
 from django.http import JsonResponse
@@ -17,6 +18,7 @@ def _json_body(request):
         return {}
 
 
+@validate_join_name('wann_war_das', 'wann_war_das/join.html')
 def join_view(request):
     error = None
     if request.method == 'POST':

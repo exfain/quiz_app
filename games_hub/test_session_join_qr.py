@@ -1,6 +1,7 @@
 import os
 from pathlib import Path
 from unittest import mock
+from urllib.parse import urlsplit
 
 os.environ.setdefault("DJANGO_ALLOW_ASYNC_UNSAFE", "1")
 
@@ -141,6 +142,9 @@ class SessionJoinQrBrowserTests(StaticLiveServerTestCase):
 
     def setUp(self):
         self.session = HubSession.objects.create(code="QRBROW", name="QR Browser")
+        detector = mock.patch('games_hub.utils.get_server_ip', return_value='192.168.178.20')
+        detector.start()
+        self.addCleanup(detector.stop)
 
     def _page(self, viewport):
         if not self.browser:
@@ -224,7 +228,7 @@ class SessionJoinQrBrowserTests(StaticLiveServerTestCase):
                     self.assertLess(abs(label_box["y"] - link_box["y"]), 12)
                     self.assertEqual(
                         page.locator(".session-join-qr__link").get_attribute("href"),
-                        url,
+                        f"http://192.168.178.20:{urlsplit(self.live_server_url).port}{reverse('games_hub:lobby', args=[self.session.code])}",
                     )
                     toggle.click()
                     self.assertFalse(page.locator(".session-join-qr__code").is_visible())

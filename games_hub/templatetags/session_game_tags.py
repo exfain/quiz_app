@@ -9,6 +9,12 @@ register = template.Library()
 logger = logging.getLogger(__name__)
 
 
+@register.simple_tag(takes_context=True)
+def session_join_url(context, session_code):
+    from games_hub.utils import session_join_url as build_join_url
+    return build_join_url(context['request'], session_code)
+
+
 @register.simple_tag
 def session_game_number(hub_session_code, game_key, room_code):
     if not hub_session_code or not game_key or not room_code:

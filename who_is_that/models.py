@@ -1,11 +1,9 @@
-from django.db import models
+from django.db import models, transaction
 from games_website.models import SyncBase
 from django.contrib.auth.models import User
 from django.utils import timezone
 import random
 import string
-import difflib
-import re
 
 
 class WhoThatQuiz(SyncBase):
@@ -61,8 +59,15 @@ class WhoThatQuiz(SyncBase):
             return self.participants.filter(is_active=True, hub_session_code=session_code)
         return self.participants.filter(is_active=True)
     
-    def start_quiz(self):
-        if self.status == 'waiting':
+    def start_quiz(self, session_code=None):
+        if self.status == 'inactive' and self.started_at:
+            from games_hub.quiz_pause import resume
+            resume(self, 'who_that', session_code)
+            self.refresh_from_db()
+            return
+        if self.status == 'active' and self.started_at:
+            return
+        if self.status == 'waiting' or not self.started_at:
             self.current_question = None
             self.question_start_time = None
             if hasattr(self, 'session'):
@@ -79,11 +84,18 @@ class WhoThatQuiz(SyncBase):
             'current_question',
             'question_start_time',
         ])
+        from games_hub.authoritative_state import reset_question_flow
+        from games_hub.models import GameRuntimeState
+        from games_hub.quiz_pause import session_code_for
+        reset_question_flow(game_key='who_that', room_code=self.room_code,
+            session_code=session_code or session_code_for(self, 'who_that'),
+            mode=GameRuntimeState.QUESTION_FLOW_MANUAL_THREE_PHASE)
     
     def end_quiz(self, status='completed'):
-        self.status = status
-        self.ended_at = timezone.now()
-        self.save()
+        from .runtime import end_game
+        end_game(self.pk, status=status)
+        self.refresh_from_db()
+        return
     
     def __str__(self):
         return f"{self.title} ({self.room_code})"
@@ -123,71 +135,16 @@ class WhoThatQuestion(SyncBase):
     class Meta:
         ordering = ['-created_at']
 
-    def _is_meaningful_partial_match(self, user_answer, correct_answer):
-        normalized_user = ' '.join((user_answer or '').strip().lower().split())
-        normalized_correct = ' '.join((correct_answer or '').strip().lower().split())
+    def check_answer(self, user_answer, *, threshold=100):
+        """Match names and explicit aliases at the requested text threshold."""
+        from games_hub.text_matching import matches
+        return any(matches(user_answer, answer, threshold=threshold)
+                   for answer in [self.correct_answer, *(self.alternative_answers or [])])
 
-        if len(normalized_user) < 3 or len(normalized_correct) < 3:
-            return False
-
-        user_pattern = rf'(^|\W){re.escape(normalized_user)}($|\W)'
-        correct_pattern = rf'(^|\W){re.escape(normalized_correct)}($|\W)'
-
-        if re.search(user_pattern, normalized_correct):
-            return True
-        if re.search(correct_pattern, normalized_user):
-            return True
-        return False
-    
-    def check_answer(self, user_answer):
-        """Check if the user's answer is correct"""
-        if not user_answer:
-            return False
-        
-        user_answer = user_answer.strip().lower()
-        correct_answer = self.correct_answer.strip().lower()
-        
-        # Exact match
-        if user_answer == correct_answer:
-            return True
-        
-        # Check alternative answers
-        for alt_answer in self.alternative_answers:
-            if user_answer == alt_answer.strip().lower():
-                return True
-        
-        # Partial match using sequence matching (70% similarity)
-        similarity = difflib.SequenceMatcher(None, user_answer, correct_answer).ratio()
-        if similarity >= 0.7:
-            return True
-        
-        # Allow only meaningful whole-token or whole-phrase partials.
-        if self._is_meaningful_partial_match(user_answer, correct_answer):
-            return True
-        
-        return False
-    
     def get_match_quality(self, user_answer):
-        """Get the quality of the match for scoring purposes"""
-        if not user_answer:
-            return 0
-        
-        user_answer = user_answer.strip().lower()
-        correct_answer = self.correct_answer.strip().lower()
-        
-        # Exact match
-        if user_answer == correct_answer:
-            return 1.0
-        
-        # Check alternative answers
-        for alt_answer in self.alternative_answers:
-            if user_answer == alt_answer.strip().lower():
-                return 1.0
-        
-        # Calculate similarity
-        similarity = difflib.SequenceMatcher(None, user_answer, correct_answer).ratio()
-        return similarity
-    
+        from games_hub.text_matching import similarity
+        return max((similarity(user_answer, answer) for answer in [self.correct_answer, *(self.alternative_answers or [])]), default=0) / 100
+
     def calculate_score(self, user_answer):
         """Calculate score based on answer quality"""
         return 1 if self.check_answer(user_answer) else 0
@@ -202,6 +159,7 @@ class WhoThatParticipant(SyncBase):
     joined_at = models.DateTimeField(auto_now_add=True)
     is_active = models.BooleanField(default=True)
     total_score = models.IntegerField(default=0)
+    score_adjustment = models.IntegerField(default=0)
     questions_answered = models.IntegerField(default=0)
     correct_answers = models.IntegerField(default=0)
     last_activity = models.DateTimeField(auto_now=True)
@@ -211,19 +169,22 @@ class WhoThatParticipant(SyncBase):
         unique_together = ['quiz', 'name', 'hub_session_code']
         ordering = ['-total_score', 'name']
     
+    @transaction.atomic
     def calculate_score(self):
         """Recalculate total score based on answers"""
+        self.score_adjustment = type(self).objects.select_for_update().get(pk=self.pk).score_adjustment
         answers = self.who_that_answers.all()
-        self.total_score = sum(1 for answer in answers if answer.is_correct)
+        self.total_score = sum(answer.points_earned for answer in answers) + self.score_adjustment
         self.questions_answered = answers.count()
         self.correct_answers = answers.filter(is_correct=True).count()
-        self.save()
+        self.save(update_fields=['total_score', 'questions_answered', 'correct_answers', 'updated_at'])
         return self.total_score
     
     def get_rank(self):
         """Get participant's rank in the quiz"""
         higher_scores = WhoThatParticipant.objects.filter(
             quiz=self.quiz,
+            hub_session_code=self.hub_session_code,
             total_score__gt=self.total_score
         ).count()
         return higher_scores + 1
@@ -252,16 +213,21 @@ class WhoThatAnswer(SyncBase):
     points_earned = models.IntegerField(default=0)
     submitted_at = models.DateTimeField(auto_now_add=True)
     time_taken = models.FloatField(help_text="Time taken to answer in seconds", null=True, blank=True)
+    round_number = models.PositiveIntegerField(default=0)
+    is_tutorial = models.BooleanField(default=False)
     
     class Meta:
-        unique_together = ['quiz', 'participant', 'question']
+        unique_together = ['quiz', 'participant', 'question', 'round_number']
         ordering = ['-submitted_at']
     
     def save(self, *args, **kwargs):
         # Auto-calculate correctness and points on creation
         if not self.pk:
-            self.is_correct = self.question.check_answer(self.user_answer)
-        self.points_earned = 1 if self.is_correct else 0
+            from games_hub.quiz_rounds import current_round
+            self.round_number = self.round_number or current_round(self.quiz)
+            from games_hub.text_matching import threshold_for
+            self.is_correct = self.question.check_answer(self.user_answer, threshold=threshold_for(self.participant))
+        self.points_earned = int(self.is_correct and not self.is_tutorial)
         super().save(*args, **kwargs)
         
         # Update participant's total score
@@ -299,6 +265,7 @@ class WhoThatSession(SyncBase):
     is_question_active = models.BooleanField(default=False)
     question_end_time = models.DateTimeField(null=True, blank=True)
     pending_answers = models.JSONField(default=dict, blank=True)
+    question_rounds = models.JSONField(default=list, blank=True)
     
     # Session statistics
     total_responses_current_question = models.IntegerField(default=0)
@@ -315,6 +282,7 @@ class WhoThatSession(SyncBase):
         self.is_question_active = False
         self.question_end_time = None
         self.pending_answers = {}
+        self.question_rounds = []
         self.total_responses_current_question = 0
         self.correct_responses_current_question = 0
         self.average_response_time_current_question = 0
@@ -324,6 +292,7 @@ class WhoThatSession(SyncBase):
             'is_question_active',
             'question_end_time',
             'pending_answers',
+            'question_rounds',
             'total_responses_current_question',
             'correct_responses_current_question',
             'average_response_time_current_question',
@@ -332,6 +301,8 @@ class WhoThatSession(SyncBase):
     
     def prepare_question(self, question):
         """Persist a question without opening its answer window."""
+        from games_hub.quiz_rounds import record_round
+        record_round(self, question)
         self.quiz.current_question = question
         self.quiz.question_start_time = None
         self.current_question_number += 1

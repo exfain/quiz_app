@@ -33,9 +33,7 @@ def _session_code(value) -> str:
 
 
 def _participant_queryset(quiz, hub_session_code):
-    participants = quiz.participants.filter(is_active=True)
-    if hub_session_code:
-        participants = participants.filter(hub_session_code=hub_session_code)
+    participants = quiz.participants.filter(is_active=True, hub_session_code=hub_session_code or None)
     return participants
 
 
@@ -89,7 +87,7 @@ def enroll_participant_in_active_round(participant_id, hub_session_code):
     if (
         participant.quiz.status != 'active'
         or not session.is_question_active
-        or participant.hub_session_code != normalized_session
+        or (participant.hub_session_code or '') != normalized_session
         or participant.eliminated_set_number == session.current_question_number
     ):
         return False
@@ -310,7 +308,7 @@ def store_round_selection(
         participant = AssignParticipant.objects.select_for_update().get(
             quiz=quiz,
             name=participant_name,
-            hub_session_code=hub_session_code,
+            hub_session_code=hub_session_code or None,
         )
     except AssignParticipant.DoesNotExist:
         return RoundActionResult(False, 'invalid_participant')
@@ -327,6 +325,19 @@ def store_round_selection(
     )
     if state.is_locked:
         return RoundActionResult(False, 'already_submitted', state)
+
+    previous = participant_solved_matches(runtime, participant)
+    if user_match:
+        try:
+            left = int(left_item_index)
+            right = int(user_match[str(left)])
+        except (TypeError, ValueError, KeyError):
+            return RoundActionResult(False, 'invalid_selection')
+        randomized = runtime.question.get_randomized_items(room_code)
+        original = randomized['position_to_original'].get(right)
+        if (left < 0 or left >= len(runtime.question.left_items) or original is None
+                or str(left) in previous or original in previous.values()):
+            return RoundActionResult(False, 'invalid_selection')
 
     state.left_item_index = left_item_index
     state.user_match = user_match if isinstance(user_match, dict) else {}
@@ -412,7 +423,8 @@ def evaluate_and_advance(
     except (AssignQuiz.DoesNotExist, AssignSession.DoesNotExist):
         return {'advanced': False, 'code': 'invalid_phase'}
     if (
-        not runtime
+        quiz.status != 'active'
+        or not runtime
         or not quiz.current_question_id
         or runtime.question_id != quiz.current_question_id
         or runtime.set_number != int(set_number)
@@ -504,7 +516,10 @@ def evaluate_and_advance(
 
     evaluated_rounds.append(normalized_round)
     runtime.evaluated_rounds = sorted(set(evaluated_rounds))
-    runtime.solved_matches = solved_matches
+    correct_participants = [participants[item['participant_id']] for item in outcomes if item['is_correct']]
+    own_matches = [participant_solved_matches(runtime, participant) for participant in correct_participants]
+    runtime.solved_matches = {key: value for key, value in (own_matches[0] if own_matches else {}).items()
+                              if all(matches.get(key) == value for matches in own_matches)}
     total_rounds = len(runtime.question.correct_matches or {})
     next_round = normalized_round + 1
     completed = next_round >= total_rounds
@@ -705,17 +720,21 @@ def persist_final_answers(runtime):
                 str(state.left_item_index)
             ] = state.original_right_index
 
+    from games_hub.unit_tutorial_runtime import is_unit_tutorial_question
+    tutorial_round = is_unit_tutorial_question('assign', runtime.quiz.room_code, runtime.hub_session_code or None, runtime.question_id)
     answers = []
     for participant in participants:
         completed_at = completed_at_by_participant.get(
             participant.id,
             min(timezone.now(), runtime.round_ends_at),
         )
-        answer, _ = AssignAnswer.objects.get_or_create(
+        answer, created = AssignAnswer.objects.get_or_create(
             quiz=runtime.quiz,
             participant=participant,
             question=runtime.question,
+            set_number=runtime.set_number,
             defaults={
+                'is_tutorial': tutorial_round,
                 'user_matches': matches_by_participant.get(participant.id, {}),
                 'time_taken': max(
                     0,
@@ -723,5 +742,16 @@ def persist_final_answers(runtime):
                 ),
             },
         )
+        if not created:
+            answer.user_matches = matches_by_participant.get(participant.id, {})
+            answer.points_earned = 0 if tutorial_round else runtime.question.calculate_score(answer.user_matches)
+            answer.is_tutorial = tutorial_round
+            answer.save(update_fields=['user_matches', 'points_earned', 'is_tutorial', 'updated_at'])
         answers.append(answer)
     return answers
+
+
+def participant_solved_matches(runtime, participant):
+    return {str(state.left_item_index): state.original_right_index
+            for state in runtime.participant_round_states.filter(participant=participant, is_correct=True)
+            if state.left_item_index is not None and state.original_right_index is not None}

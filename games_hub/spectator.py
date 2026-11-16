@@ -26,6 +26,8 @@ from games_hub.authoritative_state import current_snapshot, question_content_is_
 from games_hub.game_intro import serialize_game_intro
 from games_hub.models import GameRuntimeState, HubSession
 from games_hub.unit_tutorial_runtime import is_current_unit_tutorial_question
+from QuizGame.progress import question_progress as quiz_question_progress
+from games_hub.set_progress import set_progress
 from sorting_ladder.models import SortingLadderGame, SortingLadderSession
 from sorting_ladder.runtime import (
     SORTING_LADDER_REVEAL_ANIMATION_MS,
@@ -158,7 +160,7 @@ def build_spectator_state(session):
     game_state.update(payload)
     question = game_state.get('question')
     if question:
-        question['is_tutorial_round'] = is_current_unit_tutorial_question(
+        question['is_tutorial_round'] = question.get('is_tutorial_round', False) if step.game_key == 'blackjack' else is_current_unit_tutorial_question(
             step.game_key,
             step.room_code,
             session.code,
@@ -256,6 +258,8 @@ def _resolve_display_game(session):
 
     active = []
     for step in steps:
+        if step.game_format in {'duel', 'tournament'}:
+            continue  # Its role-filtered Duel projection owns the presentation.
         game = _get_step_game(step)
         if game and getattr(game, 'status', None) == 'active' and _game_is_current_session_run(game, session):
             active.append((step, game))
@@ -264,10 +268,13 @@ def _resolve_display_game(session):
 
     index = min(max(session.current_step_index or 0, 0), len(steps) - 1)
     current_step = steps[index]
+    if current_step.game_format in {'duel', 'tournament'}:
+        return None, None
     current_game = _get_step_game(current_step)
     if (
         current_game
-        and getattr(current_game, 'status', None) in {'active', 'completed'}
+        and (getattr(current_game, 'status', None) in {'active', 'completed'}
+             or (current_step.game_key in {'quiz', 'who', 'who_that', 'estimation'} and current_game.status == 'inactive'))
         and _game_is_current_session_run(current_game, session)
     ):
         return current_step, current_game
@@ -324,6 +331,8 @@ def _runtime_fields(runtime):
 
 
 def _runtime_timer(runtime, fallback=None):
+    if runtime.get('game_key') in {'quiz', 'who', 'who_that', 'estimation', 'assign', 'sorting_ladder', 'wer_weiss_mehr', 'blackjack'} and runtime.get('_paused_at'):
+        return {'active': False, 'seconds_left': runtime.get('remaining_answer_time'), 'starts_at': None, 'ends_at': None}
     if runtime.get('question_flow_mode') != 'manual_three_phase':
         return fallback or _timer_payload(None)
     if runtime.get('question_phase') != 'answering_open':
@@ -394,6 +403,10 @@ def _serialize_quick_quiz(quiz, session):
             prepared.update({
                 'phase': 'question_prepared',
                 'message': 'Frage wird vorbereitet',
+                'progress': quiz_question_progress(
+                    quiz, session.code, session=quiz_session,
+                    question_id=runtime.get('prepared_question_id'), prepared=True,
+                ),
                 **_runtime_fields(runtime),
             })
             return prepared
@@ -433,7 +446,7 @@ def _serialize_quick_quiz(quiz, session):
         'timer': _runtime_timer(runtime, _timer_payload(quiz_session)),
         'question': question_payload,
         'response_count': _answer_count(quiz, session, 'quiz_answers', question),
-        'progress': _question_progress(question, ordered_questions),
+        'progress': quiz_question_progress(quiz, session.code, session=quiz_session, question_id=question.id),
         'answer_reveal_stagger_ms': answer_reveal_stagger_ms,
         'answer_reveal_animation_ms': QUIZ_ANSWER_REVEAL_ANIMATION_MS,
         'answer_reveal_pause_ms': QUIZ_ANSWER_REVEAL_PAUSE_MS,
@@ -442,6 +455,7 @@ def _serialize_quick_quiz(quiz, session):
 
 
 def _serialize_estimation(quiz, session):
+    from Estimation.progress import question_progress
     quiz_session = _safe_session(quiz)
     runtime, manual_current_question = _manual_runtime('estimation', quiz, session)
     ordered_questions = _ordered_questions(quiz)
@@ -521,47 +535,24 @@ def _serialize_estimation(quiz, session):
         'timer': _runtime_timer(runtime, _timer_payload(quiz_session)),
         'question': question_payload,
         'response_count': _answer_count(quiz, session, 'estimation_answers', question),
-        'progress': _question_progress(question, ordered_questions),
+        'progress': question_progress(quiz, session.code if session else None, question.id),
         **_runtime_fields(runtime),
     }
 
 
 def _serialize_where(quiz, session):
-    quiz_session = _safe_session(quiz)
-    ordered_questions = _ordered_questions(quiz)
-    question, reveal = _current_or_last_question(
-        quiz,
-        session,
-        quiz_session,
-        'where_answers',
-        ordered_questions,
-    )
-    if not question:
-        return _game_waiting_payload(quiz_session)
-
-    question_payload = {
-        'id': question.id,
-        'text': question.question_text,
-        'image_url': _file_url(question.image),
-    }
-    if reveal:
-        question_payload['correct_location'] = {
-            'latitude': question.correct_latitude,
-            'longitude': question.correct_longitude,
-        }
-        question_payload['explanation'] = question.explanation or ''
-
-    return {
-        'phase': 'reveal' if reveal else 'question',
-        'message': 'Aufloesung' if reveal else 'Aktueller Ort',
-        'timer': _timer_payload(quiz_session),
-        'question': question_payload,
-        'response_count': _answer_count(quiz, session, 'where_answers', question),
-        'progress': _question_progress(question, ordered_questions),
-    }
+    from where_is_this.runtime import state
+    result = state(quiz, session.code if session else '', observe=False)
+    result['phase'] = 'reveal' if result['revealed'] else 'question' if result['question'] else 'game_waiting'
+    result['timer'] = {'remaining_seconds': result['remaining_seconds'], 'ends_at': result['ends_at'],
+                       'active': bool(result['question'] and not result['revealed'] and quiz.status == 'active')}
+    # The spectator shell owns its separate overall-scoreboard contract.
+    result.pop('scoreboard', None)
+    return result
 
 
 def _serialize_who_that(quiz, session):
+    from games_hub.quiz_rounds import progress
     quiz_session = _safe_session(quiz)
     runtime, manual_current_question = _manual_runtime('who_that', quiz, session)
     ordered_questions = _ordered_questions(quiz)
@@ -607,12 +598,13 @@ def _serialize_who_that(quiz, session):
         'timer': _runtime_timer(runtime, _timer_payload(quiz_session)),
         'question': question_payload,
         'response_count': _answer_count(quiz, session, 'who_that_answers', question),
-        'progress': _question_progress(question, ordered_questions),
+        'progress': progress(quiz, 'who_that', session.code if session else None, question_id=question.id),
         **_runtime_fields(runtime),
     }
 
 
 def _serialize_who(quiz, session):
+    from games_hub.quiz_rounds import progress
     quiz_session = _safe_session(quiz)
     runtime, manual_current_question = _manual_runtime('who', quiz, session)
     ordered_questions = _ordered_questions(quiz)
@@ -644,6 +636,7 @@ def _serialize_who(quiz, session):
         question_start_time=getattr(quiz, 'question_start_time', None),
         question_end_time=getattr(quiz_session, 'question_end_time', None),
         people_count=len(people),
+        server_now=parse_datetime(runtime.get('_paused_at') or '') or timezone.now(),
     )
     current_person = None
     if people and not reveal and (
@@ -657,8 +650,8 @@ def _serialize_who(quiz, session):
         'current_person': current_person,
         'people_count': len(people),
         'timer_state': timer_state,
-        'set_number': int(getattr(quiz_session, 'current_question_number', 0) or 0),
-        'total_sets': len(ordered_questions),
+        'set_number': progress(quiz, 'who', session.code if session else None, question_id=question.id)['current'],
+        'total_sets': progress(quiz, 'who', session.code if session else None, question_id=question.id)['total'],
     }
     if reveal:
         question_payload['liars'] = [person.get('name', '') for person in question.get_liars()]
@@ -681,7 +674,40 @@ def _serialize_who(quiz, session):
 
 
 def _serialize_blackjack(quiz, session):
+    from black_jack_quiz import runtime as blackjack_runtime
+    try:
+        state = blackjack_runtime.build_state(quiz, session.code)
+    except ValueError:
+        return _game_waiting_payload(None)
     quiz_session = _safe_session(quiz)
+    if quiz_session and quiz_session.set_rounds:
+        quiz_session.refresh_from_db()
+        if state.get('question_flow_mode') == 'manual_three_phase' and not state.get('question_phase') and not state.get('reveal'):
+            return {**_game_waiting_payload(quiz_session), **_runtime_fields(state)}
+        entry = blackjack_runtime.current_run(quiz_session)
+        reveal = state.get('reveal') or {}
+        question = state.get('question') or reveal.get('correct_answer')
+        if not question:
+            return {**_game_waiting_payload(quiz_session), **_runtime_fields(state)}
+        question_payload = {
+            'id': question['id'] if 'id' in question else question['question_id'],
+            'text': question['question_text'], 'set_number': state['set_number'],
+            'total_sets': state['total_sets'], 'question_in_set': state['question_in_set'],
+            'set_question_count': state['set_question_count'], 'scoring_mode': quiz.scoring_mode,
+            'is_tutorial_round': state['is_tutorial_round'],
+        }
+        if reveal:
+            question_payload.update(correct_answer=question['correct_answer'], target=21,
+                explanation=question.get('explanation', ''))
+        return {
+            'phase': 'reveal' if reveal else 'question',
+            'message': 'Aufloesung' if reveal else 'Black-Jack-Frage',
+            'timer': _runtime_timer(state, _timer_payload(quiz_session)), 'question': question_payload,
+            'response_count': blackjack_runtime.answer_rows(quiz, entry).filter(question_id=question_payload['id']).count(),
+            'progress': {'kind': 'set_round', 'set': state['set_number'], 'set_total': state['total_sets'],
+                'current': state['question_in_set'], 'total': state['set_question_count']},
+            **_runtime_fields(state),
+        }
     runtime, manual_current_question = _manual_runtime('blackjack', quiz, session)
     if runtime.get('question_flow_mode') == GameRuntimeState.QUESTION_FLOW_MANUAL_THREE_PHASE:
         question, reveal = _manual_spectator_question(
@@ -732,6 +758,7 @@ def _serialize_blackjack(quiz, session):
 
 
 def _serialize_clue_rush(game, session):
+    from clue_rush.progress import question_progress as clue_progress, current_round as clue_round
     game_session = _safe_session(game)
     runtime, manual_current_question = _manual_runtime('clue_rush', game, session)
     ordered_questions = _ordered_questions(game)
@@ -758,6 +785,9 @@ def _serialize_clue_rush(game, session):
                 )
             )
         )
+    if not question and game_session and game_session.finalized_question_id and not game.current_question_id:
+        question = game.selected_questions.model.objects.filter(pk=game_session.finalized_question_id).first()
+        reveal = question is not None
     if not question:
         return _game_waiting_payload(game_session)
     if _manual_question_is_in_progress(runtime, manual_current_question):
@@ -785,6 +815,7 @@ def _serialize_clue_rush(game, session):
         }
         for answer in game.clue_answers.filter(
             question=question,
+            round_number=clue_round(game),
             participant__hub_session_code=session.code,
         ).select_related('participant').order_by('submitted_at')
     ]
@@ -807,7 +838,7 @@ def _serialize_clue_rush(game, session):
         ),
         'question': question_payload,
         'response_count': len(answer_locks),
-        'progress': _question_progress(question, ordered_questions),
+        'progress': clue_progress(game, session.code, question.id),
         **_runtime_fields(runtime),
     }
 
@@ -843,6 +874,10 @@ def _serialize_assign(quiz, session):
             'assign_answers',
             ordered_questions,
         )
+    set_runtime = current_set_runtime(quiz.room_code, session.code)
+    if not question and set_runtime and set_runtime.phase == 'revealed':
+        question = set_runtime.question
+        reveal = True
     if not question:
         if runtime.get('question_shell_prepared'):
             prepared = _game_waiting_payload(None)
@@ -888,8 +923,8 @@ def _serialize_assign(quiz, session):
         'message': 'Aufloesung' if reveal else 'Zuordnungsaufgabe',
         'timer': _runtime_timer(runtime, _timer_payload(quiz_session)),
         'question': question_payload,
-        'response_count': _answer_count(quiz, session, 'assign_answers', question),
-        'progress': _question_progress(question, ordered_questions, kind='set'),
+        'response_count': set_runtime.participant_round_states.filter(round_index=set_runtime.current_round_index, is_locked=True).count() if set_runtime else 0,
+        'progress': set_progress(quiz, 'assign', session.code),
         'assign_reveal_stagger_ms': ASSIGN_REVEAL_STAGGER_MS,
         'assign_reveal_animation_ms': ASSIGN_REVEAL_ANIMATION_MS,
         **_runtime_fields(runtime),
@@ -947,7 +982,7 @@ def _serialize_sorting_ladder(game, session):
         for item in sorted(items_by_id.values(), key=lambda item: item.id)
         if item.id not in shuffled_ids
     )
-    fixed_item_id = getattr(question, 'starting_item_id', None)
+    fixed_item_id = getattr(question, 'starting_item_id', None) or (shuffled_ids[0] if shuffled_ids else None)
     presentation_items = [
         _sorting_item_payload(item)
         for item in presentation_order
@@ -973,8 +1008,8 @@ def _serialize_sorting_ladder(game, session):
         'placed_elements': placed,
         'items': presentation_items,
         'fixed_element': (
-            _sorting_item_payload(question.starting_item)
-            if presentation_open and question.starting_item_id
+            _sorting_item_payload(items_by_id[fixed_item_id])
+            if presentation_open and fixed_item_id in items_by_id
             else None
         ),
         'active_element': active_element,
@@ -995,12 +1030,8 @@ def _serialize_sorting_ladder(game, session):
             _timer_payload(game_session, end_attr='round_end_time'),
         ),
         'question': question_payload,
-        'response_count': 0,
-        'progress': {
-            'kind': 'round',
-            'current': round_number,
-            'total': max(item_count - 1, 0) or None,
-        },
+        'response_count': game.submissions.filter(participant__hub_session_code=session.code, question=question, set_number=game_session.current_set_number, round_number=round_number).count() if game_session else 0,
+        'progress': set_progress(game, 'sorting_ladder', session.code),
         'sorting_reveal_counts': reveal_counts,
         'sorting_reveal_stagger_ms': SORTING_LADDER_REVEAL_STAGGER_MS,
         'sorting_reveal_animation_ms': SORTING_LADDER_REVEAL_ANIMATION_MS,
@@ -1025,7 +1056,8 @@ def _serialize_buzzer(game, session):
         'progress': {
             'kind': 'round',
             'current': round_state.get('number') or None,
-            'total': (state.get('game') or {}).get('planned_rounds') or None,
+            'total': max((state.get('game') or {}).get('planned_rounds') or 0, round_state.get('number') or 0)
+                if (state.get('game') or {}).get('planned_rounds') else None,
         },
         **_runtime_fields(state),
     }
@@ -1074,11 +1106,11 @@ def _serialize_wann_war_das(game, session):
         'timer': timer,
         'question': question_payload,
         'participants': state.get('participants', []),
-        'response_count': len(state.get('answers') or []),
+        'response_count': state.get('response_count', 0),
         'progress': {
             'kind': 'question',
             'current': state.get('question_number') or None,
-            'total': len(ordered_questions) or None,
+            'total': (state.get('progress') or {}).get('total') or None,
         },
         **_runtime_fields(state),
     }
@@ -1125,6 +1157,7 @@ def _serialize_wer_weiss_mehr(game, session):
         'progress': {
             'kind': 'set_round',
             'set': state.get('current_set_number') or None,
+            'set_total': state.get('set_total') or None,
             'current': state.get('current_round') or None,
             'total': None,
         },
@@ -1226,10 +1259,14 @@ def _answer_count(quiz, hub_session, answer_relation, question):
     answer_manager = getattr(quiz, answer_relation, None)
     if answer_manager is None:
         return 0
-    return answer_manager.filter(
+    answers = answer_manager.filter(
         question=question,
         participant__hub_session_code=hub_session.code,
-    ).count()
+    )
+    if quiz._meta.app_label in {'QuizGame', 'who_is_lying', 'who_is_that', 'Estimation'}:
+        from .quiz_rounds import current_round
+        answers = answers.filter(round_number=current_round(quiz))
+    return answers.count()
 
 
 def _ordered_questions(quiz):

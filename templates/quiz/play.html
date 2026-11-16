@@ -26,7 +26,7 @@
       data-vhs-progress-source="#vhsQuizProgress">
 <!-- TEST_MARKER_2026 -->
     <div class="play-container">
-        <span id="vhsQuizProgress" hidden aria-hidden="true">{% if total_question_count %}{% firstof current_question_number 1 %}/{{ total_question_count }}{% endif %}</span>
+        <span id="vhsQuizProgress" hidden aria-hidden="true">{% if total_question_count and current_question_number and current_question_number <= total_question_count %}{{ current_question_number }}/{{ total_question_count }}{% endif %}</span>
         <!-- Header -->
         <header class="quiz-header">
             <div class="container">
@@ -106,7 +106,7 @@
                                 <!-- Question Header -->
                                 <div class="question-header">
                                     <div class="question-number">
-                                        Question <span id="currentQuestionNumber">1</span>
+                                        Question <span id="currentQuestionNumber">{{ current_question_number|default_if_none:"" }}</span>
                                     </div>
                                     <div class="question-timer{% if question_runtime.question_phase != 'answering_open' %} d-none{% endif %}" id="playerQuestionTimerWrapper">
                                         <div class="timer-circle" id="playerTimerCircle">
@@ -180,7 +180,7 @@
                                     {% include 'includes/_post_game_results.html' %}
                                 {% endwith %}
                                 <!-- <div class="quiz-actions">
-                                    <a href="/quiz/result/{{ quiz.room_code }}/{{ participant.name }}/" class="btn btn-primary btn-lg">
+                                    <a href="{% url 'quiz:result' quiz.room_code participant.name %}?hub_session={{ hub_session|default_if_none:''|urlencode }}" class="btn btn-primary btn-lg">
                                         <i data-lucide="bar-chart-3"></i>
                                         View Detailed Results
                                     </a>
@@ -1253,8 +1253,8 @@
             class QuizPlayer {
                 constructor() {
                     this.roomCode = '{{ quiz.room_code }}';
-                    this.participantName = '{{ participant.name }}';
-                    this.hubSession = '{{ hub_session }}';
+                    this.participantName = '{{ participant.name|escapejs }}';
+                    this.hubSession = '{{ hub_session|default_if_none:""|escapejs }}';
                     this.websocket = null;
                     this.questionTimer = null;
                     this.questionTimerGeneration = 0;
@@ -1272,7 +1272,8 @@
                     this.currentQuestion = null;
                     this.lastSubmittedAnswerDisplay = null;
                     this.scoreboardQuestions = this.readJsonScript('quizScoreboardData', []);
-                    this.totalQuestionCount = this.scoreboardQuestions.length;
+                    this.totalQuestionCount = {{ total_question_count|default:"0" }};
+                    this.currentProgressQuestionNumber = {{ current_question_number|default:"null" }};
                     this.progressHistory = this.readJsonScript('quizInitialProgressData', []);
                     this.currentQuestionId = this.readJsonScript('quizCurrentQuestionId', null);
                     this.pendingScoreEvaluations = new Map();
@@ -1290,9 +1291,10 @@
                     this.renderProgressHistory();
                     
                     // Start timer if there's an active question
-                    {% if quiz.current_question %}
+                    {% if quiz.current_question and quiz.status == 'active' %}
                         this.loadCurrentQuestion();
                     {% endif %}
+                    {% if quiz.status == 'inactive' %}this.onQuizInactive();{% endif %}
                 }
 
                 connectWebSocket() {
@@ -1346,6 +1348,7 @@
                             break;
 
                         case 'question_preparation_cleared':
+                            this.onQuestionPrepared(data);
                             break;
 
                         case 'tutorial_start':
@@ -1392,6 +1395,18 @@
                             this.onAnswerRejected(data);
                             break;
 
+                        case 'action_rejected':
+                            this.onAnswerRejected({...data, question_id: data.question_id || this.submissionQuestionId});
+                            break;
+
+                        case 'pending_answer_rejected':
+                            if (Number(data.question_id) === Number(this.currentQuestionId)) this.showAnswerError(data.message);
+                            break;
+
+                        case 'pending_answer_saved':
+                            document.getElementById('answerSaveError')?.remove();
+                            break;
+
                         case 'answer_corrected':
                             this.applyManualAnswerCorrection(data);
                             break;
@@ -1404,6 +1419,14 @@
                         case 'quiz_ended':
                             window.gameTutorial?.forceClose();
                             this.onQuizEnded(data);
+                            break;
+
+                        case 'quiz_inactive':
+                            this.onQuizInactive();
+                            break;
+
+                        case 'quiz_resumed':
+                            window.location.reload();
                             break;
 
                         case 'show_leaderboard':
@@ -1462,6 +1485,7 @@
                 }
 
                 onAnswerSubmitted(data) {
+                    document.getElementById('answerSaveError')?.remove();
                     const questionId = Number(data?.question_id);
                     const activeQuestionId = Number(this.currentQuestion?.id ?? this.currentQuestionId);
                     const pendingQuestionId = Number(this.submissionQuestionId);
@@ -1511,6 +1535,34 @@
                     this.submissionPending = false;
                     this.hasAnswered = false;
                     this.pendingSubmittedAnswerDisplay = null;
+                    const deadline = Date.parse(this.currentQuestion?.answering_deadline_at || this.currentQuestion?.ends_at || '');
+                    if (this.questionPhase === 'answering_open' && (!Number.isFinite(deadline) || deadline > Date.now())) {
+                        this.showState('questionState');
+                        this.setAnswerControlsDisabled(false);
+                    }
+                    this.showAnswerError(data.message || 'Die Antwort wurde nicht angenommen.');
+                }
+
+                showAnswerError(message) {
+                    let error = document.getElementById('answerSaveError');
+                    if (!error) {
+                        error = document.createElement('div');
+                        error.id = 'answerSaveError';
+                        error.className = 'alert alert-warning';
+                        error.setAttribute('role', 'alert');
+                        document.getElementById('answerOptions')?.before(error);
+                    }
+                    error.textContent = message;
+                }
+
+                onQuizInactive() {
+                    clearInterval(this.questionTimer);
+                    this.questionTimerGeneration += 1;
+                    this.clearQuestionPresentationTimer();
+                    this.clearAnswerRevealTimers();
+                    this.disableAnswerControls();
+                    this.showState('waitingQuestionState');
+                    document.getElementById('waitingQuestionState').textContent = 'Spiel pausiert. Warte auf den Host.';
                 }
 
                 bindEvents() {
@@ -1532,6 +1584,7 @@
                 }
 
                 getCurrentQuestionNumber() {
+                    if (Number(this.currentProgressQuestionNumber) > 0) return Number(this.currentProgressQuestionNumber);
                     const normalizedQuestionId = Number(this.currentQuestionId);
                     if (Number.isNaN(normalizedQuestionId)) {
                         return null;
@@ -1568,6 +1621,7 @@
                     }
                     const total = Number(this.totalQuestionCount);
                     const current = Number(questionNumber);
+                    this.currentProgressQuestionNumber = Number.isInteger(current) && current > 0 ? current : null;
                     const progress = document.getElementById('vhsQuizProgress');
                     if (!progress) return;
                     progress.textContent = (
@@ -1580,7 +1634,9 @@
 
                 onQuizStarted(data = {}) {
                     // Tutorial is shown via separate 'tutorial_start' event
-                    this.setVhsQuestionProgress(1, data.total_questions);
+                    const number = Object.prototype.hasOwnProperty.call(data, 'question_number')
+                        ? data.question_number : this.currentProgressQuestionNumber;
+                    this.setVhsQuestionProgress(number, data.total_questions);
                     if (this.currentQuestion || this.revealedQuestionId !== null) {
                         return;
                     }
@@ -1605,7 +1661,8 @@
                     this.clearQuestionPresentationTimer();
                     clearInterval(this.questionTimer);
                     this.questionTimerGeneration += 1;
-                    this.setCurrentQuestion(data.question_id || null);
+                    this.setVhsQuestionProgress(data.question_number, data.total_questions);
+                    this.setCurrentQuestion(data.question_id || null, data.question_number);
                     const questionText = document.getElementById('questionText');
                     const options = document.getElementById('answerOptions');
                     const responseArea = document.getElementById('quickQuizResponseArea');
@@ -1627,9 +1684,10 @@
                 }
 
                 onQuestionStarted(question, timeLimit) {
+                    if (Array.isArray(question.scoreboard)) this.scoreboardQuestions = question.scoreboard;
                     this.questionPrepared = false;
                     const incomingTotal = Number(question?.total_questions);
-                    if (Number.isInteger(incomingTotal) && incomingTotal > 0) {
+                    if (Number.isInteger(incomingTotal) && incomingTotal >= 0) {
                         this.totalQuestionCount = incomingTotal;
                     }
                     const currentInstanceKey = this.getQuestionInstanceKey(this.currentQuestion);
@@ -1641,7 +1699,7 @@
                         };
                         this.currentQuestionIsTutorial = !!question?.is_tutorial_round;
                         this.setVhsQuestionProgress(
-                            question?.question_number || this.getQuestionNumberById(question?.id),
+                            question?.question_number ?? this.currentProgressQuestionNumber ?? this.getQuestionNumberById(question?.id),
                             question?.total_questions
                         );
                         if (
@@ -1674,7 +1732,7 @@
                     if (this.currentQuestionIsTutorial) {
                         this.setCurrentQuestion(null);
                     } else {
-                        this.reorderScoreboardForQuestionStart(question.id);
+                        if (!Array.isArray(question.scoreboard)) this.reorderScoreboardForQuestionStart(question.id);
                         this.setCurrentQuestion(question.id, question.question_number);
                     }
                     const submittedAnswerText = document.getElementById('submittedAnswerText');
@@ -2027,11 +2085,12 @@
                 applyManualAnswerCorrection(data) {
                     if (!data || data.participant_name !== this.participantName) return;
                     const normalizedQuestionId = Number(data.question_id);
-                    if (!Number.isNaN(normalizedQuestionId) && Number(this.currentQuestionId) === normalizedQuestionId) {
+                    if (!Number.isNaN(normalizedQuestionId) && Number(this.currentQuestionId) === normalizedQuestionId
+                        && (!data.question_number || Number(data.question_number) === this.getCurrentQuestionNumber())) {
                         this.storePendingProgressEvaluation(data.is_correct, data.question_id, data.points_earned);
                         return;
                     }
-                    this.pushProgressEntry(!!data.is_correct, data.question_id, data.points_earned);
+                    this.pushProgressEntry(!!data.is_correct, data.question_id, data.points_earned, data.question_number);
                 }
 
                 loadCurrentQuestion() {
@@ -2051,7 +2110,7 @@
                             { key: '{{ key }}', text: '{{ text|escapejs }}' },
                             {% endfor %}
                         ],
-                        time_limit: {{ quiz.current_question.time_limit }},
+                        time_limit: {{ question_runtime.answer_duration_seconds|default:quiz.current_question.time_limit }},
                         starts_at: '{{ question_runtime.answering_started_at|default:""|escapejs }}',
                         ends_at: '{{ question_runtime.answering_deadline_at|default:""|escapejs }}',
                         server_now: '{{ question_runtime.server_now|default:""|escapejs }}',
@@ -2191,6 +2250,7 @@
                         participant_name: this.participantName,
                         hub_session: this.hubSession,
                         question_id: questionId,
+                        question_started_at: this.currentQuestion?.answering_started_at || this.currentQuestion?.starts_at,
                         answer: prepared ? prepared.answerPayload : null,
                     }));
                 }
@@ -2218,6 +2278,7 @@
                 }
 
                 getQuestionNumberById(questionId) {
+                    if (Number(questionId) === Number(this.currentQuestionId) && Number(this.currentProgressQuestionNumber) > 0) return Number(this.currentProgressQuestionNumber);
                     const normalizedQuestionId = Number(questionId);
                     if (Number.isNaN(normalizedQuestionId)) return null;
                     const matchingQuestion = (this.scoreboardQuestions || []).find(
@@ -2300,15 +2361,15 @@
                     const normalizedQuestionId = Number(questionId);
                     if (Number.isNaN(normalizedQuestionId)) return false;
                     return (this.progressHistory || []).some(
-                        (entry) => Number(entry?.question_id) === normalizedQuestionId
+                        (entry) => Number(entry?.question_number) === this.getCurrentQuestionNumber()
                     );
                 }
 
-                pushProgressEntry(isCorrect, questionId = null, pointsEarned = null) {
+                pushProgressEntry(isCorrect, questionId = null, pointsEarned = null, questionNumberOverride = null) {
                     const normalizedQuestionId = questionId !== null && questionId !== undefined
                         ? Number(questionId)
                         : Number(this.currentQuestionId);
-                    const questionNumber = questionId !== null && questionId !== undefined
+                    const questionNumber = Number(questionNumberOverride) > 0 ? Number(questionNumberOverride) : questionId !== null && questionId !== undefined
                         ? this.getQuestionNumberById(questionId)
                         : this.getCurrentQuestionNumber();
                     if (!questionNumber) return;
@@ -2321,8 +2382,7 @@
                         ? Number(pointsEarned)
                         : (isCorrect ? maxPoints : 0);
                     const existingIndex = (this.progressHistory || []).findIndex(
-                        (entry) => Number(entry?.question_id) === normalizedQuestionId
-                            || Number(entry?.question_number) === questionNumber
+                        (entry) => Number(entry?.question_number) === questionNumber
                     );
                     const entry = {
                         question_id: Number.isNaN(normalizedQuestionId) ? null : normalizedQuestionId,
@@ -2346,7 +2406,7 @@
                     const normalizedCurrentQuestionId = Number(this.currentQuestionId);
                     if (Number.isNaN(normalizedCurrentQuestionId)) return;
                     const exists = (this.progressHistory || []).some(
-                        (entry) => Number(entry?.question_id) === normalizedCurrentQuestionId
+                        (entry) => Number(entry?.question_number) === this.getCurrentQuestionNumber()
                     );
                     if (!exists) {
                         this.pushProgressEntry(false, normalizedCurrentQuestionId, 0);
@@ -2615,16 +2675,16 @@
             const player = new QuizPlayer();
 
             const lobbyReturnController = createHubLobbyReturnController({
-                sessionCode: '{{ hub_session|default_if_none:"" }}',
+                sessionCode: player.hubSession,
                 gameKey: 'quiz',
                 roomCode: '{{ quiz.room_code }}',
-                participantName: '{{ participant.name|escapejs }}',
+                participantName: player.participantName,
                 csrfToken: '{{ csrf_token }}',
             });
 
             // ---- Leaderboard Logic ----
             let lbFetchTimeout = null;
-            const MY_NAME = '{{ participant.name }}';
+            const MY_NAME = player.participantName;
 
             function renderLeaderboard(participants) {
                 const list = document.getElementById('leaderboardList');
@@ -2638,12 +2698,14 @@
                 const rows = sorted.map((p, i) => {
                     const rank = i + 1;
                     const isMe = p.name === MY_NAME;
+                    const name = document.createElement('span');
+                    name.textContent = p.name;
                     const rankClass = rank === 1 ? 'top1' : rank === 2 ? 'top2' : rank === 3 ? 'top3' : '';
                     const rankDisplay = rank <= 3 ? ['🥇','🥈','🥉'][rank-1] : rank;
                     return `<div class="lb-row${isMe ? ' lb-me' : ''}">
                         <div class="lb-rank ${rankClass}">${rankDisplay}</div>
                         <div class="lb-avatar">${p.name.charAt(0).toUpperCase()}</div>
-                        <div class="lb-name">${p.name}${isMe ? ' (You)' : ''}</div>
+                        <div class="lb-name">${name.innerHTML}${isMe ? ' (You)' : ''}</div>
                         <div class="lb-score">${p.total_score ?? 0} pts</div>
                     </div>`;
                 }).join('');

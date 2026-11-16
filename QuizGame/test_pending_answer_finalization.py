@@ -59,6 +59,18 @@ class QuizAnswerDeadlineTest(TransactionTestCase):
             'time_taken': 4.2,
         })
 
+    def test_pending_selection_from_previous_round_is_rejected(self):
+        self.assertFalse(async_to_sync(self.consumer.save_pending_answer)(
+            self.participant.name, None, 'Berlin', self.question.id,
+            expected_started_at=(self.quiz.question_start_time - timedelta(seconds=30)).isoformat(),
+        ))
+        self.session.refresh_from_db()
+        self.assertEqual(self.session.pending_answers, {})
+        self.assertTrue(async_to_sync(self.consumer.save_pending_answer)(
+            self.participant.name, None, 'Berlin', self.question.id,
+            expected_started_at=self.quiz.question_start_time.isoformat(),
+        ))
+
     def select(self, answer='Berlin'):
         async_to_sync(self.consumer.handle_participant_update_pending_answer)({
             'participant_name': self.participant.name,
@@ -66,6 +78,11 @@ class QuizAnswerDeadlineTest(TransactionTestCase):
             'question_id': self.question.id,
             'answer': answer,
         })
+        acknowledgement = json.loads(self.consumer.send.await_args.kwargs['text_data'])
+        self.assertEqual(acknowledgement['type'], 'pending_answer_saved')
+        self.assertNotIn('points_earned', acknowledgement)
+        self.assertNotIn('is_correct', acknowledgement)
+        self.consumer.send.reset_mock()
 
     def end_question(self):
         async_to_sync(self.consumer.handle_admin_end_question)({})

@@ -81,7 +81,7 @@
                                 <!-- Question Header -->
                                 <div class="question-header">
                                     <div class="question-number">
-                                        Set <span id="currentQuestionNumber">1</span>
+                                        Set <span id="currentQuestionNumber">{{ current_question_number|default_if_none:0 }}</span>
                                         von <span id="totalSetCount">{{ total_sets|default:0 }}</span>
                                     </div>
                                     <div class="question-timer{% if not question_answering_open %} d-none{% endif %}" id="questionTimerWrapper">
@@ -137,6 +137,7 @@
                                                     aria-pressed="false"
                                                     {% if not question_answering_open %}disabled{% endif %}
                                                 >lügt</button>
+                                                <p id="personChoiceStatus" class="small mt-2" role="status" aria-live="polite"></p>
                                             </div>
                                         </div>
 
@@ -280,7 +281,7 @@
                                     {% include 'includes/_post_game_results.html' %}
                                 {% endwith %}
                                 <!-- <div class="quiz-actions">
-                                    <a href="/who/result/{{ quiz.room_code }}/{{ participant.name }}/" class="btn btn-primary btn-lg">
+                                    <a href="{% url 'who_is_lying:result' quiz.room_code participant.name %}?hub_session={{ hub_session|default_if_none:''|urlencode }}" class="btn btn-primary btn-lg">
                                         <i data-lucide="bar-chart-3"></i>
                                         View Detailed Results
                                     </a>
@@ -335,6 +336,7 @@
     </div>
 
     {{ question_scoreboard|json_script:"whoQuestionScoreboardData" }}
+    {{ current_person_choices|json_script:"whoPersonChoices" }}
     {{ initial_progress_history|json_script:"whoInitialProgressData" }}
     {{ current_question_number|json_script:"whoCurrentQuestionNumber" }}
 
@@ -1287,12 +1289,18 @@
             class WhoPlayer {
                 constructor() {
                     this.roomCode = '{{ quiz.room_code }}';
-                    this.participantName = '{{ participant.name }}';
-                    this.hubSession = '{{ hub_session }}';
+                    this.participantName = '{{ participant.name|escapejs }}';
+                    this.hubSession = '{{ hub_session|default_if_none:""|escapejs }}';
                     this.websocket = null;
                     this.questionTimer = null;
                     this.serverClockOffsetMs = 0;
-                    this.selectedPeople = new Set();
+                    const choices = this.readJsonScript('whoPersonChoices', {});
+                    this.selectedPeople = new Set(choices.selected_people || []);
+                    this.personChoicesRevision = Number(choices.choices_revision ?? -1);
+                    this.pendingPersonChoice = null;
+                    this.choiceRequestSequence = 0;
+                    this.choicesReady = false;
+                    this.activeQuestionStartedAt = choices.question_started_at || null;
                     this.hasAnswered = false;
                     this.peopleSequence = [];
                     this.currentPersonPosition = 0;
@@ -1319,12 +1327,13 @@
                     this.bindEvents();
                     this.renderScoreHistory();
                     
-                    {% if quiz.current_question %}
+                    {% if quiz.current_question and quiz.status == 'active' %}
                         const activeQuestion = this.loadCurrentQuestion();
                         if (activeQuestion) {
                             this.applyQuestionState(activeQuestion);
                         }
                     {% endif %}
+                    {% if quiz.status == 'inactive' %}this.onQuizInactive();{% endif %}
                 }
 
                 connectWebSocket() {
@@ -1352,6 +1361,9 @@
                     
                     this.websocket.onclose = () => {
                         console.log('WebSocket disconnected');
+                        this.pendingPersonChoice = null;
+                        this.choicesReady = false;
+                        this.showCurrentPerson();
                         this.showConnectionStatus();
                         // Attempt to reconnect after 3 seconds
                         setTimeout(() => this.connectWebSocket(), 3000);
@@ -1367,6 +1379,12 @@
                     window.sessionGameStartIntro?.handleState(data);
                     if (!this.acceptStateRevision(data)) return;
                     switch(data.type) {
+                        case 'quiz_inactive':
+                            this.onQuizInactive();
+                            break;
+                        case 'quiz_resumed':
+                            window.location.reload();
+                            break;
                         case 'quiz_started':
                             this.onQuizStarted();
                             break;
@@ -1412,6 +1430,27 @@
 
                         case 'answer_submitted':
                             this.onAnswerSubmitted(data);
+                            break;
+
+                        case 'person_choices_synced':
+                        case 'person_choice_saved':
+                            this.onPersonChoices(data);
+                            break;
+
+                        case 'person_choice_rejected':
+                            if (data.choice_request_id !== this.pendingPersonChoice?.requestId) break;
+                            this.pendingPersonChoice = null;
+                            this.onPersonChoices(data);
+                            this.setChoiceStatus(data.message || 'Die Auswahl wurde nicht gespeichert.');
+                            break;
+
+                        case 'action_rejected':
+                            if (!this.pendingPersonChoice) break;
+                            this.pendingPersonChoice = null;
+                            this.choicesReady = false;
+                            this.setChoiceStatus(data.message || 'Die Auswahl wurde nicht gespeichert.');
+                            this.syncPersonChoices();
+                            this.showCurrentPerson();
                             break;
 
                         case 'time_per_person_updated':
@@ -1526,15 +1565,28 @@
                     this.showState('waitingQuizState');
                 }
 
+                onQuizInactive() {
+                    clearInterval(this.questionTimer);
+                    clearTimeout(this.questionPresentationTimer);
+                    this.setAnsweringInterface(false);
+                    this.showState('waitingQuestionState');
+                    document.getElementById('waitingQuestionState').textContent = 'Spiel pausiert. Warte auf den Host.';
+                }
+
                 onQuestionStarted(question) {
                     clearTimeout(this.questionPresentationTimer);
                     clearInterval(this.questionTimer);
                     this.hasAnswered = false;
                     this.selectedPeople.clear();
+                    this.personChoicesRevision = -1;
+                    this.pendingPersonChoice = null;
+                    this.choicesReady = false;
+                    this.setChoiceStatus('');
                     this.applyQuestionLifecycle(question);
                     this.currentQuestionIsTutorial = !!question?.is_tutorial_round;
-                    const currentEntry = this.currentQuestionIsTutorial ? null : this.moveQuestionToNextFreeScoreSlot(question?.id, question?.total_possible_points);
-                    this.currentQuestionIndex = Number(currentEntry?.number || question?.question_number) || (this.currentQuestionIndex + 1) || 1;
+                    if (Array.isArray(question.scoreboard)) this.scoreboardQuestions = question.scoreboard;
+                    const currentEntry = this.currentQuestionIsTutorial || Array.isArray(question.scoreboard) ? null : this.moveQuestionToNextFreeScoreSlot(question?.id, question?.total_possible_points);
+                    this.currentQuestionIndex = Number(question?.question_number || currentEntry?.number) || (this.currentQuestionIndex + 1) || 1;
                     const currentSetNumber = document.getElementById('currentQuestionNumber');
                     const totalSetCount = document.getElementById('totalSetCount');
                     if (currentSetNumber) currentSetNumber.textContent = String(this.currentQuestionIndex);
@@ -1553,13 +1605,26 @@
                 }
 
                 onQuestionAnsweringOpened(question) {
+                    if (Array.isArray(question.scoreboard)) this.scoreboardQuestions = question.scoreboard;
+                    if (Number(question.question_number) > 0) this.currentQuestionIndex = Number(question.question_number);
+                    const currentNumber = document.getElementById('currentQuestionNumber');
+                    if (currentNumber) currentNumber.textContent = String(this.currentQuestionIndex);
+                    if (Number(question.total_sets) > 0) document.getElementById('totalSetCount').textContent = String(question.total_sets);
                     clearTimeout(this.questionPresentationTimer);
+                    if (Number(question.id) !== this.activeQuestionId
+                        || question.question_started_at !== this.activeQuestionStartedAt) {
+                        this.selectedPeople.clear();
+                        this.personChoicesRevision = -1;
+                        this.pendingPersonChoice = null;
+                        this.choicesReady = false;
+                    }
                     this.hasAnswered = false;
                     this.applyQuestionLifecycle(question);
                     this.loadQuestion(question);
                     this.setAnsweringInterface(true);
                     this.showState('questionState');
                     this.startQuestionTimer(question);
+                    if (!this.questionHasEnded) this.syncPersonChoices();
                 }
 
                 applyQuestionLifecycle(question) {
@@ -1601,14 +1666,16 @@
                     timer?.classList.toggle('d-none', !answeringOpen);
                     people?.classList.toggle('d-none', !answeringOpen);
                     if (people) people.toggleAttribute('inert', !answeringOpen);
-                    if (accuseBtn) accuseBtn.disabled = !answeringOpen;
+                    if (accuseBtn) this.showCurrentPerson();
                 }
 
                 onQuestionEnded() {
                     clearInterval(this.questionTimer);
                     this.questionHasEnded = true;
-                    if (!this.hasAnswered) {
-                        this.submitAnswer();
+                    this.pendingPersonChoice = null;
+                    this.showCurrentPerson();
+                    if (!this.currentSetResult) {
+                        this.showState('whoSetEvaluatingState');
                         return;
                     }
 
@@ -1624,6 +1691,7 @@
                     clearInterval(this.questionTimer);
                     this.questionHasEnded = true;
                     this.hasAnswered = true;
+                    this.pendingPersonChoice = null;
                     this.activeQuestionId = Number(data.question_id) || this.activeQuestionId;
                     this.currentQuestionIndex = Number(data.question_number) || this.currentQuestionIndex;
                     this.currentQuestionStatement = data.statement || this.currentQuestionStatement;
@@ -1676,6 +1744,7 @@
 
                 loadQuestion(question) {
                     this.activeQuestionId = Number(question?.id) || null;
+                    this.activeQuestionStartedAt = question.question_started_at || question.starts_at || null;
                     window.QuestionTypewriter?.sync(document.getElementById('statementText'), {
                         text: question.statement || '',
                         presentedAt: this.questionPresentedAt,
@@ -1712,17 +1781,60 @@
                     progressDefaultEl.textContent = `Person ${this.currentPersonPosition + 1}/${this.peopleSequence.length}`;
                     progressVhsEl.textContent = `${this.currentPersonPosition + 1} von ${this.peopleSequence.length}`;
                     const isSelected = this.selectedPeople.has(current.id);
-                    accuseBtn.disabled = this.questionPhase !== 'answering_open' || isSelected;
+                    accuseBtn.disabled = this.questionPhase !== 'answering_open' || this.hasAnswered
+                        || this.questionHasEnded || !this.choicesReady || !!this.pendingPersonChoice
+                        || this.websocket?.readyState !== WebSocket.OPEN;
                     accuseBtn.classList.toggle('is-selected', isSelected);
                     accuseBtn.setAttribute('aria-pressed', isSelected ? 'true' : 'false');
                 }
 
                 accuseCurrentPerson() {
-                    if (this.hasAnswered || this.questionPhase !== 'answering_open') return;
+                    if (this.hasAnswered || this.questionHasEnded || !this.choicesReady
+                        || this.pendingPersonChoice || this.questionPhase !== 'answering_open'
+                        || this.websocket?.readyState !== WebSocket.OPEN) return;
                     const current = this.peopleSequence[this.currentPersonPosition];
                     if (!current) return;
-                    this.selectedPeople.add(current.id);
+                    const requestId = String(++this.choiceRequestSequence);
+                    this.pendingPersonChoice = {requestId};
+                    this.websocket.send(JSON.stringify({
+                        type: 'participant_update_person_choice', question_id: this.activeQuestionId,
+                        question_started_at: this.activeQuestionStartedAt,
+                        person_id: current.id, selected: !this.selectedPeople.has(current.id),
+                        choice_request_id: requestId,
+                    }));
+                    this.setChoiceStatus('Wird gespeichert…');
                     this.showCurrentPerson();
+                }
+
+                syncPersonChoices() {
+                    if (this.websocket?.readyState !== WebSocket.OPEN || !this.activeQuestionId) return;
+                    this.websocket.send(JSON.stringify({
+                        type: 'who_sync_person_choices', question_id: this.activeQuestionId,
+                    }));
+                }
+
+                onPersonChoices(data) {
+                    if (Number(data.question_id) !== this.activeQuestionId
+                        || data.question_started_at !== this.activeQuestionStartedAt
+                        || !Array.isArray(data.selected_people)) return;
+                    const revision = Number(data.choices_revision);
+                    if (!Number.isInteger(revision) || revision < this.personChoicesRevision) return;
+                    if (this.pendingPersonChoice && (
+                        (data.choice_request_id && data.choice_request_id !== this.pendingPersonChoice.requestId)
+                        || (!data.choice_request_id && revision <= this.personChoicesRevision)
+                    )) return;
+                    this.personChoicesRevision = revision;
+                    this.selectedPeople = new Set(data.selected_people);
+                    this.pendingPersonChoice = null;
+                    this.choicesReady = true;
+                    if (data.answer_locked) this.hasAnswered = true;
+                    this.setChoiceStatus(data.accepted ? 'Gespeichert' : (data.message || ''));
+                    this.showCurrentPerson();
+                }
+
+                setChoiceStatus(message) {
+                    const status = document.getElementById('personChoiceStatus');
+                    if (status) status.textContent = message;
                 }
 
                 startQuestionTimer(question) {
@@ -1784,9 +1896,7 @@
 
                         if (timerState.questionComplete) {
                             clearInterval(this.questionTimer);
-                            if (!this.hasAnswered) {
-                                this.submitAnswer();
-                            }
+                            this.onQuestionEnded();
                         }
                     };
 
@@ -2185,7 +2295,7 @@
             const player = new WhoPlayer();
 
             const lobbyReturnController = createHubLobbyReturnController({
-                sessionCode: '{{ hub_session|default_if_none:"" }}',
+                sessionCode: player.hubSession,
                 gameKey: 'who',
                 roomCode: '{{ quiz.room_code }}',
                 participantName: '{{ participant.name|escapejs }}',

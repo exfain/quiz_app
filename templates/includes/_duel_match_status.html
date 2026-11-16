@@ -1,0 +1,4 @@
+{% load static %}
+<section id="duel-match-status" class="duel-shell" aria-live="polite"><p id="duel-round-reason"></p><p id="duel-match-notice"></p>
+{% if role == 'host' %}<button type="button" id="finish-match-draw" hidden>Ohne weitere Aufgaben: Match unentschieden abschließen</button>{% endif %}</section>
+<script src="{% static 'js/duel-match-status.js' %}"></script>

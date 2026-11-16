@@ -37,6 +37,12 @@ class WannWarDasConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer)
     authoritative_game_key = 'wann_war_das'
     authoritative_required_actions = frozenset({'participant_submit_answer'})
 
+    @staticmethod
+    def _is_state_payload(payload):
+        # serialize_state already observes a redacted canonical revision state.
+        # Observing the host's full DTO again would publish its solution.
+        return False
+
     async def connect(self):
         self.room_code = self.scope['url_route']['kwargs']['room_code']
         self.room_group_name = f'wann_war_das_{self.room_code}'
@@ -69,6 +75,8 @@ class WannWarDasConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer)
             await self.handle_admin_set_inactive(data)
         elif message_type == 'participant_submit_answer':
             await self.handle_participant_submit_answer(data)
+        elif message_type == 'participant_input_changed':
+            await self.handle_participant_input_changed(data)
         elif message_type == 'participant_join':
             await self.handle_participant_join(data)
         elif message_type == 'tutorial_completed':
@@ -82,6 +90,19 @@ class WannWarDasConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer)
             or data.get('hub_session_code')
             or await self.get_hub_session_code()
         )
+        game = await self.get_game()
+        if not game:
+            return
+        if game.started_at and game.active_hub_session_code == (hub_session or '') and game.status in {'active', 'inactive', 'completed'}:
+            if game.status == 'inactive':
+                activation = await database_sync_to_async(resolve_session_game_activation_for_room)(
+                    'wann_war_das', self.room_code, session_code=hub_session)
+                if not activation.get('success'):
+                    await self.send(text_data=json.dumps({'type': 'error', 'message': activation.get('message') or 'Fortsetzen nicht möglich.'}))
+                    return
+                await database_sync_to_async(game.set_paused)(False)
+            await self.broadcast_state({'type': 'game_resumed'}, hub_session)
+            return
         lobby_ready = await database_sync_to_async(ensure_session_players_ready_for_game_start_for_room)(
             'wann_war_das',
             self.room_code,
@@ -267,6 +288,19 @@ class WannWarDasConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer)
         }))
         await self.broadcast_state({'type': 'participant_answered'}, hub_session)
 
+    async def handle_participant_input_changed(self, data):
+        name = self._authoritative_participant_name()
+        code = self._authoritative_session_code()
+        if not name or data.get('participant_name') != name:
+            return
+        game = await self.get_game()
+        participant = await self.get_participant(name, code)
+        if game and participant:
+            saved = await database_sync_to_async(game.store_pending_answer)(
+                participant, data.get('answer'), data.get('question_id'), data.get('round_id'))
+            if saved:
+                await self.send(text_data=json.dumps({'type': 'input_saved', 'question_id': data.get('question_id'), 'round_id': data.get('round_id')}))
+
     async def handle_admin_end_question(self, data):
         game = await self.get_game()
         if not game:
@@ -285,12 +319,6 @@ class WannWarDasConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer)
         if not ended:
             await self.send_state(data)
             return
-        await database_sync_to_async(reset_question_flow)(
-            game_key='wann_war_das',
-            room_code=self.room_code,
-            session_code=hub_session,
-            mode=GameRuntimeState.QUESTION_FLOW_MANUAL_THREE_PHASE,
-        )
         await self.broadcast_state({'type': 'game_ended'}, hub_session)
         await self.hub_mirror_event('game_ended', {
             'game_key': 'wann_war_das',
@@ -338,7 +366,8 @@ class WannWarDasConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer)
             return
         hub_session = data.get('hub_session') or data.get('hub_session_code') or await self.get_hub_session_code()
         participant_name = data.get('participant_name') or data.get('name')
-        state = await database_sync_to_async(game.serialize_state)(hub_session, participant_name)
+        for_host = await self.is_host() and not participant_name
+        state = await database_sync_to_async(game.serialize_state)(hub_session, participant_name, for_host=for_host)
         await self.send(text_data=json.dumps({'type': 'wann_war_das_state', **state}))
 
     async def broadcast_state(self, extra=None, hub_session=None):
@@ -352,7 +381,22 @@ class WannWarDasConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer)
         await self.channel_layer.group_send(self.room_group_name, event)
 
     async def wann_war_das_state(self, event):
-        await self.send(text_data=json.dumps(event))
+        game = await self.get_game()
+        if not game:
+            return
+        for_host = await self.is_host()
+        state = await database_sync_to_async(game.serialize_state)(
+            self._authoritative_session_code() or game.active_hub_session_code,
+            None if for_host else self._authoritative_participant_name(), for_host=for_host)
+        await self.send(text_data=json.dumps({'type': 'wann_war_das_state', 'event_type': event.get('event_type'), **state}))
+
+    async def is_host(self):
+        from games_hub.host_permissions import authorize_game_host
+        user = getattr(self, 'scope', {}).get('user')
+        if not user or not user.is_authenticated:
+            return False
+        authorization = await database_sync_to_async(authorize_game_host)(user, 'wann_war_das', self.room_code, self._authoritative_session_code() or None)
+        return authorization.allowed
 
     async def tutorial_start(self, event):
         await self.send(text_data=json.dumps(event))
@@ -366,10 +410,8 @@ class WannWarDasConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer)
 
     @database_sync_to_async
     def set_game_inactive(self):
-        return WannWarDasGame.objects.filter(
-            room_code=self.room_code,
-            status='active',
-        ).update(status='inactive', updated_at=timezone.now()) == 1
+        game = WannWarDasGame.objects.filter(room_code=self.room_code).first()
+        return bool(game and game.set_paused(True))
 
     @database_sync_to_async
     def get_question(self, question_id):

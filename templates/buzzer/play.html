@@ -88,6 +88,13 @@
 const ROOM_CODE = '{{ game.room_code|escapejs }}';
 const PARTICIPANT_NAME = '{{ participant.name|escapejs }}';
 const HUB_SESSION = '{{ hub_session|escapejs }}';
+window.manualPlayerToken = '{{ player_token|escapejs }}';
+if (!window.manualPlayerToken && HUB_SESSION) {
+    try {
+        const credential = JSON.parse(localStorage.getItem(`hub_lobby_rejoin:${HUB_SESSION}`) || 'null');
+        if (credential?.nickname === PARTICIPANT_NAME) window.manualPlayerToken = credential.token;
+    } catch (_) {}
+}
 let socket = null;
 let currentState = null;
 {% if hub_session %}
@@ -107,6 +114,7 @@ function send(payload) {
     socket.send(JSON.stringify({
         hub_session: HUB_SESSION,
         participant_name: PARTICIPANT_NAME,
+        player_token: window.manualPlayerToken,
         ...payload,
     }));
 }
@@ -114,6 +122,7 @@ function send(payload) {
 function setStatus(text) {
     document.getElementById('statusText').textContent = text;
 }
+window.manualGameTutorialComplete = () => send({type: 'tutorial_completed'});
 
 function setBuzzedState(button, isBuzzed) {
     if (!button) return;
@@ -156,7 +165,8 @@ function renderRoundScores(state) {
             'score-box__row',
             hasPoints ? 'is-played' : (roundNumber === currentRound ? 'is-current' : 'is-upcoming'),
         ].join(' ');
-        row.dataset.maxPoints = '1';
+        const maximum = result?.max_points ?? state.game?.points_per_correct ?? 1;
+        row.dataset.maxPoints = String(maximum);
         row.dataset.pointsEarned = hasPoints ? String(result.points_earned) : '';
 
         const badge = document.createElement('span');
@@ -167,12 +177,12 @@ function renderRoundScores(state) {
         const value = document.createElement('span');
         value.className = 'score-box__value';
         if (hasPoints) {
-            value.textContent = `${result.points_earned}/1`;
+            value.textContent = `${result.points_earned}/${maximum}`;
         } else {
             const empty = document.createElement('span');
             empty.className = 'score-box__empty';
             empty.textContent = '_';
-            value.append(empty, document.createTextNode('/1'));
+            value.append(empty, document.createTextNode(`/${maximum}`));
         }
 
         row.append(badge, value);
@@ -207,7 +217,7 @@ function renderState(state) {
     renderRoundScores(state);
     const button = document.getElementById('buzzButton');
     setBuzzedState(button, Boolean(participant.has_answer_right));
-    button.disabled = !state.can_buzz;
+    button.disabled = !state.can_buzz || socket?.readyState !== WebSocket.OPEN;
 
     if (!gameStarted) {
         button.disabled = true;
@@ -237,6 +247,7 @@ function connect() {
         socket.send(JSON.stringify({
             type: 'participant_join',
             participant_name: PARTICIPANT_NAME,
+            player_token: window.manualPlayerToken,
             hub_session: HUB_SESSION,
         }));
     };
@@ -249,9 +260,18 @@ function connect() {
             send({ type: 'get_state' });
         }
         if (data.type === 'tutorial_start') window.gameTutorial?.showFromPayload(data);
+        if (data.type === 'tutorial_force_close') window.gameTutorial?.forceClose();
+        if (data.type === 'action_rejected') {
+            setBuzzedState(document.getElementById('buzzButton'), false);
+            setStatus(data.message || 'Buzz abgelehnt');
+            if (data.code !== 'unauthorized') send({type: 'get_state'});
+            else document.getElementById('buzzButton').disabled = true;
+        }
         if (data.type === 'tutorial_progress') return;
     };
     socket.onclose = () => {
+        document.getElementById('buzzButton').disabled = true;
+        setBuzzedState(document.getElementById('buzzButton'), false);
         document.getElementById('connectionStatus').textContent = 'Verbindung getrennt';
         setTimeout(connect, 2000);
     };
@@ -259,7 +279,7 @@ function connect() {
 
 document.getElementById('buzzButton').addEventListener('click', () => {
     const button = document.getElementById('buzzButton');
-    if (button.disabled || button.classList.contains('is-buzzed')) return;
+    if (socket?.readyState !== WebSocket.OPEN || button.disabled || button.classList.contains('is-buzzed')) return;
     setBuzzedState(button, true);
     button.disabled = true;
     send({ type: 'participant_buzz' });

@@ -1,4 +1,5 @@
 {% extends "admin_dashboard/base.html" %}
+{% load session_game_tags %}
 
 {% block title %}Dashboard - QuizMaster Admin{% endblock %}
 
@@ -59,7 +60,7 @@
                         </thead>
                         <tbody>
                             {% for session in active_hub_sessions %}
-                            {% with lobby_url=request.scheme|add:"://"|add:request.get_host|add:"/hub/lobby/"|add:session.code|add:"/" %}
+                            {% session_join_url session.code as lobby_url %}
                             <tr style="cursor:pointer;" onclick="window.location='{% url 'games_hub:monitor' session.code %}'">
                                 <td><code>{{ session.code }}</code></td>
                                 <td><strong>{{ session.name }}</strong></td>
@@ -81,7 +82,6 @@
                                     </button>
                                 </td>
                             </tr>
-                            {% endwith %}
                             {% empty %}
                             <tr>
                                 <td colspan="6" class="text-center py-4 text-muted">No active sessions</td>

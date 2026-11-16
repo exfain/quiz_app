@@ -17,6 +17,9 @@ urlpatterns = [
     path('status/<str:room_code>/<str:participant_name>/', views.get_quiz_status, name='quiz_status'),
     path('leave/<str:room_code>/<str:participant_name>/', views.leave_quiz, name='leave_quiz'),
     
+    path('pending/<str:room_code>/<str:participant_name>/', views.pending_input, name='pending_input'),
+    path('acknowledge/<str:room_code>/<str:participant_name>/', views.acknowledge_reveal, name='acknowledge_reveal'),
+
     # Public API endpoints
     path('api/<str:room_code>/participants/', views.api_quiz_participants, name='api_participants'),
     path('api/<str:room_code>/leaderboard/', views.api_quiz_leaderboard, name='api_leaderboard'),

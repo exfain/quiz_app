@@ -112,7 +112,10 @@ Im WS-switch muss folgendes stehen:
 
 <script>
 (function () {
-    const MY_NAME = '{{ participant.name }}';
+    const MY_NAME = '{{ participant.name|escapejs }}';
+    const escapeName = value => String(value ?? '').replace(/[&<>"']/g, char => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+    }[char]));
 
     function renderLeaderboard(participants) {
         const list = document.getElementById('leaderboardList');
@@ -123,14 +126,15 @@ Im WS-switch muss folgendes stehen:
         }
         const sorted = [...participants].sort((a, b) => (b.total_score ?? 0) - (a.total_score ?? 0));
         list.innerHTML = sorted.map((p, i) => {
-            const rank = i + 1;
+            const score = p.total_score ?? 0;
+            const rank = 1 + sorted.filter(other => (other.total_score ?? 0) > score).length;
             const isMe = p.name === MY_NAME;
             const rankClass = rank === 1 ? 'top1' : rank === 2 ? 'top2' : rank === 3 ? 'top3' : '';
             const rankDisplay = rank <= 3 ? ['🥇', '🥈', '🥉'][rank - 1] : rank;
             return `<div class="lb-row${isMe ? ' lb-me' : ''}">
                 <div class="lb-rank ${rankClass}">${rankDisplay}</div>
-                <div class="lb-avatar">${p.name.charAt(0).toUpperCase()}</div>
-                <div class="lb-name">${p.name}${isMe ? ' (Du)' : ''}</div>
+                <div class="lb-avatar">${escapeName(p.name.charAt(0).toUpperCase())}</div>
+                <div class="lb-name">${escapeName(p.name)}${isMe ? ' (Du)' : ''}</div>
                 <div class="lb-score">${p.total_score ?? 0} pts</div>
             </div>`;
         }).join('');

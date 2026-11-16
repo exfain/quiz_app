@@ -2,9 +2,12 @@ from django.urls import path
 from . import views
 from wer_weiss_mehr import views as wer_weiss_mehr_views
 
+from duel import bid_admin
+
 app_name = 'admin_dashboard'
 
 urlpatterns = [
+    path("bid/", bid_admin.manage, name="bid_management"),
     # Authentication
     path('login/', views.admin_login, name='login'),
     path('logout/', views.admin_logout_view, name='logout'),

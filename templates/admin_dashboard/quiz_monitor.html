@@ -21,7 +21,7 @@
             <div class="quiz-header-context">
                 <div class="quiz-context-item{% if not host_active_question %} d-none{% endif %}" id="questionProgress">
                     <span>Frage</span>
-                    <strong><span id="currentQuestionNumber">{% firstof prepared_question_number quiz_session.current_question_number %}</span> / <span id="totalQuestionCount">{{ available_questions|length }}</span></strong>
+                    <strong><span id="currentQuestionNumber">{{ host_question_number }}</span> / <span id="totalQuestionCount">{{ host_total_questions }}</span></strong>
                 </div>
                 <div class="quiz-context-item question-timer{% if not question_runtime.answering_allowed %} d-none{% endif %}" id="questionTimerWrapper">
                     <span>Zeit verbleibend</span>
@@ -48,7 +48,7 @@
                         <label class="form-check-label" for="playTutorialToggle">Tutorial spielen</label>
                     </div>
                 {% endif %}
-                    <button class="btn btn-success" id="startQuizBtn" data-host-game-start>
+                    <button class="btn btn-success" id="startQuizBtn" data-host-game-start data-host-game-resume="{% if quiz.status == 'inactive' and quiz.started_at %}true{% else %}false{% endif %}">
                         <i data-lucide="play"></i>
                         {% if quiz.status == 'inactive' %}Spiel reaktivieren{% else %}Spiel starten{% endif %}
                     </button>
@@ -102,7 +102,7 @@
                         {% if quiz.current_question %}
                             <div id="activeQuestion">
                                 <div class="current-question-content">
-                                    <div class="current-question-number">Frage <span data-live-question-number>{{ quiz_session.current_question_number }}</span></div>
+                                    <div class="current-question-number">Frage <span data-live-question-number>{{ host_question_number }}</span></div>
                                     <div class="question-text">{{ quiz.current_question.question_text }}</div>
                                     <div class="question-answers mt-2">
                                         {% if quiz.current_question.question_type == 'multiple_choice' %}
@@ -1463,6 +1463,8 @@ document.addEventListener('DOMContentLoaded', function() {
             this.pendingQuestionId = null;
             this.preparedQuestionId = '{{ prepared_question.id|default:""|escapejs }}';
             this.pendingPhaseAction = null;
+            this.pendingStart = null;
+            this.startConfirmationTimer = null;
             this.questionPresentationTimer = null;
             this.answeringStartTimer = null;
             this.readyQuestionVisibleAt = null;
@@ -1474,7 +1476,7 @@ document.addEventListener('DOMContentLoaded', function() {
             this.answeringDeadlineAt = '{{ question_runtime.answering_deadline_at|default:""|escapejs }}';
             this.presentationServerNow = '{{ question_runtime.server_now|default:""|escapejs }}';
             this.presentationServerReceivedAt = performance.now();
-            this.currentQuestionNumber = Number('{{ quiz_session.current_question_number|default:"0" }}');
+            this.currentQuestionNumber = Number('{{ host_question_number|default:"0" }}');
             this.totalQuestions = Number('{{ available_questions|length }}');
             this.init();
         }
@@ -1632,6 +1634,7 @@ document.addEventListener('DOMContentLoaded', function() {
             };
             
             this.websocket.onclose = () => {
+                this.finishPendingStart();
                 console.log('WebSocket disconnected');
                 this.updateConnectionStatus(false);
                 setTimeout(() => this.connectWebSocket(), 3000);
@@ -1665,6 +1668,8 @@ document.addEventListener('DOMContentLoaded', function() {
                     break;
                     
                 case 'quiz_started':
+                    if (this.pendingStart && data.start_request_id !== this.pendingStart) break;
+                    this.finishPendingStart();
                     console.log('Quiz started:', data.message);
                     // Reconstruct the monitor only after the server committed the start.
                     location.reload();
@@ -1683,6 +1688,7 @@ document.addEventListener('DOMContentLoaded', function() {
                     break;
 
                 case 'tutorial_question_missing':
+                    this.finishPendingStart();
                     window.showTutorialQuestionMissing?.(data);
                     break;
                     
@@ -1736,6 +1742,20 @@ document.addEventListener('DOMContentLoaded', function() {
                     window.hostEndState?.apply({ message: data.message, event: data });
                     break;
 
+                case 'quiz_resumed':
+                    this.finishPendingStart();
+                    location.reload();
+                    break;
+                case 'participants_not_in_lobby':
+                    this.finishPendingStart();
+                    this.showHostError(data.message || 'Noch nicht alle Teilnehmer sind in der Lobby.');
+                    window.hostGameStartGuard?.showLobbyReturn(data);
+                    break;
+                case 'active_game_conflict':
+                    this.finishPendingStart();
+                    this.showHostError(data.message || data.error || 'Ein anderes Spiel ist noch aktiv.');
+                    window.hostGameStartGuard?.showActiveGameConflict(data);
+                    break;
                 case 'quiz_inactive':
                     console.log('Quiz set inactive:', data.message);
                     this.isActive = false;
@@ -1743,12 +1763,14 @@ document.addEventListener('DOMContentLoaded', function() {
                     break;
 
                 case 'error':
+                    this.finishPendingStart();
                     this.showHostError(data.message || 'Frage konnte nicht gestartet werden.');
                     this.resetPendingSendButton(data.question_id || this.pendingQuestionId);
                     this.pendingPhaseAction = null;
                     break;
 
                 case 'action_rejected':
+                    this.finishPendingStart();
                     this.applyAuthoritativeMetadata(data.snapshot || data);
                     this.pendingPhaseAction = null;
                     this.showHostError(data.message || 'Die Aktion wurde aufgrund eines neueren Spielzustands abgelehnt.');
@@ -1830,7 +1852,7 @@ document.addEventListener('DOMContentLoaded', function() {
             if (list) {
                 list.innerHTML = (participants || []).map(participant => `
                     <div class="d-flex justify-content-between border-top py-1">
-                        <span>${participant.name || ''}</span>
+                        <span>${this.escapeHtml(participant.name || '')}</span>
                         <span class="badge ${participant.completed ? 'bg-success' : 'bg-warning text-dark'}">
                             ${participant.completed ? 'bestätigt' : 'offen'}
                         </span>
@@ -2237,7 +2259,15 @@ document.addEventListener('DOMContentLoaded', function() {
             return false;
         }
         
+        finishPendingStart() {
+            clearTimeout(this.startConfirmationTimer);
+            this.pendingStart = null;
+            const button = document.getElementById('startQuizBtn');
+            if (button) button.disabled = false;
+        }
+
         startQuiz() {
+            if (this.pendingStart) return;
             if (this.websocket && this.websocket.readyState === WebSocket.OPEN) {
                 const showTutorial = document.getElementById('showTutorialToggle')?.checked ?? false;
                 const playTutorial = document.getElementById('playTutorialToggle')?.checked ?? false;
@@ -2245,12 +2275,21 @@ document.addEventListener('DOMContentLoaded', function() {
                     window.showTutorialQuestionMissing?.();
                     return;
                 }
+                this.pendingStart = window.AuthoritativeGameState.createActionId();
+                document.getElementById('startQuizBtn').disabled = true;
+                this.startConfirmationTimer = setTimeout(() => {
+                    this.finishPendingStart();
+                    this.showHostError('Keine Startbestätigung erhalten. Bitte den Spielstand prüfen und erneut versuchen.');
+                }, 10000);
                 this.websocket.send(JSON.stringify({
                     type: 'admin_start_quiz',
+                    start_request_id: this.pendingStart,
                     show_tutorial: showTutorial,
                     play_tutorial: playTutorial,
                     hub_session: this.getHubSession()
                 }));
+            } else {
+                this.showHostError('Keine Verbindung. Bitte nach der Wiederverbindung erneut starten.');
             }
         }
         
@@ -2616,22 +2655,24 @@ document.addEventListener('DOMContentLoaded', function() {
             const noParticipants = participantsList.querySelector('.no-participants');
             if (noParticipants) noParticipants.remove();
             
-            const existingParticipant = participantsList.querySelector(`[data-participant-name="${participant.name}"]`);
+            const existingParticipant = [...participantsList.querySelectorAll('.participant-item')]
+                .find(row => row.dataset.participantName === participant.name);
             if (existingParticipant) return;
             
             const participantEl = document.createElement('div');
             participantEl.className = 'participant-item';
             participantEl.dataset.participantName = participant.name;
+            const participantName = this.escapeHtml(participant.name);
             participantEl.innerHTML = `
                 <div class="participant-identity">
-                    <div class="participant-name">${participant.name}</div>
+                    <div class="participant-name">${participantName}</div>
                     <span class="participant-response-status" data-participant-response-status>Offen</span>
                 </div>
                 <div class="participant-points">
                     <span class="participant-score" id="score-${participant.id}">${participant.total_score || 0} pts</span>
                     <button class="btn btn-link btn-sm p-0 edit-score-btn" title="Punkte bearbeiten"
                         data-participant-id="${participant.id}"
-                        data-participant-name="${participant.name}"
+                        data-participant-name="${participantName}"
                         data-current-score="${participant.total_score || 0}"
                         data-bs-toggle="modal" data-bs-target="#editScoreModal">
                         <i data-lucide="pencil" style="width:14px;height:14px;color:#6c757d;"></i>
@@ -2781,6 +2822,9 @@ document.addEventListener('DOMContentLoaded', function() {
 
         if (data.type === 'navigate' && data.step) {
           const step = data.step;
+          // The game socket confirms this monitor's own start. Its Hub mirror
+          // must not cause a second reload (or race the correlated start ACK).
+          if (step.game_key === 'quiz' && String(step.room_code) === '{{ quiz.room_code|escapejs }}') return;
           console.log("[HubScript] Navigation requested for:", step);
 
           const routes = {

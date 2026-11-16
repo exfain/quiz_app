@@ -199,8 +199,8 @@
                                 <p>Great job! The Sorting Ladder quiz has ended.</p>
                                 <div class="final-score">
                                     <div class="score-circle">
-                                        <span class="score-value" id="finalRoundsSurvived">{{ participant.rounds_survived }}</span>
-                                        <span class="score-label">rounds survived</span>
+                                        <span class="score-value" id="finalRoundsSurvived">{{ participant.total_score }}</span>
+                                        <span class="score-label">points</span>
                                     </div>
                                 </div>
                                 {% with post_game_game_key="sorting_ladder" %}
@@ -1165,8 +1165,8 @@
             class SortingLadderPlayer {
                 constructor() {
                     this.roomCode = '{{ quiz.room_code }}';
-                    this.participantName = '{{ participant.name }}';
-                    this.hubSession = '{{ hub_session }}';
+                    this.participantName = '{{ participant.name|escapejs }}';
+                    this.hubSession = '{{ hub_session|default_if_none:""|escapejs }}' || null;
                     this.websocket = null;
                     this.roundTimer = null;
                     this.roundTimeLeft = 0;
@@ -1290,6 +1290,17 @@
                         case 'tutorial_force_close':
                             window.gameTutorial?.forceClose();
                             break;
+                        case 'sorting_state':
+                            this.applySortingSnapshot(data);
+                            break;
+                        case 'quiz_inactive':
+                            this.paused = true;
+                            clearInterval(this.roundTimer);
+                            this.clearSortingRevealTimers?.();
+                            this.setInteractionLock(true);
+                            break;
+                        case 'quiz_resumed':
+                            break;
                         case 'question_started':
                             window.gameTutorial?.forceClose();
                             window.unitTutorialNotice?.setFromPayload(data);
@@ -1335,14 +1346,14 @@
                             this.onQuizEnded(data);
                             break;
                         case 'round_submission_rejected':
-                            if (this.lastSubmitWasTimeout || this.isInputLocked || this.isEliminated || !this.moreRoundsInQuestion) {
+                            if (this.lastSubmitWasTimeout || this.isEliminated || !this.moreRoundsInQuestion) {
                                 this.lastSubmitWasTimeout = false;
                                 break;
                             }
                             this.hasSubmittedMove = false;
                             this.setInteractionLock(this.questionPhase !== 'answering_open');
                             this.showState('topicState');
-                            alert(data.message || 'Submission was rejected by the server.');
+                            this.websocket?.send(JSON.stringify({type: 'snapshot_request'}));
                             break;
 
                         case 'action_rejected':
@@ -1371,6 +1382,38 @@
                     }
                 }
 
+                applySortingSnapshot(data) {
+                    this.paused = !!data.paused || data.game?.status === 'inactive';
+                    if (data.game?.status === 'completed') { this.onQuizEnded(data); return; }
+                    if (!data.question_payload) { this.onQuizStarted(); return; }
+                    const question = data.question_payload.question;
+                    const sameRound = Number(this.currentQuestion?.id) === Number(question.id)
+                        && Number(this.currentQuestion?.set_number) === Number(question.set_number)
+                        && Number(this.currentRound) === Number(data.question_payload.round_number);
+                    const local = sameRound && this.currentRoundItemId && !data.answer_locked
+                        ? this.ladderItems.map(item => item.id) : null;
+                    this.onQuestionStarted(data.question_payload);
+                    if (data.latest_round_result) this.onRoundResult({participant_name: this.participantName, ...data.latest_round_result});
+                    if (data.round_started) this.onRoundStarted(data.round_started);
+                    const order = local || data.own_selection;
+                    if (!data.answer_locked && Array.isArray(order) && order.length > 1) {
+                        const byId = new Map(this.shuffledItems.map(item => [Number(item.id), item]));
+                        const restored = order.map(id => byId.get(Number(id))).filter(Boolean);
+                        if (restored.length === order.length) {
+                            this.ladderItems = restored;
+                            this.containerItems = this.shuffledItems.filter(item => !order.map(Number).includes(Number(item.id)));
+                            this.currentRoundItemId = restored.find(item => !this.lockedIds.has(item.id))?.id || null;
+                            this.renderCurrentRound();
+                        }
+                    }
+                    this.hasSubmittedMove = !!data.answer_locked;
+                    this.setProgressHistory(data.latest_round_result?.progress_history || data.progress_history || []);
+                    if (data.reveal_state === 'revealed') this.onShowSolution({correct_order_ids: data.reveal_order_ids});
+                    else if (data.reveal_state === 'awaiting_reveal') this.onQuestionRoundsComplete(data);
+                    else this.setInteractionLock(this.paused || data.answer_locked || this.isEliminated || this.roundTimerEnded);
+                    if (this.paused) clearInterval(this.roundTimer);
+                }
+
                 onQuizStarted() {
                     this.showState('waitingQuizState');
                 }
@@ -1387,8 +1430,8 @@
                     // Prefer server-sent final_scores so we reflect authoritative value
                     if (data && Array.isArray(data.final_scores)) {
                         const me = data.final_scores.find(p => p.name === this.participantName);
-                        if (me && typeof me.rounds_survived === 'number') {
-                            finalRounds = me.rounds_survived;
+                        if (me && typeof (me.total_score ?? me.rounds_survived) === 'number') {
+                            finalRounds = me.total_score ?? me.rounds_survived;
                         }
                     }
 
@@ -1586,7 +1629,7 @@
                 onQuestionStarted(data) {
                     if (!this.applyQuestionLifecycle(data)) return;
                     this.cancelActiveSortingDrag();
-                    const setNumber = Number(data?.set_number || data?.question?.set_number);
+                    const setNumber = Number(data?.question?.display_set_number || data?.display_set_number || data?.set_number || data?.question?.set_number);
                     if (Number.isInteger(setNumber) && setNumber > 0) {
                         document.getElementById('vhsProgressNumber').textContent = String(setNumber);
                     }
@@ -1662,12 +1705,8 @@
                     this.roundTimeLeft = endsAt
                         ? Math.ceil(AuthoritativeGameState.remainingMilliseconds(timerContext) / 1000)
                         : seconds;
-                    // Reset per-round submission state
-                    this.hasSubmittedMove = false;
-                    this.lastSubmitWasTimeout = false;
-                    this.roundTimerEnded = false;
-                    this.pendingRoundResult = null;
-                    this.setInteractionLock(false);
+                    this.roundTimerEnded = this.roundTimeLeft <= 0;
+                    this.setInteractionLock(this.isEliminated || this.hasSubmittedMove || this.roundTimerEnded);
                     const timeEl = document.getElementById('playerTimeLeft');
                     const circle = document.getElementById('playerTimerCircle');
 
@@ -1700,6 +1739,11 @@
                     applyTimerClasses(circleWaiting);
                     applyTimerClasses(circleFinal);
 
+                    if (this.roundTimerEnded) {
+                        if (this.pendingRoundResult) this.applyRoundResult(this.pendingRoundResult);
+                        return;
+                    }
+
                     this.roundTimer = setInterval(() => {
                         this.roundTimeLeft = endsAt
                             ? Math.ceil(AuthoritativeGameState.remainingMilliseconds(timerContext) / 1000)
@@ -1726,19 +1770,9 @@
                                 this.applyRoundResult(this.pendingRoundResult);
                             }
 
-                            // Only auto-submit a timeout if this player has
-                            // NOT already submitted a move for this round.
-                            if (this.moreRoundsInQuestion && !this.hasSubmittedMove)  {
-                                // If a valid current selection exists, submit it
-                                // normally so non-explicit "check" inputs are
-                                // still accepted at round end.
-                                const hasSelection = !!this.currentRoundItemId &&
-                                    this.ladderItems.some(it => Number(it.id) === Number(this.currentRoundItemId));
-                                this.submitCurrentRound(!hasSelection);
-                                // Show waiting state while we await the
-                                // authoritative result.
-                                this.showState('waitingRoundState');
-                            }
+                            // Drafts are already saved; the host resolves the round.
+                            this.setInteractionLock(true, 'Warte auf die Auswertung der Runde.');
+                            if (!this.hasSubmittedMove && !this.pendingRoundResult) this.showState('waitingRoundState');
                         }
                     }, 1000);
                 }
@@ -2370,7 +2404,7 @@
                     if (locked) {
                         this.cancelActiveSortingDrag();
                     }
-                    this.isInputLocked = !!locked;
+                    this.isInputLocked = !!locked || !!this.paused;
                     const layout = document.getElementById('topicLayout');
                     if (layout) layout.classList.toggle('round-locked', this.isInputLocked);
 

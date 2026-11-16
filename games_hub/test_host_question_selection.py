@@ -31,7 +31,7 @@ class HostQuestionSelectionContractTests(SimpleTestCase):
             'host_points',
         }
         self.assertEqual(
-            classified,
+            classified | HubGameStep.DUEL_ONLY_GAME_KEYS,
             {game_key for game_key, _label in HubGameStep.GAME_CHOICES},
         )
 
@@ -41,6 +41,18 @@ class HostQuestionSelectionContractTests(SimpleTestCase):
                 source = (REPO_ROOT / 'templates' / 'admin_dashboard' / template_name).read_text(
                     encoding='utf-8'
                 )
+                if game_key == 'where':
+                    # The live map monitor uses a native host selector rather
+                    # than the older shared question-card presentation.
+                    self.assertEqual(source.count('id="questionSelect"'), 1)
+                    self.assertEqual(source.count('id="sendQuestionBtn"'), 1)
+                    self.assertIn("js/where-live.js", source)
+                    runtime = (REPO_ROOT / 'static' / 'js' / 'where-live.js').read_text(encoding='utf-8')
+                    binding = "el('sendQuestionBtn').onclick = () => send({type: 'admin_send_question', question_id: el('questionSelect').value});"
+                    self.assertEqual(runtime.count(binding), 1)
+                    host_handlers = runtime[runtime.index('    if (host) {\n        window.adminGameMonitor'):runtime.index('    } else {\n        el(\'submitAnswerBtn\').onclick')]
+                    self.assertIn(binding, host_handlers)
+                    continue
                 self.assertIn('data-host-question-selection', source)
                 self.assertIn('data-host-question-item', source)
                 self.assertIn('data-host-question-select', source)

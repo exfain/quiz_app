@@ -533,7 +533,7 @@
                             <div id="blackjackScoreList" class="blackjack-score-list score-box__list">
                                 {% for set_entry in set_scoreboard %}
                                     <div class="blackjack-score-row score-box__row is-{{ set_entry.status }}" data-set-number="{{ set_entry.set_number }}" data-earned-points="{% if set_entry.earned_points is not None %}{{ set_entry.earned_points }}{% endif %}" data-max-points="{{ set_entry.max_points }}">
-                                        <div class="blackjack-score-badge score-box__badge" data-vhs-round-number="S{{ set_entry.set_number }}">{{ forloop.counter }}</div>
+                                        <div class="blackjack-score-badge score-box__badge" data-vhs-round-number="S{{ set_entry.display_number|default:forloop.counter }}">{{ forloop.counter }}</div>
                                         <div class="blackjack-score-value score-box__value">
                                             {% if set_entry.earned_points is not None %}
                                                 <span class="blackjack-score-earned">{{ set_entry.earned_points }}</span>
@@ -1559,9 +1559,15 @@
             class BlackJackPlayer {
                 constructor() {
                     this.roomCode = '{{ quiz.room_code }}';
-                    this.participantName = '{{ participant.name }}';
-                    this.hubSession = '{{ hub_session }}';
+                    this.participantName = '{{ participant.name|escapejs }}';
+                    this.hubSession = '{{ hub_session|default_if_none:""|escapejs }}';
                     this.websocket = null;
+                    this.connected = false;
+                    this.playerToken = '{{ player_token|escapejs }}';
+                    this.lastState = null;
+                    this.renderedContext = null;
+                    this.draftTimer = null;
+                    this.fetchSequence = 0;
                     this.questionTimer = null;
                     this.hasAnswered = false;
                     this.currentPoints = {{ participant.total_points }};
@@ -1589,9 +1595,148 @@
                     this.timeoutStatusSyncTimer = null;
                     this.timeoutStatusRequestSequence = 0;
                     this.timeoutStatusAbortController = null;
-                    this.quizStatusUrl = '{% url "black_jack_quiz:quiz_status" quiz.room_code participant.name %}';
+                    {% url "black_jack_quiz:quiz_status" quiz.room_code participant.name as quiz_status_url %}
+                    this.quizStatusUrl = '{{ quiz_status_url|escapejs }}';
                     
                     this.init();
+                }
+
+
+                serverNow() {
+                    const server = Date.parse(this.lastState?.server_now || this.presentationServerNow || '');
+                    return server + Math.max(0, performance.now() - (this.stateReceivedAt || this.presentationServerReceivedAt));
+                }
+
+                participantContext() {
+                    const state = this.lastState || {};
+                    return {game_id: state.game_id, question_id: state.current_question_id,
+                        round_id: state.current_round_id, set_id: state.current_set_id};
+                }
+
+                async postPlayer(action, data) {
+                    const response = await fetch(`/blackjack/${action}/${this.roomCode}/${encodeURIComponent(this.participantName)}/`, {
+                        method: 'POST', credentials: 'same-origin', headers: {'Content-Type': 'application/json', 'X-CSRFToken': '{{ csrf_token }}'},
+                        body: JSON.stringify({hub_session: this.hubSession, player_token: this.playerToken, ...data})});
+                    const result = await response.json();
+                    if (!response.ok || !result.success) throw new Error(result.error || 'Die Eingabe konnte nicht gespeichert werden.');
+                    return result;
+                }
+
+                async fetchState() {
+                    const sequence = ++this.fetchSequence;
+                    try {
+                        const url = new URL(this.quizStatusUrl, location.origin);
+                        url.searchParams.set('hub_session', this.hubSession);
+                        url.searchParams.set('player_token', this.playerToken);
+                        const response = await fetch(url, {credentials: 'same-origin'});
+                        const state = await response.json();
+                        if (sequence === this.fetchSequence && response.ok && state.success) this.applyCanonicalState(state);
+                    } catch (_) { this.showConnectionStatus(); }
+                }
+
+                syncScoreboard(rows) {
+                    const list = document.getElementById('blackjackScoreList');
+                    if (!list) return;
+                    list.replaceChildren();
+                    for (const row of rows || []) {
+                        const element = document.createElement('div');
+                        element.className = `blackjack-score-row score-box__row is-${row.status}`;
+                        element.dataset.setNumber = row.set_number;
+                        element.dataset.earnedPoints = row.earned_points === null ? '' : row.earned_points;
+                        element.dataset.maxPoints = row.max_points;
+                        const badge = document.createElement('div');
+                        badge.className = 'blackjack-score-badge score-box__badge';
+                        badge.dataset.vhsRoundNumber = `S${row.display_number}`;
+                        badge.textContent = row.display_number;
+                        const value = document.createElement('div');
+                        value.className = 'blackjack-score-value score-box__value';
+                        const earned = document.createElement('span');
+                        earned.className = 'blackjack-score-earned';
+                        if (row.earned_points === null) earned.classList.add('blackjack-score-empty', 'score-box__empty');
+                        earned.textContent = row.earned_points === null ? '__' : row.earned_points;
+                        value.append(earned, document.createTextNode(` / ${row.max_points}`));
+                        element.append(badge, value); list.append(element);
+                    }
+                    this.updateSetScoreTotal();
+                    this.renderFinalSetSummaryList();
+                }
+
+                applyCanonicalState(state) {
+                    if (!window.AuthoritativeGameState.acceptSnapshot(state)) return;
+                    this.lastState = state;
+                    this.stateReceivedAt = performance.now();
+                    this.stateRevision = state.state_revision;
+                    this.gameId = state.game_id;
+                    this.currentPoints = state.participant_points || 0;
+                    this.overallPoints = state.overall_points || 0;
+                    this.isBusted = !!state.is_busted;
+                    this.displaySetNumber = state.set_number;
+                    this.totalSets = state.total_sets;
+                    this.syncVhsSetProgress();
+                    this.syncScoreboard(state.scoreboard);
+                    this.updatePointsDisplay();
+                    if (state.own_reveal) {
+                        clearInterval(this.questionTimer);
+                        clearTimeout(this.questionPresentationTimer);
+                        this.pendingAnswerResult = state.revealed_answer;
+                        document.getElementById('submittedAnswer').textContent = state.revealed_answer?.user_answer ?? '-';
+                        this.revealEvent = state.own_reveal;
+                        this.applySetResults(state.own_reveal.set_number, state.own_reveal.set_results || []);
+                        this.storeLastCompletedSetSummary(state.own_reveal.set_number, state.own_reveal.set_results || []);
+                        this.renderCompletedSetScreens();
+                        this.showCorrectAnswer(state.own_reveal.correct_answer);
+                        let button = document.getElementById('continueRevealBtn');
+                        if (!button) {
+                            button = document.createElement('button'); button.id = 'continueRevealBtn'; button.type = 'button';
+                            button.className = 'btn btn-primary mt-3'; button.textContent = 'Weiter';
+                            document.querySelector('#correctAnswerState .correct-answer-card').append(button);
+                            button.addEventListener('click', async () => {
+                                button.disabled = true;
+                                try {
+                                    const result = await this.postPlayer('acknowledge', {question_id: this.revealEvent.correct_answer.question_id, set_id: this.revealEvent.set_id});
+                                    this.applyCanonicalState(result);
+                                } catch (error) { alert(error.message); } finally { button.disabled = false; }
+                            });
+                        }
+                        return;
+                    }
+                    if (state.game_status === 'completed') {
+                        clearInterval(this.questionTimer);
+                        this.applyFinalScores(state.reveal?.final_scores || []);
+                        this.renderCompletedSetScreens(); this.showState('quizEndedState'); return;
+                    }
+                    if (state.game_status === 'inactive') {
+                        clearInterval(this.questionTimer); this.renderedContext = null;
+                        this.setQuestionInteraction(false); this.showState('waitingQuestionState'); return;
+                    }
+                    if (state.question) {
+                        const context = `${state.current_set_id}:${state.current_question_id}:${state.question_phase}`;
+                        const changed = context !== this.renderedContext;
+                        if (changed) {
+                            clearTimeout(this.draftTimer);
+                            this.onQuestionStarted(state.question);
+                            this.renderedContext = context;
+                            document.getElementById('answerInput').value = state.pending_answer || '';
+                        }
+                        this.currentSetNumber = Number(state.current_set_id);
+                        this.hasAnswered = !!state.has_answered;
+                        this.questionPhase = state.question_phase || '';
+                        if (state.has_answered) {
+                            document.getElementById('answerInput').value = state.submitted_answer;
+                            this.onAnswerSubmitted({user_answer: state.submitted_answer, answer_locked: true});
+                        }
+                        this.setQuestionInteraction(!!state.can_answer);
+                        if (state.waiting_for_next_set) {
+                            this.setQuestionInteraction(false);
+                            document.getElementById('questionSubmitFeedback').classList.remove('d-none');
+                            document.getElementById('questionSubmittedAnswer').textContent = 'Du spielst ab dem naechsten Set mit.';
+                        }
+                        this.updatePointsDisplay();
+                        return;
+                    }
+                    clearInterval(this.questionTimer);
+                    if (state.reveal?.set_complete) { this.showState('setEndedState'); return; }
+                    this.showWaitingForNextQuestion();
                 }
 
                 readJSONScript(elementId) {
@@ -1638,12 +1783,14 @@
                     this.websocket = new WebSocket(wsUrl);
                     
                     this.websocket.onopen = () => {
+                        this.connected = true;
                         console.log('WebSocket connected');
                         this.hideConnectionStatus();
                         
                         // Send join message
                         this.websocket.send(JSON.stringify({
                             type: 'participant_join',
+                            player_token: this.playerToken,
                             participant_name: this.participantName,
                             hub_session: this.hubSession
                         }));
@@ -1658,6 +1805,8 @@
                     };
                     
                     this.websocket.onclose = () => {
+                        this.connected = false;
+                        this.setQuestionInteraction(false);
                         console.log('WebSocket disconnected');
                         this.showConnectionStatus();
                         setTimeout(() => this.connectWebSocket(), 3000);
@@ -1672,6 +1821,19 @@
                 handleWebSocketMessage(data) {
                     window.sessionGameStartIntro?.handleState(data);
                     switch(data.type) {
+                        case 'blackjack_state':
+                            this.applyCanonicalState(data);
+                            break;
+                        case 'quiz_inactive':
+                            this.fetchState();
+                            break;
+                        case 'action_rejected':
+                        case 'error':
+                            document.getElementById('submitAnswerBtn').classList.remove('loading');
+                            this.hasAnswered = false;
+                            this.fetchState();
+                            alert(data.message || 'Die Antwort konnte nicht gespeichert werden.');
+                            break;
                         case 'quiz_started':
                             this.onQuizStarted();
                             break;
@@ -1687,11 +1849,11 @@
                         case 'question_started':
                             window.gameTutorial?.forceClose();
                             window.unitTutorialNotice?.setFromPayload(data, 'Tutorialset');
-                            this.onQuestionStarted(this.mergeQuestionLifecycle(data.question, data));
+                            this.fetchState();
                             break;
 
                         case 'question_answering_opened':
-                            this.onQuestionStarted(this.mergeQuestionLifecycle(data.question, data));
+                            this.fetchState();
                             break;
                             
                         case 'question_ended':
@@ -1738,10 +1900,18 @@
                     // Answer input
                     const answerInput = document.getElementById('answerInput');
                     answerInput.addEventListener('input', () => {
-                        const hasValue = answerInput.value.trim() !== '';
+                        const raw = answerInput.value.trim();
+                        const number = Number(raw);
+                        const hasValue = raw !== '' && Number.isSafeInteger(number) && number >= -2147483648 && number <= 2147483647;
+                        const context = this.participantContext();
+                        clearTimeout(this.draftTimer);
+                        this.draftTimer = setTimeout(() => {
+                            if (raw === '' || hasValue) this.postPlayer('pending', {user_answer: raw === '' ? '' : String(number), ...context}).catch(() => {});
+                        }, 100);
                         const submitBtn = document.getElementById('submitAnswerBtn');
                         submitBtn.disabled = (
-                            this.questionPhase !== 'answering_open'
+                            !this.connected || !this.lastState?.can_answer || this.serverNow() >= Date.parse(this.currentQuestionEndTime || '')
+                            || this.questionPhase !== 'answering_open'
                             || !hasValue
                             || this.hasAnswered
                             || this.isBusted
@@ -1757,8 +1927,31 @@
                     });
                 }
 
-                onQuizStarted() {
-                    this.showState('waitingQuizState');
+                onQuizStarted() { this.fetchState(); }
+
+                async submitAnswer() {
+                    const input = document.getElementById('answerInput');
+                    const value = Number(input.value.trim());
+                    if (!this.connected || !this.lastState?.can_answer || this.hasAnswered
+                        || !input.value.trim() || !Number.isSafeInteger(value)
+                        || value < -2147483648 || value > 2147483647) return;
+                    const context = this.participantContext();
+                    const button = document.getElementById('submitAnswerBtn');
+                    button.disabled = true;
+                    button.classList.add('loading');
+                    clearTimeout(this.draftTimer);
+                    try {
+                        const result = await this.postPlayer('submit-answer', {
+                            ...context, user_answer: value, state_revision: this.stateRevision,
+                            client_action_id: window.AuthoritativeGameState.createActionId(),
+                        });
+                        this.applyCanonicalState(result.state);
+                    } catch (error) {
+                        await this.fetchState();
+                        alert(error.message);
+                    } finally {
+                        button.classList.remove('loading');
+                    }
                 }
 
                 onQuestionStarted(question) {
@@ -1840,33 +2033,11 @@
                     }, 500);
                 }
 
-                onQuestionEnded(data) {
-                    clearInterval(this.questionTimer);
-                    clearTimeout(this.questionPresentationTimer);
-                    clearTimeout(this.timeoutStatusSyncTimer);
-                    this.questionPhase = '';
-                    this.timeoutSyncInFlight = false;
-                    this.currentQuestionId = null;
-                    this.currentQuestionEndTime = null;
-                    this.lastQuestionEndData = data || {};
-                    if (this.questionClosedAwaitingAutoSubmit && this.hasAnswered && !this.pendingAnswerResult) {
-                        this.pendingQuestionEndedData = data || {};
-                        return;
-                    }
-                    this.questionClosedAwaitingAutoSubmit = false;
-                    this.pendingQuestionEndedData = null;
-                    this.finalizeQuestionEnd(data);
-                }
+                onQuestionEnded(data) { this.fetchState(); }
 
                 onQuestionEnding(data) {
-                    clearInterval(this.questionTimer);
-                    if (this.hasAnswered || this.isBusted) return;
-                    const answerInput = document.getElementById('answerInput');
-                    if (!answerInput || !answerInput.value.trim()) return;
-                    this.questionClosedAwaitingAutoSubmit = true;
-                    this.submitAnswer({
-                        questionId: data?.question_id || null,
-                    });
+                    // Drafts are already stored on the server; no deadline race or grace period.
+                    this.setQuestionInteraction(false);
                 }
 
                 finalizeQuestionEnd(data) {
@@ -1952,12 +2123,7 @@
                     if (helpText) helpText.textContent = 'Du kannst die restlichen Fragen dieses Sets weiter ansehen, aber nicht mehr antworten.';
                 }
 
-                onQuizEnded(data) {
-                    clearInterval(this.questionTimer);
-                    this.applyFinalScores(data?.final_scores);
-                    this.renderCompletedSetScreens();
-                    this.showState('quizEndedState');
-                }
+                onQuizEnded(data) { this.fetchState(); }
 
                 loadCurrentQuestion() {
                     {% if quiz.current_question %}
@@ -2024,7 +2190,7 @@
                 }
 
                 setQuestionInteraction(enabled) {
-                    const interactive = enabled && !this.isBusted && !this.hasAnswered;
+                    const interactive = this.connected && enabled && !this.isBusted && !this.hasAnswered;
                     const answerInput = document.getElementById('answerInput');
                     if (answerInput) {
                         answerInput.disabled = !interactive;
@@ -2077,73 +2243,21 @@
 
                 startQuestionTimer(timeLimit, questionEndTime = null) {
                     clearInterval(this.questionTimer);
-                    const endTimestamp = questionEndTime ? new Date(questionEndTime).getTime() : null;
-                    const getTimeLeft = () => {
-                        if (endTimestamp && !Number.isNaN(endTimestamp)) {
-                            return Math.max(0, Math.ceil((endTimestamp - Date.now()) / 1000));
-                        }
-                        return Math.max(0, timeLimit);
+                    const deadline = Date.parse(questionEndTime || '');
+                    const tick = () => {
+                        const remaining = Number.isFinite(deadline) ? Math.max(0, Math.ceil((deadline - this.serverNow()) / 1000)) : 0;
+                        document.getElementById('playerTimeLeft').textContent = remaining;
+                        document.getElementById('playerTimerCircle').className = `timer-circle${remaining <= 10 ? ' danger' : remaining <= 20 ? ' warning' : ''}`;
+                        if (remaining <= 0) { clearInterval(this.questionTimer); this.onTimeUp(); return false; }
+                        return true;
                     };
-                    let timeLeft = getTimeLeft();
-                    const timerElement = document.getElementById('playerTimeLeft');
-                    const circleElement = document.getElementById('playerTimerCircle');
-                    
-                    timerElement.textContent = timeLeft;
-                    circleElement.className = 'timer-circle';
-                    if (timeLeft <= 0) {
-                        this.onTimeUp();
-                        return;
-                    }
-                    
-                    this.questionTimer = setInterval(() => {
-                        timeLeft = endTimestamp && !Number.isNaN(endTimestamp) ? getTimeLeft() : Math.max(0, timeLeft - 1);
-                        timerElement.textContent = timeLeft;
-                        
-                        // Update timer circle appearance
-                        circleElement.className = 'timer-circle';
-                        if (timeLeft <= 10) {
-                            circleElement.classList.add('danger');
-                        } else if (timeLeft <= 20) {
-                            circleElement.classList.add('warning');
-                        }
-                        
-                        if (timeLeft <= 0) {
-                            clearInterval(this.questionTimer);
-                            this.onTimeUp();
-                        }
-                    }, 1000);
-                }
-
-                submitAnswer(options = {}) {
-                    if (this.isBusted || this.questionPhase !== 'answering_open') return;
-                    
-                    const answerInput = document.getElementById('answerInput');
-                    const userAnswer = answerInput.value.trim();
-                    
-                    if (!userAnswer || this.hasAnswered) return;
-                    
-                    // Disable interface
-                    answerInput.disabled = true;
-                    const submitBtn = document.getElementById('submitAnswerBtn');
-                    submitBtn.classList.add('loading');
-                    
-                    // Send answer via WebSocket
-                    this.websocket.send(JSON.stringify({
-                        type: 'participant_submit_answer',
-                        participant_name: this.participantName,
-                        hub_session: this.hubSession,
-                        question_id: options.questionId || this.currentQuestionId || null,
-                        user_answer: parseInt(userAnswer),
-                        game_id: this.gameId || null,
-                        state_revision: this.stateRevision,
-                        client_action_id: window.AuthoritativeGameState?.createActionId?.()
-                    }));
-                    
-                    this.hasAnswered = true;
+                    if (tick()) this.questionTimer = setInterval(tick, 250);
                 }
 
                 onAnswerSubmitted(data) {
                     this.pendingAnswerResult = data;
+                    this.hasAnswered = true;
+                    document.getElementById('answerInput').disabled = true;
                     document.getElementById('submittedAnswer').textContent = data.user_answer;
                     document.getElementById('questionSubmittedAnswer').textContent = data.user_answer;
                     document.getElementById('questionSubmitFeedback').classList.remove('d-none');
@@ -2159,17 +2273,11 @@
                 }
 
                 onTimeUp() {
-                    if (this.hasAnswered || this.isBusted) return;
-                    
-                    const answerInput = document.getElementById('answerInput');
-                    if (answerInput && answerInput.value.trim()) {
-                        this.submitAnswer({ questionId: this.currentQuestionId || null });
-                        this.sendParticipantQuestionTimeout();
-                        this.scheduleTimeoutStatusSync();
-                        return;
-                    }
-
-                    this.requestQuestionTimeoutSync();
+                    this.setQuestionInteraction(false);
+                    const feedback = document.getElementById('questionSubmitFeedback');
+                    feedback.classList.remove('d-none');
+                    const text = feedback.querySelector('.zone-submit-waiting');
+                    if (text) text.textContent = 'Zeit abgelaufen. Warte auf die Aufloesung durch den Host.';
                 }
 
                 requestQuestionTimeoutSync() {
@@ -2218,6 +2326,7 @@
                         this.timeoutStatusAbortController?.abort();
                         this.timeoutStatusAbortController = new AbortController();
                         const statusUrl = new URL(this.quizStatusUrl, window.location.origin);
+                        statusUrl.searchParams.set('player_token', this.playerToken);
                         if (this.hubSession) {
                             statusUrl.searchParams.set('hub_session', this.hubSession);
                         }
@@ -2287,13 +2396,16 @@
                     const correctAnswer = correctAnswerData.correct_answer;
                     const difference = Math.abs(userAnswer - correctAnswer);
                     const starLabel = difference === 1 ? 'Stern' : 'Sterne';
-                    const calculation = `|${userAnswer} - ${correctAnswer}| = ${difference} ${starLabel}`;
+                    const calculation = Number.isFinite(userAnswer) ? `|${userAnswer} - ${correctAnswer}| = ${difference} ${starLabel}` : 'Keine Antwort abgegeben.';
                     document.getElementById('calculationDisplay').textContent = calculation;
                     
                     // Show explanation if available
                     if (correctAnswerData.explanation) {
                         document.getElementById('explanationText').textContent = correctAnswerData.explanation;
                         document.getElementById('explanationText').style.display = 'block';
+                    } else {
+                        document.getElementById('explanationText').textContent = '';
+                        document.getElementById('explanationText').style.display = 'none';
                     }
                     
                     this.showState('correctAnswerState');
@@ -2397,12 +2509,15 @@
                 renderSetSummaryCard() {
                     const summary = this.lastCompletedSetSummary;
                     if (!summary) return;
+                    const rows = Array.from(document.querySelectorAll('#blackjackScoreList .blackjack-score-row'));
+                    const position = rows.findIndex(row => row.dataset.setNumber === String(summary.set_number));
+                    const displayNumber = position < 0 ? summary.set_number : position + 1;
                     const map = {
-                        setEndedNumber: summary.set_number,
+                        setEndedNumber: displayNumber,
                         setEndedStars: summary.set_stars,
                         setEndedAwardedPoints: summary.awarded_points,
                         setEndedOverallPoints: summary.overall_points,
-                        finalLastSetNumber: summary.set_number,
+                        finalLastSetNumber: displayNumber,
                         finalSetStars: summary.set_stars,
                         finalSetAwardedPoints: summary.awarded_points,
                         finalOverallPoints: summary.overall_points,
@@ -2472,7 +2587,7 @@
                 syncVhsSetProgress() {
                     const root = document.querySelector('.play-container');
                     if (!root) return;
-                    root.dataset.blackjackCurrentSet = String(this.currentSetNumber);
+                    root.dataset.blackjackCurrentSet = String(this.displaySetNumber || this.currentSetNumber);
                     root.dataset.blackjackTotalSets = String(this.totalSets);
                 }
 

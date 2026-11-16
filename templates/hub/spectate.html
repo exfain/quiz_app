@@ -66,7 +66,8 @@
     {% include 'includes/_session_game_start_intro.html' %}
 
     <script src="{% static 'js/question-typewriter.js' %}"></script>
-    <script>
+    <script src="{% static 'vendor/proj4/proj4.js' %}"></script><script src="{% static 'js/where-map.js' %}"></script>
+<script>
     (() => {
         const root = document.getElementById('spectator-root');
         const stage = document.getElementById('stage');
@@ -429,12 +430,11 @@
             `);
         }
 
+        let whereMap = null;
         function renderWhere(game) {
+            window.whereSpectatorState = game;
             const q = game.question || {};
-            const location = game.phase === 'reveal' && q.correct_location
-                ? panelMarkup(`<span class="spectator-card-label">Korrekte Position</span><div class="spectator-reveal-answer">${escapeHtml(q.correct_location.latitude)} / ${escapeHtml(q.correct_location.longitude)}</div>${q.explanation ? `<p class="spectator-subtitle">${escapeHtml(q.explanation)}</p>` : ''}`, 'spectator-panel--reveal')
-                : '';
-            return gameMarkup(game, `${imageMarkup(q.image_url, q.text)}${questionMarkup(q.text || '')}${location}`);
+            return gameMarkup(game, `${imageMarkup(q.image_url, q.text)}${questionMarkup(q.text || '')}<div id="whereSpectatorMap" style="width:100%;height:56vh;min-height:300px"></div>${game.phase === 'reveal' && q.explanation ? `<p>${escapeHtml(q.explanation)}</p>` : ''}`);
         }
 
         function renderWhoThat(game) {
@@ -553,7 +553,9 @@
 
         function renderBuzzer(game) {
             const round = game.round || {};
-            const state = round.current_buzz_participant
+            const state = round.status === 'answered'
+                ? `${escapeHtml(round.current_buzz_participant || '')} HAT RICHTIG GEANTWORTET`
+                : round.status === 'ended' ? 'RUNDE BEENDET' : round.current_buzz_participant
                 ? `${escapeHtml(round.current_buzz_participant)} HAT GEBUZZERT`
                 : (round.buzzer_open ? 'BUZZER OFFEN' : 'WARTE AUF FREIGABE');
             return gameMarkup(game, `${questionMarkup(state, `RUNDE ${escapeHtml(round.number || 0)}`)}${panelMarkup(publicParticipantTable(game.participants || [], true))}`);
@@ -638,9 +640,12 @@
         }
 
         function updateStage(markup) {
-            if (markup === renderedStageMarkup) return;
+            if (markup === renderedStageMarkup) { if (whereMap && window.whereSpectatorState) whereMap.update(window.whereSpectatorState, {spectator:true}); return; }
             renderedStageMarkup = markup;
             stage.innerHTML = markup;
+            whereMap?.destroy(); whereMap = null;
+            const mapContainer = document.getElementById('whereSpectatorMap');
+            if (mapContainer) { whereMap = new WhereMap(mapContainer); whereMap.update(window.whereSpectatorState, {spectator:true}); }
         }
 
         function introNavigation(intro) {
@@ -706,7 +711,7 @@
             if (!game.question && game.question_visible_at) {
                 schedulePresentation(Date.parse(game.question_visible_at), true);
             }
-            const scoreboard = scoreboardMarkup(game);
+            const scoreboard = game.game_key === 'where' && game.phase === 'reveal' ? '' : scoreboardMarkup(game);
             if (scoreboard) {
                 updateStage(scoreboard);
             } else {
@@ -764,5 +769,7 @@
         });
     })();
     </script>
+<aside id="session-encounter" data-role="spectator" data-code="{{ session.code }}"><p data-result></p><a data-result-link hidden>Letztes Duellergebnis ansehen</a></aside>
+<script src="{% static 'js/duel-encounters.js' %}"></script>
 </body>
 </html>

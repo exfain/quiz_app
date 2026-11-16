@@ -896,6 +896,8 @@ class AuthoritativeClientSafeguardTests(TestCase):
             with self.subTest(game_template=game_template):
                 source = Path(f'templates/{game_template}/play.html').read_text(encoding='utf-8')
                 self.assertIn('data-authoritative-paint-gate', source)
+                if game_template == 'where_is_this':
+                    source += Path('static/js/where-live.js').read_text(encoding='utf-8')
                 self.assertIn('markInitialPaintReady?.()', source)
 
         for synchronously_hydrated_template in ('quiz', 'estimation'):
@@ -1005,6 +1007,36 @@ class AuthoritativeClientSafeguardTests(TestCase):
             with self.subTest(view_path=view_path):
                 source = Path(view_path).read_text(encoding='utf-8')
                 self.assertNotIn("time_taken = data.get('time_taken'", source)
+                if view_path == 'where_is_this/views.py':
+                    self.assertIn('validate_and_reserve_action(', source)
+                    self.assertIn('r.save_input(', source)
+                    runtime_source = Path('where_is_this/runtime.py').read_text(encoding='utf-8')
+                    self.assertIn('select_for_update()', runtime_source)
+                    self.assertIn('now >= session.question_end_time', runtime_source)
+                    continue
+                if view_path == 'black_jack_quiz/views.py':
+                    self.assertIn('runtime.submit_action(', source)
+                    runtime_source = Path('black_jack_quiz/runtime.py').read_text(encoding='utf-8')
+                    for safeguard in ('select_for_update()', 'now >= session.question_end_time',
+                                      'validate_and_reserve_action(', 'def context_matches('):
+                        self.assertIn(safeguard, runtime_source)
+                    continue
+                if view_path in {'who_is_that/views.py', 'Estimation/views.py'}:
+                    self.assertIn('validate_and_reserve_action(', source)
+                    self.assertIn('answer = save_answer(', source)
+                    runtime_source = Path(view_path.replace('views.py', 'runtime.py')).read_text(encoding='utf-8')
+                    self.assertIn('select_for_update()', runtime_source)
+                    self.assertIn('received_at >= session.question_end_time', runtime_source)
+                    self.assertIn('.objects.get_or_create(', runtime_source)
+                    continue
+                if view_path in {'QuizGame/views.py', 'who_is_lying/views.py'}:
+                    self.assertIn('validate_and_reserve_action(', source)
+                    self.assertIn('consumer.save_participant_answer_sync(', source)
+                    runtime_source = Path(view_path.replace('views.py', 'consumers.py')).read_text(encoding='utf-8')
+                    self.assertIn('select_for_update()', runtime_source)
+                    self.assertIn('>= session.question_end_time', runtime_source)
+                    self.assertIn('.objects.get_or_create(', runtime_source)
+                    continue
                 self.assertIn('select_for_update()', source)
                 self.assertIn('question_end_time', source)
                 self.assertIn('received_at >= locked_session.question_end_time', source)

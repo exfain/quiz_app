@@ -100,6 +100,8 @@ def question_content_is_visible(snapshot: dict, *, at=None) -> bool:
     }:
         return False
     visible_at = _aware_datetime(snapshot.get('question_visible_at'))
+    if snapshot.get('game_key') in {'who_that', 'estimation', 'clue_rush', 'assign', 'sorting_ladder', 'wer_weiss_mehr', 'blackjack', 'wann_war_das', 'where'} and snapshot.get('_paused_at'):
+        at = snapshot['_paused_at']
     return not visible_at or (_aware_datetime(at) or timezone.now()) >= visible_at
 
 
@@ -260,8 +262,11 @@ def _persisted_game_context(runtime: GameRuntimeState) -> dict:
         if phase == 'active' and is_active:
             phase = 'question_active'
 
+    if runtime.game_key == 'wann_war_das':
+        current_round_id = game.get_current_round_number()
+
     current_set_id = None
-    get_set_number = getattr(game, 'get_current_set_number', None)
+    get_set_number = getattr(game, 'get_current_set_id', None) if game._meta.app_label == 'black_jack_quiz' else getattr(game, 'get_current_set_number', None)
     if callable(get_set_number):
         try:
             current_set_id = get_set_number()
@@ -389,12 +394,19 @@ def _question_lifecycle_snapshot(
         content_revealed_at = starts_at if question_phase else None
         visible_at = None
 
+    paused_at = (
+        _aware_datetime((runtime.public_snapshot or {}).get('_paused_at'))
+        if runtime.game_key in {'quiz', 'who', 'who_that', 'estimation', 'clue_rush', 'assign', 'sorting_ladder', 'wer_weiss_mehr', 'blackjack', 'wann_war_das', 'where'} else None
+    )
     answering_allowed = bool(
         question_phase == GameRuntimeState.QUESTION_PHASE_ANSWERING_OPEN
+        and not paused_at
         and (not starts_at or now >= starts_at)
         and (not ends_at or now < ends_at)
     )
     remaining_answer_time = None
+    if paused_at and ends_at:
+        remaining_answer_time = max(0, int((ends_at - paused_at).total_seconds() + 0.999))
     if answering_allowed and ends_at:
         remaining_answer_time = max(
             0,
@@ -963,6 +975,8 @@ def reset_question_flow(
         runtime.context_revision = runtime.state_revision
         snapshot = dict(runtime.public_snapshot or {})
         snapshot.pop('question', None)
+        if game_key in {'quiz', 'who', 'who_that', 'estimation', 'clue_rush', 'assign', 'sorting_ladder', 'wer_weiss_mehr', 'blackjack', 'wann_war_das', 'where'}:
+            snapshot.pop('_paused_at', None)
         snapshot.pop('answer_options', None)
         snapshot.pop('answer_duration_seconds', None)
         snapshot.pop('question_presentation_duration_ms', None)
@@ -1063,6 +1077,8 @@ def _transition_question_phase(
                 runtime.pk,
                 runtime.state_revision,
             )
+        if runtime.game_key in {'quiz', 'who', 'who_that', 'estimation', 'clue_rush', 'assign', 'sorting_ladder', 'wer_weiss_mehr', 'blackjack', 'wann_war_das', 'where'} and (runtime.public_snapshot or {}).get('_paused_at'):
+            return QuestionPhaseDecision(False, 'invalid_phase', 'Das Spiel ist pausiert.', runtime.pk, runtime.state_revision)
         if (
             action_revision < runtime.context_revision
             or action_revision > runtime.state_revision
@@ -1438,6 +1454,8 @@ def validate_and_reserve_action(
         runtime = get_runtime_state(game_key, room_code, session_code)
         runtime = GameRuntimeState.objects.select_for_update().get(pk=runtime.pk)
         received_at = timezone.now()
+        if runtime.game_key in {'quiz', 'who', 'who_that', 'estimation', 'clue_rush', 'assign', 'sorting_ladder', 'wer_weiss_mehr', 'blackjack', 'wann_war_das', 'where'} and (runtime.public_snapshot or {}).get('_paused_at'):
+            return ActionDecision(False, 'invalid_phase', 'Das Spiel ist pausiert.', runtime.pk)
         if action_revision < runtime.context_revision or action_revision > runtime.state_revision:
             return ActionDecision(False, 'stale_action', 'Der Spielzustand hat sich geaendert.', runtime.pk)
         supplied_game_id = _text(action.get('game_id'))

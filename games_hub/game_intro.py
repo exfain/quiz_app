@@ -19,6 +19,7 @@ GAME_INTRO_TITLES = {
     'sorting_ladder': 'SORTING LADDER',
     'clue_rush': 'CLUE RUSH',
     'wer_weiss_mehr': 'WER WEISS MEHR',
+    'bid': 'GEBOTSSPIEL',
     'buzzer': 'BUZZER',
     'host_points': 'HOST-PUNKTEVERGABE',
     'wann_war_das': 'WANN WAR DAS',
@@ -52,13 +53,14 @@ def serialize_game_step(step: HubGameStep, *, server_now=None) -> dict:
         'index': step.order,
         'order': step.order,
         'game_key': step.game_key,
+        'game_format': step.game_format,
         'room_code': step.room_code,
         'title': step.title,
         'intro': serialize_game_intro(step, server_now=server_now),
     }
 
 
-def start_game_intro(session_code: str, game_key: str, room_code: str) -> dict | None:
+def start_game_intro(session_code: str, game_key: str, room_code: str, *, step_id=None) -> dict | None:
     server_now = timezone.now()
     step = (
         HubGameStep.objects
@@ -66,6 +68,7 @@ def start_game_intro(session_code: str, game_key: str, room_code: str) -> dict |
             session__code=session_code,
             game_key=game_key,
             room_code=room_code,
+            **({'pk': step_id} if step_id is not None else {'game_format': 'standard'}),
         )
         .order_by('order', 'pk')
         .first()
@@ -94,6 +97,7 @@ def get_game_step(session_code: str, game_key: str, room_code: str) -> dict | No
             session__code=session_code,
             game_key=game_key,
             room_code=room_code,
+            game_format='standard',
         )
         .order_by('order', 'pk')
         .first()

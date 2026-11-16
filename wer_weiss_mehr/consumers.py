@@ -23,6 +23,9 @@ from games_hub.unit_tutorial_runtime import (
     validate_unit_tutorial_request,
 )
 
+from .identity import valid_player_token
+from games_hub.host_permissions import authorize_game_host
+
 from .models import WerWeissMehrGame, WerWeissMehrParticipant, WerWeissMehrSession
 from .services import (
     apply_manual_correction,
@@ -83,7 +86,7 @@ class WerWeissMehrConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsume
             elif msg_type == 'admin_finish_set':
                 await self.handle_admin_finish_set(data)
             elif msg_type == 'admin_clear_set':
-                await self.handle_admin_clear_set()
+                await self.handle_admin_clear_set(data)
             elif msg_type == 'participant_join':
                 await self.handle_participant_join(data)
             elif msg_type == 'participant_input_changed':
@@ -119,6 +122,21 @@ class WerWeissMehrConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsume
         await self.send_json({'type': 'tutorial_force_close'})
 
     async def handle_admin_start_quiz(self, data):
+        quiz = await self.get_quiz()
+        hub_session_code = data.get('hub_session_code') or data.get('hub_session') or await self._get_hub_session_code_for_room()
+        if quiz.status == 'active' and quiz.started_at:
+            await self.send_state(data)
+            return
+        if quiz.status == 'inactive' and quiz.started_at:
+            activation = await database_sync_to_async(resolve_session_game_activation_for_room)(
+                'wer_weiss_mehr', self.room_code, session_code=hub_session_code)
+            if not activation.get('success'):
+                await self.send_json({'type': 'error', 'message': activation.get('error') or activation.get('message')})
+                return
+            await self.start_quiz_db(hub_session_code)
+            await self.send_state(data)
+            await self.broadcast_state(data)
+            return
         hub_session_code = data.get('hub_session_code') or data.get('hub_session')
         lobby_ready = await database_sync_to_async(ensure_session_players_ready_for_game_start_for_room)(
             'wer_weiss_mehr',
@@ -297,6 +315,7 @@ class WerWeissMehrConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsume
         await database_sync_to_async(end_current_round_with_question_flow)(
             await self.get_quiz(),
             hub_session_code=hub_session_code,
+            action=data,
         )
         await self.broadcast_state(data)
         await self.hub_mirror_event('round_ended', {
@@ -376,6 +395,7 @@ class WerWeissMehrConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsume
         await database_sync_to_async(finish_set_with_question_flow)(
             await self.get_quiz(),
             hub_session_code=hub_session_code,
+            action=data,
         )
         await self.finish_current_unit_tutorial_db(hub_session_code)
         await self.broadcast_state(data)
@@ -384,56 +404,65 @@ class WerWeissMehrConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsume
             'game_key': 'wer_weiss_mehr',
         }, session_code=hub_session_code)
 
-    async def handle_admin_clear_set(self):
-        await database_sync_to_async(clear_current_set)(await self.get_quiz())
+    async def handle_admin_clear_set(self, data):
+        await database_sync_to_async(clear_current_set)(await self.get_quiz(), action=data, hub_session_code=data.get('hub_session_code') or data.get('hub_session'))
         await self.broadcast_state({})
 
+    async def authorized_participant(self, data):
+        name = self._authoritative_participant_name() or data.get('name') or data.get('participant_name')
+        code = self._authoritative_session_code() or data.get('hub_session_code') or data.get('hub_session')
+        if data.get('name', data.get('participant_name', name)) != name:
+            return None
+        participant = await self.get_participant(name, code)
+        token = getattr(self, '_player_token', None) or data.get('player_token')
+        if not participant or not valid_player_token(token, participant):
+            return None
+        self._player_token = token
+        return participant
+
     async def handle_participant_join(self, data):
-        name = (data.get('name') or data.get('participant_name') or '').strip()
-        if not name:
-            await self.send_json({'type': 'error', 'message': 'Name is required.'})
+        participant = await self.authorized_participant(data)
+        if not participant:
+            await self.send_json({'type': 'error', 'code': 'unauthorized', 'message': 'Teilnahme nicht bestaetigt.'})
             return
-        await self.get_or_create_participant(name, data.get('hub_session_code') or data.get('hub_session'))
+        self._authoritative_participant = participant.name
+        self._authoritative_session = participant.hub_session_code or ''
         await self.send_state(data)
         await self.broadcast_state(data)
 
     async def handle_participant_input_changed(self, data):
-        name = (data.get('name') or data.get('participant_name') or '').strip()
-        participant = await self.get_participant(name, data.get('hub_session_code') or data.get('hub_session'))
+        participant = await self.authorized_participant(data)
         if participant:
-            await database_sync_to_async(store_pending_input)(
-                await self.get_quiz(),
-                participant,
-                data.get('answer_text') or '',
-            )
+            await database_sync_to_async(store_pending_input)(await self.get_quiz(), participant,
+                data.get('answer_text') or '', action=data)
 
     async def handle_participant_submit_answer(self, data):
-        name = (data.get('name') or data.get('participant_name') or '').strip()
-        participant = await self.get_participant(name, data.get('hub_session_code') or data.get('hub_session'))
+        participant = await self.authorized_participant(data)
         if not participant:
-            await self.send_json({'type': 'error', 'message': 'Participant not found.'})
+            await self.send_json({'type': 'error', 'code': 'unauthorized', 'message': 'Teilnahme nicht bestaetigt.'})
             return
-        await database_sync_to_async(submit_answer)(
-            await self.get_quiz(),
-            participant,
-            data.get('answer_text') or '',
-        )
+        await database_sync_to_async(submit_answer)(await self.get_quiz(), participant, data.get('answer_text') or '')
         await self.broadcast_state(data)
 
     async def send_state(self, data):
         quiz = await self.get_quiz()
-        state = await database_sync_to_async(build_game_state)(
-            quiz,
-            hub_session_code=data.get('hub_session_code') or data.get('hub_session'),
-            participant_name=data.get('participant_name') or data.get('name'),
-        )
+        name = self._authoritative_participant_name() or data.get('participant_name') or data.get('name')
+        code = self._authoritative_session_code() or data.get('hub_session_code') or data.get('hub_session')
+        if name:
+            participant = await self.authorized_participant(data)
+            if not participant:
+                await self.send_json({'type': 'error', 'code': 'unauthorized', 'message': 'Teilnahme nicht bestaetigt.'})
+                return
+            name, code = participant.name, participant.hub_session_code
+        else:
+            authorization = await database_sync_to_async(authorize_game_host)(self.scope.get('user'), 'wer_weiss_mehr', self.room_code, code)
+            if not authorization.allowed:
+                await self.send_json({'type': 'error', 'code': 'unauthorized', 'message': authorization.message})
+                return
+        state = await database_sync_to_async(build_game_state)(quiz, hub_session_code=code, participant_name=name)
         await self.send_json({'type': 'state', **state})
-        participant_name = data.get('participant_name') or data.get('name')
-        if participant_name:
-            tutorial_payload = await self.get_tutorial_payload_db(
-                data.get('hub_session_code') or data.get('hub_session'),
-                participant_name,
-            )
+        if name:
+            tutorial_payload = await self.get_tutorial_payload_db(code, name)
             if tutorial_payload:
                 await self.send_json({'type': 'tutorial_start', **tutorial_payload})
 
@@ -518,24 +547,14 @@ class WerWeissMehrConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsume
         quiz = WerWeissMehrGame.objects.get(room_code=self.room_code)
         deactivate_tutorial_runtime('wer_weiss_mehr', self.room_code, hub_session_code, quiz)
         quiz.end_quiz()
-        participants = quiz.participants.all()
-        if hub_session_code is not None:
-            participants = participants.filter(hub_session_code=hub_session_code)
+        from .services import get_scoped_participants
+        participants = get_scoped_participants(quiz, hub_session_code)
         return list(participants.order_by('-total_score', 'name').values('name', 'total_score'))
 
     @database_sync_to_async
     def get_or_create_participant(self, name, hub_session_code=None):
-        quiz = WerWeissMehrGame.objects.get(room_code=self.room_code)
-        participant, _ = WerWeissMehrParticipant.objects.get_or_create(
-            quiz=quiz,
-            name=name,
-            hub_session_code=hub_session_code or None,
-            defaults={'is_active': True},
-        )
-        if not participant.is_active:
-            participant.is_active = True
-            participant.save(update_fields=['is_active'])
-        return participant
+        return WerWeissMehrParticipant.objects.filter(quiz__room_code=self.room_code,
+            name=name, hub_session_code=hub_session_code or None).first()
 
     @database_sync_to_async
     def get_participant(self, name, hub_session_code=None):

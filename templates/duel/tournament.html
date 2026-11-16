@@ -1,0 +1,12 @@
+{% load static %}<!doctype html><html lang="de" data-participant-theme="vhs"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Turnier</title>
+<link rel="stylesheet" href="{% static 'theme.css' %}"><link rel="stylesheet" href="{% static 'themes/vhs/vhs.css' %}"><link rel="stylesheet" href="{% static 'css/duel.css' %}"></head>
+<body><main class="vhs-theme-shell duel-shell" id="tournament" data-api="{{ api }}" data-code="{{ session.code }}" data-role="{{ role }}">
+<header class="vhs-theme-header"><h1>Turnier · {{ tournament.step.get_game_key_display }}</h1></header>{% csrf_token %}
+<p id="error" role="alert"></p><p id="status" aria-live="polite"></p><p id="bye"></p>
+<h2 id="question"></h2><p id="options"></p>
+{% if role == 'host' %}<section><label>Gemeinsame Aufgabe / Set <select id="material"><option value="">Bitte auswählen</option></select></label>
+{% if tournament.step.game_key == 'estimation' %}<label>Antwortdauer (Sekunden)<input id="duration" type="number" min="1" step="1" required></label>{% endif %}
+<button id="draw">Set auslosen</button><button id="end" hidden>Turnier beenden</button></section>{% endif %}
+<a id="own" hidden>Eigene Begegnung öffnen</a><section id="pairs" aria-label="Paarungen"></section>
+<h2>Abgeschlossene Ergebnisse · getrennt von der Abendwertung</h2><div id="results"></div><a id="return" hidden>Zur Lobby / zum Hub</a>
+</main><script src="{% static 'js/duel-match-status.js' %}"></script><script src="{% static 'js/duel-tournament.js' %}"></script></body></html>

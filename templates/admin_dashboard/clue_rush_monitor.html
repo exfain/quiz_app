@@ -54,7 +54,7 @@
                                 <label class="form-check-label" for="playTutorialToggle">Tutorial spielen</label>
                             </div>
                             {% endif %}
-                            <button class="btn btn-success" id="startQuizBtn" data-host-game-start>
+                            <button class="btn btn-success" id="startQuizBtn" data-host-game-start data-host-game-resume="{{ quiz_session.paused_at|yesno:'true,false' }}">
                                 <i data-lucide="play"></i>
                                 {% if quiz.status == 'inactive' %}Spiel reaktivieren{% else %}Spiel starten{% endif %}
                             </button>
@@ -894,6 +894,8 @@ document.addEventListener('DOMContentLoaded', function() {
             this.runKey = '{{ quiz.started_at|date:"c"|escapejs }}' || 'not-started';
             this.stateRevision = Number('{{ question_runtime.state_revision|default:"-1" }}');
             this.gameId = '{{ question_runtime.game_id|default:""|escapejs }}';
+            this.currentQuestionId = '{{ quiz.current_question_id|default_if_none:""|escapejs }}';
+            this.currentRound = Number('{{ quiz_session.current_question_number|default:0 }}');
             this.questionPhase = '{{ question_runtime.question_phase|default:""|escapejs }}';
             this.questionVisibleAt = '{{ question_runtime.question_visible_at|default:""|escapejs }}';
             this.presentationServerNow = '{{ question_runtime.server_now|default:""|escapejs }}';
@@ -986,6 +988,7 @@ document.addEventListener('DOMContentLoaded', function() {
         }
         
         connectWebSocket() {
+            this.setStartPending(true);
             const wsScheme = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
             const wsUrl = `${wsScheme}//${window.location.host}/ws/clue-rush/${this.roomCode}/`;
             
@@ -993,7 +996,10 @@ document.addEventListener('DOMContentLoaded', function() {
             
             this.websocket.onopen = () => {
                 console.log('WebSocket connected');
+                this.setStartPending(false);
                 this.updateConnectionStatus(true);
+                this.websocket.send(JSON.stringify({type: 'admin_get_state', hub_session: this.hubSession}));
+                this.scheduleClueStartAvailability();
             };
             
             this.websocket.onmessage = (event) => {
@@ -1003,6 +1009,7 @@ document.addEventListener('DOMContentLoaded', function() {
             
             this.websocket.onclose = () => {
                 console.log('WebSocket disconnected');
+                this.scheduleClueStartAvailability();
                 this.updateConnectionStatus(false);
                 this.setStartPending(false);
                 this.clearPendingQuestionAction();
@@ -1127,6 +1134,9 @@ document.addEventListener('DOMContentLoaded', function() {
                     window.hostEndState?.apply({ message: data.message, event: data });
                     break;
 
+                case 'quiz_resumed':
+                    location.reload();
+                    break;
                 case 'quiz_inactive':
                     console.log('Quiz set inactive:', data.message);
                     this.isActive = false;
@@ -1392,6 +1402,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
         hostActionContext(questionId) {
             return {
+                round_number: this.currentRound,
                 question_id: questionId,
                 game_id: this.gameId || null,
                 state_revision: this.stateRevision,
@@ -1406,6 +1417,8 @@ document.addEventListener('DOMContentLoaded', function() {
             const revision = Number(source.state_revision);
             if (Number.isFinite(revision)) this.stateRevision = revision;
             if (source.game_id) this.gameId = String(source.game_id);
+            if (source.current_question_id) this.currentQuestionId = String(source.current_question_id);
+            if (source.question?.round_number !== undefined) this.currentRound = Number(source.question.round_number);
             if (source.question_phase !== undefined && source.question_phase !== null) {
                 this.questionPhase = String(source.question_phase);
             }
@@ -1416,6 +1429,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 this.presentationServerNow = String(source.server_now);
                 this.presentationServerReceivedAt = performance.now();
             }
+            this.scheduleClueStartAvailability();
         }
 
         remainingQuestionPresentationDelay() {
@@ -1430,6 +1444,11 @@ document.addEventListener('DOMContentLoaded', function() {
             const button = document.getElementById('startCluesBtn');
             if (!button) return;
             clearTimeout(this.questionPresentationTimer);
+            if (!this.websocket || this.websocket.readyState !== WebSocket.OPEN || !Number.isFinite(this.stateRevision) || this.stateRevision < 0 || this.pendingPhaseAction) {
+                button.disabled = true;
+                button.setAttribute('aria-disabled', 'true');
+                return;
+            }
             const remaining = this.remainingQuestionPresentationDelay();
             if (remaining <= 0) {
                 button.disabled = false;
@@ -1452,7 +1471,10 @@ document.addEventListener('DOMContentLoaded', function() {
                 || !Number.isFinite(this.stateRevision)
                 || this.stateRevision < 0
             ) return;
-            if (!this.websocket || this.websocket.readyState !== WebSocket.OPEN) return;
+            if (!this.websocket || this.websocket.readyState !== WebSocket.OPEN) {
+                alert('Die Verbindung zum Spielserver wird hergestellt. Bitte erneut versuchen.');
+                return;
+            }
             this.pendingPhaseAction = 'admin_start_clues';
             button.disabled = true;
             button.setAttribute('aria-busy', 'true');
@@ -1468,7 +1490,8 @@ document.addEventListener('DOMContentLoaded', function() {
                 const hub = new URLSearchParams(window.location.search).get('hub_session') || window.__hubCode || '';
                 this.websocket.send(JSON.stringify({
                     type: 'admin_end_question',
-                    hub_session: hub
+                    hub_session: hub,
+                    ...this.hostActionContext(this.currentQuestionId)
                 }));
             }
         }
@@ -1632,7 +1655,7 @@ document.addEventListener('DOMContentLoaded', function() {
             const noParticipants = participantsList.querySelector('.no-participants');
             if (noParticipants) noParticipants.remove();
             
-            const existingParticipant = participantsList.querySelector(`[data-participant-name="${participant.name}"]`);
+            const existingParticipant = Array.from(participantsList.querySelectorAll('[data-participant-name]')).find(node => node.dataset.participantName === participant.name);
             if (existingParticipant) return;
             
             const participantEl = document.createElement('div');
@@ -1643,14 +1666,14 @@ document.addEventListener('DOMContentLoaded', function() {
                     <i data-lucide="user"></i>
                 </div>
                 <div class="participant-info">
-                    <div class="participant-name">${participant.name}</div>
+                    <div class="participant-name">${this.escapeHtml(participant.name)}</div>
                     <div class="participant-score" id="score-${participant.id}">${participant.total_score || 0} pts</div>
                 </div>
                 <div class="participant-stats">
                     <div class="accuracy-badge">0%</div>
                     <button class="btn btn-link btn-sm p-0 ms-1 edit-score-btn" title="Set points manually"
                         data-participant-id="${participant.id}"
-                        data-participant-name="${participant.name}"
+                        data-participant-name="${this.escapeHtml(participant.name)}"
                         data-current-score="${participant.total_score || 0}"
                         data-bs-toggle="modal" data-bs-target="#editScoreModal">
                         <i data-lucide="pencil" style="width:14px;height:14px;color:#6c757d;"></i>
@@ -2012,6 +2035,7 @@ document.addEventListener('DOMContentLoaded', function() {
 (function() {
     const modal = document.getElementById('editScoreModal');
     if (!modal) return;
+    document.body.appendChild(modal);
     let currentParticipantId = null;
     document.addEventListener('click', function(e) {
         const btn = e.target.closest('.edit-score-btn');

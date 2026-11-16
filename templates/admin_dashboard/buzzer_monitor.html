@@ -171,6 +171,9 @@ function actionButton(type) {
 }
 
 function send(payload) {
+    if (payload.type === 'admin_mark_correct' || payload.type === 'admin_mark_wrong') {
+        payload = {...payload, buzz_id: currentState?.round?.current_buzz_id};
+    }
     if (guardedAdminActions.has(payload.type)) {
         hostRuntime.sendAction(payload, {button: actionButton(payload.type)});
         return;
@@ -194,6 +197,7 @@ function applyState(data) {
     const round = data.round || {};
     const participants = data.participants || [];
     currentGameStatus = game.status || currentGameStatus;
+    document.getElementById('startGameBtn').dataset.hostGameResume = String(game.status === 'inactive');
     document.getElementById('hostGameStatus').textContent = game.status || '-';
     document.getElementById('hostRoundNumber').textContent = round.number || 0;
     document.getElementById('roundStateBadge').textContent = round.buzzer_open ? 'Buzzer offen' : (round.status || 'bereit');

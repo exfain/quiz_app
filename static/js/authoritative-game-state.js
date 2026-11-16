@@ -14,7 +14,7 @@
         }
         document.documentElement.dataset.participantTheme = participantThemes.has(storedTheme)
             ? storedTheme
-            : 'standard';
+            : 'vhs';
     }
 
     (function primeSessionGameIntroGate() {

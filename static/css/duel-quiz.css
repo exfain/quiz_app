@@ -1,0 +1,6 @@
+.duel-options{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:.7rem}
+.duel-options button{text-align:left;min-height:4rem;border-width:2px}
+.duel-options button:hover:not(:disabled){background:var(--vhs-orange,#f99d40);color:#151726}
+.duel-options button[aria-pressed=true]{border-color:#fff;background:#714519;font-weight:700}
+.duel-shell #buzz{display:block;width:100%;font-size:2.5rem;font-weight:bold;min-height:7rem;background:#9a2432}
+.duel-shell #answer-right{font-size:1.4rem;font-weight:bold}

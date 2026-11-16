@@ -1,0 +1,15 @@
+{% load static %}
+<!doctype html><html lang="de" data-participant-theme="vhs"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Duell · {{ session.name }}</title>
+<link rel="stylesheet" href="{% static 'theme.css' %}"><link rel="stylesheet" href="{% static 'themes/vhs/vhs.css' %}"><link rel="stylesheet" href="{% static 'css/duel.css' %}"></head>
+<body><main class="vhs-theme-shell duel-shell" id="duel-session" data-code="{{ session.code }}" data-role="{{ role }}" data-api="{% url 'duel:session_api' session.code %}">
+<header class="vhs-theme-header"><h1>{{ session.name|default:session.code }}</h1><p>2-Spieler-Session · {{ session.code }}</p></header>
+{% csrf_token %}<p id="error" role="alert"></p><p id="roster"></p>
+{% if role == 'host' %}
+<div class="duel-controls"><button id="activate-session">Session aktivieren</button><button data-check="start">Check-in starten</button><button data-check="complete">Check-in abschließen</button></div>
+<h2>Spielplan</h2><p>Leere Matchwerte bleiben unkonfiguriert. Gestartete Slots sind eingefroren.</p><div id="steps"></div><button id="save-plan">Konfiguration speichern</button>
+<p><a href="{% url 'games_hub:lobby' session.code %}" target="_blank">Teilnehmer-Lobby</a> · <a href="{% url 'games_hub:spectate_session' session.code %}" target="_blank">Spectator öffnen</a> · <a href="{% url 'admin_dashboard:sessions_overview' %}">Sessionübersicht</a></p>
+{% elif role == 'participant' %}
+<form id="join-form"><label>Teamname <input id="nickname" required maxlength="50" autocomplete="nickname"></label><button>Beitreten / Rejoin</button></form>
+<div id="joined" hidden><h2>Lobby</h2><p>Warte auf den Spielstart durch den Host.</p><button id="ready">Ich bin bereit</button></div>
+{% else %}<h2>Warte auf das nächste Duell</h2>{% endif %}
+</main><script src="{% static 'js/duel-session.js' %}"></script></body></html>

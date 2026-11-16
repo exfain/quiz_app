@@ -1,3 +1,4 @@
+from games_hub.team_names import validate_join_name
 import json
 import logging
 import uuid
@@ -12,6 +13,7 @@ from django.views.decorators.http import require_POST
 
 from games_hub.active_game_guard import resolve_session_game_activation_for_room
 from games_hub.authoritative_state import (
+    _retry_sqlite_locked,
     current_snapshot,
     reset_question_flow,
     validate_and_reserve_action,
@@ -31,6 +33,8 @@ from games_hub.unit_tutorial_runtime import (
     prepare_unit_tutorial_runtime,
     validate_unit_tutorial_request,
 )
+
+from .identity import issue_player_token, valid_player_token
 
 from .models import WerWeissMehrGame, WerWeissMehrParticipant, WerWeissMehrSession
 from .services import (
@@ -79,6 +83,7 @@ def _host_context_error(request, quiz, hub_session):
     }, status=403)
 
 
+@validate_join_name('wer_weiss_mehr', 'wer_weiss_mehr/join.html')
 def join_view(request):
     if request.method == 'GET':
         return render(request, 'wer_weiss_mehr/join.html')
@@ -152,6 +157,7 @@ def play(request, room_code, participant_name):
     return render(request, 'wer_weiss_mehr/play.html', {
         'quiz': quiz,
         'participant': participant,
+        'player_token': issue_player_token(participant),
         'hub_session': session_code or '',
         'current_unit_is_tutorial': bool(
             tutorial_state.get('current_unit_is_tutorial')
@@ -164,6 +170,14 @@ def state(request, room_code):
     quiz = get_object_or_404(WerWeissMehrGame, room_code=room_code)
     participant_name = request.GET.get('participant_name') or None
     hub_session = request.GET.get('hub_session') or None
+    if participant_name:
+        participant = _get_participant(quiz, participant_name, hub_session)
+        if not participant or not valid_player_token(request.GET.get('player_token'), participant):
+            return JsonResponse({'success': False, 'error': 'Teilnahme nicht bestaetigt.'}, status=403)
+    else:
+        error = _host_context_error(request, quiz, hub_session)
+        if error is not None:
+            return error
     return JsonResponse(build_game_state(quiz, hub_session_code=hub_session, participant_name=participant_name))
 
 
@@ -182,10 +196,12 @@ def participant_pending_input(request, room_code):
     participant = _get_participant(quiz, participant_name, hub_session)
     if not participant:
         return JsonResponse({'success': False, 'error': 'Participant not found.'}, status=404)
+    if not valid_player_token(data.get('player_token'), participant):
+        return JsonResponse({'success': False, 'error': 'Teilnahme nicht bestaetigt.'}, status=403)
     if quiz.status != 'active':
         return JsonResponse({'success': False, 'error': 'Das Spiel ist nicht aktiv.'}, status=400)
 
-    pending = store_pending_input(quiz, participant, data.get('answer_text') or '')
+    pending = store_pending_input(quiz, participant, data.get('answer_text') or '', action=data)
     return JsonResponse({'success': True, 'pending_saved': bool(pending)})
 
 
@@ -204,15 +220,17 @@ def participant_submit_answer(request, room_code):
     participant = _get_participant(quiz, participant_name, hub_session)
     if not participant:
         return JsonResponse({'success': False, 'error': 'Participant not found.'}, status=404)
+    if not valid_player_token(data.get('player_token'), participant):
+        return JsonResponse({'success': False, 'error': 'Teilnahme nicht bestaetigt.'}, status=403)
 
-    decision = validate_and_reserve_action(
+    decision = _retry_sqlite_locked(lambda: validate_and_reserve_action(
         game_key='wer_weiss_mehr',
         room_code=room_code,
         session_code=hub_session,
         participant_name=participant_name,
         action_type='participant_submit_answer',
         action=data,
-    )
+    ))
     if not decision.accepted:
         return JsonResponse({
             'success': False,
@@ -260,6 +278,13 @@ def start_game(request, room_code):
     context_error = _host_context_error(request, quiz, hub_session)
     if context_error:
         return context_error
+    if quiz.started_at and quiz.status in {'active', 'inactive'}:
+        activation = resolve_session_game_activation_for_room('wer_weiss_mehr', quiz.room_code, session_code=hub_session)
+        if not activation.get('success'):
+            return JsonResponse({'success': False, 'error': activation.get('message') or activation.get('error')}, status=409)
+        quiz.refresh_from_db()
+        _broadcast_state_updated(quiz, hub_session)
+        return JsonResponse(build_game_state(quiz, hub_session_code=hub_session))
     lobby_ready = ensure_session_players_ready_for_game_start_for_room(
         'wer_weiss_mehr',
         quiz.room_code,
@@ -457,6 +482,7 @@ def end_round(request, room_code):
         round_state = end_current_round_with_question_flow(
             quiz,
             hub_session_code=hub_session,
+            action=data,
         )
     except ValueError as exc:
         return JsonResponse({'success': False, 'error': str(exc)}, status=400)
@@ -591,7 +617,7 @@ def finish_current_set(request, room_code):
     if context_error:
         return context_error
     try:
-        finish_set_with_question_flow(quiz, hub_session_code=hub_session)
+        finish_set_with_question_flow(quiz, hub_session_code=hub_session, action=data)
         finish_current_unit_tutorial('wer_weiss_mehr', quiz.room_code, hub_session)
     except ValueError as exc:
         return JsonResponse({'success': False, 'error': str(exc)}, status=400)
@@ -627,7 +653,7 @@ def clear_set_selection(request, room_code):
     if context_error:
         return context_error
     try:
-        clear_current_set(quiz)
+        clear_current_set(quiz, action=data, hub_session_code=hub_session)
     except ValueError as exc:
         return JsonResponse({'success': False, 'error': str(exc)}, status=400)
     except Exception as exc:  # pylint: disable=broad-except

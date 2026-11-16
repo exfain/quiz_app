@@ -172,6 +172,7 @@
                 'sorting-ladder': 'sorting-ladder',
                 'wer-weiss-mehr': 'wer-weiss-mehr',
                 buzzer: 'buzzer',
+                'host-points': 'host-points',
                 wann_war_das: 'wann-war-das',
             };
             const wsPath = routeMap[parts[0]];
@@ -188,6 +189,10 @@
                 return;
             }
             completionSent = true;
+            if (typeof window.manualGameTutorialComplete === 'function') {
+                window.manualGameTutorialComplete();
+                return;
+            }
             const wsUrl = getTutorialWebSocketUrl();
             if (!wsUrl) {
                 return;
@@ -201,6 +206,7 @@
                         name: participantName,
                         hub_session: hubSession,
                         hub_session_code: hubSession,
+                        ...(window.manualPlayerToken ? {player_token: window.manualPlayerToken} : {}),
                     }));
                     setTimeout(function () {
                         try { ackSocket.close(); } catch (_) {}
@@ -219,7 +225,7 @@
         };
 
         document.addEventListener('click', function (event) {
-            if (event.target && event.target.id === 'gameTutorialCloseBtn') {
+            if (event.target instanceof Element && event.target.closest('#gameTutorialCloseBtn')) {
                 sendCompletion();
                 hideOverlay();
             }
@@ -253,12 +259,18 @@
             if (elements.button) elements.button.disabled = false;
         }
 
+        let readinessJoined = false;
         function connectReadinessSocket() {
             if (!hubSession || !participantName) return;
             const scheme = window.location.protocol === 'https:' ? 'wss' : 'ws';
             const socket = new WebSocket(`${scheme}://${window.location.host}/ws/hub/${hubSession}/`);
             socket.onopen = function () {
-                socket.send(JSON.stringify({ type: 'get_state' }));
+                let credential = null;
+                try { credential = JSON.parse(localStorage.getItem('hub_lobby_rejoin:' + hubSession) || 'null'); } catch (_) {}
+                socket.send(JSON.stringify({
+                    type: 'join', nickname: participantName,
+                    rejoin_token: credential?.nickname === participantName ? credential.token : '',
+                }));
             };
             socket.onmessage = function (event) {
                 let payload = null;
@@ -267,21 +279,37 @@
                 } catch (_) {
                     return;
                 }
+                if (payload.type === 'lobby_join_success') {
+                    readinessJoined = true;
+                    socket.send(JSON.stringify({type: 'get_state'}));
+                }
+                if (payload.type === 'readiness_error' || payload.type === 'join_error') {
+                    const elements = getReadinessElements();
+                    if (elements.text) elements.text.textContent = payload.error || payload.message || 'Bereitschaft konnte nicht bestätigt werden.';
+                    if (elements.button) elements.button.disabled = false;
+                }
                 if (['state', 'readiness_started', 'readiness_participant_ready', 'readiness_ended'].includes(payload.type)) {
                     renderReadinessPayload(payload);
                 }
             };
-            document.addEventListener('click', function (event) {
-                if (!event.target || event.target.id !== 'sessionReadinessReadyBtn') return;
-                event.target.disabled = true;
-                socket.send(JSON.stringify({ type: 'participant_ready', nickname: participantName }));
+            socket.onclose = function () {
+                readinessJoined = false;
+                setTimeout(connectReadinessSocket, 2000);
+            };
+            if (window.__readinessClickHandler) document.removeEventListener('click', window.__readinessClickHandler);
+            window.__readinessClickHandler = function (event) {
+                const button = event.target?.closest?.('#sessionReadinessReadyBtn');
+                if (!button || button.disabled) return;
                 const elements = getReadinessElements();
-                if (elements.text) elements.text.textContent = 'Du bist bereit.';
-                setTimeout(function () {
-                    elements.overlay?.classList.remove('is-visible');
-                    elements.overlay?.setAttribute('aria-hidden', 'true');
-                }, 350);
-            });
+                if (!readinessJoined || socket.readyState !== WebSocket.OPEN) {
+                    if (elements.text) elements.text.textContent = 'Verbindung wird hergestellt. Bitte gleich erneut bestätigen.';
+                    return;
+                }
+                button.disabled = true;
+                socket.send(JSON.stringify({ type: 'participant_ready', nickname: participantName }));
+                if (elements.text) elements.text.textContent = 'Bestätigung wird gesendet …';
+            };
+            document.addEventListener('click', window.__readinessClickHandler);
         }
 
         connectReadinessSocket();

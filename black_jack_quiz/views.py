@@ -1,5 +1,7 @@
+from games_hub.team_names import validate_join_name
 from django.shortcuts import render, get_object_or_404, redirect
 from django.http import JsonResponse
+from django.urls import reverse
 from django.views.decorators.http import require_http_methods, require_POST
 from django.views.decorators.csrf import csrf_exempt
 from django.utils import timezone
@@ -7,6 +9,8 @@ from django.utils.dateparse import parse_datetime
 from django.db import transaction
 from django.db.models import Avg, Count, Q
 import json
+from . import runtime
+from .identity import issue_player_token, valid_player_token
 from .models import BlackJackQuiz, BlackJackQuestion, BlackJackParticipant, BlackJackAnswer, BlackJackSession
 from games_hub.authoritative_state import attach_snapshot_metadata, current_snapshot, validate_and_reserve_action
 from games_hub.models import GameRuntimeState
@@ -162,6 +166,10 @@ def _build_set_points_lookup(quiz, participants, finalized_set_numbers):
 
 
 def _build_participant_set_scoreboard(quiz, participant, session_code):
+    session = getattr(quiz, 'session', None)
+    if session and session.set_rounds:
+        rows = runtime.scoreboard(quiz, session, participant, runtime.pool_code(quiz, session_code))
+        return rows, sum(row['earned_points'] or 0 for row in rows), sum(row['max_points'] for row in rows if row['status'] == 'played')
     total_sets = quiz.get_total_sets()
     participants = _get_scoped_participants(quiz, session_code)
     finalized_set_numbers = _get_finalized_set_numbers(quiz)
@@ -200,6 +208,16 @@ def _build_participant_set_scoreboard(quiz, participant, session_code):
 
 
 def _build_last_completed_set_summary(quiz, participant, session_code):
+    session = getattr(quiz, 'session', None)
+    if session and session.set_rounds:
+        entries = runtime.progress(quiz, session, runtime.pool_code(quiz, session_code))['entries']
+        entry = next((r for r in reversed(entries) if r['status'] == 'completed'), None)
+        if not entry:
+            return None
+        st = entry['states'].get(str(participant.pk), {})
+        return {'set_number': entry['number'], 'set_stars': 0 if st.get('busted') else runtime.stars(st),
+            'awarded_points': st.get('awarded', 0), 'overall_points': participant.overall_points,
+            'is_busted': st.get('busted', False), 'max_points': len(entry['states']) if quiz.uses_ranking_mode() else 21}
     finalized_set_numbers = _get_finalized_set_numbers(quiz)
     if not finalized_set_numbers:
         return None
@@ -231,6 +249,7 @@ def _build_last_completed_set_summary(quiz, participant, session_code):
     }
 
 
+@validate_join_name('blackjack', 'black_jack_quiz/join.html')
 def blackjack_join_view(request):
     """Combined view for blackjack quiz join page (GET) and join action (POST)"""
     if request.method == 'GET':
@@ -376,7 +395,10 @@ def blackjack_play(request, room_code, participant_name):
     try:
         session_code = request.GET.get('hub_session')
         quiz = get_object_or_404(BlackJackQuiz, room_code=room_code)
-        quiz.ensure_runtime_scoped_to_hub_session(session_code)
+        try:
+            runtime.pool_code(quiz, session_code)
+        except ValueError:
+            return JsonResponse({'success': False, 'error': 'Spiel und Session stimmen nicht ueberein.'}, status=404)
         participant = get_object_or_404(
             BlackJackParticipant, 
             quiz=quiz, 
@@ -389,6 +411,8 @@ def blackjack_play(request, room_code, participant_name):
         participant.last_activity = timezone.now()
         participant.save()
 
+        private_state = runtime.build_state(quiz, session_code, participant)
+        quiz.refresh_from_db()
         set_scoreboard, score_total_earned, score_total_max = _build_participant_set_scoreboard(
             quiz,
             participant,
@@ -435,6 +459,8 @@ def blackjack_play(request, room_code, participant_name):
         tutorial_state = get_unit_tutorial_state('blackjack', quiz.room_code, session_code)
         
         context = {
+            'player_token': issue_player_token(participant),
+            'private_state': private_state,
             'quiz': quiz,
             'participant': participant,
             'hub_session': session_code,
@@ -443,17 +469,17 @@ def blackjack_play(request, room_code, participant_name):
             'question_prompt_visible': question_prompt_visible,
             'question_answering_open': question_answering_open,
             'participant_count': quiz.get_participant_count(session_code),
-            'current_question_in_set': quiz.get_current_question_position_in_set() or 1,
-            'current_set_question_count': quiz.get_set_question_count(
+            'current_question_in_set': private_state['question_in_set'] or quiz.get_current_question_position_in_set() or 1,
+            'current_set_question_count': private_state['set_question_count'] or quiz.get_set_question_count(
                 question_id=quiz.current_question_id if quiz.current_question_id else None,
                 set_number=current_set_number,
             ),
-            'current_set_number': current_set_number,
+            'current_set_number': private_state['set_number'] or current_set_number,
             'current_unit_is_tutorial': bool(
                 tutorial_state.get('current_unit_is_tutorial')
                 and current_set_number == quiz.tutorial_set_number
             ),
-            'total_sets': quiz.get_total_sets(),
+            'total_sets': private_state['total_sets'],
             'set_scoreboard': set_scoreboard,
             'score_total_earned': score_total_earned,
             'score_total_max': score_total_max,
@@ -461,14 +487,18 @@ def blackjack_play(request, room_code, participant_name):
             'show_initial_set_end_state': bool(
                 quiz.status == 'active'
                 and not quiz.current_question_id
+                and not private_state.get('own_reveal')
                 and not quiz.is_quiz_complete()
                 and last_completed_set_summary
             ),
             'show_initial_quiz_end_state': bool(
                 quiz.status == 'completed'
+                and not private_state.get('own_reveal')
                 and not quiz.current_question_id
             ),
         }
+        participant.total_points = private_state['participant_points']
+        participant.is_busted = private_state['is_busted']
         return render(request, 'black_jack_quiz/play.html', context)
         
     except (BlackJackQuiz.DoesNotExist, BlackJackParticipant.DoesNotExist):
@@ -482,18 +512,32 @@ def blackjack_result(request, room_code, participant_name):
         participant = get_object_or_404(
             BlackJackParticipant, 
             quiz=quiz, 
-            name=participant_name
+            name=participant_name,
+            hub_session_code=request.GET.get('hub_session') or None,
         )
         
+        runtime.build_state(quiz, participant.hub_session_code, participant)
         # Get participant's answers
         participant_answers = BlackJackAnswer.objects.filter(
             quiz=quiz,
             participant=participant
         ).select_related('question').order_by('question_number')
+        if quiz.status != 'completed':
+            return redirect(reverse('black_jack_quiz:play', args=[quiz.room_code, participant.name])
+                + ('?hub_session=' + participant.hub_session_code if participant.hub_session_code else ''))
         tutorial_state = get_unit_tutorial_state('blackjack', quiz.room_code, participant.hub_session_code)
         tutorial_question_id = tutorial_state.get('tutorial_question_id') if tutorial_state.get('requested') else None
         if tutorial_question_id:
             participant_answers = participant_answers.exclude(question_id=tutorial_question_id)
+        history = [entry for entry in quiz.session.set_rounds
+            if (entry.get('hub_session_code') or '') == (participant.hub_session_code or '')
+            and entry['status'] == 'completed' and not entry['is_tutorial']]
+        if quiz.session.set_rounds:
+            included = Q(pk__in=[])
+            for entry in history:
+                included |= Q(set_round_number=0 if entry.get('legacy') else entry['number'],
+                    question_id__in=entry['question_ids'])
+            participant_answers = participant_answers.filter(included)
 
         set_scoreboard, _, _ = _build_participant_set_scoreboard(
             quiz,
@@ -511,6 +555,9 @@ def blackjack_result(request, room_code, participant_name):
             for set_number, raw_points in set_raw_points.items()
             if raw_points > 21
         }
+        if quiz.session.set_rounds:
+            busted_set_numbers = {entry['number'] for entry in quiz.session.set_rounds
+                if entry['states'].get(str(participant.pk), {}).get('busted')}
         result_set_log = [
             {
                 **set_entry,
@@ -555,10 +602,19 @@ def blackjack_result(request, room_code, participant_name):
             seconds = int(quiz_duration % 60)
             quiz_duration_formatted = f"{minutes}m {seconds}s"
         
+        displayed_answers = list(participant_answers)
+        for answer in displayed_answers:
+            entry = next((entry for entry in history
+                if (0 if entry.get('legacy') else entry['number']) == answer.set_round_number
+                and answer.question_id in entry['question_ids']), None)
+            snapshot = next((q for q in entry['questions'] if q['id'] == answer.question_id), None) if entry else None
+            if snapshot:
+                for field in ['question_text', 'correct_answer', 'explanation']:
+                    setattr(answer.question, field, snapshot[field])
         context = {
             'quiz': quiz,
             'participant': participant,
-            'participant_answers': participant_answers,
+            'participant_answers': displayed_answers,
             'result_set_log': result_set_log,
             'total_answers': total_answers,
             'participant_rank': participant_rank,
@@ -578,266 +634,31 @@ def blackjack_result(request, room_code, participant_name):
 
 
 @require_POST
-@csrf_exempt
 def submit_answer(request, room_code, participant_name):
-    """Submit an answer for the current question"""
     try:
-        session_code = request.GET.get('hub_session')
-        quiz = get_object_or_404(BlackJackQuiz, room_code=room_code)
-        participant = get_object_or_404(
-            BlackJackParticipant, 
-            quiz=quiz, 
-            name=participant_name,
-            hub_session_code=session_code
-        )
-        
-        # Check if there's an active question
-        if not quiz.current_question or quiz.status != 'active':
-            return JsonResponse({
-                'success': False,
-                'error': 'No active question available.'
-            })
-
-        if participant.is_busted:
-            return JsonResponse({
-                'success': False,
-                'error': 'You are already busted for this set and cannot answer the remaining questions.'
-            })
-        
-        # Check if participant has already answered this question
-        existing_answer = BlackJackAnswer.objects.filter(
-            quiz=quiz,
-            participant=participant,
-            question=quiz.current_question
-        ).first()
-        
-        if existing_answer:
-            return JsonResponse({
-                'success': False,
-                'error': 'You have already answered this question.'
-            })
-        
-        data = json.loads(request.body)
-        user_answer = data.get('user_answer')
-        
-        if user_answer is None or user_answer == '':
-            return JsonResponse({
-                'success': False,
-                'error': 'Please provide an answer before submitting.'
-            })
-        
-        # Convert to integer
-        try:
-            user_answer_int = int(user_answer)
-        except (ValueError, TypeError):
-            return JsonResponse({
-                'success': False,
-                'error': 'Please provide a valid whole number.'
-            })
-        is_tutorial_answer = is_unit_tutorial_question(
-            'blackjack',
-            quiz.room_code,
-            session_code,
-            quiz.current_question_id,
-        )
-        question = quiz.current_question
-        decision = validate_and_reserve_action(
-            game_key='blackjack',
-            room_code=room_code,
-            session_code=session_code,
-            participant_name=participant_name,
-            action_type='participant_submit_answer',
-            action=data,
-        )
-        if not decision.accepted:
-            return JsonResponse({
-                'success': False,
-                'type': 'action_rejected',
-                'code': decision.code,
-                'error': decision.message,
-            }, status=409)
-        with transaction.atomic():
-            locked_quiz = BlackJackQuiz.objects.select_for_update().get(pk=quiz.pk)
-            locked_session = BlackJackSession.objects.select_for_update().filter(quiz=locked_quiz).first()
-            participant = BlackJackParticipant.objects.select_for_update().get(pk=participant.pk)
-            received_at = timezone.now()
-            if (
-                locked_quiz.status != 'active'
-                or locked_quiz.current_question_id != question.id
-                or participant.is_busted
-                or not locked_session
-                or not locked_session.is_question_active
-                or not locked_quiz.question_start_time
-                or received_at < locked_quiz.question_start_time
-                or not locked_session.question_end_time
-                or received_at >= locked_session.question_end_time
-            ):
-                return JsonResponse({
-                    'success': False,
-                    'error': 'The answer deadline has expired or the question is no longer active.'
-                })
-            previous_participant_state = {
-                'total_points': participant.total_points,
-                'overall_points': participant.overall_points,
-                'questions_answered': participant.questions_answered,
-                'is_busted': participant.is_busted,
-                'final_score': participant.final_score,
-            }
-            server_time_taken = (
-                max(0.0, (received_at - locked_quiz.question_start_time).total_seconds())
-                if locked_quiz.question_start_time
-                else 0.0
-            )
-            answer, created = BlackJackAnswer.objects.get_or_create(
-                quiz=locked_quiz,
-                participant=participant,
-                question=question,
-                defaults={
-                    'user_answer': user_answer_int,
-                    'time_taken': server_time_taken,
-                    'question_number': locked_quiz.current_question_number,
-                },
-            )
-            if not created:
-                return JsonResponse({
-                    'success': False,
-                    'error': 'You have already answered this question.'
-                })
-            if is_tutorial_answer:
-                if answer.points_earned:
-                    answer.points_earned = 0
-                    answer.save(update_fields=['points_earned'])
-                for field, value in previous_participant_state.items():
-                    setattr(participant, field, value)
-                participant.save(update_fields=list(previous_participant_state.keys()))
-        
-        # Refresh participant to get updated totals
-        participant.refresh_from_db()
-        
-        # Update participant's last activity
-        participant.last_activity = timezone.now()
-        participant.save()
-        
-        return JsonResponse({
-            'success': True,
-            'points_earned': answer.points_earned,
-            'user_answer': answer.user_answer,
-            'difference': answer.get_difference(),
-            'total_points': participant.total_points,
-            'overall_points': participant.overall_points,
-            'is_busted': participant.is_busted,
-            'is_tutorial_round': is_tutorial_answer,
-            'status': participant.get_status(),
-            'questions_remaining': max(
-                0,
-                quiz.get_set_question_count(question_id=question.id) - participant.questions_answered
-            )
-        })
-        
-    except json.JSONDecodeError:
-        return JsonResponse({
-            'success': False,
-            'error': 'Invalid request format.'
-        })
-    except Exception as e:
-        return JsonResponse({
-            'success': False,
-            'error': 'An error occurred while submitting your answer.'
-        })
+        data = json.loads(request.body or '{}')
+        quiz, participant = player_request(request, room_code, participant_name, data)
+        answer = runtime.submit_action(quiz, participant, data.get('user_answer'), data)
+        state = runtime.build_state(quiz, participant.hub_session_code, participant)
+        runtime.broadcast(quiz, {'type': 'state_updated'})
+        return JsonResponse({'success': True, 'user_answer': answer.user_answer, 'answer_locked': True, 'state': state,
+            'questions_remaining': max(0, quiz.get_total_game_questions() - quiz.current_question_number)})
+    except PermissionError as exc:
+        return JsonResponse({'success': False, 'error': str(exc)}, status=403)
+    except (ValueError, TypeError) as exc:
+        return JsonResponse({'success': False, 'error': str(exc)}, status=409)
 
 
 def get_quiz_status(request, room_code, participant_name):
-    """Get current quiz status for participant"""
     try:
-        session_code = request.GET.get('hub_session')
-        quiz = get_object_or_404(BlackJackQuiz, room_code=room_code)
-        participant = get_object_or_404(
-            BlackJackParticipant, 
-            quiz=quiz, 
-            name=participant_name,
-            hub_session_code=session_code
-        )
-        
-        # Update last activity
-        participant.last_activity = timezone.now()
-        participant.save()
-        
-        status_data = {
-            'quiz_status': quiz.status,
-            'current_question': None,
-            'participant_points': participant.total_points,
-            'overall_points': participant.overall_points,
-            'participant_count': quiz.get_participant_count(),
-            'questions_answered': participant.questions_answered,
-            'is_busted': participant.is_busted,
-            'status': participant.get_status(),
-            'current_question_number': quiz.current_question_number,
-            'total_questions': quiz.get_set_question_count(
-                question_id=quiz.current_question_id if quiz.current_question_id else None,
-                set_number=quiz.get_current_set_number(),
-            ),
-            'question_in_set': quiz.get_current_question_position_in_set(),
-            'set_number': quiz.get_current_set_number(),
-            'total_sets': quiz.get_total_sets(),
-        }
-        
-        # Include current question if active
-        if quiz.current_question and quiz.status == 'active':
-            question = quiz.current_question
-            quiz_session = getattr(quiz, 'session', None)
-            runtime = current_snapshot('blackjack', room_code, session_code)
-            status_data['current_question'] = {
-                'id': question.id,
-                'question_text': question.question_text,
-                'time_limit': question.time_limit,
-                'question_end_time': quiz_session.question_end_time.isoformat() if quiz_session and quiz_session.question_end_time else None,
-                'question_number': quiz.current_question_number,
-                'question_in_set': quiz.get_current_question_position_in_set(),
-                'set_question_count': quiz.get_set_question_count(question_id=question.id),
-                'set_number': quiz.get_current_set_number(),
-                'total_sets': quiz.get_total_sets(),
-                **{
-                    key: runtime.get(key)
-                    for key in (
-                        'state_revision',
-                        'server_now',
-                        'game_id',
-                        'question_phase',
-                        'question_presented_at',
-                        'question_visible_at',
-                        'answering_started_at',
-                        'answering_deadline_at',
-                        'answering_allowed',
-                        'timer_running',
-                        'remaining_answer_time',
-                    )
-                },
-            }
-            
-            # Check if user has already answered
-            has_answered = BlackJackAnswer.objects.filter(
-                quiz=quiz,
-                participant=participant,
-                question=question
-            ).exists()
-            status_data['has_answered'] = has_answered
-        
-        response_payload = {
-            'success': True,
-            **status_data
-        }
-        return JsonResponse(attach_snapshot_metadata(
-            response_payload,
-            game_key='blackjack',
-            room_code=quiz.room_code,
-            session_code=session_code,
-        ))
-        
-    except (BlackJackQuiz.DoesNotExist, BlackJackParticipant.DoesNotExist):
-        return JsonResponse({
-            'success': False,
-            'error': 'Participant not found.'
-        })
+        quiz, participant = player_request(request, room_code, participant_name)
+        state = runtime.build_state(quiz, participant.hub_session_code, participant)
+        return JsonResponse({**state, 'quiz_status': state['game_status'], 'current_question': state['question'],
+            'current_question_number': quiz.current_question_number, 'total_questions': state['set_question_count']})
+    except PermissionError as exc:
+        return JsonResponse({'success': False, 'error': str(exc)}, status=403)
+    except ValueError as exc:
+        return JsonResponse({'success': False, 'error': str(exc)}, status=409)
 
 
 def leave_quiz(request, room_code, participant_name):
@@ -867,66 +688,14 @@ def leave_quiz(request, room_code, participant_name):
 
 # API endpoints for real-time updates
 def api_quiz_participants(request, room_code):
-    """Get current participants for a quiz (public endpoint)"""
-    try:
-        quiz = get_object_or_404(BlackJackQuiz, room_code=room_code)
-        
-        participants = quiz.get_ordered_participants(active_only=True)
-        
-        participants_data = []
-        for rank, participant in enumerate(participants, 1):
-            participants_data.append({
-                'name': participant.name,
-                'total_points': participant.total_points,
-                'questions_answered': participant.questions_answered,
-                'rank': participant.get_rank(),
-                'is_busted': participant.is_busted,
-                'status': participant.get_status(),
-                'final_score': participant.final_score,
-            })
-        
-        return JsonResponse({
-            'success': True,
-            'participants': participants_data,
-            'count': len(participants_data)
-        })
-        
-    except BlackJackQuiz.DoesNotExist:
-        return JsonResponse({
-            'success': False,
-            'error': 'Quiz not found.'
-        })
+    quiz = get_object_or_404(BlackJackQuiz, room_code=room_code)
+    rows = public_participants(quiz)
+    return JsonResponse({'success': True, 'participants': rows, 'count': len(rows)})
 
 
 def api_quiz_leaderboard(request, room_code):
-    """Get leaderboard for a quiz"""
-    try:
-        quiz = get_object_or_404(BlackJackQuiz, room_code=room_code)
-        
-        participants = quiz.get_ordered_participants()[:10]
-        
-        leaderboard_data = []
-        for rank, participant in enumerate(participants, 1):
-            leaderboard_data.append({
-                'rank': rank,
-                'name': participant.name,
-                'total_points': participant.total_points,
-                'questions_answered': participant.questions_answered,
-                'is_busted': participant.is_busted,
-                'status': participant.get_status(),
-                'distance_from_21': participant.get_distance_from_21()
-            })
-        
-        return JsonResponse({
-            'success': True,
-            'leaderboard': leaderboard_data
-        })
-        
-    except BlackJackQuiz.DoesNotExist:
-        return JsonResponse({
-            'success': False,
-            'error': 'Quiz not found.'
-        })
+    quiz = get_object_or_404(BlackJackQuiz, room_code=room_code)
+    return JsonResponse({'success': True, 'leaderboard': public_participants(quiz)[:10]})
 
 
 # Utility functions for WebSocket consumers
@@ -950,3 +719,61 @@ def get_quiz_statistics(quiz):
         stats['average_points'] = sum(points) / len(points)
     
     return stats
+
+
+def player_request(request, room_code, name, data=None):
+    data = data or {}
+    quiz = get_object_or_404(BlackJackQuiz, room_code=room_code)
+    code = data.get('hub_session', request.GET.get('hub_session'))
+    runtime.pool_code(quiz, code)
+    participant = quiz.participants.filter(name=name).filter(runtime.pool_filter(code)).first()
+    if not participant or not valid_player_token(data.get('player_token') or request.GET.get('player_token'), participant):
+        raise PermissionError('Teilnahme nicht bestaetigt.')
+    return quiz, participant
+
+
+@require_POST
+def pending_input(request, room_code, participant_name):
+    try:
+        data = json.loads(request.body or '{}')
+        quiz, participant = player_request(request, room_code, participant_name, data)
+        saved = runtime.store_pending(quiz, participant, data.get('user_answer', ''), data)
+        return JsonResponse({'success': True, 'pending_saved': saved})
+    except PermissionError as exc:
+        return JsonResponse({'success': False, 'error': str(exc)}, status=403)
+    except (ValueError, TypeError) as exc:
+        return JsonResponse({'success': False, 'error': str(exc)}, status=409)
+
+
+@require_POST
+def acknowledge_reveal(request, room_code, participant_name):
+    try:
+        data = json.loads(request.body or '{}')
+        quiz, participant = player_request(request, room_code, participant_name, data)
+        runtime.acknowledge(quiz, participant, data)
+        return JsonResponse(runtime.build_state(quiz, participant.hub_session_code, participant))
+    except PermissionError as exc:
+        return JsonResponse({'success': False, 'error': str(exc)}, status=403)
+    except (ValueError, TypeError) as exc:
+        return JsonResponse({'success': False, 'error': str(exc)}, status=409)
+
+
+def public_participants(quiz):
+    runtime.build_state(quiz)
+    quiz.refresh_from_db()
+    session = quiz.session
+    entry = runtime.current_run(session)
+    rows = []
+    for p in runtime.participants(quiz):
+        st = entry['states'].get(str(p.pk), {}) if entry else {}
+        visible = st.get('visible_stars', 0) if entry else p.total_points
+        rows.append({'name': p.name, 'total_points': p.overall_points if quiz.status == 'completed' else visible,
+            'overall_points': p.overall_points, 'is_busted': st.get('visible_busted', False),
+            'questions_answered': 0, 'status': 'busted' if st.get('visible_busted') else 'playing'})
+    if quiz.uses_ranking_mode() and quiz.status != 'completed':
+        rows.sort(key=lambda row: (row['is_busted'], abs(21 - row['total_points']), row['name']))
+    else:
+        rows.sort(key=lambda row: (-row['total_points'], row['name']))
+    for rank, row in enumerate(rows, 1):
+        row['rank'] = rank
+    return rows

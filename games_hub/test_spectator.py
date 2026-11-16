@@ -79,6 +79,8 @@ class HubSpectatorTests(TestCase):
         content = response.content.decode('utf-8')
 
         for game_key, _label in HubGameStep.GAME_CHOICES:
+            if game_key in HubGameStep.DUEL_ONLY_GAME_KEYS:
+                continue  # Role-filtered duel HTTP projection, no Multiplayer renderer.
             self.assertIn(f'{game_key}: render', content, game_key)
 
     def test_spectator_state_waits_without_active_game(self):
@@ -284,7 +286,22 @@ class HubSpectatorTests(TestCase):
 
                 self.assertEqual(spectator_game['phase'], 'game_waiting')
                 self.assertIsNone(spectator_game['question'])
-                self.assertNotIn(secret, json.dumps(spectator_game))
+                if secret.isdecimal():
+                    # A short answer can occur inside a timestamp or room code.
+                    # Check actual scalar values for numeric answer disclosure.
+                    def values(payload):
+                        if isinstance(payload, dict):
+                            for value in payload.values():
+                                yield from values(value)
+                        elif isinstance(payload, list):
+                            for value in payload:
+                                yield from values(value)
+                        else:
+                            yield payload
+                    self.assertFalse(any(value == secret or value == int(secret)
+                        for value in values(spectator_game)))
+                else:
+                    self.assertNotIn(secret, json.dumps(spectator_game))
 
         who_hub = HubSession.objects.get(code='STALE0')
         observe_snapshot(

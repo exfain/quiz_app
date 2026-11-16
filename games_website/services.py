@@ -27,6 +27,9 @@ def sync_all_models_to_supabase(stdout=None, stderr=None):
     # Discover all concrete, managed models
     all_models = []
     for app_config in apps.get_app_configs():
+        # Local runtime apps opt out before any reads, writes or deletion sync.
+        if not getattr(app_config, 'supabase_sync_enabled', True):
+            continue
         for model in app_config.get_models():
             if not model._meta.abstract and model._meta.managed:
                 all_models.append(model)
@@ -144,6 +147,9 @@ def restore_all_models_from_supabase(stdout=None, stderr=None, target_alias="def
     # Discover all concrete, managed models
     all_models = []
     for app_config in apps.get_app_configs():
+        # The same exclusion must also protect local rows during restore.
+        if not getattr(app_config, 'supabase_sync_enabled', True):
+            continue
         for model in app_config.get_models():
             if not model._meta.abstract and model._meta.managed:
                 all_models.append(model)

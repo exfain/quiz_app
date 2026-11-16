@@ -6,9 +6,11 @@ from unittest.mock import AsyncMock
 from asgiref.sync import async_to_sync
 from django.urls import reverse
 from django.test import TestCase, TransactionTestCase
+from django.contrib.auth.models import User
+from django.utils import timezone
 
 from games_hub.consumers import HubConsumer
-from games_hub.models import HubParticipant, HubReadinessCheck, HubSession
+from games_hub.models import HubGameStep, HubParticipant, HubReadinessCheck, HubSession
 from games_hub.readiness import (
     end_readiness_check,
     get_readiness_state,
@@ -111,6 +113,18 @@ class ReadinessCheckConsumerTests(TransactionTestCase):
         self.consumer.channel_layer = SimpleNamespace(group_send=AsyncMock())
         self.consumer.send = AsyncMock()
 
+    def test_running_game_returns_error_to_host_without_broadcasting_overlay(self):
+        from QuizGame.models import Quiz
+        host = User.objects.create_user('readiness-host')
+        game = Quiz.objects.create(creator=host, status='active')
+        HubGameStep.objects.create(session=self.session, game_key='quiz', room_code=game.room_code, order=0)
+        async_to_sync(self.consumer.handle_start_readiness_check)()
+        self.consumer.channel_layer.group_send.assert_not_awaited()
+        payload = json.loads(self.consumer.send.await_args.kwargs['text_data'])
+        self.assertEqual(payload['type'], 'readiness_error')
+        self.assertIn('zwischen Spielen', payload['error'])
+        self.assertFalse(self.session.readiness_checks.exists())
+
     def test_start_and_confirm_broadcast_readiness_updates(self):
         async_to_sync(self.consumer.handle_start_readiness_check)()
 
@@ -145,6 +159,87 @@ class ReadinessCheckConsumerTests(TransactionTestCase):
         _, event = self.consumer.channel_layer.group_send.await_args.args
         self.assertEqual(event['event_type'], 'readiness_ended')
         self.assertFalse(event['state']['readiness_check']['active'])
+
+
+class ReadinessCheckBoundaryTests(TestCase):
+    def setUp(self):
+        from host_points.models import HostPointsGame
+        self.host = User.objects.create_user('readiness-boundary-host')
+        self.session = HubSession.objects.create(code='READY4', creator=self.host, is_active=True,
+            check_in_status='completed', locked_participant_count=2)
+        for name in ['Alice', 'Bob']:
+            HubParticipant.objects.create(session=self.session, nickname=name, scoring_eligible=True)
+        self.game = HostPointsGame.objects.create(creator=self.host)
+        self.step = HubGameStep.objects.create(session=self.session, game_key='host_points', room_code=self.game.room_code, order=0)
+
+    def test_active_game_blocks_readiness_for_each_audited_game_type_even_without_players(self):
+        from games_hub.active_game_guard import get_game_model_map
+        for key, model in get_game_model_map().items():
+            if key == 'where':
+                continue
+            with self.subTest(game_key=key):
+                game = model.objects.create(creator=self.host, status='active')
+                step = HubGameStep.objects.create(session=self.session, game_key=key, room_code=game.room_code, order=1)
+                result = start_readiness_check(self.session)
+                self.assertFalse(result['success'])
+                self.assertFalse(self.session.readiness_checks.exists())
+                game.refresh_from_db()
+                self.assertEqual(game.status, 'active')
+                step.delete()
+
+    def test_completed_or_paused_game_still_blocks_until_last_player_returns(self):
+        from host_points.models import HostPointsParticipant
+        player = HostPointsParticipant.objects.create(quiz=self.game, name='Alice', hub_session_code=self.session.code, is_active=True)
+        for status in ['completed', 'inactive']:
+            with self.subTest(status=status):
+                self.game.status = status
+                self.game.save(update_fields=['status'])
+                result = start_readiness_check(self.session)
+                self.assertFalse(result['success'])
+                self.assertIn('Lobby', result['error'])
+                self.assertFalse(self.session.readiness_checks.exists())
+        player.is_active = False
+        player.save(update_fields=['is_active'])
+        self.assertTrue(start_readiness_check(self.session)['success'])
+
+    def test_other_session_using_same_room_does_not_block_readiness(self):
+        from host_points.models import HostPointsParticipant
+        self.game.status = 'active'
+        self.game.active_hub_session_code = 'OTHER'
+        self.game.save(update_fields=['status', 'active_hub_session_code'])
+        HostPointsParticipant.objects.create(quiz=self.game, name='Alice', hub_session_code='OTHER', is_active=True)
+        self.assertTrue(start_readiness_check(self.session)['success'])
+
+    def test_rejected_restart_preserves_existing_check_and_ready_marks(self):
+        first = start_readiness_check(self.session)
+        mark_participant_ready(self.session, 'Alice')
+        self.game.status = 'active'
+        self.game.save(update_fields=['status'])
+        self.assertFalse(start_readiness_check(self.session)['success'])
+        state = get_readiness_state(self.session)
+        self.assertEqual(state['readiness_check']['id'], first['readiness_check']['id'])
+        self.assertEqual(state['readiness_counts']['ready'], 1)
+
+    def test_game_start_waits_until_host_closes_readiness_even_when_everyone_is_ready(self):
+        from games_hub.active_game_guard import resolve_session_game_activation
+        start_readiness_check(self.session)
+        for name in ['Alice', 'Bob']:
+            mark_participant_ready(self.session, name)
+        for check_only in [True, False]:
+            result = resolve_session_game_activation(self.session.code, 'host_points', self.game.room_code, check_only=check_only)
+            self.assertFalse(result['success'])
+            self.assertIn('Bereitschaftscheck', result['error'])
+            self.game.refresh_from_db()
+            self.assertEqual(self.game.status, 'waiting')
+            self.assertFalse(self.step.participant_snapshots.exists())
+        end_readiness_check(self.session)
+        self.assertTrue(resolve_session_game_activation(self.session.code, 'host_points', self.game.room_code)['success'])
+
+    def test_ended_session_cannot_start_check(self):
+        self.session.ended_at = timezone.now()
+        self.session.save(update_fields=['ended_at'])
+        self.assertFalse(start_readiness_check(self.session)['success'])
+        self.assertFalse(self.session.readiness_checks.exists())
 
 
 class ReadinessCheckTemplateTests(TestCase):

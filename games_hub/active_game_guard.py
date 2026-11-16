@@ -18,7 +18,7 @@ CHECK_IN_REQUIRED_MESSAGE = (
     'damit die Teilnehmerzahl für die Sessionwertung fixiert wird.'
 )
 
-REUSABLE_COMPLETED_GAME_KEYS = frozenset({'host_points'})
+REUSABLE_COMPLETED_GAME_KEYS = frozenset({'host_points', 'blackjack'})
 
 
 def get_game_model_map():
@@ -85,6 +85,56 @@ def is_game_routable_for_hub_auto_redirect(game) -> bool:
 
 
 def _set_game_status(game, status: str):
+    if game._meta.app_label == 'where_is_this' and status in {'active', 'inactive'}:
+        from where_is_this.runtime import set_paused
+        if set_paused(game, status == 'inactive'):
+            game.refresh_from_db()
+            return
+    if game._meta.app_label == 'wann_war_das' and status in {'active', 'inactive'}:
+        if game.set_paused(status == 'inactive'):
+            game.refresh_from_db()
+            return
+    if game._meta.app_label in {'buzzer', 'host_points'} and (
+            status == 'inactive' and game.status == 'active'
+            or status == 'active' and game.status == 'inactive' and game.started_at):
+        from .manual_game_runtime import set_status
+        set_status(game, status)
+        game.refresh_from_db()
+        return
+    if game._meta.app_label == 'black_jack_quiz' and status in {'active', 'inactive'}:
+        from black_jack_quiz.runtime import set_paused, broadcast
+        if set_paused(game, status == 'inactive'):
+            game.refresh_from_db()
+            broadcast(game, {'type': 'state_updated'})
+            return
+    if game._meta.app_label == 'wer_weiss_mehr' and status in {'active', 'inactive'}:
+        from wer_weiss_mehr.runtime import set_paused
+        if set_paused(game, status == 'inactive'):
+            game.refresh_from_db()
+            return
+    matching_key = {'Assign': 'assign', 'sorting_ladder': 'sorting_ladder'}.get(game._meta.app_label)
+    if matching_key and status in {'active', 'inactive'}:
+        from .matching_runtime import set_paused
+        if set_paused(game, matching_key, status == 'inactive'):
+            game.refresh_from_db()
+            return
+    if game._meta.app_label == 'clue_rush' and status in {'inactive', 'active'}:
+        from clue_rush.runtime import set_paused, broadcast
+        if set_paused(game.pk, status == 'inactive'):
+            broadcast('quiz_inactive' if status == 'inactive' else 'quiz_resumed', {}, game.room_code)
+            game.refresh_from_db()
+            return
+    key = {'QuizGame': 'quiz', 'who_is_lying': 'who', 'who_is_that': 'who_that', 'Estimation': 'estimation'}.get(game._meta.app_label)
+    if key and status in {'inactive', 'active'}:
+        from .quiz_pause import pause, resume
+        if status == 'inactive' and game.status == 'active':
+            pause(game, key)
+            game.refresh_from_db()
+            return
+        if status == 'active' and game.status == 'inactive':
+            resume(game, key)
+            game.refresh_from_db()
+            return
     update_fields = ['status']
     game.status = status
     if status == 'completed' and hasattr(game, 'ended_at'):
@@ -94,13 +144,51 @@ def _set_game_status(game, status: str):
 
 
 def _activate_target_game(game_key: str, game, hub_session_code: str | None = None):
+    from .session_results import freeze_previous_results
+    freeze_previous_results(game_key, game, hub_session_code)
+    if game_key == 'where':
+        game.start_quiz(session_code=hub_session_code)
+        return
+    if game_key == 'blackjack':
+        game.start_quiz(session_code=hub_session_code)
+        return
     if game_key == 'wer_weiss_mehr' and hasattr(game, 'start_quiz'):
         game.start_quiz(hub_session_code=hub_session_code)
+        return
+    if game_key == 'who_that' and game.status == 'waiting':
+        game.start_quiz(session_code=hub_session_code)
         return
     _set_game_status(game, 'active')
 
 
 def _end_game_cleanly(game):
+    if game._meta.app_label in {'buzzer', 'host_points'}:
+        from .manual_game_runtime import perform, broadcast
+        perform(game, None, game.active_hub_session_code, lambda locked: locked.end_quiz())
+        broadcast(game, 'game_ended')
+        game.refresh_from_db()
+        return
+    if game._meta.app_label == 'black_jack_quiz':
+        from black_jack_quiz.runtime import end_game, broadcast
+        result = end_game(game)
+        game.refresh_from_db()
+        broadcast(game, result)
+        return
+    matching_key = {'Assign': 'assign', 'sorting_ladder': 'sorting_ladder'}.get(game._meta.app_label)
+    if matching_key:
+        from .matching_runtime import end_game, broadcast
+        from .quiz_pause import session_code_for
+        end_game(game, matching_key)
+        scores = list(game.participants.filter(hub_session_code=session_code_for(game, matching_key)).values('name', 'total_score', *(['rounds_survived'] if matching_key == 'sorting_ladder' else [])))
+        broadcast(game, matching_key, 'quiz_ended', message='Spiel beendet.', final_scores=scores)
+        return
+    if game._meta.app_label == 'clue_rush':
+        from clue_rush.runtime import end_game, broadcast, _resolve_hub_session_code
+        end_game(game.pk)
+        code = _resolve_hub_session_code(game.room_code)
+        scores = list(game.participants.filter(hub_session_code=code).values('name', 'total_score'))
+        broadcast('quiz_ended', {'message': 'Clue Rush beendet.', 'final_scores': scores}, game.room_code)
+        return
     session = getattr(game, 'session', None)
     if session:
         if hasattr(session, 'end_current_question'):
@@ -194,10 +282,26 @@ def resolve_session_game_activation(
             return {'success': False, 'error': 'Session nicht gefunden oder bereits beendet.'}
         if not session.is_active:
             return {'success': False, 'error': 'Diese Session ist aktuell inaktiv. Aktiviere zuerst die Session.'}
+        if session.session_type == 'duel':
+            return {'success': False, 'error': 'Starte das Duell über den geplanten Spielslot im Hub.'}
 
-        target_step = session.steps.filter(game_key=target_game_key, room_code=target_room_code).first()
+        from duel.encounters import active_encounter
+        from duel.tournaments import active_tournament
+        if active_encounter(session) or active_tournament(session):
+            return {'success': False, 'error': 'Schließe zuerst das laufende Duell einschließlich Präsentation ab.'}
+
+        candidates = session.steps.filter(game_key=target_game_key, room_code=target_room_code)
+        target_step = candidates.filter(game_format='standard').first()
         if not target_step:
+            if candidates.exists():
+                return {'success': False, 'error': 'Dieser Slot wurde als Duell gespielt.'}
             return {'success': True}
+
+        if session.readiness_checks.filter(active=True, ended_at__isnull=True).exists():
+            return {
+                'success': False,
+                'error': 'Beende zuerst den Bereitschaftscheck, bevor du das nächste Spiel startest.',
+            }
 
         check_in_error = _validate_first_game_check_in(session)
         if check_in_error:
@@ -209,8 +313,17 @@ def resolve_session_game_activation(
             if step.game_key == target_game_key and step.room_code == target_room_code:
                 target_game = game
                 continue
+            if step.game_key in {'buzzer', 'host_points'} and game.started_at and game.active_hub_session_code != session.code:
+                continue
             if getattr(game, 'status', None) == 'active':
                 conflicts.append((step, game))
+
+        if target_game and target_game_key in {'buzzer', 'host_points'}:
+            from .manual_game_runtime import ActionError, session_code as checked_session
+            try:
+                checked_session(target_game, session.code, starting=True)
+            except ActionError as exc:
+                return {'success': False, 'error': str(exc)}
 
         completed_in_current_session = bool(
             target_game
@@ -247,7 +360,11 @@ def resolve_session_game_activation(
                 'active_game': _serialize_game(target_step, target_game) if target_game else None,
             }
 
-        if target_game_key == 'who' and target_game:
+        # A normal game following a Duel must replace that slot as the Hub's
+        # current display, including after the normal game has ended.
+        current_format = list(session.steps.order_by('order', 'id').values_list('game_format', flat=True))
+        returning_from_duel = 0 <= session.current_step_index < len(current_format) and current_format[session.current_step_index] in {'duel', 'tournament'}
+        if (target_game_key == 'who' or returning_from_duel) and target_game:
             ordered_step_ids = list(
                 session.steps.order_by('order', 'id').values_list('id', flat=True)
             )
@@ -270,7 +387,11 @@ def resolve_session_game_activation(
             HubGameParticipantSnapshot.create_for_step(target_step)
             _provision_target_game_participants(target_step, target_game)
         if target_needs_activation:
-            start_game_intro(session.code, target_game_key, target_room_code)
+            resuming_quiz = target_game_key in {'quiz', 'who', 'who_that', 'estimation', 'clue_rush', 'assign', 'sorting_ladder', 'wer_weiss_mehr', 'blackjack', 'buzzer', 'host_points'} and target_game.status == 'inactive' and target_game.started_at
+            if target_game_key in {'buzzer', 'host_points'} and target_game.active_hub_session_code != session.code:
+                resuming_quiz = False
+            if not resuming_quiz:
+                start_game_intro(session.code, target_game_key, target_room_code, step_id=target_step.pk)
             _activate_target_game(target_game_key, target_game, hub_session_code=session.code)
 
         return {

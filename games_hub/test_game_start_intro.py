@@ -168,7 +168,12 @@ class SessionGameStartIntroTemplateTests(unittest.TestCase):
         content = read_text("templates/hub/lobby.html")
 
         self.assertIn("appendGameStartIntroParams(playUrl, step);", content)
-        self.assertIn("appendGameStartIntroParams(playRoute, data.step || {});", content)
+        # Rejoin and initial navigation now share the same navigate handler.
+        self.assertIn("data.step || {game_key: data.game_key, room_code: data.room_code}", content)
+        self.assertIn("if (step) ws.onmessage({data: JSON.stringify({type: 'navigate', step})});", content)
+        self.assertIn("playUrl.searchParams.set('game_start_instance', intro.game_instance_id", content)
+        self.assertIn("playUrl.searchParams.set('game_start_title', displayName)", content)
+        self.assertIn("playUrl.searchParams.set('game_start_order', displayOrder)", content)
         self.assertIn("intro?.intro_active !== true", content)
         self.assertIn("game_start_intro_started_at", content)
         self.assertIn("game_start_intro_ends_at", content)
@@ -246,6 +251,9 @@ class SessionGameStartIntroTemplateTests(unittest.TestCase):
             with self.subTest(template=relative_path):
                 content = read_text(relative_path)
                 self.assertIn("_session_game_start_intro.html", content)
+                if relative_path == "templates/where_is_this/play.html":
+                    self.assertIn("'js/where-live.js'", content)
+                    content = read_text("static/js/where-live.js")
                 self.assertIn("window.sessionGameStartIntro?.handleState", content)
 
 
@@ -525,6 +533,14 @@ class SessionGameStartIntroBrowserTests(unittest.TestCase):
         try:
             number = page.locator("#sessionGameStartIntroNumber")
             stack = page.locator(".qa-vhs-intro__title")
+            # The number builds until 630 ms, then deliberately flickers twice
+            # at 920–1100 ms. Measure its settled state, still before the title,
+            # rather than whichever animation frame the browser first paints.
+            number.evaluate("""async el => {
+                await Promise.all(el.getAnimations().filter(a =>
+                    a.animationName.startsWith('qa-vhs-intro-number-')
+                ).map(a => a.finished));
+            }""")
             self.assertGreater(float(number.evaluate("el => getComputedStyle(el).opacity")), 0.9)
             self.assertLess(float(stack.evaluate("el => getComputedStyle(el).opacity")), 0.1)
             elapsed_before = float(

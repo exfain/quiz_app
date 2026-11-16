@@ -2,18 +2,22 @@
 
 {% block title %}Optionen - QuizMaster{% endblock %}
 {% block page_title %}Optionen{% endblock %}
-{% block page_subtitle %}Globale Darstellungseinstellungen{% endblock %}
+{% block page_subtitle %}Globale Optionen und Vorgaben für neue Sessions{% endblock %}
 
 {% block content %}
 <div class="card shadow-sm">
     <div class="card-body">
         {% if messages %}
             {% for message in messages %}
-                <div class="alert alert-success" role="status">{{ message }}</div>
+                <div class="alert alert-{{ message.tags|default:'success' }}" role="status">{{ message }}</div>
             {% endfor %}
         {% endif %}
         <form method="post" class="vstack gap-3">
             {% csrf_token %}
+            {% if text_matching_error %}<div class="alert alert-danger" role="alert">{{ text_matching_error }}</div>{% endif %}
+            {% include 'includes/_text_match_slider.html' with slider_id='defaultTextMatchThreshold' threshold=dashboard_settings.text_match_threshold %}
+            <p class="text-muted small">Neue Sessions übernehmen diesen Wert bei ihrer Erstellung. Bereits angelegte Sessions behalten ihren eigenen Wert.</p>
+            {% if has_running_session %}<div class="alert alert-warning" role="status">Eine Session läuft bereits. Änderungen am Defaultwert haben keine Auswirkungen auf diese Session.</div>{% endif %}
             <div>
                 <label class="form-label fw-semibold" for="questionRevealSpeed">
                     Fragen-Einblendgeschwindigkeit

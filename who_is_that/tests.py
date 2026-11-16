@@ -741,7 +741,7 @@ class WhoThatPartialMatchThresholdTests(TestCase):
         self.assertFalse(question.check_answer("a"))
         self.assertEqual(question.calculate_score("a"), 0)
 
-    def test_meaningful_last_name_partial_match_remains_valid(self):
+    def test_last_name_requires_an_explicit_alias(self):
         question = WhoThatQuestion.objects.create(
             question_text="Who is this person?",
             image=self._image_file("tesla-lastname.jpg"),
@@ -750,8 +750,8 @@ class WhoThatPartialMatchThresholdTests(TestCase):
             points=5,
         )
 
-        self.assertTrue(question.check_answer("Tesla"))
-        self.assertGreater(question.calculate_score("Tesla"), 0)
+        self.assertFalse(question.check_answer("Tesla"))
+        self.assertEqual(question.calculate_score("Tesla"), 0)
 
 
 class WhoThatPlayTextCleanupTests(TestCase):

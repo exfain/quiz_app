@@ -32,7 +32,7 @@
                             <th>Question</th>
                             <th>Answer</th>
                             <th>No Of Clues</th>
-                            <th>Points</th>
+                            <th>Max. Punkte (Hinweise)</th>
                             <th>Time Limit (s)</th>
                             <th>Created</th>
 
@@ -75,10 +75,6 @@
                         <small class="text-muted">Wird auf Teilnehmerseite als Frage angezeigt.</small>
                     </div>
                     <div class="row g-3 mb-3">
-                        <div class="col-md-4">
-                            <label for="points" class="form-label">Points</label>
-                            <input type="number" class="form-control" id="points" value="12" min="1" max="100" required>
-                        </div>
                         <div class="col-md-4">
                             <label for="timeLimit" class="form-label">Time Limit (sec)</label>
                             <input type="number" class="form-control" id="timeLimit" value="30" min="5" max="600" required disabled>
@@ -133,7 +129,7 @@
                                 <th>Question</th>
                                 <th>Answer</th>
                                 <th>No. of Clues</th>
-                                <th>Points</th>
+                                <th>Max. Punkte (Hinweise)</th>
                                 <th>Time (s)</th>
                                 <th>Created</th>
                             </tr>
@@ -172,7 +168,7 @@
                             <tr>
                                 <th>Question</th>
                                 <th>No. of Clues</th>
-                                <th>Points</th>
+                                <th>Max. Punkte (Hinweise)</th>
                                 <th>Time Limit (s)</th>
                                 <th>Created</th>
     
@@ -471,7 +467,7 @@ document.addEventListener('DOMContentLoaded', function() {
                     <td>${question.question_text}</td>
                     <td>${question.answer}</td>
                     <td>${question.no_of_clues}</td>
-                    <td>${question.points}</td>
+                    <td>${question.clue_count ?? question.no_of_clues ?? 0}</td>
                     <td>${question.time_limit}</td>
                     <td>${question.created_at}</td>
 
@@ -522,7 +518,6 @@ document.addEventListener('DOMContentLoaded', function() {
 
             document.getElementById('questionId').value = question.id;
             document.getElementById('questionText').value = question.question_text;
-            document.getElementById('points').value = question.points;
             document.getElementById('timeLimit').value = question.time_limit;
             const answerEl = document.getElementById('answer');
             if (answerEl) answerEl.value = question.answer || '';
@@ -601,7 +596,6 @@ document.addEventListener('DOMContentLoaded', function() {
         const qid = (document.getElementById('questionId')?.value || '').trim();
         const payload = {
             question_text: document.getElementById('questionText').value.trim(),
-            points: parseInt(document.getElementById('points').value, 10),
             time_limit: parseInt(document.getElementById('timeLimit').value, 10),
             answer: document.getElementById('answer').value.trim(),
             clues: Array.from(document.querySelectorAll('#cluesContainer .clue-row')).map((row, idx) => ({
@@ -749,7 +743,7 @@ document.addEventListener('DOMContentLoaded', function() {
                     <td>${q.question_text}</td>
                     <td>${q.answer}</td>
                     <td>${q.no_of_clues}</td>
-                    <td>${q.points}</td>
+                    <td>${q.clue_count ?? q.no_of_clues ?? 0}</td>
                     <td>${q.time_limit}</td>
                     <td>${q.created_at}</td>
                 `;

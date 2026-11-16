@@ -131,7 +131,7 @@ class HostOwnershipTests(TransactionTestCase):
         )
 
     def test_all_registered_game_consumers_share_the_admin_authorization_boundary(self):
-        registered_keys = {key for key, _label in HubGameStep.GAME_CHOICES}
+        registered_keys = {key for key, _label in HubGameStep.GAME_CHOICES} - HubGameStep.DUEL_ONLY_GAME_KEYS
         consumer_keys = {consumer.authoritative_game_key for consumer in REGISTERED_GAME_CONSUMERS}
         self.assertEqual(consumer_keys, registered_keys)
         for consumer in REGISTERED_GAME_CONSUMERS:
@@ -295,7 +295,11 @@ class HostHttpMutationPermissionTests(TestCase):
         )
         participant = game.ensure_snapshot_participants(session.code)[0]
         url = reverse('host_points:adjust_score', args=[game.room_code])
+        snapshot = game.serialize_state(session.code)
         payload = json.dumps({
+            'game_id': snapshot['game_id'], 'state_revision': snapshot['state_revision'],
+            'round_id': snapshot['current_round_id'], 'set_id': snapshot.get('current_set_id'),
+            'question_id': snapshot.get('current_question_id'), 'client_action_id': str(uuid.uuid4()),
             'participant_id': participant.id,
             'delta': 5,
             'hub_session': session.code,
@@ -380,6 +384,7 @@ class BuzzerHostIdempotencyTests(TransactionTestCase):
             'question_id': snapshot.get('current_question_id'),
             'round_id': snapshot.get('current_round_id'),
             'set_id': snapshot.get('current_set_id'),
+            'buzz_id': self.game.serialize_state(self.session.code)['round'].get('current_buzz_id'),
             **extra,
         }
 

@@ -76,6 +76,11 @@ class WerWeissMehrGame(SyncBase):
 
     @transaction.atomic
     def start_quiz(self, hub_session_code=None):
+        if self.status == 'inactive' and self.started_at:
+            from .runtime import set_paused
+            set_paused(self, False)
+            self.refresh_from_db()
+            return
         if self.status != 'active' or self.started_at is None:
             self.status = 'active'
             self.started_at = timezone.now()
@@ -97,9 +102,7 @@ class WerWeissMehrGame(SyncBase):
             ])
             session.revealed_answers.clear()
 
-            participants = self.participants.all()
-            if hub_session_code is not None:
-                participants = participants.filter(hub_session_code=hub_session_code)
+            participants = self.participants.filter(hub_session_code=hub_session_code or None)
             participant_ids = list(participants.values_list('id', flat=True))
             WerWeissMehrParticipantState.objects.filter(
                 quiz=self,
@@ -114,12 +117,21 @@ class WerWeissMehrGame(SyncBase):
                 participant_id__in=participant_ids,
             ).delete()
             participants.update(total_score=0)
-            WerWeissMehrRound.objects.filter(quiz=self).delete()
+            WerWeissMehrRound.objects.filter(quiz=self, hub_session_code=hub_session_code or '').delete()
+            session.question_rounds = [entry for entry in session.question_rounds if (entry.get('hub_session_code') or None) != (hub_session_code or None)]
+            session.hub_session_code = hub_session_code or ''
+            session.save(update_fields=['question_rounds', 'hub_session_code'])
+
+    def get_current_set_number(self):
+        session = getattr(self, 'session', None)
+        return (session.current_set_number or self.current_question_id) if session and self.current_question_id else None
 
     def set_inactive(self):
-        self.status = 'inactive'
-        self.save(update_fields=['status'])
+        from .runtime import set_paused
+        set_paused(self, True)
+        self.refresh_from_db()
 
+    @transaction.atomic
     def end_quiz(self, status='completed'):
         self.status = status
         self.ended_at = timezone.now()
@@ -131,6 +143,10 @@ class WerWeissMehrGame(SyncBase):
             session.round_start_time = None
             session.round_end_time = None
             session.save(update_fields=['phase', 'round_start_time', 'round_end_time'])
+            self.pending_inputs.filter(participant__hub_session_code=session.hub_session_code or None, set_number=session.current_set_number).delete()
+        from games_hub.authoritative_state import reset_question_flow
+        from games_hub.models import GameRuntimeState
+        reset_question_flow(game_key='wer_weiss_mehr', room_code=self.room_code, session_code=session.hub_session_code or None if session else None, mode=GameRuntimeState.QUESTION_FLOW_MANUAL_THREE_PHASE)
 
     def __str__(self):
         return f"{self.title} ({self.room_code})"
@@ -159,19 +175,23 @@ class WerWeissMehrQuestion(SyncBase):
                 answer.sort_order = index
                 answer.save(update_fields=['sort_order'])
 
-    def find_matching_answer(self, answer_text):
-        normalized = normalize_answer_text(answer_text)
-        if not normalized:
-            return None
-
-        answers = list(self.answers.all())
-        for answer in answers:
-            if normalized == answer.normalized_text:
-                return answer
+    def match_answer(self, answer_text, *, threshold=100):
+        from games_hub.text_matching import similarity
+        candidates = []
+        for answer in self.answers.all():
             aliases = answer.aliases if isinstance(answer.aliases, list) else []
-            if normalized in {normalize_answer_text(alias) for alias in aliases}:
-                return answer
-        return None
+            score = max(similarity(answer_text, text, normalizer=normalize_answer_text)
+                        for text in [answer.canonical_text, *aliases])
+            if score >= threshold:
+                candidates.append((score, answer))
+        if not candidates:
+            return None, False
+        best_score = max(score for score, _ in candidates)
+        best = [answer for score, answer in candidates if abs(score - best_score) < 1e-9]
+        return (best[0], False) if len(best) == 1 else (None, True)
+
+    def find_matching_answer(self, answer_text, *, threshold=100):
+        return self.match_answer(answer_text, threshold=threshold)[0]
 
 
 class WerWeissMehrAnswerOption(SyncBase):
@@ -214,7 +234,7 @@ class WerWeissMehrParticipant(SyncBase):
 
         tutorial_state = get_unit_tutorial_state('wer_weiss_mehr', self.quiz.room_code, self.hub_session_code)
         tutorial_question_id = tutorial_state.get('tutorial_question_id') if tutorial_state.get('requested') else None
-        states = WerWeissMehrParticipantState.objects.filter(quiz=self.quiz, participant=self)
+        states = WerWeissMehrParticipantState.objects.filter(quiz=self.quiz, participant=self, is_tutorial=False)
         if tutorial_question_id:
             states = states.exclude(question_id=tutorial_question_id)
         total = (
@@ -243,6 +263,9 @@ class WerWeissMehrSession(SyncBase):
     ]
 
     quiz = models.OneToOneField(WerWeissMehrGame, on_delete=models.CASCADE, related_name='session')
+    current_set_number = models.PositiveIntegerField(default=0)
+    question_rounds = models.JSONField(default=list, blank=True)
+    hub_session_code = models.CharField(max_length=16, blank=True, default='')
     current_round = models.PositiveIntegerField(default=0)
     phase = models.CharField(max_length=24, choices=PHASE_CHOICES, default=PHASE_IDLE)
     round_start_time = models.DateTimeField(null=True, blank=True)
@@ -271,10 +294,15 @@ class WerWeissMehrSession(SyncBase):
         self.quiz.current_question = question
         self.quiz.save(update_fields=['current_question'])
 
-        WerWeissMehrParticipantState.objects.filter(quiz=self.quiz, question=question).delete()
-        WerWeissMehrRoundResponse.objects.filter(quiz=self.quiz, question=question).delete()
-        WerWeissMehrPendingInput.objects.filter(quiz=self.quiz, question=question).delete()
-        WerWeissMehrRound.objects.filter(quiz=self.quiz, question=question).delete()
+        from games_hub.quiz_pause import session_code_for
+        from games_hub.unit_tutorial_runtime import is_unit_tutorial_question
+        code = (participants_qs.first().hub_session_code if participants_qs is not None and participants_qs.exists()
+                else session_code_for(self.quiz, 'wer_weiss_mehr'))
+        self.hub_session_code = code or ''
+        self.current_set_number += 1
+        tutorial = is_unit_tutorial_question('wer_weiss_mehr', self.quiz.room_code, code, question.pk)
+        self.question_rounds = [*self.question_rounds, {'question_id': question.pk,
+            'set_number': self.current_set_number, 'hub_session_code': code, 'is_tutorial': tutorial}]
 
         self.revealed_answers.clear()
         self.current_round = 0
@@ -282,14 +310,16 @@ class WerWeissMehrSession(SyncBase):
         self.time_limit_seconds = int(time_limit_seconds or question.round_time_limit or 30)
         self.round_start_time = None
         self.round_end_time = None
-        self.save(update_fields=['current_round', 'phase', 'time_limit_seconds', 'round_start_time', 'round_end_time'])
+        self.save(update_fields=['current_round', 'phase', 'time_limit_seconds', 'round_start_time', 'round_end_time', 'current_set_number', 'question_rounds', 'hub_session_code'])
 
-        participants = participants_qs if participants_qs is not None else self.quiz.participants.filter(is_active=True)
+        participants = participants_qs if participants_qs is not None else self.quiz.participants.filter(is_active=True, hub_session_code=self.hub_session_code or None)
         states = [
             WerWeissMehrParticipantState(
                 quiz=self.quiz,
                 participant=participant,
                 question=question,
+                set_number=self.current_set_number,
+                is_tutorial=tutorial,
             )
             for participant in participants
         ]
@@ -340,6 +370,7 @@ class WerWeissMehrSession(SyncBase):
             return WerWeissMehrRound.objects.filter(
                 quiz=self.quiz,
                 question=question,
+                set_number=self.current_set_number,
                 round_number=self.current_round,
             ).first()
         if self.phase != self.PHASE_IDLE:
@@ -362,8 +393,10 @@ class WerWeissMehrSession(SyncBase):
         round_state, _ = WerWeissMehrRound.objects.update_or_create(
             quiz=self.quiz,
             question=question,
+            set_number=self.current_set_number,
             round_number=self.current_round,
             defaults={
+                'hub_session_code': self.hub_session_code,
                 'status': WerWeissMehrRound.STATUS_ACTIVE,
                 'started_at': now,
                 'ended_at': None,
@@ -381,6 +414,7 @@ class WerWeissMehrSession(SyncBase):
         round_state = WerWeissMehrRound.objects.filter(
             quiz=self.quiz,
             question=question,
+            set_number=self.current_set_number,
             round_number=self.current_round,
         ).first()
         if not round_state:
@@ -389,14 +423,17 @@ class WerWeissMehrSession(SyncBase):
         active_states = WerWeissMehrParticipantState.objects.select_related('participant').filter(
             quiz=self.quiz,
             question=question,
+            set_number=self.current_set_number,
             is_eliminated=False,
             participant__is_active=True,
+            participant__hub_session_code=self.hub_session_code or None,
         )
         for state in active_states:
             response, _ = WerWeissMehrRoundResponse.objects.get_or_create(
                 quiz=self.quiz,
                 participant=state.participant,
                 question=question,
+                set_number=self.current_set_number,
                 round_number=self.current_round,
                 defaults={'answer_text': ''},
             )
@@ -405,6 +442,7 @@ class WerWeissMehrSession(SyncBase):
                     quiz=self.quiz,
                     participant=state.participant,
                     question=question,
+                set_number=self.current_set_number,
                     round_number=self.current_round,
                 ).first()
                 if pending:
@@ -430,6 +468,7 @@ class WerWeissMehrSession(SyncBase):
         round_state = WerWeissMehrRound.objects.filter(
             quiz=self.quiz,
             question=question,
+            set_number=self.current_set_number,
             round_number=self.current_round,
         ).first()
         if not round_state or round_state.status == WerWeissMehrRound.STATUS_COMPLETED:
@@ -441,13 +480,17 @@ class WerWeissMehrSession(SyncBase):
             for response in WerWeissMehrRoundResponse.objects.filter(
                 quiz=self.quiz,
                 question=question,
+                set_number=self.current_set_number,
                 round_number=self.current_round,
-            ).select_related('matched_answer')
+                participant__hub_session_code=self.hub_session_code or None,
+        ).select_related('matched_answer')
         }
 
         states = WerWeissMehrParticipantState.objects.select_related('participant').filter(
             quiz=self.quiz,
             question=question,
+            set_number=self.current_set_number,
+            participant__hub_session_code=self.hub_session_code or None,
         )
         for state in states:
             response = response_map.get(state.participant_id)
@@ -524,8 +567,10 @@ class WerWeissMehrSession(SyncBase):
         return WerWeissMehrParticipantState.objects.filter(
             quiz=self.quiz,
             question=question,
+            set_number=self.current_set_number,
             is_eliminated=False,
             participant__is_active=True,
+            participant__hub_session_code=self.hub_session_code or None,
         ).count()
 
     def get_hidden_answer_count(self):
@@ -550,6 +595,8 @@ class WerWeissMehrSession(SyncBase):
 
 
 class WerWeissMehrRound(SyncBase):
+    set_number = models.PositiveIntegerField(default=0)
+    hub_session_code = models.CharField(max_length=16, blank=True, default='')
     STATUS_ACTIVE = 'active'
     STATUS_REVIEW = 'review'
     STATUS_COMPLETED = 'completed'
@@ -568,7 +615,7 @@ class WerWeissMehrRound(SyncBase):
     revealed_answer_ids_at_start = models.JSONField(default=list, blank=True)
 
     class Meta:
-        unique_together = ['quiz', 'question', 'round_number']
+        unique_together = ['quiz', 'question', 'set_number', 'round_number']
         ordering = ['round_number']
 
     def __str__(self):
@@ -576,6 +623,8 @@ class WerWeissMehrRound(SyncBase):
 
 
 class WerWeissMehrParticipantState(SyncBase):
+    set_number = models.PositiveIntegerField(default=0)
+    is_tutorial = models.BooleanField(default=False)
     quiz = models.ForeignKey(WerWeissMehrGame, on_delete=models.CASCADE, related_name='participant_states')
     participant = models.ForeignKey(WerWeissMehrParticipant, on_delete=models.CASCADE, related_name='set_states')
     question = models.ForeignKey(WerWeissMehrQuestion, on_delete=models.CASCADE, related_name='participant_states')
@@ -585,7 +634,7 @@ class WerWeissMehrParticipantState(SyncBase):
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
-        unique_together = ['quiz', 'participant', 'question']
+        unique_together = ['quiz', 'participant', 'question', 'set_number']
         ordering = ['participant__name']
 
     def __str__(self):
@@ -593,6 +642,7 @@ class WerWeissMehrParticipantState(SyncBase):
 
 
 class WerWeissMehrRoundResponse(SyncBase):
+    set_number = models.PositiveIntegerField(default=0)
     STATUS_CORRECT = 'correct'
     STATUS_WRONG = 'wrong'
     STATUS_MANUAL_CORRECTED = 'manual_corrected'
@@ -613,18 +663,21 @@ class WerWeissMehrRoundResponse(SyncBase):
     final_status = models.CharField(max_length=32, choices=STATUS_CHOICES, default=STATUS_WRONG)
     is_correct = models.BooleanField(default=False)
     is_manual_override = models.BooleanField(default=False)
+    needs_manual_review = models.BooleanField(default=False)
     time_taken = models.FloatField(default=0)
     submitted_at = models.DateTimeField(auto_now_add=True)
     evaluated_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
-        unique_together = ['quiz', 'participant', 'question', 'round_number']
+        unique_together = ['quiz', 'participant', 'question', 'set_number', 'round_number']
         ordering = ['participant__name', 'round_number']
 
     def evaluate(self, revealed_before_round_ids=None):
         revealed_before_round_ids = {int(item) for item in (revealed_before_round_ids or [])}
         self.normalized_answer = normalize_answer_text(self.answer_text)
-        matched_answer = self.question.find_matching_answer(self.answer_text)
+        from games_hub.text_matching import threshold_for
+        matched_answer, self.needs_manual_review = self.question.match_answer(
+            self.answer_text, threshold=threshold_for(self.participant))
 
         status = self.STATUS_CORRECT if matched_answer and matched_answer.id not in revealed_before_round_ids else self.STATUS_WRONG
 
@@ -633,6 +686,7 @@ class WerWeissMehrRoundResponse(SyncBase):
             'answer_text',
             'normalized_answer',
             'auto_status',
+            'needs_manual_review',
             'evaluated_at',
         ]
         if not self.is_manual_override:
@@ -663,6 +717,7 @@ class WerWeissMehrRoundResponse(SyncBase):
 
 
 class WerWeissMehrPendingInput(SyncBase):
+    set_number = models.PositiveIntegerField(default=0)
     quiz = models.ForeignKey(WerWeissMehrGame, on_delete=models.CASCADE, related_name='pending_inputs')
     participant = models.ForeignKey(WerWeissMehrParticipant, on_delete=models.CASCADE, related_name='pending_inputs')
     question = models.ForeignKey(WerWeissMehrQuestion, on_delete=models.CASCADE, related_name='pending_inputs')
@@ -671,7 +726,7 @@ class WerWeissMehrPendingInput(SyncBase):
     normalized_answer = models.CharField(max_length=255, blank=True, default='')
 
     class Meta:
-        unique_together = ['quiz', 'participant', 'question', 'round_number']
+        unique_together = ['quiz', 'participant', 'question', 'set_number', 'round_number']
 
     def save(self, *args, **kwargs):
         self.normalized_answer = normalize_answer_text(self.answer_text)

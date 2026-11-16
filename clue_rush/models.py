@@ -83,6 +83,8 @@ class ClueRushGame(SyncBase):
             except ClueRushSession.DoesNotExist:
                 session = None
             if session:
+                session.question_rounds = []
+                session.paused_at = None
                 session.total_questions_sent = 0
                 session.current_question_number = 0
                 session.is_question_active = False
@@ -98,6 +100,8 @@ class ClueRushGame(SyncBase):
                 session.total_responses_current_question = 0
                 session.correct_responses_current_question = 0
                 session.save(update_fields=[
+                    'question_rounds',
+                    'paused_at',
                     'total_questions_sent',
                     'current_question_number',
                     'is_question_active',
@@ -115,7 +119,8 @@ class ClueRushGame(SyncBase):
                 ])
             CluePendingInput.objects.filter(quiz=self).delete()
         self.status = 'active'
-        self.started_at = timezone.now()
+        if self.started_at is None or reset_runtime:
+            self.started_at = timezone.now()
         self.save(update_fields=['status', 'started_at'])
     
     def end_quiz(self, status='completed'):
@@ -137,6 +142,7 @@ class ClueRushParticipant(SyncBase):
     # guess_correct = models.BooleanField(default=False)
 
     total_score = models.IntegerField(default=0)
+    score_adjustment = models.IntegerField(default=0)
     questions_answered = models.IntegerField(default=0)
     last_activity = models.DateTimeField(auto_now=True)
     # guess_clue_number = models.PositiveIntegerField(null=True, blank=True)
@@ -148,8 +154,8 @@ class ClueRushParticipant(SyncBase):
         ordering = ['-total_score', 'name']
 
     def calculate_score(self):
-        self.total_score = sum(answer.points_earned for answer in self.clue_answers.filter(is_correct=True))
-        self.questions_answered = self.clue_answers.count()
+        self.total_score = self.score_adjustment + sum(answer.points_earned for answer in self.clue_answers.filter(is_correct=True, is_tutorial=False))
+        self.questions_answered = self.clue_answers.filter(is_tutorial=False).count()
         self.save()
 
     def __str__(self):
@@ -169,8 +175,9 @@ class ClueQuestion(SyncBase):
     class Meta:
         ordering = ['-created_at']
 
-    def is_correct_answer(self, answer):
-        return answer.lower().strip() == self.answer.lower().strip()
+    def is_correct_answer(self, answer, *, threshold=100):
+        from games_hub.text_matching import matches
+        return matches(answer, self.answer, threshold=threshold, normalizer=lambda text: text.lower().strip())
 
     def get_revealed_clue_count(self, current_clue=None, current_clue_order=None):
         if current_clue is not None and getattr(current_clue, 'clue_question_id', self.id) == self.id:
@@ -241,6 +248,8 @@ class Clue(SyncBase):
 
 
 class ClueAnswer(SyncBase):
+    round_number = models.PositiveIntegerField(default=0)
+    is_tutorial = models.BooleanField(default=False)
     quiz = models.ForeignKey(ClueRushGame, on_delete=models.CASCADE, related_name='clue_answers')
     participant = models.ForeignKey(ClueRushParticipant, on_delete=models.CASCADE, related_name='clue_answers')
     question = models.ForeignKey(ClueQuestion, on_delete=models.CASCADE, related_name='clue_answers')
@@ -255,12 +264,13 @@ class ClueAnswer(SyncBase):
     time_taken = models.FloatField(help_text="Time taken to answer in seconds", null=True, blank=True)
 
     class Meta:
-        unique_together = ['quiz', 'participant', 'question']
+        unique_together = ['quiz', 'participant', 'question', 'round_number']
         ordering = ['-submitted_at']
 
     def save(self, *args, **kwargs):
         if not self.pk:
-            correct = self.answer_text.strip().lower() == self.question.answer.strip().lower()
+            from games_hub.text_matching import threshold_for
+            correct = self.question.is_correct_answer(self.answer_text, threshold=threshold_for(self.participant))
             self.auto_is_correct = correct
             self.is_correct = correct
             self.is_manually_corrected = False
@@ -296,6 +306,8 @@ class ClueAnswer(SyncBase):
             else:
                 self.points_earned = 0
 
+        if self.is_tutorial:
+            self.points_earned = 0
         super().save(*args, **kwargs)
 
         # Update participant's total score
@@ -323,6 +335,8 @@ class CluePendingInput(SyncBase):
         ordering = ['-updated_at']
 
 class ClueRushSession(SyncBase):
+    question_rounds = models.JSONField(default=list, blank=True)
+    paused_at = models.DateTimeField(null=True, blank=True)
     quiz = models.OneToOneField(ClueRushGame, on_delete=models.CASCADE, related_name='session')
     total_questions_sent = models.PositiveIntegerField(default=0)
     current_question_number = models.PositiveIntegerField(default=0)

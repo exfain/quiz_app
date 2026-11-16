@@ -208,7 +208,8 @@
       .lb-empty { padding: .8rem 0; color: var(--muted); font-size: .85rem; }
     </style>
     <script src="{% static 'js/authoritative-game-state.js' %}"></script>
-  </head>
+      <script src="{% static 'js/team-names.js' %}"></script>
+</head>
   <body>
     <div
       class="container"
@@ -297,6 +298,7 @@
       let autoJoinRequested = false;
       let joinInFlight = false;
       let activeGameNavigationKey = '';
+      let pendingNavigation = null;
       let currentNickname = '';
       let sessionEndedReceived = false;
       const initialNextGameNumber = Number(
@@ -483,10 +485,11 @@
         try {
           const qp = new URLSearchParams(window.location.search);
           const credential = readRejoinCredential();
-          const nick = qp.get('nickname') || credential?.nickname || '';
+          const typedNickname = nicknameInput.value.trim();
+          const nick = typedNickname || qp.get('nickname') || credential?.nickname || '';
           if (nick) {
             nicknameInput.value = nick;
-            scheduleNicknameCheck({ autoJoin: true, delay: 0 });
+            scheduleNicknameCheck({ autoJoin: !typedNickname, delay: 0 });
           } else {
             renderNicknameStatus('', 'idle');
           }
@@ -513,79 +516,15 @@
           joinCard.style.display = 'none';
           syncParticipantLobbyMetadata();
 
-          // Check for active game and redirect if needed
-          (function() {
-            const returnedToLobby = new URLSearchParams(window.location.search).get('return') === '1';
-            if (returnedToLobby) {
-              return;
-            }
-            
-            // Check if there's an active game from the server-side context
-            const activeGameKey = data.game_key;
-            const activeRoomCode = data.room_code;
-            const nickname = currentNickname;
-
-            if (activeGameKey && activeRoomCode && nickname) {
-              const routes = {
-                quiz: { join: '/quiz/join/', play: '/quiz/play/' },
-                clue_rush: { join: '/clue-rush/join/', play: '/clue-rush/play/' },
-                assign: { join: '/assign/join/', play: '/assign/play/' },
-                estimation: { join: '/estimation/join/', play: '/estimation/play/' },
-                where: { join: '/where/join/', play: '/where/play/' },
-                who: { join: '/who/join/', play: '/who/play/' },
-                who_that: { join: '/who-is-that/join/', play: '/who-is-that/play/' },
-                blackjack: { join: '/blackjack/join/', play: '/blackjack/play/' },
-                sorting_ladder: { join: '/sorting-ladder/join/', play: '/sorting-ladder/play/' },
-                wer_weiss_mehr: { join: '/wer-weiss-mehr/join/', play: '/wer-weiss-mehr/play/' },
-                buzzer: { join: '/buzzer/join/', play: '/buzzer/play/' },
-                host_points: { join: '/host-points/join/', play: '/host-points/play/' },
-                wann_war_das: { join: '/wann-war-das/join/', play: '/wann-war-das/play/' },
-              };
-              
-              const code = '{{ session_code }}';
-              const joinRoute = new URL(routes[activeGameKey]?.join, window.location.origin);
-              const playRoute = new URL(`${routes[activeGameKey]?.play}${activeRoomCode}/${encodeURIComponent(nickname)}/?hub_session=${code}`, window.location.origin);
-              appendGameStartIntroParams(playRoute, data.step || {});
-              
-              // Prepare join payload
-              const csrfToken = "{{ csrf_token }}"; // or get dynamically if rendered server-side
-              const body = JSON.stringify({
-                room_code: activeRoomCode,
-                participant_name: nickname,
-                hub_session: code,
-              });
-
-              if (code) {
-                try { localStorage.setItem('hub_session_code', code); } catch (_) {}
-              }
-
-              try {
-                fetch(joinRoute.toString(), {
-                  method: 'POST',
-                  headers: {
-                    'Content-Type': 'application/json',
-                    'X-CSRFToken': csrfToken,
-                  },
-                  body: body,
-                  credentials: 'same-origin',
-                })
-                .then(response => response.json())
-                .then(data => {
-                  console.log('Join response:', data);
-                  if (data.success) {
-                    console.log('Join successful, redirecting to play URL');
-                    window.location.href = playRoute.toString();
-                  } else {
-                    console.error('Join failed, falling back to play URL ');
-                    window.location.href = playRoute.toString();
-                  }
-                })
-              } catch (error) {
-                console.error('Error joining game:', error);
-              }
-            }
-          })();
-
+          const returnedToLobby = new URLSearchParams(location.search).get('return') === '1';
+          const returnParams = new URLSearchParams(location.search);
+          const sameReturnedGame = returnedToLobby && (!returnParams.get('from_game') || (
+            returnParams.get('from_game') === data.game_key && returnParams.get('from_room') === String(data.room_code)
+          ));
+          const step = pendingNavigation || (!sameReturnedGame && data.game_key && data.room_code
+            ? (data.step || {game_key: data.game_key, room_code: data.room_code}) : null);
+          pendingNavigation = null;
+          if (step) ws.onmessage({data: JSON.stringify({type: 'navigate', step})});
           return;
         }
 
@@ -707,6 +646,11 @@
 
         if (data.type === 'navigate' && data.step) {
           const step = data.step;
+          if (['duel','tournament'].includes(step.game_format)) return; // Token-bound routing selects the parties.
+          if (!currentNickname || joinInFlight) {
+            pendingNavigation = step;
+            return;
+          }
           const routes = {
             quiz: { join: '/quiz/join/', play: '/quiz/play/' },
             clue_rush: { join: '/clue-rush/join/', play: '/clue-rush/play/' },
@@ -750,49 +694,30 @@
                 try { localStorage.setItem('hub_session_code', code); } catch (_) {}
             }
 
-            try {
-              fetch(joinUrl.toString(), {
-                method: 'POST',
-                headers: {
-                  'Content-Type': 'application/json',
-                  'X-CSRFToken': csrfToken,
-                },
-                body: body,
-                credentials: 'same-origin',
-              })
-              .then(response => response.json())
-              .then(data => {
-                console.log('Join response:', data);
-                if (data.success) {
-                  console.log('Join successful, redirecting to play URL');
-                  window.location.href = playUrl.toString();
-                } else if (step.game_key === 'who') {
-                  activeGameNavigationKey = '';
-                  console.error('Who join failed; keeping participant in the hub lobby.', data.error);
-                  showStatus(data.error || 'Teilnahme am aktuellen Spiel konnte nicht bestaetigt werden.', 'error');
-                } else {
-                  console.error('Join failed, falling back to play URL ');
+            (async () => {
+              try {
+                let response, payload;
+                for (let attempt = 0; attempt < 3; attempt++) {
+                  response = await fetch(joinUrl.toString(), {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json', 'X-CSRFToken': csrfToken},
+                    body, credentials: 'same-origin',
+                  });
+                  if (response.status < 500) break;
+                  await new Promise(resolve => setTimeout(resolve, 250 * (attempt + 1)));
+                }
+                payload = await response.json();
+                if (!response.ok || !payload.success) {
+                  throw new Error(payload.error || 'Teilnahme am Spiel konnte nicht bestätigt werden.');
+                }
+                if (activeGameNavigationKey === navigationKey && currentNickname === nickname) {
                   window.location.href = playUrl.toString();
                 }
-              })
-              .catch(error => {
+              } catch (error) {
                 activeGameNavigationKey = '';
-                console.error('Error joining game:', error);
-                if (step.game_key === 'who') {
-                  showStatus('Teilnahme am aktuellen Spiel konnte nicht bestaetigt werden.', 'error');
-                  return;
-                }
-                window.location.href = playUrl.toString();
-              });
-            } catch (error) {
-              activeGameNavigationKey = '';
-              console.error('Error joining game:', error);
-              if (step.game_key === 'who') {
-                showStatus('Teilnahme am aktuellen Spiel konnte nicht bestaetigt werden.', 'error');
-              } else {
-                window.location.href = playUrl.toString();
+                showStatus(error.message || 'Teilnahme am Spiel konnte nicht bestätigt werden.', 'error');
               }
-            }
+            })();
 
           }
         }
@@ -862,6 +787,14 @@
           autoJoinRequested = false;
           nicknameAvailability = 'idle';
           renderNicknameStatus('', 'idle');
+          syncJoinButtonState();
+          return;
+        }
+
+        if (!window.TeamNames.validCharacters(nicknameInput.value) && !rejoinTokenFor(nickname)) {
+          autoJoinRequested = false;
+          nicknameAvailability = 'invalid';
+          renderNicknameStatus(window.TeamNames.message, 'error');
           syncJoinButtonState();
           return;
         }
@@ -1041,7 +974,7 @@
         }
         if (!voting.can_vote) {
           voteSection.style.display = 'none';
-          voteWaitingText.textContent = voting.message || 'Der berechtigte Teilnehmer wÃ¤hlt das nÃ¤chste Spiel aus.';
+          voteWaitingText.textContent = voting.message || 'Der berechtigte Teilnehmer wählt das nächste Spiel aus.';
           voteWaitingSection.style.display = '';
           return;
         }
@@ -1200,5 +1133,7 @@
       setInterval(fetchLeaderboard, 10000);
     </script>
   {% include 'includes/accessibility_widget.html' with participant_options_menu=True %}
+  <aside id="session-encounter" data-role="participant" data-code="{{ session_code }}"><a data-watch hidden target="_blank" rel="noopener">Duell im Spectator View ansehen</a></aside>
+  <script src="{% static 'js/duel-encounters.js' %}"></script>
   </body>
 </html>

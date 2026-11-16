@@ -55,7 +55,7 @@
                                 <label class="form-check-label" for="playTutorialToggle">Tutorial spielen</label>
                             </div>
                             {% endif %}
-                            <button class="btn btn-success" id="startQuizBtn" data-host-game-start>
+                            <button class="btn btn-success" id="startQuizBtn" data-host-game-start data-host-game-resume="{% if quiz.status == 'inactive' and quiz.started_at %}true{% else %}false{% endif %}">
                                 <i data-lucide="play"></i>
                                 {% if quiz.status == 'inactive' %}Spiel reaktivieren{% else %}Spiel starten{% endif %}
                             </button>
@@ -171,7 +171,7 @@
                         <!-- Active Question Display -->
                         <div id="activeQuestion">
                             <div class="active-question-header">
-                                <h6>Current Set {{ quiz_session.current_question_number }}/{{ total_sets }}</h6>
+                                <h6>Current Set {{ host_question_number }}/{{ total_sets }}</h6>
                                     <div class="question-timer{% if not question_answering_open %} d-none{% endif %}" id="questionTimerWrapper">
                                         <div class="timer-circle" id="questionTimerCircle">
                                         <span id="questionTimeLeft">{{ current_question_time_left|default:0 }}</span>
@@ -1147,6 +1147,9 @@ document.addEventListener('DOMContentLoaded', function() {
                     window.hostEndState?.apply({ message: data.message, event: data });
                     break;
 
+                case 'quiz_resumed':
+                    location.reload();
+                    break;
                 case 'quiz_inactive':
                     console.log('Quiz set inactive:', data.message);
                     this.isActive = false;
@@ -1228,7 +1231,7 @@ document.addEventListener('DOMContentLoaded', function() {
             if (list) {
                 list.innerHTML = (participants || []).map(participant => `
                     <div class="d-flex justify-content-between border-top py-1">
-                        <span>${participant.name || ''}</span>
+                        <span>${this.escapeHtml(participant.name || '')}</span>
                         <span class="badge ${participant.completed ? 'bg-success' : 'bg-warning text-dark'}">
                             ${participant.completed ? 'bestätigt' : 'offen'}
                         </span>
@@ -1680,9 +1683,9 @@ document.addEventListener('DOMContentLoaded', function() {
                 const row = document.createElement('div');
                 row.className = 'response-item';
                 row.innerHTML = `
-                    <div class="response-avatar ${quality}">${participantName.charAt(0).toUpperCase()}</div>
+                    <div class="response-avatar ${quality}">${this.escapeHtml(participantName.charAt(0).toUpperCase())}</div>
                     <div class="response-content">
-                        <div class="response-name">${participantName}</div>
+                        <div class="response-name">${this.escapeHtml(participantName)}</div>
                         <div class="response-details">${detailText}</div>
                     </div>
                 `;
@@ -1693,6 +1696,12 @@ document.addEventListener('DOMContentLoaded', function() {
             if (responseCount) responseCount.textContent = `${answeredCount}/${entries.length}`;
         }
 
+        escapeHtml(value) {
+            return String(value ?? '').replace(/[&<>"']/g, char => ({
+                '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+            }[char]));
+        }
+
         addParticipant(participant) {
             const participantsList = document.getElementById('participantsList');
             if (!participantsList) return;
@@ -1701,24 +1710,26 @@ document.addEventListener('DOMContentLoaded', function() {
             if (noParticipants) noParticipants.remove();
             
             // Check if participant already exists
-            const existingParticipant = participantsList.querySelector(`[data-participant-name="${participant.name}"]`);
+            const existingParticipant = Array.from(participantsList.querySelectorAll('[data-participant-name]'))
+                .find(element => element.dataset.participantName === participant.name);
             if (existingParticipant) return;
             
             const participantEl = document.createElement('div');
             participantEl.className = 'participant-item';
             participantEl.dataset.participantName = participant.name;
+            const safeName = this.escapeHtml(participant.name);
             participantEl.innerHTML = `
                 <div class="participant-avatar">
                     <i data-lucide="user"></i>
                 </div>
                 <div class="participant-info">
-                    <div class="participant-name">${participant.name}</div>
+                    <div class="participant-name">${safeName}</div>
                     <div class="participant-score" id="score-${participant.id}">${participant.total_score || 0} pts</div>
                 </div>
                 <div class="participant-status">
                     <button class="btn btn-link btn-sm p-0 me-1 edit-score-btn" title="Set points manually"
                         data-participant-id="${participant.id}"
-                        data-participant-name="${participant.name}"
+                        data-participant-name="${safeName}"
                         data-current-score="${participant.total_score || 0}"
                         data-bs-toggle="modal" data-bs-target="#editScoreModal">
                         <i data-lucide="pencil" style="width:14px;height:14px;color:#6c757d;"></i>
@@ -1824,7 +1835,7 @@ document.addEventListener('DOMContentLoaded', function() {
     window.adminGameMonitor = monitor;
     
     // Start question timer if there's an active question
-    {% if quiz.current_question and question_answering_open %}
+    {% if quiz.current_question and question_answering_open and quiz.status == 'active' %}
         monitor.startQuestionTimer();
     {% endif %}
 });
@@ -1873,7 +1884,11 @@ document.addEventListener('DOMContentLoaded', function() {
     };
   } catch (_) {}
 })();
+</script>
 
+{% endblock %}
+
+{% block modals %}
 <!-- Score Edit Modal -->
 <div class="modal fade" id="editScoreModal" tabindex="-1" aria-hidden="true">
   <div class="modal-dialog modal-sm modal-dialog-centered">

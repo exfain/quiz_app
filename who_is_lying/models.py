@@ -156,13 +156,30 @@ class WhoQuiz(SyncBase):
         return self.participants.filter(is_active=True)
     
     def start_quiz(self):
+        if self.status == 'active' and self.started_at:
+            return
+        if self.status == 'inactive' and self.started_at:
+            from games_hub.quiz_pause import resume
+            resume(self, 'who')
+            self.refresh_from_db()
+            return
         self.status = 'active'
         self.started_at = timezone.now()
         self.save()
     
     def end_quiz(self, status='completed'):
+        if status == 'inactive':
+            from games_hub.quiz_pause import pause
+            pause(self, 'who')
+            self.refresh_from_db()
+            return
         self.status = status
         self.ended_at = timezone.now()
+        session = getattr(self, 'session', None)
+        if session:
+            session.end_current_question()
+        self.current_question = None
+        self.question_start_time = None
         self.save()
     
     def __str__(self):
@@ -291,6 +308,7 @@ class WhoParticipant(SyncBase):
         """Get participant's rank in the quiz"""
         higher_scores = WhoParticipant.objects.filter(
             quiz=self.quiz,
+            hub_session_code=self.hub_session_code,
             total_score__gt=self.total_score
         ).count()
         return higher_scores + 1
@@ -308,8 +326,15 @@ class WhoParticipant(SyncBase):
         return f"{self.name} in {self.quiz.room_code}"
 
 
-@transaction.atomic
 def ensure_who_participant_for_hub(quiz, participant_name, session_code, *, activate=True):
+    from games_hub.authoritative_state import _retry_sqlite_locked
+    return _retry_sqlite_locked(lambda: _ensure_who_participant_for_hub(
+        quiz, participant_name, session_code, activate=activate,
+    ))
+
+
+@transaction.atomic
+def _ensure_who_participant_for_hub(quiz, participant_name, session_code, *, activate=True):
     """Idempotently bind one authorized hub identity to this quiz instance."""
     normalized_name = str(participant_name or '').strip()
     normalized_session = str(session_code or '').strip()
@@ -342,6 +367,7 @@ def ensure_who_participant_for_hub(quiz, participant_name, session_code, *, acti
 
 
 class WhoAnswer(SyncBase):
+    round_number = models.PositiveIntegerField(default=0)
     quiz = models.ForeignKey(WhoQuiz, on_delete=models.CASCADE, related_name='who_answers')
     participant = models.ForeignKey(WhoParticipant, on_delete=models.CASCADE, related_name='who_answers')
     question = models.ForeignKey(WhoQuestion, on_delete=models.CASCADE, related_name='who_answers')
@@ -353,12 +379,14 @@ class WhoAnswer(SyncBase):
     time_taken = models.FloatField(help_text="Time taken to answer in seconds", null=True, blank=True)
     
     class Meta:
-        unique_together = ['quiz', 'participant', 'question']
+        unique_together = ['quiz', 'participant', 'question', 'round_number']
         ordering = ['-submitted_at']
     
     def save(self, *args, **kwargs):
         # Auto-calculate points on creation
         if not self.pk:
+            from games_hub.quiz_rounds import current_round
+            self.round_number = self.round_number or current_round(self.quiz)
             self.points_earned = self.question.calculate_score(self.selected_liars or [])
         super().save(*args, **kwargs)
         
@@ -450,6 +478,8 @@ class WhoSession(SyncBase):
     total_questions_sent = models.IntegerField(default=0)
     is_question_active = models.BooleanField(default=False)
     question_end_time = models.DateTimeField(null=True, blank=True)
+    pending_answers = models.JSONField(default=dict, blank=True)
+    question_rounds = models.JSONField(default=list, blank=True)
     recently_ended_question = models.ForeignKey(
         WhoQuestion,
         on_delete=models.SET_NULL,
@@ -471,10 +501,13 @@ class WhoSession(SyncBase):
         """Prepare a set without starting its people timeline."""
         self.quiz.current_question = question
         self.quiz.question_start_time = None
+        from games_hub.quiz_rounds import record_round
+        record_round(self, question)
         self.current_question_number += 1
         self.total_questions_sent += 1
         self.is_question_active = False
         self.question_end_time = None
+        self.pending_answers = {}
         self.total_responses_current_question = 0
         self.average_score_current_question = 0
         self.average_accuracy_current_question = 0
@@ -506,12 +539,29 @@ class WhoSession(SyncBase):
         """End the current active question"""
         self.is_question_active = False
         self.question_end_time = None
+        self.pending_answers = {}
         self.quiz.current_question = None
         self.quiz.question_start_time = None
         
         self.quiz.save()
         self.save()
     
+    def get_person_choice_state(self, participant):
+        started_at = self.quiz.question_start_time.isoformat() if self.quiz.question_start_time else None
+        entry = (self.pending_answers or {}).get(str(participant.id), {})
+        if (
+            entry.get('question_id') != self.quiz.current_question_id
+            or entry.get('question_started_at') != started_at
+            or entry.get('hub_session_code') != participant.hub_session_code
+        ):
+            entry = {}
+        return {
+            'question_id': self.quiz.current_question_id,
+            'question_started_at': started_at,
+            'selected_people': sorted(int(key) for key, selected in entry.get('choices', {}).items() if selected),
+            'choices_revision': entry.get('revision', 0),
+        }
+
     def record_answer(self, points_earned, accuracy_percentage):
         """Record statistics for an answer"""
         self.total_responses_current_question += 1

@@ -1322,9 +1322,9 @@
             class WhoThatPlayer {
                 constructor() {
                     this.roomCode = '{{ quiz.room_code }}';
-                    this.participantName = '{{ participant.name }}';
+                    this.participantName = '{{ participant.name|escapejs }}';
                     this.participantId = {{ participant.id }};
-                    this.hubSession = '{{ hub_session }}';
+                    this.hubSession = '{{ hub_session|default_if_none:""|escapejs }}' || null;
                     this.websocket = null;
                     this.questionTimer = null;
                     this.questionPresentationTimer = null;
@@ -1339,17 +1339,14 @@
                     this.initialSubmittedState = {% if current_participant_answer %}{
                         question_id: {{ current_participant_answer.question_id }},
                         user_answer: '{{ current_participant_answer.user_answer|escapejs }}',
-                        is_correct: {{ current_participant_answer.is_correct|yesno:"true,false" }},
-                        points_earned: {{ current_participant_answer.points_earned|default:0 }},
-                        match_quality: '{{ current_participant_answer.get_match_quality|escapejs }}'
+                        answer_locked: true
                     }{% else %}null{% endif %};
+                    this.currentRound = {{ quiz.session.current_question_number|default:0 }};
+                    this.submissionPending = false;
+                    this.isPaused = {% if quiz.status == 'inactive' %}true{% else %}false{% endif %};
                     this.hasAnswered = Boolean(this.initialSubmittedState);
                     this.lastSubmittedAnswer = this.initialSubmittedState ? this.initialSubmittedState.user_answer : '';
-                    this.lastAnswerEvaluation = this.initialSubmittedState ? {
-                        is_correct: Boolean(this.initialSubmittedState.is_correct),
-                        points_earned: this.initialSubmittedState.points_earned,
-                        match_quality: this.initialSubmittedState.match_quality || '-'
-                    } : null;
+                    this.lastAnswerEvaluation = null;
                     this.lastCorrectAnswerData = null;
                     this.currentQuestionPoints = 0;
                     this.questionStatusBoard = this.readJsonScript('whoThatQuestionStatusData', []);
@@ -1448,6 +1445,39 @@
                             this.updateParticipantCount(data.count);
                             break;
 
+                        case 'quiz_inactive':
+                            this.isPaused = true;
+                            clearInterval(this.questionTimer);
+                            clearTimeout(this.questionPresentationTimer);
+                            this.answeringAllowed = false;
+                            document.getElementById('nameInput').disabled = true;
+                            document.getElementById('submitAnswerBtn').disabled = true;
+                            this.setTimerVisible(false);
+                            break;
+                        case 'quiz_resumed':
+                            this.isPaused = false;
+                            this.requestState();
+                            break;
+                        case 'pending_answer_saved':
+                            if (Number(data.question_id) === Number(this.currentQuestionId)) {
+                                this.lastSyncedPendingAnswer = data.user_answer || '';
+                                this.showAnswerError('');
+                            }
+                            break;
+                        case 'pending_answer_restored':
+                            if (!this.hasAnswered && Number(data.question_id) === Number(this.currentQuestionId)) {
+                                document.getElementById('nameInput').value = data.user_answer || '';
+                                this.lastSyncedPendingAnswer = data.user_answer || '';
+                                document.getElementById('submitAnswerBtn').disabled = !this.answeringAllowed || !data.user_answer;
+                            }
+                            break;
+                        case 'pending_answer_rejected':
+                            this.showAnswerError('Entwurf konnte nicht gespeichert werden.');
+                            break;
+                        case 'answer_rejected':
+                        case 'action_rejected':
+                            this.onAnswerRejected(data);
+                            break;
                         case 'answer_submitted':
                             this.onAnswerSubmitted(data);
                             break;
@@ -1524,10 +1554,14 @@
 
                 onQuestionPrepared(data) {
                     if (!this.applyQuestionMetadata(data)) return;
+                    this.isPaused = Boolean(data.question?.paused || data.phase === 'inactive');
                     clearInterval(this.questionTimer);
                     clearTimeout(this.questionPresentationTimer);
                     this.currentQuestionId = Number(data.question?.id || data.current_question_id || 0) || null;
                     this.questionEndTime = null;
+                    clearTimeout(this.submissionTimeout);
+                    this.submissionPending = false;
+                    this.initialSubmittedState = null;
                     this.hasAnswered = false;
                     this.lastSubmittedAnswer = '';
                     this.lastAnswerEvaluation = null;
@@ -1543,6 +1577,7 @@
 
                 schedulePreparedQuestionRefresh() {
                     clearTimeout(this.questionPresentationTimer);
+                    if (this.isPaused) return;
                     const visibleAt = Date.parse(this.questionVisibleAt || '');
                     const serverNow = Date.parse(this.presentationServerNow || '');
                     if (!Number.isFinite(visibleAt)) return;
@@ -1564,13 +1599,22 @@
                 onQuestionStarted(question) {
                     if (!this.applyQuestionMetadata(question)) return;
                     clearTimeout(this.questionPresentationTimer);
+                    const incomingRound = Number(question.round_number || 0);
+                    if (incomingRound && incomingRound !== this.currentRound) {
+                        this.hasAnswered = false;
+                        this.initialSubmittedState = null;
+                        this.lastSubmittedAnswer = '';
+                        this.lastAnswerEvaluation = null;
+                    }
+                    this.currentRound = incomingRound || this.currentRound;
+                    if (Array.isArray(question.scoreboard)) this.applyRoundScoreboard(question.scoreboard);
+                    const draft = Number(this.currentQuestionId) === Number(question.id) && !this.hasAnswered
+                        ? document.getElementById('nameInput').value : '';
                     const submittedState = this.getSubmittedStateForQuestion(question.id);
                     this.hasAnswered = false;
                     this.currentQuestionIsTutorial = !!question?.is_tutorial_round;
                     const nextQuestionNumber = Number(question.question_number);
-                    this.currentQuestionNumber = Number.isNaN(nextQuestionNumber) || nextQuestionNumber <= 0
-                        ? this.currentQuestionNumber + 1
-                        : nextQuestionNumber;
+                    this.currentQuestionNumber = this.currentQuestionIsTutorial ? 0 : (nextQuestionNumber > 0 ? nextQuestionNumber : this.currentQuestionNumber);
                     this.questionEndTime = question.ends_at || question.question_end_time || null;
                     
                     const answeringOpen = (
@@ -1578,9 +1622,11 @@
                         && this.answeringAllowed
                     );
                     this.loadQuestion(question, submittedState, answeringOpen);
-                    if (this.currentQuestionIsTutorial) {
-                        this.currentQuestionId = null;
-                    } else {
+                    if (!submittedState && draft) {
+                        document.getElementById('nameInput').value = draft;
+                        document.getElementById('submitAnswerBtn').disabled = !answeringOpen;
+                    }
+                    if (!this.currentQuestionIsTutorial) {
                         this.markQuestionAsCurrent(this.currentQuestionNumber, question.id);
                     }
                     if (answeringOpen) {
@@ -1605,12 +1651,14 @@
                 }
 
                 onQuestionEnded(data) {
+                    if (data.is_tutorial_round !== undefined) this.currentQuestionIsTutorial = Boolean(data.is_tutorial_round);
                     clearInterval(this.questionTimer);
                     clearTimeout(this.questionPresentationTimer);
                     this.questionPhase = '';
                     this.answeringAllowed = false;
                     this.questionEndTime = null;
-                    const endedQuestionNumber = this.currentQuestionNumber;
+                    const endedQuestionNumber = Number(data.question_number) || this.currentQuestionNumber;
+                    this.currentQuestionNumber = endedQuestionNumber;
                     const endedQuestionPoints = this.currentQuestionPoints;
                     const evaluatedPendingAnswers = Array.isArray(data.evaluated_pending_answers) ? data.evaluated_pending_answers : [];
                     const evaluatedPendingAnswer = evaluatedPendingAnswers.find((entry) => (
@@ -1618,7 +1666,7 @@
                         (entry.hub_session_code || '') === (this.hubSession || '')
                     ));
 
-                    if (!this.currentQuestionIsTutorial && !this.hasAnswered && evaluatedPendingAnswer) {
+                    if (evaluatedPendingAnswer) {
                         this.hasAnswered = true;
                         this.onAnswerSubmitted(evaluatedPendingAnswer);
                     }
@@ -1629,12 +1677,12 @@
                         this.setQuestionResult(endedQuestionNumber, false, null, endedQuestionPoints, 0);
                     }
 
-                    if (!this.currentQuestionIsTutorial && data.correct_answer) {
+                    if (data.correct_answer) {
                         const isCorrect = Boolean(this.lastAnswerEvaluation && this.lastAnswerEvaluation.is_correct);
                         const earnedPoints = this.lastAnswerEvaluation
                             ? (parseInt(this.lastAnswerEvaluation.points_earned || 0, 10) || 0)
                             : 0;
-                        this.setQuestionResult(
+                        if (!this.currentQuestionIsTutorial) this.setQuestionResult(
                             endedQuestionNumber,
                             isCorrect,
                             data.correct_answer.correct_answer || '',
@@ -1664,6 +1712,8 @@
                     {% if question_content_visible %}
                     const question = {
                         id: {{ quiz.current_question.id }},
+                        round_number: {{ quiz.session.current_question_number|default:0 }},
+                        is_tutorial_round: {{ current_unit_is_tutorial|yesno:"true,false" }},
                         question_number: {{ current_question_number|default:0 }},
                         question_text: '{{ quiz.current_question.question_text|escapejs }}',
                         image_url: '{{ quiz.current_question.image.url|default:"" }}',
@@ -1681,6 +1731,17 @@
                         hint_text: {% if quiz.current_question.hint_text %}'{{ quiz.current_question.hint_text|escapejs }}'{% else %}null{% endif %},
                         category: {% if quiz.current_question.category %}'{{ quiz.current_question.category|escapejs }}'{% else %}null{% endif %}
                     };
+                    const incomingRound = Number(question.round_number || 0);
+                    if (incomingRound && incomingRound !== this.currentRound) {
+                        this.hasAnswered = false;
+                        this.initialSubmittedState = null;
+                        this.lastSubmittedAnswer = '';
+                        this.lastAnswerEvaluation = null;
+                    }
+                    this.currentRound = incomingRound || this.currentRound;
+                    if (Array.isArray(question.scoreboard)) this.applyRoundScoreboard(question.scoreboard);
+                    const draft = Number(this.currentQuestionId) === Number(question.id) && !this.hasAnswered
+                        ? document.getElementById('nameInput').value : '';
                     const submittedState = this.getSubmittedStateForQuestion(question.id);
                     this.applyQuestionMetadata(question);
                     this.questionEndTime = question.answering_deadline_at || question.question_end_time || null;
@@ -1689,6 +1750,10 @@
                         && this.answeringAllowed
                     );
                     this.loadQuestion(question, submittedState, answeringOpen);
+                    if (!submittedState && draft) {
+                        document.getElementById('nameInput').value = draft;
+                        document.getElementById('submitAnswerBtn').disabled = !answeringOpen;
+                    }
                     this.setTimerVisible(answeringOpen);
                     if (answeringOpen) {
                         this.startQuestionTimer(
@@ -1705,7 +1770,7 @@
 
                 loadQuestion(question, submittedState = null, interactive = false) {
                     this.currentQuestionIsTutorial = !!question?.is_tutorial_round;
-                    this.currentQuestionId = this.currentQuestionIsTutorial ? null : question.id;
+                    this.currentQuestionId = question.id;
                     this.currentQuestionPoints = Number(question.points || 0) || 0;
                     const questionNumber = Number(question.question_number);
                     if (!this.currentQuestionIsTutorial && !Number.isNaN(questionNumber) && questionNumber > 0) {
@@ -1858,7 +1923,12 @@
                     const nameInput = document.getElementById('nameInput');
                     const userAnswer = nameInput.value.trim();
                     
-                    if (!userAnswer || this.hasAnswered || !this.answeringAllowed) return;
+                    if (!userAnswer || this.hasAnswered || this.submissionPending || !this.answeringAllowed) return;
+                    if (this.websocket?.readyState !== WebSocket.OPEN) {
+                        this.showAnswerError('Keine Verbindung. Bitte erneut versuchen.');
+                        return;
+                    }
+                    this.submissionPending = true;
                     
                     // Disable interface
                     nameInput.disabled = true;
@@ -1875,22 +1945,66 @@
                         user_answer: userAnswer
                     }));
                     
-                    this.hasAnswered = true;
-                    
-                    // Show submitted state after a brief delay
-                    setTimeout(() => {
-                        this.showState('answerSubmittedState');
-                    }, 500);
+                    clearTimeout(this.submissionTimeout);
+                    this.submissionTimeout = setTimeout(() => this.onAnswerRejected({
+                        message: 'Keine Best?tigung erhalten. Die Antwort wird erneut abgefragt.'
+                    }), 5000);
+                }
+
+                requestState() {
+                    if (this.websocket?.readyState === WebSocket.OPEN) this.websocket.send(JSON.stringify({
+                        type: 'snapshot_request', participant_name: this.participantName, hub_session: this.hubSession
+                    }));
+                }
+
+                showAnswerError(message) {
+                    let element = document.getElementById('answerSyncError');
+                    if (!element) {
+                        element = document.createElement('p');
+                        element.id = 'answerSyncError';
+                        element.className = 'text-danger';
+                        document.getElementById('nameInput').after(element);
+                    }
+                    element.textContent = message;
+                }
+
+                onAnswerRejected(data) {
+                    if (data.snapshot) this.applyQuestionMetadata(data.snapshot);
+                    clearTimeout(this.submissionTimeout);
+                    this.submissionPending = false;
+                    if (!this.hasAnswered) {
+                        document.getElementById('nameInput').disabled = !this.answeringAllowed;
+                        const button = document.getElementById('submitAnswerBtn');
+                        button.classList.remove('loading');
+                        button.disabled = !this.answeringAllowed || !document.getElementById('nameInput').value.trim();
+                        this.showAnswerError(data.message || 'Antwort wurde nicht gespeichert. Bitte erneut versuchen.');
+                    }
+                    this.requestState();
+                }
+
+                applyRoundScoreboard(rows) {
+                    const previous = this.questionStatusBoard || [];
+                    this.questionStatusBoard = rows.map(row => ({
+                        ...previous.find(old => old.round_number && old.round_number === row.round_number),
+                        ...row, is_current: row.status === 'current',
+                    }));
+                    this.renderQuestionStatusBoard();
                 }
 
                 onAnswerSubmitted(data) {
+                    clearTimeout(this.submissionTimeout);
+                    this.submissionPending = false;
+                    this.hasAnswered = true;
+                    this.showAnswerError('');
+                    document.getElementById('submitAnswerBtn').classList.remove('loading');
                     this.lastSubmittedAnswer = (data.user_answer || document.getElementById('nameInput').value || '').trim();
-                    this.lastAnswerEvaluation = {
+                    if (data.is_correct !== undefined) this.lastAnswerEvaluation = {
                         is_correct: Boolean(data.is_correct),
                         points_earned: data.points_earned,
                         match_quality: data.match_quality || '-'
                     };
                     this.updateSubmittedAnswerState();
+                    if (!this.lastCorrectAnswerData) this.showState('answerSubmittedState');
                 }
 
                 onAnswerCorrected(data) {
@@ -1898,7 +2012,7 @@
                         return;
                     }
 
-                    const correctedEntry = this.getQuestionStatusEntryById(data.question_id);
+                    const correctedEntry = data.round_number ? this.questionStatusBoard.find(row => row.round_number === Number(data.round_number)) : this.getQuestionStatusEntryById(data.question_id);
                     const correctedQuestionNumber = Number(correctedEntry?.number || 0) || this.currentQuestionNumber;
                     const correctedMaxPoints = Number(
                         correctedEntry?.max_points ?? this.currentQuestionPoints ?? data.points_earned ?? 0
@@ -1907,6 +2021,7 @@
 
                     const affectsCurrentDisplay = (
                         Number(data.question_id) > 0 && Number(data.question_id) === Number(this.currentQuestionId)
+                        && (!data.round_number || Number(data.round_number) === this.currentRound)
                     ) || (
                         !this.currentQuestionId &&
                         correctedQuestionNumber > 0 &&
@@ -1991,8 +2106,8 @@
                     const submitBtn = document.getElementById('submitAnswerBtn');
                     if (nameInput.value.trim()) {
                         this.lastSubmittedAnswer = nameInput.value.trim();
-                        this.syncPendingAnswer(nameInput.value);
                     }
+                    this.answeringAllowed = false;
                     nameInput.disabled = true;
                     submitBtn.disabled = true;
                 }
@@ -2017,10 +2132,6 @@
                         return;
                     }
                     const userAnswer = (rawValue || '').trim();
-                    if (userAnswer === this.lastSyncedPendingAnswer) {
-                        return;
-                    }
-                    this.lastSyncedPendingAnswer = userAnswer;
                     this.websocket.send(JSON.stringify({
                         type: 'participant_update_pending_answer',
                         participant_name: this.participantName,
@@ -2203,15 +2314,13 @@
                     (this.questionStatusBoard || []).forEach((entry) => {
                         entry.is_current = false;
                     });
-                    const entry = questionId
-                        ? this.moveQuestionToNextFreeStatusSlot(questionId)
-                        : this.ensureQuestionStatusEntry(questionNumber, questionId);
+                    const entry = this.ensureQuestionStatusEntry(questionNumber, questionId);
                     if (entry) {
                         entry.result = null;
                         entry.solution_text = '';
                         entry.earned_points = null;
                         entry.is_current = true;
-                        this.currentQuestionNumber = Number(entry.number) || Number(questionNumber) || this.currentQuestionNumber;
+                        this.currentQuestionNumber = Number(questionNumber) || Number(entry.number) || this.currentQuestionNumber;
                     }
                     this.updateCurrentQuestionNumberDisplay();
                     this.renderQuestionStatusBoard();
@@ -2240,7 +2349,8 @@
                         questionNumberElement.textContent = displayNumber;
                     }
                     const progressElement = document.getElementById('vhsWhoThatProgress');
-                    const totalQuestions = Number(progressElement?.dataset.total || 0);
+                    const totalQuestions = (this.questionStatusBoard || []).length;
+                    if (progressElement) progressElement.dataset.total = String(totalQuestions);
                     if (progressElement) {
                         progressElement.textContent = totalQuestions > 0
                             ? `${displayNumber}/${totalQuestions}`
@@ -2323,7 +2433,7 @@
             const player = new WhoThatPlayer();
 
             const lobbyReturnController = createHubLobbyReturnController({
-                sessionCode: '{{ hub_session|default_if_none:"" }}',
+                sessionCode: '{{ hub_session|default_if_none:""|escapejs }}',
                 gameKey: 'who_that',
                 roomCode: '{{ quiz.room_code }}',
                 participantName: '{{ participant.name|escapejs }}',
@@ -2333,7 +2443,7 @@
             // Minimal Hub listener for centralized navigation
             (function() {
                 let hubCode = null;
-                const configuredHubSessionCode = '{{ hub_session|default_if_none:"" }}';
+                const configuredHubSessionCode = '{{ hub_session|default_if_none:""|escapejs }}';
                 try {
                     hubCode = localStorage.getItem('hub_session_code') || '';
                     console.log("[HubScript2] Retrieved hub_session_code from localStorage:", hubCode);

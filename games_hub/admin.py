@@ -4,6 +4,8 @@ from .models import HubGameParticipantSnapshot, HubSession, HubParticipant, HubG
 
 @admin.register(HubSession)
 class HubSessionAdmin(admin.ModelAdmin):
+    # Persistence only for now; do not expose a mode selector automatically.
+    exclude = ('session_type',)
     list_display = (
         'code',
         'name',
@@ -36,6 +38,8 @@ class HubParticipantAdmin(admin.ModelAdmin):
 
 @admin.register(HubGameStep)
 class HubGameStepAdmin(admin.ModelAdmin):
+    # No format selection until planning and activation validation are ready.
+    exclude = ('game_format', 'duel_match_config')
     list_display = ('session', 'order', 'game_key', 'room_code', 'title')
     list_filter = ('game_key',)
     ordering = ('session', 'order')

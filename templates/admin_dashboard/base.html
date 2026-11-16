@@ -47,6 +47,9 @@
         </main>
     </div>
 
+    {# Keep page dialogs outside the layout stacking context, alongside Bootstrap's backdrop. #}
+    {% block modals %}{% endblock %}
+
     <div class="modal fade" id="activeGameConflictModal" tabindex="-1" aria-labelledby="activeGameConflictModalLabel" aria-hidden="true">
         <div class="modal-dialog modal-dialog-centered">
             <div class="modal-content">
@@ -545,9 +548,21 @@
                 updateLobbyReturnPrimaryLabel();
             }
 
+            async function fetchStartGuardJson(url, options = {}) {
+                const controller = new AbortController();
+                const timer = setTimeout(() => controller.abort(), 10000);
+                try {
+                    const response = await fetch(url, {...options, signal: controller.signal});
+                    const payload = await response.json();
+                    if (!response.ok) return {...payload, success: false, http_status: response.status};
+                    return payload;
+                } catch (_) {
+                    return {success: false, error: 'Die Startprüfung konnte nicht bestätigt werden. Bitte erneut versuchen.'};
+                } finally {clearTimeout(timer);}
+            }
+
             async function fetchLobbyPresence(sessionCode) {
-                const response = await fetch(`/hub/api/session/${sessionCode}/lobby-presence/`);
-                return response.json();
+                return fetchStartGuardJson(`/hub/api/session/${sessionCode}/lobby-presence/`);
             }
 
             function openLobbyReturnModal(presence, mode, pendingButton = null) {
@@ -672,7 +687,7 @@
             }
 
             async function requestActivation(context, action = null, checkOnly = false) {
-                const response = await fetch(`/hub/api/session/${context.sessionCode}/activate-game/`, {
+                return fetchStartGuardJson(`/hub/api/session/${context.sessionCode}/activate-game/`, {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
@@ -686,12 +701,6 @@
                     }),
                 });
 
-                const payload = await response.json().catch(() => ({
-                    success: false,
-                    error: 'Unbekannter Serverfehler.',
-                }));
-                payload.http_status = response.status;
-                return payload;
             }
 
             function releasePendingStart() {
@@ -833,6 +842,7 @@
                 });
             }
 
+            const checkingStarts = new WeakSet();
             document.addEventListener('click', async function(event) {
                 const startButton = event.target.closest(startButtonSelector);
                 if (!startButton) return;
@@ -848,17 +858,27 @@
                 event.preventDefault();
                 event.stopImmediatePropagation();
 
+                if (checkingStarts.has(startButton)) return;
+                checkingStarts.add(startButton);
+                startButton.dataset.hostStartChecking = '1';
                 startButton.disabled = true;
-
+                try {
+                const resumingQuiz = ['quiz', 'where', 'who', 'who_that', 'estimation', 'clue_rush', 'assign', 'sorting_ladder', 'wer_weiss_mehr', 'blackjack', 'buzzer', 'host_points'].includes(context.gameKey)
+                    && startButton.dataset.hostGameResume === 'true';
                 let presence;
                 try {
-                    presence = await fetchLobbyPresence(context.sessionCode);
+                    presence = resumingQuiz ? {success: true, all_in_lobby: true} : await fetchLobbyPresence(context.sessionCode);
                 } catch (_) {
                     startButton.disabled = false;
                     alert('Der Lobby-Status konnte nicht geprüft werden.');
                     return;
                 }
 
+                if (!presence.success) {
+                    startButton.disabled = false;
+                    alert(presence.error || 'Der Lobby-Status konnte nicht geprüft werden.');
+                    return;
+                }
                 if (presence.success && !presence.all_in_lobby) {
                     showLobbyReturnGuard(presence, startButton);
                     return;
@@ -880,6 +900,10 @@
                 guardState.pendingButton = startButton;
                 guardState.pendingContext = context;
                 releasePendingStart();
+                } finally {
+                    checkingStarts.delete(startButton);
+                    delete startButton.dataset.hostStartChecking;
+                }
             }, true);
 
             document.addEventListener('click', async function(event) {

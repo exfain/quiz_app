@@ -1,8 +1,9 @@
 from django.db import OperationalError, ProgrammingError, models
+from django.core.validators import MinValueValidator, MaxValueValidator
 
 
 class DashboardSettings(models.Model):
-    """Global presentation settings shared by all sessions."""
+    """Global presentation settings and defaults copied into new sessions."""
 
     DEFAULT_QUESTION_REVEAL_MS_PER_CHARACTER = 75
     MIN_QUESTION_REVEAL_MS_PER_CHARACTER = 35
@@ -17,6 +18,9 @@ class DashboardSettings(models.Model):
     )
     quiz_mc_answer_reveal_stagger_ms = models.PositiveSmallIntegerField(
         default=DEFAULT_QUIZ_MC_ANSWER_REVEAL_STAGGER_MS,
+    )
+    text_match_threshold = models.PositiveSmallIntegerField(
+        default=90, validators=[MinValueValidator(65), MaxValueValidator(100)],
     )
 
     @classmethod

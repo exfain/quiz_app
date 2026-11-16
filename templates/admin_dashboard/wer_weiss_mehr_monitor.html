@@ -30,7 +30,7 @@
                     <label class="form-check-label" for="playTutorialToggle">Tutorial spielen</label>
                 </div>
             {% endif %}
-            <button class="btn btn-success {% if quiz.status != 'waiting' and quiz.status != 'inactive' %}d-none{% endif %}" id="startQuizBtn" data-host-game-start>
+            <button class="btn btn-success {% if quiz.status != 'waiting' and quiz.status != 'inactive' %}d-none{% endif %}" id="startQuizBtn" data-host-game-start data-host-game-resume="{% if quiz.status == 'inactive' %}true{% else %}false{% endif %}">
                 {% if quiz.status == 'inactive' %}Spiel reaktivieren{% else %}Spiel starten{% endif %}
             </button>
             <button class="btn btn-outline-warning {% if quiz.status != 'active' %}d-none{% endif %}" id="setInactiveBtn">Aktives Spiel auf inaktiv setzen</button>
@@ -468,7 +468,7 @@ function finishSet() {
             'Content-Type': 'application/json',
             'X-CSRFToken': CSRF_TOKEN,
         },
-        body: JSON.stringify({hub_session: HUB_SESSION}),
+        body: JSON.stringify({hub_session: HUB_SESSION, ...questionActionContext()}),
         credentials: 'same-origin',
     })
         .then(response => parseJsonResponse(response, 'Das Set konnte nicht beendet werden.'))
@@ -494,7 +494,7 @@ function clearSetSelection() {
             'Content-Type': 'application/json',
             'X-CSRFToken': CSRF_TOKEN,
         },
-        body: JSON.stringify({hub_session: HUB_SESSION}),
+        body: JSON.stringify({hub_session: HUB_SESSION, ...questionActionContext()}),
         credentials: 'same-origin',
     })
         .then(response => parseJsonResponse(response, 'Die Setauswahl konnte nicht geladen werden.'))
@@ -626,6 +626,7 @@ function renderControls(s) {
     const endBtn = document.getElementById('endQuizBtn');
     if (startBtn) {
         startBtn.classList.toggle('d-none', !['waiting', 'inactive'].includes(status));
+        startBtn.dataset.hostGameResume = String(status === 'inactive');
         startBtn.textContent = status === 'inactive' ? 'Spiel reaktivieren' : 'Spiel starten';
     }
     if (inactiveBtn) inactiveBtn.classList.toggle('d-none', status !== 'active');
@@ -656,9 +657,9 @@ function renderQuestionArea(s) {
                     </div>
                 </div>
                 <div class="d-flex align-items-center gap-2">
-                    <input type="number" class="form-control form-control-sm time-input" value="${q.round_time_limit}" min="5" style="width:90px" data-question-id="${q.id}" ${q.is_completed || q.is_start_disabled ? 'disabled' : ''}>
+                    <input type="number" class="form-control form-control-sm time-input" value="${q.round_time_limit}" min="5" style="width:90px" data-question-id="${q.id}" ${q.is_start_disabled ? 'disabled' : ''}>
                     ${q.is_tutorial_set && !q.is_completed ? '<button class="btn btn-outline-secondary skip-tutorial-set-btn" id="skipTutorialSetBtn" type="button">Tutorialset überspringen</button>' : ''}
-                    <button class="btn ${q.is_tutorial_set ? 'btn-warning' : 'btn-primary'} start-set-btn" data-question-id="${q.id}" data-host-question-select data-host-select-label="${q.is_tutorial_set ? 'TUTORIALSET WÄHLEN' : 'SET WÄHLEN'}" data-host-send-label="${q.is_tutorial_set ? 'TUTORIALSET SENDEN' : 'SET SENDEN'}" data-host-selection-noun="Set" ${s.game_status !== 'active' || q.is_completed || q.is_start_disabled ? 'disabled' : ''}>${q.is_completed ? 'Beendet' : (q.is_tutorial_set ? 'TUTORIALSET WÄHLEN' : 'SET WÄHLEN')}</button>
+                    <button class="btn ${q.is_tutorial_set ? 'btn-warning' : 'btn-primary'} start-set-btn" data-question-id="${q.id}" data-host-question-select data-host-select-label="${q.is_tutorial_set ? 'TUTORIALSET WÄHLEN' : 'SET WÄHLEN'}" data-host-send-label="${q.is_tutorial_set ? 'TUTORIALSET SENDEN' : 'SET SENDEN'}" data-host-selection-noun="Set" ${s.game_status !== 'active' || q.is_start_disabled ? 'disabled' : ''}>${q.is_completed && q.is_tutorial_set ? 'Beendet' : (q.is_tutorial_set ? 'TUTORIALSET WÄHLEN' : 'SET WÄHLEN')}</button>
                 </div>
             </div>
         `).join('') || '<div class="text-muted">Keine Sets diesem Spiel zugeordnet.</div>';
@@ -752,7 +753,7 @@ function renderResponseRow(row, response, s, options) {
         <td>${escapeHtml(response.participant_name)}</td>
         <td>${escapeHtml(response.answer_text || '')}</td>
         <td><div>Runde ${escapeHtml(response.round_number || s.current_round || '-')}</div><div class="small text-muted">${escapeHtml(formatTime(response.submitted_at))}</div></td>
-        <td><span class="badge bg-${responseBadgeClass(response.auto_status)}">${escapeHtml(responseStatusLabel(response.auto_status))}</span></td>
+        <td><span class="badge bg-${response.needs_manual_review ? 'warning' : responseBadgeClass(response.auto_status)}">${escapeHtml(response.needs_manual_review ? 'mehrdeutig – manuell prüfen' : responseStatusLabel(response.auto_status))}</span></td>
         <td>${escapeHtml(response.matched_answer_text || '-')}</td>
         <td><span class="badge bg-${response.is_manual_override ? 'primary' : (response.id ? 'info' : 'secondary')}">${escapeHtml(response.is_manual_override ? 'manuell korrigiert' : (response.id ? 'eingeloggt / bewertet' : 'pending'))}</span></td>
         <td>${canCorrect && options ? `<div class="d-flex gap-2"><select class="form-select form-select-sm correction-target" data-response-id="${response.id}">${options}</select><button class="btn btn-sm btn-outline-primary correction-btn" data-response-id="${response.id}">Uebernehmen</button></div>` : ''}</td>
@@ -838,7 +839,7 @@ function startHostTimer(s) {
     if (timerInterval) clearInterval(timerInterval);
     timerInterval = null;
     const box = document.getElementById('timerBox');
-    if (s.phase !== 'round_active' || !s.timer?.ends_at) {
+    if (s.game_status !== 'active' || s.phase !== 'round_active' || !s.timer?.ends_at) {
         box.textContent = '';
         return;
     }

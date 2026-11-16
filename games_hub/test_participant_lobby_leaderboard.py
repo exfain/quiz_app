@@ -80,7 +80,7 @@ class ParticipantLeaderboardProjectionTests(SimpleTestCase):
         data = self.project([('Anna', 20), ('Ben', 20), ('Cara', 5)], 'Ben')
 
         self.assertEqual([row['name'] for row in data['participants']], ['Anna', 'Ben', 'Cara'])
-        self.assertEqual([row['rank'] for row in data['participants']], [1, 2, 3])
+        self.assertEqual([row['rank'] for row in data['participants']], [1, 1, 3])
 
     def test_only_completed_games_are_returned_to_participant_lobby(self):
         data = self.project([('Anna', 20)], 'Anna')

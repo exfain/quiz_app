@@ -176,7 +176,7 @@
                                          role="listitem"
                                          data-set-number="{{ set_entry.set_number }}"
                                          data-set-busted="{{ set_entry.is_busted|yesno:'true,false' }}">
-                                        <span class="blackjack-vhs-set-log-index">SET {{ set_entry.set_number|stringformat:"02d" }}</span>
+                                        <span class="blackjack-vhs-set-log-index">SET {{ forloop.counter|stringformat:"02d" }}</span>
                                         <span class="blackjack-vhs-set-log-status">
                                             {% if set_entry.is_busted %}BUST / ÜBER 21{% else %}SET ABGESCHLOSSEN{% endif %}
                                         </span>

@@ -18,6 +18,7 @@ import re
 import uuid
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
+from games_hub.quiz_rounds import current_round
 from QuizGame.models import Quiz, QuizQuestion, QuizParticipant, QuizAnswer, QuizSession, QuizBundle
 from sorting_ladder.models import SortingLadderGame, SortingLadderParticipant, SortingQuestion, SortingItem, SortingLadderSession, SortingBundle
 from sorting_ladder.runtime import sorting_ladder_reveal_ready_at
@@ -27,6 +28,8 @@ from Estimation.models import EstimationQuiz, EstimationQuestion, EstimationPart
 from where_is_this.models import WhereQuiz, WhereQuestion, WhereParticipant, WhereBundle, WhereDistanceZone
 from where_is_this.geo import WEB_MERCATOR_MAX_LATITUDE
 from black_jack_quiz.models import BlackJackQuiz, BlackJackQuestion, BlackJackParticipant, BlackJackBundle
+from clue_rush.progress import current_round as clue_round, score_history as clue_score_history, question_progress as clue_progress
+from clue_rush.runtime import end_game as end_clue_runtime, broadcast as clue_broadcast
 from clue_rush.models import ClueRushGame, ClueRushParticipant, ClueQuestion, Clue, ClueAnswer, ClueRushSession
 from who_is_that.models import WhoThatQuiz, WhoThatQuestion, WhoThatParticipant, WhoThatBundle
 from who_is_lying.models import WhoQuiz, WhoQuestion, WhoParticipant, WhoBundle
@@ -51,7 +54,7 @@ from games_hub.active_game_guard import (
 from games_hub.models import GameRuntimeState, HubSession, HubParticipant, HubGameStep
 from games_hub.host_permissions import authorize_game_host, user_can_manage_hub_session
 from games_hub.authoritative_state import current_snapshot, present_question, reset_question_flow
-from games_hub.unit_tutorial_runtime import get_unit_tutorial_state, is_current_unit_tutorial_question
+from games_hub.unit_tutorial_runtime import get_unit_tutorial_state, is_current_unit_tutorial_question, is_unit_tutorial_question
 from games_website.services import sync_all_models_to_supabase, restore_all_models_from_supabase
 
 
@@ -62,13 +65,14 @@ def is_admin(user):
 
 def _get_lobby_url(request, room_code):
     """Return the full participant lobby URL for a game room_code, or None."""
+    from games_hub.utils import session_join_url
     # Prefer hub_session from the URL parameter (set when navigating from the hub monitor)
     hub_session = request.GET.get('hub_session')
     if hub_session:
-        return f"{request.scheme}://{request.get_host()}/hub/lobby/{hub_session}/"
+        return session_join_url(request, hub_session)
     step = HubGameStep.objects.filter(room_code=room_code).select_related('session').first()
     if step:
-        return f"{request.scheme}://{request.get_host()}/hub/lobby/{step.session.code}/"
+        return session_join_url(request, step.session.code)
     return None
 
 
@@ -82,6 +86,68 @@ def _extract_hub_session_code(request):
         return None
     session_code = (data.get('hub_session') or data.get('session_code') or '').strip()
     return session_code or None
+
+
+def _dispatch_quiz_host_action(request, quiz, game_key, method, data=None):
+    """Keep supported HTTP host transports on the same lifecycle as their sockets."""
+    if method == 'handle_admin_start_quiz' and game_key in {'quiz', 'who', 'who_that', 'estimation'}:
+        denied = _guard_session_game_start(request, game_key, quiz.room_code)
+        if denied is not None:
+            return denied
+    from QuizGame.consumers import QuizConsumer
+    from who_is_lying.consumers import WhoConsumer
+    from who_is_that.consumers import WhoThatConsumer
+    from Estimation.consumers import EstimationConsumer
+    from Assign.consumers import AssignConsumer
+    from sorting_ladder.consumers import SortingLadderGameConsumer
+    from black_jack_quiz.consumers import BlackJackConsumer
+    consumer = {'blackjack': BlackJackConsumer, 'assign': AssignConsumer, 'sorting_ladder': SortingLadderGameConsumer, 'quiz': QuizConsumer, 'who': WhoConsumer, 'who_that': WhoThatConsumer, 'estimation': EstimationConsumer}[game_key]()
+    consumer.room_code = quiz.room_code
+    consumer.room_group_name = f"{'sortingladder' if game_key == 'sorting_ladder' else game_key}_{quiz.room_code}"
+    consumer.channel_layer = get_channel_layer()
+    consumer.scope = {'user': request.user}
+    if game_key == 'blackjack':
+        data = dict(data if data is not None else json.loads(request.body or '{}'))
+        data.setdefault('hub_session', _extract_hub_session_code(request) or quiz.active_hub_session_code or None)
+        consumer._authoritative_session = str(data.get('hub_session') or '')
+        authorization = authorize_game_host(request.user, game_key, quiz.room_code, data.get('hub_session'))
+        if not authorization.allowed:
+            return JsonResponse({'success': False, 'error': authorization.message}, status=403)
+    if game_key in {'assign', 'sorting_ladder'}:
+        data = dict(data if data is not None else json.loads(request.body or '{}') if request.content_type == 'application/json' else request.POST.dict())
+        data.setdefault('hub_session', request.GET.get('hub_session') or _get_active_hub_session_code_for_room(game_key, quiz.room_code))
+        consumer._authoritative_session = str(data.get('hub_session') or '')
+        authorization = authorize_game_host(request.user, game_key, quiz.room_code, data.get('hub_session'))
+        if not authorization.allowed:
+            return JsonResponse({'success': False, 'error': authorization.message, 'code': authorization.code}, status=403)
+        if method == 'handle_admin_send_question':
+            snapshot = current_snapshot(game_key, quiz.room_code, data.get('hub_session'))
+            data.setdefault('game_id', str(quiz.pk))
+            data.setdefault('state_revision', snapshot['state_revision'])
+            data.setdefault('client_action_id', str(uuid.uuid4()))
+    else:
+        data = dict(data if data is not None else json.loads(request.body or '{}'))
+        data.setdefault('hub_session', _extract_hub_session_code(request))
+    if game_key in {'who_that', 'estimation'} and method == 'handle_admin_send_question':
+        snapshot = current_snapshot(game_key, quiz.room_code, data.get('hub_session') or _get_active_hub_session_code_for_room(game_key, quiz.room_code))
+        data.setdefault('game_id', str(quiz.id))
+        data.setdefault('state_revision', snapshot['state_revision'])
+        data.setdefault('client_action_id', str(uuid.uuid4()))
+    responses = []
+
+    async def capture_send(text_data=None, **kwargs):
+        if text_data:
+            responses.append(json.loads(text_data))
+
+    consumer.send = capture_send
+    async_to_sync(getattr(consumer, method))(data)
+    failure = next((response for response in responses if response.get('type') in {
+        'error', 'action_rejected', 'active_game_conflict', 'participants_not_in_lobby',
+        'tutorial_start_warning', 'tutorial_ack_warning', 'tutorial_question_missing',
+    }), None)
+    if failure:
+        return JsonResponse({'success': False, 'error': failure.get('message') or failure.get('error'), **failure}, status=409)
+    return JsonResponse({'success': True})
 
 
 def _get_active_hub_session_code_for_room(game_key, room_code):
@@ -123,6 +189,27 @@ def _guard_session_game_start(request, game_key, room_code):
 def admin_required(view_func):
     """Decorator to require admin access"""
     return user_passes_test(is_admin, login_url='/admin/login/')(view_func)
+
+
+def _question_for_deletion(request, model, id_key='question_id'):
+    """Validate only the deletion target and ownership; keep each game's delete policy."""
+    try:
+        data = json.loads(request.body or '{}')
+        question_id = data.get(id_key) if isinstance(data, dict) else None
+        if isinstance(question_id, bool) or not isinstance(question_id, (int, str)):
+            raise ValueError
+        question_id = int(question_id)
+        if not 0 < question_id <= 9223372036854775807:
+            raise ValueError
+    except (ValueError, TypeError, UnicodeDecodeError):
+        return None, JsonResponse({'success': False, 'error': f'Eine gültige {id_key} ist erforderlich.'}, status=400)
+
+    question = model.objects.filter(pk=question_id).first()
+    if question is None:
+        return None, JsonResponse({'success': False, 'error': 'Frage nicht gefunden.'}, status=404)
+    if not request.user.is_superuser and question.created_by_id != request.user.pk:
+        return None, JsonResponse({'success': False, 'error': 'Keine Berechtigung zum Löschen dieser Frage.'}, status=403)
+    return question, None
 
 
 def admin_login(request):
@@ -559,12 +646,14 @@ def clue_rush_monitor(request, room_code):
     hub_session = request.GET.get('hub_session')
     from clue_rush.runtime import reconcile_clue_schedule
 
-    reconcile_clue_schedule(room_code)
     quiz = get_object_or_404(ClueRushGame, room_code=room_code)
 
     if not request.user.is_superuser and quiz.creator != request.user:
         return redirect('admin_dashboard:clue_rush_management')
 
+    reconcile_clue_schedule(room_code)
+    quiz.refresh_from_db()
+    hub_session = hub_session or _get_active_hub_session_code_for_room('clue_rush', room_code)
     participants = quiz.participants.all().filter(hub_session_code=hub_session).order_by('-total_score', 'name')
     # If the quiz has a predefined set of selected questions, show only those
     if quiz.selected_questions.exists():
@@ -608,7 +697,7 @@ def clue_rush_monitor(request, room_code):
 
     response_session_code = hub_session or _get_active_hub_session_code_for_room('clue_rush', room_code)
     live_response_question = quiz.current_question
-    scoped_live_answers = ClueAnswer.objects.filter(quiz=quiz).select_related('participant', 'question')
+    scoped_live_answers = ClueAnswer.objects.filter(quiz=quiz, round_number=clue_round(quiz)).select_related('participant', 'question')
     if quiz.started_at:
         scoped_live_answers = scoped_live_answers.filter(submitted_at__gte=quiz.started_at)
     if response_session_code is not None:
@@ -629,7 +718,7 @@ def clue_rush_monitor(request, room_code):
                 'answer_text': response.answer_text,
                 'is_correct': response.is_correct,
                 'is_manual_override': response.is_manually_corrected,
-                'can_mark_correct': not response.is_correct,
+                'can_mark_correct': not response.is_correct and not response.is_tutorial,
                 'points_earned': response.points_earned,
                 'time_taken': response.time_taken,
                 'total_score': response.participant.total_score,
@@ -659,26 +748,7 @@ def clue_rush_monitor(request, room_code):
 
 
 def _build_clue_rush_progress_history(quiz, participant):
-    answers = ClueAnswer.objects.filter(
-        quiz=quiz,
-        participant=participant,
-    ).select_related('question').order_by('submitted_at', 'id')
-    if quiz.started_at:
-        answers = answers.filter(submitted_at__gte=quiz.started_at)
-
-    history = []
-    for idx, answer in enumerate(answers, start=1):
-        max_points = answer.total_clues_at_submission or answer.question.clues.count()
-        achieved_points = answer.points_earned if answer.is_correct else 0
-        if max_points > 0:
-            achieved_points = max(0, min(achieved_points, max_points))
-        history.append({
-            'question_number': idx,
-            'correct_answer': answer.question.answer,
-            'achieved_points': achieved_points,
-            'max_points': max_points,
-        })
-    return history
+    return clue_score_history(quiz, participant)
 
 
 @admin_required
@@ -716,6 +786,9 @@ def promote_clue_rush_answer_correct(request, room_code):
                     'error': 'This answer does not belong to the active session.',
                 }, status=400)
 
+            if answer.is_tutorial or is_unit_tutorial_question('clue_rush', room_code, answer.participant.hub_session_code, answer.question_id):
+                return JsonResponse({'success': False, 'error': 'Tutorial answers cannot award points.'}, status=400)
+
             if answer.is_correct:
                 return JsonResponse({
                     'success': False,
@@ -749,6 +822,7 @@ def promote_clue_rush_answer_correct(request, room_code):
             'participant_name': answer.participant.name,
             'question_id': answer.question_id,
             'answer_text': answer.answer_text,
+            'hub_session_code': answer.participant.hub_session_code,
             'is_correct': True,
             'is_manual_override': True,
             'can_mark_correct': False,
@@ -797,34 +871,17 @@ def end_clue_rush_game_by_room_code(request, room_code):
                 'error': 'You are not authorized to end this quiz.'
             }, status=403)
 
-        session = getattr(quiz, 'session', None)
-        if session:
-            session.is_question_active = False
-            session.is_clue_active = False
-            session.question_end_time = None
-            session.clue_end_time = None
-            session.current_clue_number = 0
-            session.save(update_fields=[
-                'is_question_active',
-                'is_clue_active',
-                'question_end_time',
-                'clue_end_time',
-                'current_clue_number',
-            ])
-
-        quiz.current_question = None
-        quiz.question_start_time = None
-        quiz.current_clue = None
-        quiz.clue_start_time = None
-        quiz.end_quiz('completed')
-        quiz.save(update_fields=[
-            'status',
-            'ended_at',
-            'current_question',
-            'question_start_time',
-            'current_clue',
-            'clue_start_time',
-        ])
+        end_clue_runtime(quiz.pk)
+        code = (request.GET.get('hub_session') or request.POST.get('hub_session')
+                or (_extract_hub_session_code(request) if request.content_type == 'application/json' else None)
+                or _get_active_hub_session_code_for_room('clue_rush', room_code))
+        scores = list(quiz.participants.filter(hub_session_code=code).values('name', 'total_score'))
+        clue_broadcast('quiz_ended', {'message': 'Clue Rush beendet.', 'final_scores': scores}, room_code)
+        if code:
+            layer = get_channel_layer()
+            if layer:
+                async_to_sync(layer.group_send)(f'hub_{code}', {'type': 'hub_event',
+                    'event': {'type': 'quiz_ended', 'room_code': room_code, 'game_key': 'clue_rush', 'final_scores': scores}})
 
         return JsonResponse({'success': True})
     except Exception as e:
@@ -837,7 +894,7 @@ def end_clue_rush_game_by_room_code(request, room_code):
 @admin_required
 def sorting_ladder_monitor(request, room_code):
     """Admin monitor for a live Sorting Ladder game session."""
-    hub_session = request.GET.get('hub_session')
+    hub_session = request.GET.get('hub_session') or _get_active_hub_session_code_for_room('sorting_ladder', room_code)
     quiz = get_object_or_404(SortingLadderGame, room_code=room_code)
 
     if not request.user.is_superuser and quiz.creator != request.user:
@@ -849,10 +906,7 @@ def sorting_ladder_monitor(request, room_code):
         quiz.current_question = None
         quiz.tutorial_active = False
 
-    participants_qs = quiz.participants.all()
-    if hub_session:
-        participants_qs = participants_qs.filter(hub_session_code=hub_session)
-    participants = participants_qs.order_by('-rounds_survived', 'name')
+    participants = quiz.participants.filter(hub_session_code=hub_session or None).order_by('-total_score', 'name')
 
     # If the game has predefined selected topics, show only those
     if quiz.selected_questions.exists():
@@ -873,6 +927,8 @@ def sorting_ladder_monitor(request, room_code):
 
     session, _ = SortingLadderSession.objects.get_or_create(quiz=quiz)
     question_runtime = current_snapshot('sorting_ladder', room_code, hub_session)
+    if quiz.current_question_id:
+        question_runtime['current_set_id'] = session.current_set_number
     reveal_ready_at = sorting_ladder_reveal_ready_at(
         content_revealed_at=parse_datetime(
             question_runtime.get('content_revealed_at') or ''
@@ -916,18 +972,7 @@ def start_sorting_ladder_game(request, room_code):
                 'error': 'You are not authorized to start this game.',
             }, status=403)
 
-        guard_response = _guard_session_game_start(request, 'sorting_ladder', room_code)
-        if guard_response:
-            return guard_response
-
-        # Use the model helper, similar to quiz.start_quiz()
-        if hasattr(quiz, 'start_quiz'):
-            quiz.start_quiz()
-        else:
-            quiz.status = 'active'
-            quiz.save(update_fields=['status'])
-
-        return JsonResponse({'success': True})
+        return _dispatch_quiz_host_action(request, quiz, 'sorting_ladder', 'handle_admin_start_quiz')
     except Exception as e:
         return JsonResponse({
             'success': False,
@@ -948,22 +993,7 @@ def end_sorting_ladder_game_by_room_code(request, room_code):
                 'error': 'You are not authorized to end this game.',
             }, status=403)
 
-        # Use the model helper, similar to quiz.end_quiz('completed')
-        if hasattr(quiz, 'end_quiz'):
-            quiz.end_quiz()
-        else:
-            quiz.status = 'completed'
-            quiz.save(update_fields=['status'])
-
-        # Ensure any active round is stopped in the session
-        try:
-            session = quiz.session
-            if session.is_round_active:
-                session.end_round()
-        except (SortingLadderSession.DoesNotExist, AttributeError):
-            pass
-
-        return JsonResponse({'success': True})
+        return _dispatch_quiz_host_action(request, quiz, 'sorting_ladder', 'handle_admin_end_quiz')
     except Exception as e:
         return JsonResponse({
             'success': False,
@@ -1007,56 +1037,9 @@ def send_sorting_ladder_topic(request, room_code):
                 'error': 'This topic is not part of the selected set for this game.',
             }, status=400)
 
-        # Initialize / reset session similar to consumer.initialize_session_for_topic
-        elements = list(topic.elements.order_by('correct_rank'))
-        if len(elements) < 3:
-            return JsonResponse({
-                'success': False,
-                'error': 'Not enough items for this topic (need at least 3).',
-            }, status=400)
-
-        smallest = elements[0]
-        largest = elements[-1]
-
-        session, _ = SortingLadderSession.objects.get_or_create(quiz=quiz)
-        session.placed_elements.clear()
-        session.placed_elements.add(smallest, largest)
-        session.active_element = None
-        session.current_round = 0
-        session.is_round_active = False
-
-        if time_limit is not None:
-            try:
-                session.time_limit_seconds = int(time_limit)
-            except (TypeError, ValueError):
-                pass
-
-        session.round_start_time = None
-        session.round_end_time = None
-        session.save()
-
-        quiz.current_question = topic
-        quiz.save(update_fields=['current_question'])
-
-        payload = {
-            'current_round': session.current_round,
-            'time_limit_seconds': session.time_limit_seconds,
-            'placed_elements': [
-                {'id': smallest.id, 'text': smallest.text},
-                {'id': largest.id, 'text': largest.text},
-            ],
-            'active_element': None,
-        }
-
-        return JsonResponse({
-            'success': True,
-            'topic': {
-                'id': topic.id,
-                'title': topic.title,
-                'description': topic.description,
-            },
-            'session': payload,
-        })
+        data['question_id'] = topic.pk
+        data['custom_time_limit'] = time_limit
+        return _dispatch_quiz_host_action(request, quiz, 'sorting_ladder', 'handle_admin_send_question', data)
     except Exception as e:
         return JsonResponse({
             'success': False,
@@ -1080,23 +1063,7 @@ def end_sorting_ladder_round(request, room_code):
                 'error': 'You are not authorized to control this game.',
             }, status=403)
 
-        try:
-            session = quiz.session
-        except (SortingLadderSession.DoesNotExist, AttributeError):
-            return JsonResponse({
-                'success': False,
-                'error': 'No active session for this game.',
-            }, status=400)
-
-        # End the round and collect survivors, similar to consumer.end_round_db
-        session.end_round()
-        survivors_qs = quiz.participants.filter(is_eliminated=False, is_active=True)
-        survivors = list(survivors_qs.values('id', 'name', 'rounds_survived'))
-
-        return JsonResponse({
-            'success': True,
-            'survivors': survivors,
-        })
+        return _dispatch_quiz_host_action(request, quiz, 'sorting_ladder', 'handle_admin_end_round')
     except Exception as e:
         return JsonResponse({
             'success': False,
@@ -1110,14 +1077,15 @@ def api_clue_rush_participants(request, room_code):
         quiz = get_object_or_404(ClueRushGame, room_code=room_code)
         if not request.user.is_superuser and quiz.creator != request.user:
             return JsonResponse({'error': 'Unauthorized'}, status=403)
-        participants = quiz.participants.all().order_by('-total_score', 'name')
+        participants = quiz.participants.filter(hub_session_code=_extract_hub_session_code(request) or _get_active_hub_session_code_for_room('clue_rush', room_code)).order_by('-total_score', 'name')
+        answers = {answer.participant_id: answer for answer in quiz.clue_answers.filter(question_id=quiz.current_question_id, round_number=clue_round(quiz))}
         data = [{
             'id': p.id,
             'name': p.name,
             'total_score': p.total_score,
-            'has_guessed': p.has_guessed,
-            'guess_correct': p.guess_correct,
-            'points_earned': p.points_earned,
+            'has_guessed': p.pk in answers,
+            'guess_correct': bool(answers.get(p.pk) and answers[p.pk].is_correct),
+            'points_earned': answers[p.pk].points_earned if p.pk in answers else 0,
             'is_active': p.is_active,
         } for p in participants]
         return JsonResponse({'success': True, 'participants': data, 'count': len(data)})
@@ -1131,12 +1099,12 @@ def api_clue_rush_stats(request, room_code):
         quiz = get_object_or_404(ClueRushGame, room_code=room_code)
         if not request.user.is_superuser and quiz.creator != request.user:
             return JsonResponse({'error': 'Unauthorized'}, status=403)
-        participants = quiz.participants.all()
+        participants = quiz.participants.filter(hub_session_code=_extract_hub_session_code(request) or _get_active_hub_session_code_for_room('clue_rush', room_code))
         stats = {
             'participant_count': participants.count(),
             'active_participants': participants.filter(is_active=True).count(),
-            'current_round': quiz.current_round,
-            'total_clues': quiz.clues.count(),
+            'current_round': getattr(getattr(quiz, 'session', None), 'current_clue_number', 0),
+            'total_clues': quiz.current_question.clues.count() if quiz.current_question_id else 0,
         }
         return JsonResponse({'success': True, 'stats': stats})
     except Exception as e:
@@ -1188,6 +1156,7 @@ def add_clue_rush_question(request):
 
 @admin_required
 @require_POST
+@transaction.atomic
 def update_clue_rush_question(request):
     """Update fields of ClueQuestion and optionally replace its clues."""
     try:
@@ -1195,9 +1164,12 @@ def update_clue_rush_question(request):
         qid = data.get('question_id')
         if not qid:
             return JsonResponse({'success': False, 'error': 'question_id is required'}, status=400)
-        q = get_object_or_404(ClueQuestion, id=qid)
+        q = get_object_or_404(ClueQuestion.objects.select_for_update(), id=qid)
         if not request.user.is_superuser and q.created_by != request.user:
             return JsonResponse({'success': False, 'error': 'Unauthorized'}, status=403)
+
+        if ClueRushGame.objects.filter(current_question=q, status__in=['active', 'inactive']).exists():
+            return JsonResponse({'success': False, 'error': 'Die laufende Frage kann erst nach ihrem Abschluss bearbeitet werden.'}, status=409)
 
         fields_to_update = []
         if 'question_text' in data:
@@ -1233,8 +1205,10 @@ def update_clue_rush_question(request):
 
         return JsonResponse({'success': True})
     except ValueError:
+        transaction.set_rollback(True)
         return JsonResponse({'success': False, 'error': 'Invalid numeric values.'}, status=400)
     except Exception as e:
+        transaction.set_rollback(True)
         return JsonResponse({'success': False, 'error': str(e)}, status=400)
 
 
@@ -1243,13 +1217,9 @@ def update_clue_rush_question(request):
 def delete_clue_rush_question(request):
     """Delete or deactivate a ClueQuestion depending on usage."""
     try:
-        data = json.loads(request.body or '{}')
-        qid = data.get('question_id')
-        if not qid:
-            return JsonResponse({'success': False, 'error': 'question_id is required'}, status=400)
-        q = get_object_or_404(ClueQuestion, id=qid)
-        if not request.user.is_superuser and q.created_by != request.user:
-            return JsonResponse({'success': False, 'error': 'Unauthorized'}, status=403)
+        q, error = _question_for_deletion(request, ClueQuestion)
+        if error is not None:
+            return error
 
         in_use = ClueAnswer.objects.filter(question=q).exists() or q.games.exists()
         if in_use:
@@ -1276,7 +1246,8 @@ def get_clue_rush_selected_questions(request, quiz_id: int):
             'id': q.id,
             'question_text': q.question_text,
             'answer': q.answer,
-            'points': q.points,
+            'points': q.clues.count(),
+            'clue_count': q.clues.count(),
             'time_limit': q.time_limit,
             'created_at': q.created_at.strftime('%Y-%m-%d %H:%M:%S'),
             'is_active': q.is_active,
@@ -1290,7 +1261,7 @@ def get_clue_rush_selected_questions(request, quiz_id: int):
             'success': True,
             'questions': questions,
             'count': len(questions),
-            'total_questions': quiz.total_questions,
+            'total_questions': len(questions),
             'scoring_mode': getattr(quiz, 'scoring_mode', 'simple'),
             'tutorial_question_id': quiz.tutorial_question_id,
         })
@@ -1312,7 +1283,8 @@ def get_clue_rush_question_detail(request, question_id):
             'id': question.id,
             'question_text': question.question_text,
             'answer': question.answer,
-            'points': question.points,
+            'points': question.clues.count(),
+            'clue_count': question.clues.count(),
             'time_limit': question.time_limit,
             'is_active': question.is_active,
             'clues': [
@@ -1330,6 +1302,7 @@ def get_clue_rush_question_detail(request, question_id):
         return JsonResponse({'success': False, 'error': str(e)}, status=400)
 
 
+@admin_required
 def get_clue_rush_questions(request):
     # Get page number from request
     page_number = request.GET.get('page', 1)
@@ -1358,7 +1331,8 @@ def get_clue_rush_questions(request):
             'question_text': question.question_text,
             'answer': question.answer,
             'no_of_clues': question.clues.count(),
-            'points': question.points,
+            'points': question.clues.count(),
+            'clue_count': question.clues.count(),
             'time_limit': question.time_limit,
             'created_at': question.created_at.strftime('%Y-%m-%d %H:%M:%S'),
             'is_active': question.is_active,
@@ -1608,15 +1582,18 @@ def add_sorting_topic(request):
 
 @admin_required
 @require_POST
+@transaction.atomic
 def update_sorting_topic(request):
     topic_id = request.POST.get('topic_id')
     if not topic_id:
         return JsonResponse({'success': False, 'error': 'Missing topic_id'}, status=400)
-    topic = get_object_or_404(SortingQuestion, id=topic_id, created_by=request.user)
+    topic = get_object_or_404(SortingQuestion.objects.select_for_update(), id=topic_id, created_by=request.user)
+    if SortingLadderGame.objects.filter(current_question=topic, status__in=['active', 'inactive']).exists():
+        return JsonResponse({'success': False, 'error': 'Das laufende Set kann erst nach seinem Abschluss bearbeitet werden.'}, status=409)
     title = (request.POST.get('title') or topic.question_text).strip()
     description = (request.POST.get('description') or topic.description).strip()
-    points = (request.POST.get('points') or topic.points).strip()
-    round_time_limit = (request.POST.get('round_time_limit') or topic.round_time_limit).strip()
+    points = str(request.POST.get('points') or topic.points).strip()
+    round_time_limit = str(request.POST.get('round_time_limit') or topic.round_time_limit).strip()
     is_active_raw = request.POST.get('is_active')
 
     upper_label = (request.POST.get('upper_label') or topic.upper_label).strip()
@@ -1682,11 +1659,9 @@ def update_sorting_topic(request):
 @admin_required
 @require_POST
 def delete_sorting_topic(request):
-    data = json.loads(request.body or '{}')
-    topic_id = data.get('topic_id')
-    if not topic_id:
-        return JsonResponse({'success': False, 'error': 'topic_id is required'}, status=400)
-    topic = get_object_or_404(SortingQuestion, id=topic_id, created_by=request.user)
+    topic, error = _question_for_deletion(request, SortingQuestion, id_key='topic_id')
+    if error is not None:
+        return error
     if topic.elements.exists() or topic.active_in_games.exists():
         topic.is_active = False
         topic.save(update_fields=['is_active'])
@@ -2071,6 +2046,8 @@ def update_wer_weiss_mehr_question(request):
         question = get_object_or_404(WerWeissMehrQuestion, id=data.get('question_id'))
         if not request.user.is_superuser and question.created_by != request.user:
             return JsonResponse({'success': False, 'error': 'Unauthorized'}, status=403)
+        if WerWeissMehrGame.objects.filter(current_question=question, status__in=['active', 'inactive']).exists():
+            return JsonResponse({'success': False, 'error': 'Dieses Set wird gerade gespielt und kann noch nicht bearbeitet werden.'}, status=409)
         question.question_text = (data.get('question_text') or question.question_text).strip()
         question.round_time_limit = int(data.get('round_time_limit') or data.get('time_limit') or question.round_time_limit)
         question.save(update_fields=['question_text', 'round_time_limit'])
@@ -2092,8 +2069,9 @@ def get_wer_weiss_mehr_question_detail(request, question_id):
 @admin_required
 @require_POST
 def delete_wer_weiss_mehr_question(request):
-    data = json.loads(request.body or '{}')
-    question = get_object_or_404(WerWeissMehrQuestion, id=data.get('question_id'), created_by=request.user)
+    question, error = _question_for_deletion(request, WerWeissMehrQuestion)
+    if error is not None:
+        return error
     question.is_active = False
     question.save(update_fields=['is_active'])
     return JsonResponse({'success': True})
@@ -2113,6 +2091,9 @@ def delete_wer_weiss_mehr_game(request):
 @admin_required
 def api_wer_weiss_mehr_state(request, room_code):
     quiz = get_object_or_404(WerWeissMehrGame, room_code=room_code)
+    authorization = authorize_game_host(request.user, 'wer_weiss_mehr', room_code, request.GET.get('hub_session') or None)
+    if not authorization.allowed:
+        return JsonResponse({'success': False, 'error': authorization.message}, status=403)
     return JsonResponse(build_game_state(quiz, hub_session_code=request.GET.get('hub_session') or None))
 
     
@@ -2407,7 +2388,15 @@ def end_buzzer_game_by_room_code(request, room_code):
     authorization = authorize_game_host(request.user, 'buzzer', room_code, hub_session)
     if not authorization.allowed:
         return JsonResponse({'success': False, 'error': authorization.message, 'code': authorization.code}, status=403)
-    game.end_quiz()
+    from games_hub import manual_game_runtime as manual
+    try:
+        manual.perform(game, None, hub_session, lambda locked: locked.end_quiz())
+        manual.broadcast(game, 'game_ended')
+        if hub_session:
+            async_to_sync(get_channel_layer().group_send)(f'hub_{hub_session}',
+                {'type': 'hub_event', 'event': {'type': 'game_ended', 'game_key': 'buzzer', 'room_code': room_code}})
+    except manual.ActionError as exc:
+        return JsonResponse({'success': False, 'error': str(exc), 'code': exc.code}, status=409)
     if request.headers.get('x-requested-with') == 'XMLHttpRequest' or request.content_type == 'application/json':
         return JsonResponse({'success': True})
     return redirect('admin_dashboard:sessions_overview')
@@ -2469,10 +2458,12 @@ def host_points_monitor(request, room_code):
         return redirect('admin_dashboard:manage_games')
     if hub_session:
         game.ensure_snapshot_participants(hub_session)
+    state = game.serialize_state(hub_session)
+    game.status = state['game']['status']
     return render(request, 'admin_dashboard/host_points_monitor.html', {
         'game': game,
         'hub_session': hub_session or '',
-        'state': game.serialize_state(hub_session),
+        'state': state,
     })
 
 
@@ -2486,7 +2477,15 @@ def end_host_points_game_by_room_code(request, room_code):
     authorization = authorize_game_host(request.user, 'host_points', room_code, hub_session)
     if not authorization.allowed:
         return JsonResponse({'success': False, 'error': authorization.message, 'code': authorization.code}, status=403)
-    game.end_quiz()
+    from games_hub import manual_game_runtime as manual
+    try:
+        manual.perform(game, None, hub_session, lambda locked: locked.end_quiz())
+        manual.broadcast(game, 'game_ended')
+        if hub_session:
+            async_to_sync(get_channel_layer().group_send)(f'hub_{hub_session}',
+                {'type': 'hub_event', 'event': {'type': 'game_ended', 'game_key': 'host_points', 'room_code': room_code}})
+    except manual.ActionError as exc:
+        return JsonResponse({'success': False, 'error': str(exc), 'code': exc.code}, status=409)
     if request.headers.get('x-requested-with') == 'XMLHttpRequest' or request.content_type == 'application/json':
         return JsonResponse({'success': True})
     return redirect('admin_dashboard:sessions_overview')
@@ -2636,7 +2635,7 @@ def wann_war_das_monitor(request, room_code):
         'game': game,
         'hub_session': hub_session or '',
         'available_questions': available_questions,
-        'state': game.serialize_state(hub_session),
+        'state': game.serialize_state(hub_session, for_host=True),
     })
 
 
@@ -2708,10 +2707,9 @@ def update_wann_war_das_question(request):
 @admin_required
 def delete_wann_war_das_question(request):
     try:
-        data = json.loads(request.body or '{}')
-        question = get_object_or_404(WannWarDasQuestion, id=data.get('question_id'))
-        if not request.user.is_superuser and question.created_by != request.user:
-            return JsonResponse({'success': False, 'error': 'Unauthorized'}, status=403)
+        question, error = _question_for_deletion(request, WannWarDasQuestion)
+        if error is not None:
+            return error
         question.is_active = False
         question.save(update_fields=['is_active', 'updated_at'])
         return JsonResponse({'success': True})
@@ -3359,7 +3357,7 @@ def get_where_selected_questions(request, quiz_id: int):
         if _order:
             _omap = {i: pos for pos, i in enumerate(_order)}
             questions.sort(key=lambda q: _omap.get(q['id'], len(_order)))
-        return JsonResponse({'success': True, 'questions': questions, 'count': len(questions), 'tutorial_question_id': quiz.tutorial_question_id})
+        return JsonResponse({'success': True, 'questions': questions, 'count': len(questions), 'tutorial_question_id': quiz.tutorial_question_id, 'scoring_mode': quiz.scoring_mode, 'zone_count': quiz.zone_count, 'zone_width_km': quiz.zone_width_km})
     except Exception as e:
         return JsonResponse({'success': False, 'error': str(e)}, status=400)
 
@@ -3382,6 +3380,8 @@ def update_where_custom_quiz(request):
         if not request.user.is_superuser and quiz.creator != request.user:
             return JsonResponse({'success': False, 'error': 'Unauthorized'}, status=403)
 
+        if quiz.status not in {'waiting'}:
+            return JsonResponse({'success': False, 'error': 'Ein gestartetes Spiel kann nicht umkonfiguriert werden.'}, status=400)
         fields_to_update = []
         if title:
             quiz.title = title
@@ -3392,6 +3392,12 @@ def update_where_custom_quiz(request):
         if 'scoring_mode' in data:
             quiz.scoring_mode = _normalize_where_scoring_mode(data.get('scoring_mode'))
             fields_to_update.append('scoring_mode')
+        if 'zone_count' in data or 'zone_width_km' in data:
+            from where_is_this.runtime import zones
+            count, width = data.get('zone_count', quiz.zone_count or 5), data.get('zone_width_km', quiz.zone_width_km or 50)
+            zones(count, width)
+            quiz.zone_count, quiz.zone_width_km = int(count), float(width)
+            fields_to_update.extend(['zone_count', 'zone_width_km'])
         _apply_tutorial_fields(quiz, data, fields_to_update)
         if fields_to_update:
             quiz.save(update_fields=fields_to_update)
@@ -3806,6 +3812,9 @@ def quiz_monitor(request, room_code):
         if prepared_question is not None
         else None
     )
+    from games_hub.quiz_rounds import progress as round_progress
+    host_progress = round_progress(quiz, 'quiz', hub_session,
+        question_id=quiz.current_question_id or getattr(prepared_question, 'id', None), prepared=prepared_question is not None)
 
     context = {
         'quiz': quiz,
@@ -3815,6 +3824,8 @@ def quiz_monitor(request, room_code):
         'quiz_session': quiz_session,
         'prepared_question': prepared_question,
         'prepared_question_number': prepared_question_number,
+        'host_question_number': host_progress['current'] or 0,
+        'host_total_questions': host_progress['total'] or 0,
         'host_active_question': quiz.current_question or prepared_question,
         'lobby_url': _get_lobby_url(request, room_code),
         'current_unit_is_tutorial': is_current_unit_tutorial_question('quiz', quiz.room_code, hub_session, quiz.current_question_id),
@@ -3850,6 +3861,7 @@ def create_quiz(request):
 
 
 def _serialize_quiz_live_response(response):
+    from games_hub.quiz_rounds import answer_number
     question = response.question
     display_answer = response.answer_text
     effective_question_type = question.get_effective_question_type()
@@ -3868,6 +3880,8 @@ def _serialize_quiz_live_response(response):
     )
     return {
         'answer_id': response.id,
+        'round_number': response.round_number,
+        'question_number': answer_number(response, 'quiz'),
         'participant_id': response.participant_id,
         'participant_name': response.participant.name,
         'answer_text': display_answer,
@@ -3927,6 +3941,7 @@ def promote_quiz_answer_correct(request, room_code):
             answer.participant.refresh_from_db(fields=['total_score'])
             correction_is_during_active_question = bool(
                 quiz.current_question_id == answer.question_id
+                and answer.round_number == current_round(quiz)
                 and QuizSession.objects.filter(quiz=quiz, is_question_active=True).exists()
             )
 
@@ -4366,13 +4381,7 @@ def end_quiz(request):
                 'error': 'You are not authorized to end this quiz.'
             }, status=403)
 
-        # End current question if active
-        if hasattr(quiz, 'session'):
-            quiz.session.end_current_question()
-
-        quiz.end_quiz('completed')
-
-        return JsonResponse({'success': True})
+        return _dispatch_quiz_host_action(request, quiz, 'quiz', 'handle_admin_end_quiz')
     except Exception as e:
         return JsonResponse({
             'success': False,
@@ -4398,9 +4407,7 @@ def start_quiz(request, room_code):
         if guard_response:
             return guard_response
         
-        quiz.start_quiz(session_code=_extract_hub_session_code(request))
-        
-        return JsonResponse({'success': True})
+        return _dispatch_quiz_host_action(request, quiz, 'quiz', 'handle_admin_start_quiz')
     except Exception as e:
         return JsonResponse({
             'success': False,
@@ -4422,13 +4429,7 @@ def end_quiz_by_room_code(request, room_code):
                 'error': 'You are not authorized to end this quiz.'
             }, status=403)
 
-        # End current question if active
-        if hasattr(quiz, 'session'):
-            quiz.session.end_current_question()
-
-        quiz.end_quiz('completed')
-
-        return JsonResponse({'success': True})
+        return _dispatch_quiz_host_action(request, quiz, 'quiz', 'handle_admin_end_quiz')
     except Exception as e:
         return JsonResponse({
             'success': False,
@@ -4450,28 +4451,7 @@ def send_question(request, room_code):
                 'error': 'You are not authorized to send questions to this quiz.'
             }, status=403)
         
-        data = json.loads(request.body)
-        question_id = data.get('question_id')
-        
-        question = get_object_or_404(QuizQuestion, id=question_id)
-
-        # Enforce selected questions if the quiz has a predefined set
-        if quiz.selected_questions.exists() and not quiz.selected_questions.filter(id=question.id).exists():
-            return JsonResponse({
-                'success': False,
-                'error': 'This question is not part of the selected set for this quiz.'
-            }, status=400)
-        
-        # Get or create quiz session
-        quiz_session, created = QuizSession.objects.get_or_create(quiz=quiz)
-        
-        # Send the question
-        quiz_session.send_question(question)
-        
-        # Here you would typically send a WebSocket message to all participants
-        # We'll implement this in the WebSocket consumer
-        
-        return JsonResponse({'success': True})
+        return _dispatch_quiz_host_action(request, quiz, 'quiz', 'handle_admin_send_question')
     except Exception as e:
         return JsonResponse({
             'success': False,
@@ -4493,15 +4473,7 @@ def end_question(request, room_code):
                 'error': 'You are not authorized to control this quiz.'
             }, status=403)
         
-        # Get quiz session
-        quiz_session = get_object_or_404(QuizSession, quiz=quiz)
-        
-        # End current question
-        quiz_session.end_current_question()
-        
-        # Here you would send WebSocket message to all participants
-        
-        return JsonResponse({'success': True})
+        return _dispatch_quiz_host_action(request, quiz, 'quiz', 'handle_admin_end_question')
     except Exception as e:
         return JsonResponse({
             'success': False,
@@ -4514,10 +4486,9 @@ def end_question(request, room_code):
 def delete_quiz_question(request):
     """Delete a quiz question via AJAX"""
     try:
-        data = json.loads(request.body)
-        question_id = data.get('question_id')
-        
-        question = get_object_or_404(QuizQuestion, id=question_id, created_by=request.user)
+        question, error = _question_for_deletion(request, QuizQuestion)
+        if error is not None:
+            return error
         
         # Check if question has been used in games
         if QuizAnswer.objects.filter(question=question).exists():
@@ -4602,6 +4573,16 @@ def settings(request):
     dashboard_settings = DashboardSettings.load()
     if request.method == 'POST':
         update_fields = []
+        if 'text_match_threshold' in request.POST:
+            from games_hub.text_matching import validate_threshold
+            try:
+                threshold = validate_threshold(request.POST.get('text_match_threshold'))
+            except ValueError as exc:
+                return render(request, 'admin_dashboard/settings.html', {'dashboard_settings': dashboard_settings, 'text_matching_error': str(exc)}, status=400)
+            if threshold != dashboard_settings.text_match_threshold and HubSession.objects.filter(started_at__isnull=False, ended_at__isnull=True).exists():
+                messages.warning(request, 'Die laufende Session ist von dieser Änderung nicht betroffen. Sie behält ihren eigenen Wert für die Textbewertung.')
+            dashboard_settings.text_match_threshold = threshold
+            update_fields.append('text_match_threshold')
         if 'question_reveal_ms_per_character' in request.POST:
             dashboard_settings.question_reveal_ms_per_character = (
                 DashboardSettings.normalize_question_reveal_speed(
@@ -4618,9 +4599,10 @@ def settings(request):
             update_fields.append('quiz_mc_answer_reveal_stagger_ms')
         if update_fields:
             dashboard_settings.save(update_fields=update_fields)
-        messages.success(request, 'Darstellungseinstellungen gespeichert.')
+        messages.success(request, 'Optionen gespeichert.')
         return redirect('admin_dashboard:settings')
-    context = {'dashboard_settings': dashboard_settings}
+    context = {'dashboard_settings': dashboard_settings,
+               'has_running_session': HubSession.objects.filter(started_at__isnull=False, ended_at__isnull=True).exists()}
     return render(request, 'admin_dashboard/settings.html', context)
 
 
@@ -4656,7 +4638,7 @@ def api_quiz_stats(request, room_code):
         
         # Current question stats
         if quiz.current_question:
-            current_answers = answers.filter(question=quiz.current_question)
+            current_answers = answers.filter(question=quiz.current_question, round_number=current_round(quiz))
             stats['current_question_responses'] = current_answers.count()
             stats['correct_current_responses'] = current_answers.filter(is_correct=True).count()
         
@@ -4721,7 +4703,7 @@ def api_live_responses(request, room_code):
             return JsonResponse({'error': 'Unauthorized'}, status=403)
 
         hub_session = _extract_hub_session_code(request)
-        answers = QuizAnswer.objects.filter(quiz=quiz)
+        answers = QuizAnswer.objects.filter(quiz=quiz, round_number=current_round(quiz))
         if hub_session is not None:
             answers = answers.filter(participant__hub_session_code=hub_session)
 
@@ -4771,6 +4753,7 @@ def _normalize_where_scoring_mode(value):
 
 
 def _parse_where_zones_from_request(data):
+    import math
     raw_zones = data.get('distance_zones') or data.get('zones') or ''
     if raw_zones:
         if isinstance(raw_zones, str):
@@ -4812,6 +4795,8 @@ def _parse_where_zones_from_request(data):
         max_distance = float(zone.get('max_distance_km', zone.get('max')))
         points = int(zone.get('points', 0))
         label = (zone.get('label') or '').strip()
+        if not math.isfinite(min_distance) or not math.isfinite(max_distance):
+            raise ValueError('Zonengrenzen müssen endliche Zahlen sein.')
         if min_distance < 0:
             raise ValueError('Zone minimum distance must be >= 0.')
         if max_distance <= min_distance:
@@ -4907,6 +4892,8 @@ def where_monitor(request, room_code):
     
     context = {
         'quiz': quiz,
+        'hub_session': hub_session or '',
+        'where_config': {'room': quiz.room_code, 'code': hub_session or '', 'host': True},
         'participants': participants,
         'participant_count': participants.count(),
         'available_questions': available_questions,
@@ -4925,6 +4912,7 @@ def create_where_quiz(request):
         quiz = WhereQuiz.objects.create(
             title="Where is this?",
             creator=request.user,
+            zone_count=5, zone_width_km=50,
             status='waiting'
         )
         
@@ -4951,6 +4939,9 @@ def create_where_custom_quiz(request):
         title = (data.get('title') or '').strip() or 'Where is this?'
         question_ids = data.get('question_ids') or []
         tutorial_enabled, tutorial_title, tutorial_text = _normalize_tutorial_payload(data)
+        from where_is_this.runtime import zones
+        count, width = data.get('zone_count', 5), data.get('zone_width_km', 50)
+        zones(count, width)
 
         quiz = WhereQuiz.objects.create(
             title=title,
@@ -4960,6 +4951,7 @@ def create_where_custom_quiz(request):
             tutorial_text=tutorial_text,
             scoring_mode=_normalize_where_scoring_mode(data.get('scoring_mode')),
             question_order=[int(i) for i in question_ids],
+            zone_count=int(count), zone_width_km=float(width),
             creator=request.user,
             status='waiting'
         )
@@ -5016,14 +5008,14 @@ def add_where_question(request):
                 'success': False,
                 'error': 'Invalid coordinates provided for the world map.'
             }, status=400)
-        if map_type != 'world_mercator':
+        if map_type not in {'world_mercator', 'germany', 'europe'}:
             return JsonResponse({
                 'success': False,
-                'error': 'Only the world map is supported.'
+                'error': 'Bitte Deutschland, Europa oder Welt wählen.'
             }, status=400)
         
         # Create question
-        question = WhereQuestion.objects.create(
+        question = WhereQuestion(
             question_text=question_text,
             time_limit=time_limit,
             points=points,
@@ -5039,6 +5031,8 @@ def add_where_question(request):
             image=image,
             created_by=request.user
         )
+        question.full_clean()
+        question.save()
         _sync_where_distance_zones(question, distance_zones)
         
         return JsonResponse({
@@ -5047,6 +5041,8 @@ def add_where_question(request):
             'message': 'Location question added successfully!'
         })
         
+    except ValidationError as e:
+        return JsonResponse({'success': False, 'error': str(e)}, status=400)
     except ValueError as e:
         return JsonResponse({
             'success': False,
@@ -5168,6 +5164,10 @@ def update_blackjack_question(request):
 
         question_id = data.get('question_id')
         question = get_object_or_404(BlackJackQuestion, id=question_id)
+        from black_jack_quiz.runtime import question_in_open_set
+        if question_in_open_set(question.pk):
+            return JsonResponse({'success': False, 'error': 'Dieses Set wird noch gespielt und kann nicht geaendert werden.'}, status=409)
+
         if not request.user.is_superuser and question.created_by != request.user:
             return JsonResponse({'success': False, 'error': 'Unauthorized'}, status=403)
 
@@ -5257,8 +5257,8 @@ def update_where_question(request):
         question.good_distance = good_distance
         question.fair_distance = fair_distance
         question.poor_distance = poor_distance
-        if map_type != 'world_mercator':
-            return JsonResponse({'success': False, 'error': 'Only the world map is supported.'}, status=400)
+        if map_type not in {'world_mercator', 'germany', 'europe'}:
+            return JsonResponse({'success': False, 'error': 'Bitte Deutschland, Europa oder Welt wählen.'}, status=400)
         question.map_type = map_type
 
         # Only overwrite coordinates if provided
@@ -5278,6 +5278,7 @@ def update_where_question(request):
         if image:
             question.image = image
 
+        question.full_clean()
         question.save()
         _sync_where_distance_zones(question, distance_zones)
         return JsonResponse({'success': True})
@@ -5291,10 +5292,9 @@ def update_where_question(request):
 def delete_where_question(request):
     """Delete a where question via AJAX"""
     try:
-        data = json.loads(request.body)
-        question_id = data.get('question_id')
-        
-        question = get_object_or_404(WhereQuestion, id=question_id)
+        question, error = _question_for_deletion(request, WhereQuestion)
+        if error is not None:
+            return error
         
         # Check if question has been used in games
         if WhereAnswer.objects.filter(question=question).exists():
@@ -5373,7 +5373,7 @@ def start_where_quiz(request, room_code):
         if guard_response:
             return guard_response
         
-        quiz.start_quiz()
+        quiz.start_quiz(session_code=request.GET.get('hub_session') or None)
         
         return JsonResponse({'success': True})
     except Exception as e:
@@ -6021,6 +6021,7 @@ def get_assign_question_detail(request, question_id):
 
 @admin_required
 @require_POST
+@transaction.atomic
 def update_assign_question(request):
     """Update an assign question via AJAX"""
     try:
@@ -6029,7 +6030,10 @@ def update_assign_question(request):
         data = json.loads(request.body)
 
         question_id = data.get('question_id')
-        question = get_object_or_404(AssignQuestion, id=question_id)
+        question = get_object_or_404(AssignQuestion.objects.select_for_update(), id=question_id)
+
+        if AssignQuiz.objects.filter(current_question=question, status__in=['active', 'inactive']).exists():
+            return JsonResponse({'success': False, 'error': 'Die laufende Frage kann erst nach ihrem Abschluss bearbeitet werden.'}, status=409)
 
         question_text = data.get('question_text', question.question_text).strip()
         time_limit = int(data.get('time_limit', question.time_limit))
@@ -6091,13 +6095,7 @@ def end_assign_quiz(request):
                 'error': 'You are not authorized to end this quiz.'
             }, status=403)
         
-        quiz.end_quiz('completed')
-        
-        # End current question if active
-        if hasattr(quiz, 'session'):
-            quiz.session.end_current_question()
-        
-        return JsonResponse({'success': True})
+        return _dispatch_quiz_host_action(request, quiz, 'assign', 'handle_admin_end_quiz')
     except Exception as e:
         return JsonResponse({
             'success': False,
@@ -6119,13 +6117,7 @@ def start_assign_quiz(request, room_code):
                 'error': 'You are not authorized to start this quiz.'
             }, status=403)
 
-        guard_response = _guard_session_game_start(request, 'assign', room_code)
-        if guard_response:
-            return guard_response
-        
-        quiz.start_quiz()
-        
-        return JsonResponse({'success': True})
+        return _dispatch_quiz_host_action(request, quiz, 'assign', 'handle_admin_start_quiz')
     except Exception as e:
         return JsonResponse({
             'success': False,
@@ -6147,13 +6139,7 @@ def end_assign_quiz_by_room_code(request, room_code):
                 'error': 'You are not authorized to end this quiz.'
             }, status=403)
         
-        quiz.end_quiz('completed')
-        
-        # End current question if active
-        if hasattr(quiz, 'session'):
-            quiz.session.end_current_question()
-        
-        return JsonResponse({'success': True})
+        return _dispatch_quiz_host_action(request, quiz, 'assign', 'handle_admin_end_quiz')
     except Exception as e:
         return JsonResponse({
             'success': False,
@@ -6186,16 +6172,7 @@ def send_assign_question(request, room_code):
                 'error': 'This question is not part of the selected set for this quiz.'
             }, status=400)
         
-        # Get or create quiz session
-        quiz_session, created = AssignSession.objects.get_or_create(quiz=quiz)
-        
-        # Send the question
-        quiz_session.send_question(question)
-        
-        # Here you would typically send a WebSocket message to all participants
-        # We'll implement this in the WebSocket consumer
-        
-        return JsonResponse({'success': True})
+        return _dispatch_quiz_host_action(request, quiz, 'assign', 'handle_admin_send_question')
     except Exception as e:
         return JsonResponse({
             'success': False,
@@ -6217,15 +6194,7 @@ def end_assign_question(request, room_code):
                 'error': 'You are not authorized to control this quiz.'
             }, status=403)
         
-        # Get quiz session
-        quiz_session = get_object_or_404(AssignSession, quiz=quiz)
-        
-        # End current question
-        quiz_session.end_current_question()
-        
-        # Here you would send WebSocket message to all participants
-        
-        return JsonResponse({'success': True})
+        return _dispatch_quiz_host_action(request, quiz, 'assign', 'handle_admin_end_question')
     except Exception as e:
         return JsonResponse({
             'success': False,
@@ -6237,11 +6206,13 @@ def end_assign_question(request, room_code):
 def delete_assign_question(request):
     """Delete a quiz question via AJAX"""
     try:
-        data = json.loads(request.body)
-        question_id = data.get('question_id')
+        question, error = _question_for_deletion(request, AssignQuestion)
+        if error is not None:
+            return error
         
-        question = get_object_or_404(AssignQuestion, id=question_id, created_by=request.user)
-        
+        if AssignQuiz.objects.filter(current_question=question, status__in=['active', 'inactive']).exists():
+            return JsonResponse({'success': False, 'error': 'Die Frage wird gerade gespielt und kann noch nicht geloescht werden.'}, status=409)
+
         # Check if question has been used in games
         if AssignAnswer.objects.filter(question=question).exists():
             # Soft delete - just deactivate
@@ -6280,12 +6251,12 @@ def api_assign_quiz_stats(request, room_code):
         if not request.user.is_superuser and quiz.creator != request.user:
             return JsonResponse({'error': 'Unauthorized'}, status=403)
         
-        participants = quiz.participants.all()
+        participants = quiz.participants.filter(hub_session_code=_extract_hub_session_code(request) or _get_active_hub_session_code_for_room('assign', room_code))
         
         stats = {
             'participant_count': participants.count(),
             'active_participants': participants.filter(is_active=True).count(),
-            'total_answers': AssignAnswer.objects.filter(quiz=quiz).count(),
+            'total_answers': AssignAnswer.objects.filter(quiz=quiz, participant__in=participants).count(),
             'current_question_responses': 0,
             'average_score': 0,
         }
@@ -6297,7 +6268,9 @@ def api_assign_quiz_stats(request, room_code):
         if quiz.current_question:
             current_answers = AssignAnswer.objects.filter(
                 quiz=quiz, 
-                question=quiz.current_question
+                question=quiz.current_question,
+                set_number=quiz.get_current_set_number() or 0,
+                participant__hub_session_code=_extract_hub_session_code(request) or _get_active_hub_session_code_for_room('assign', room_code),
             )
             stats['current_question_responses'] = current_answers.count()
             stats['average_current_score'] = sum(a.points_earned for a in current_answers) / max(1, current_answers.count())
@@ -6323,7 +6296,7 @@ def api_assign_participants(request, room_code):
         if not request.user.is_superuser and quiz.creator != request.user:
             return JsonResponse({'error': 'Unauthorized'}, status=403)
         
-        participants = quiz.participants.all().order_by('-total_score', 'name')
+        participants = quiz.participants.filter(hub_session_code=_extract_hub_session_code(request) or _get_active_hub_session_code_for_room('assign', room_code)).order_by('-total_score', 'name')
         
         participants_data = []
         for participant in participants:
@@ -6366,7 +6339,9 @@ def api_assign_live_responses(request, room_code):
         
         responses = AssignAnswer.objects.filter(
             quiz=quiz,
-            question=quiz.current_question
+            question=quiz.current_question,
+                set_number=quiz.get_current_set_number() or 0,
+                participant__hub_session_code=_extract_hub_session_code(request) or _get_active_hub_session_code_for_room('assign', room_code),
         ).select_related('participant').order_by('-submitted_at')[:20]
         
         responses_data = []
@@ -6401,12 +6376,13 @@ def add_estimation_question(request):
     """Add a new estimation question via AJAX"""
     try:
         data = json.loads(request.body)
+        from Estimation.numbers import finite_number
 
         question_text = data.get('question_text', '').strip()
-        correct_answer = float(data.get('correct_answer'))
+        correct_answer = finite_number(data.get('correct_answer'))
         unit = EstimationQuestion.normalize_unit_value(data.get('unit', 'number'))
         use_manual_points = data.get('use_manual_points') is True or str(data.get('use_manual_points')).lower() in ['true', '1', 'yes', 'on']
-        tolerance_percentage = float(data.get('tolerance_percentage', 10.0))
+        tolerance_percentage = finite_number(data.get('tolerance_percentage', 10.0))
         zone_count = int(data.get('zone_count', 5))
         max_points = max(1, int(data.get('max_points') or zone_count or 1))
         hint_text = data.get('hint_text', '').strip() if data.get('hint_text') is not None else ''
@@ -6499,6 +6475,7 @@ def update_estimation_question(request):
     """Update an estimation question via AJAX"""
     try:
         data = json.loads(request.body)
+        from Estimation.numbers import finite_number
 
         question_id = data.get('question_id')
         from Estimation.models import EstimationQuestion
@@ -6509,13 +6486,13 @@ def update_estimation_question(request):
         # Update fields
         question.question_text = data.get('question_text', question.question_text).strip()
         if 'correct_answer' in data:
-            question.correct_answer = float(data.get('correct_answer'))
+            question.correct_answer = finite_number(data.get('correct_answer'))
         if 'unit' in data:
             question.unit = EstimationQuestion.normalize_unit_value(data.get('unit'))
         if 'use_manual_points' in data:
             question.use_manual_points = data.get('use_manual_points') is True or str(data.get('use_manual_points')).lower() in ['true', '1', 'yes', 'on']
         if 'tolerance_percentage' in data:
-            question.tolerance_percentage = float(data.get('tolerance_percentage'))
+            question.tolerance_percentage = finite_number(data.get('tolerance_percentage'))
         if 'zone_count' in data:
             question.zone_count = max(1, int(data.get('zone_count')))
         if 'max_points' in data:
@@ -6539,10 +6516,9 @@ def update_estimation_question(request):
 def delete_estimation_question(request):
     """Delete an estimation question via AJAX"""
     try:
-        data = json.loads(request.body)
-        question_id = data.get('question_id')
-        
-        question = get_object_or_404(EstimationQuestion, id=question_id, created_by=request.user)
+        question, error = _question_for_deletion(request, EstimationQuestion)
+        if error is not None:
+            return error
         
         # Check if question has been used in games
         if EstimationAnswer.objects.filter(question=question).exists():
@@ -6851,6 +6827,10 @@ def estimation_monitor(request, room_code):
     if not request.user.is_superuser and quiz.creator != request.user:
         return redirect('admin_dashboard:estimation_management')
     
+    from Estimation.runtime import end_question as finish_estimation_question
+    recovered = finish_estimation_question(quiz.pk, hub_session, expired_only=True)
+    if recovered:
+        quiz.refresh_from_db()
     participants = quiz.participants.all().filter(hub_session_code=hub_session).order_by('-total_score', 'name')
     if quiz.selected_questions.exists():
         available_questions = quiz.selected_questions.all().order_by('-created_at')
@@ -6900,22 +6880,8 @@ def start_estimation_quiz(request, room_code):
                 'error': 'You are not authorized to start this quiz.'
             }, status=403)
 
-        guard_response = _guard_session_game_start(request, 'estimation', room_code)
-        if guard_response:
-            return guard_response
-        
-        quiz.start_quiz()
-        session_code = _extract_hub_session_code(request) or _get_active_hub_session_code_for_room(
-            'estimation', room_code,
-        )
-        reset_question_flow(
-            game_key='estimation',
-            room_code=room_code,
-            session_code=session_code,
-            mode=GameRuntimeState.QUESTION_FLOW_MANUAL_THREE_PHASE,
-        )
-        
-        return JsonResponse({'success': True})
+        return _dispatch_quiz_host_action(request, quiz, 'estimation', 'handle_admin_start_quiz')
+
     except Exception as e:
         return JsonResponse({
             'success': False,
@@ -6940,13 +6906,8 @@ def end_estimation_quiz(request):
                 'error': 'You are not authorized to end this quiz.'
             }, status=403)
         
-        quiz.end_quiz('completed')
-        
-        # End current question if active
-        if hasattr(quiz, 'session'):
-            quiz.session.end_current_question()
-        
-        return JsonResponse({'success': True})
+        return _dispatch_quiz_host_action(request, quiz, 'estimation', 'handle_admin_end_quiz')
+
     except Exception as e:
         return JsonResponse({
             'success': False,
@@ -6968,13 +6929,8 @@ def end_estimation_quiz_by_room_code(request, room_code):
                 'error': 'You are not authorized to end this quiz.'
             }, status=403)
         
-        quiz.end_quiz('completed')
-        
-        # End current question if active
-        if hasattr(quiz, 'session'):
-            quiz.session.end_current_question()
-        
-        return JsonResponse({'success': True})
+        return _dispatch_quiz_host_action(request, quiz, 'estimation', 'handle_admin_end_quiz')
+
     except Exception as e:
         return JsonResponse({
             'success': False,
@@ -6996,59 +6952,8 @@ def send_estimation_question(request, room_code):
                 'error': 'You are not authorized to send questions to this quiz.'
             }, status=403)
         
-        data = json.loads(request.body)
-        question_id = data.get('question_id')
-        
-        question = get_object_or_404(EstimationQuestion, id=question_id, is_active=True)
+        return _dispatch_quiz_host_action(request, quiz, 'estimation', 'handle_admin_send_question')
 
-        if quiz.selected_questions.exists() and not quiz.selected_questions.filter(id=question.id).exists():
-            return JsonResponse({
-                'success': False,
-                'error': 'This question is not part of the selected set for this quiz.'
-            }, status=400)
-        
-        session_code = _extract_hub_session_code(request) or _get_active_hub_session_code_for_room(
-            'estimation', room_code,
-        )
-        runtime = current_snapshot('estimation', room_code, session_code)
-        action = {
-            'client_action_id': data.get('client_action_id') or str(uuid.uuid4()),
-            'state_revision': runtime.get('state_revision'),
-            'game_id': runtime.get('game_id'),
-            'question_id': question.id,
-        }
-        try:
-            answer_duration = int(data.get('custom_time_limit') or 90)
-        except (TypeError, ValueError):
-            answer_duration = 90
-        if answer_duration <= 0:
-            answer_duration = 90
-
-        with transaction.atomic():
-            locked_quiz = EstimationQuiz.objects.select_for_update().get(pk=quiz.pk)
-            quiz_session, _ = EstimationSession.objects.select_for_update().get_or_create(
-                quiz=locked_quiz,
-            )
-            decision = present_question(
-                game_key='estimation',
-                room_code=room_code,
-                session_code=session_code,
-                action=action,
-                answer_duration_seconds=answer_duration,
-            )
-            if decision.accepted and not decision.duplicate:
-                quiz_session.prepare_question(question)
-        if not decision.accepted:
-            return JsonResponse({
-                'success': False,
-                'error': decision.message,
-                'code': decision.code,
-            }, status=409)
-        
-        # Here you would typically send a WebSocket message to all participants
-        # We'll implement this in the WebSocket consumer
-        
-        return JsonResponse({'success': True, 'question_phase': decision.snapshot.get('question_phase')})
     except Exception as e:
         return JsonResponse({
             'success': False,
@@ -7070,15 +6975,8 @@ def end_estimation_question(request, room_code):
                 'error': 'You are not authorized to control this quiz.'
             }, status=403)
         
-        # Get quiz session
-        quiz_session = get_object_or_404(EstimationSession, quiz=quiz)
-        
-        # End current question
-        quiz_session.end_current_question()
-        
-        # Here you would send WebSocket message to all participants
-        
-        return JsonResponse({'success': True})
+        return _dispatch_quiz_host_action(request, quiz, 'estimation', 'handle_admin_end_question')
+
     except Exception as e:
         return JsonResponse({
             'success': False,
@@ -7097,12 +6995,15 @@ def api_estimation_quiz_stats(request, room_code):
         if not request.user.is_superuser and quiz.creator != request.user:
             return JsonResponse({'error': 'Unauthorized'}, status=403)
         
-        participants = quiz.participants.all()
+        from games_hub.quiz_rounds import current_round
+        code = _extract_hub_session_code(request) or _get_active_hub_session_code_for_room('estimation', room_code)
+        participants = quiz.participants.filter(hub_session_code=code)
+        answers = EstimationAnswer.objects.filter(quiz=quiz, participant__hub_session_code=code)
         
         stats = {
             'participant_count': participants.count(),
             'active_participants': participants.filter(is_active=True).count(),
-            'total_answers': EstimationAnswer.objects.filter(quiz=quiz).count(),
+            'total_answers': answers.count(),
             'current_question_responses': 0,
             'average_score': 0,
             'average_accuracy': 0,
@@ -7113,17 +7014,14 @@ def api_estimation_quiz_stats(request, room_code):
             stats['average_score'] = sum(total_scores) / len(total_scores)
             
         # Get all answers for this quiz to calculate accuracy
-        all_answers = EstimationAnswer.objects.filter(quiz=quiz)
+        all_answers = answers
         if all_answers.exists():
             total_accuracy = sum(answer.get_accuracy_percentage() for answer in all_answers)
             stats['average_accuracy'] = total_accuracy / all_answers.count()
         
         # Current question stats
         if quiz.current_question:
-            current_answers = EstimationAnswer.objects.filter(
-                quiz=quiz, 
-                question=quiz.current_question
-            )
+            current_answers = answers.filter(question=quiz.current_question, round_number=current_round(quiz))
             stats['current_question_responses'] = current_answers.count()
             if current_answers.exists():
                 current_accuracy = sum(answer.get_accuracy_percentage() for answer in current_answers)
@@ -7150,7 +7048,7 @@ def api_estimation_participants(request, room_code):
         if not request.user.is_superuser and quiz.creator != request.user:
             return JsonResponse({'error': 'Unauthorized'}, status=403)
         
-        participants = quiz.participants.all().order_by('-total_score', 'name')
+        participants = quiz.participants.filter(hub_session_code=_extract_hub_session_code(request) or _get_active_hub_session_code_for_room('estimation', room_code)).order_by('-total_score', 'name')
         
         participants_data = []
         for participant in participants:
@@ -7192,7 +7090,10 @@ def api_estimation_live_responses(request, room_code):
                 'responses': []
             })
         
+        from games_hub.quiz_rounds import current_round
         responses = EstimationAnswer.objects.filter(
+            participant__hub_session_code=_extract_hub_session_code(request) or _get_active_hub_session_code_for_room('estimation', room_code),
+            round_number=current_round(quiz),
             quiz=quiz,
             question=quiz.current_question
         ).select_related('participant').order_by('-submitted_at')[:20]
@@ -7275,7 +7176,7 @@ def who_monitor(request, room_code):
     current_person_name = None
     current_question_time_per_person = None
     current_question_started_at = None
-    who_timer_server_now = timezone.now()
+    who_timer_server_now = parse_datetime(question_runtime.get('_paused_at') or '') or timezone.now()
     if quiz.current_question:
         randomized_people = quiz.current_question.get_randomized_people(room_code=quiz.room_code)
         current_question_people = []
@@ -7315,13 +7216,16 @@ def who_monitor(request, room_code):
         if people_count and question_answering_open:
             current_person_name = current_question_people[current_person_index].get('name') or None
     
+    from games_hub.quiz_rounds import progress as round_progress
+    host_progress = round_progress(quiz, 'who', hub_session, question_id=quiz.current_question_id)
     context = {
         'quiz': quiz,
         'participants': participants,
         'participant_count': participants.count(),
         'available_questions': available_questions,
         'quiz_session': quiz_session,
-        'total_sets': available_questions.count(),
+        'host_question_number': host_progress['current'] or 0,
+        'total_sets': host_progress['total'] or 0,
         'lobby_url': _get_lobby_url(request, room_code),
         'current_question_time_left': current_question_time_left,
         'current_question_people': current_question_people,
@@ -7440,10 +7344,9 @@ def add_who_question(request):
 def delete_who_question(request):
     """Delete a who question via AJAX"""
     try:
-        data = json.loads(request.body)
-        question_id = data.get('question_id')
-        
-        question = get_object_or_404(WhoQuestion, id=question_id)
+        question, error = _question_for_deletion(request, WhoQuestion)
+        if error is not None:
+            return error
         
         # Check if question has been used in games
         if WhoAnswer.objects.filter(question=question).exists():
@@ -7489,13 +7392,7 @@ def end_who_quiz(request):
                 'error': 'You are not authorized to end this quiz.'
             }, status=403)
         
-        quiz.end_quiz('completed')
-        
-        # End current question if active
-        if hasattr(quiz, 'session'):
-            quiz.session.end_current_question()
-        
-        return JsonResponse({'success': True})
+        return _dispatch_quiz_host_action(request, quiz, 'who', 'handle_admin_end_quiz')
     except Exception as e:
         return JsonResponse({
             'success': False,
@@ -7521,9 +7418,7 @@ def start_who_quiz(request, room_code):
         if guard_response:
             return guard_response
         
-        quiz.start_quiz()
-        
-        return JsonResponse({'success': True})
+        return _dispatch_quiz_host_action(request, quiz, 'who', 'handle_admin_start_quiz')
     except Exception as e:
         return JsonResponse({
             'success': False,
@@ -7545,13 +7440,7 @@ def end_who_quiz_by_room_code(request, room_code):
                 'error': 'You are not authorized to end this quiz.'
             }, status=403)
         
-        quiz.end_quiz('completed')
-        
-        # End current question if active
-        if hasattr(quiz, 'session'):
-            quiz.session.end_current_question()
-        
-        return JsonResponse({'success': True})
+        return _dispatch_quiz_host_action(request, quiz, 'who', 'handle_admin_end_quiz')
     except Exception as e:
         return JsonResponse({
             'success': False,
@@ -7573,18 +7462,7 @@ def send_who_question(request, room_code):
                 'error': 'You are not authorized to send questions to this quiz.'
             }, status=403)
         
-        data = json.loads(request.body)
-        question_id = data.get('question_id')
-        
-        question = get_object_or_404(WhoQuestion, id=question_id, created_by=request.user)
-        
-        # Get or create quiz session
-        quiz_session, created = WhoSession.objects.get_or_create(quiz=quiz)
-        
-        # Send the question
-        quiz_session.send_question(question)
-        
-        return JsonResponse({'success': True})
+        return _dispatch_quiz_host_action(request, quiz, 'who', 'handle_admin_send_question')
     except Exception as e:
         return JsonResponse({
             'success': False,
@@ -7606,13 +7484,7 @@ def end_who_question(request, room_code):
                 'error': 'You are not authorized to control this quiz.'
             }, status=403)
         
-        # Get quiz session
-        quiz_session = get_object_or_404(WhoSession, quiz=quiz)
-        
-        # End current question
-        quiz_session.end_current_question()
-        
-        return JsonResponse({'success': True})
+        return _dispatch_quiz_host_action(request, quiz, 'who', 'handle_admin_end_question')
     except Exception as e:
         return JsonResponse({
             'success': False,
@@ -7694,7 +7566,8 @@ def api_who_quiz_stats(request, room_code):
         # Current question stats
         if quiz.current_question:
             current_answers = WhoAnswer.objects.filter(
-                quiz=quiz, 
+                quiz=quiz, round_number=current_round(quiz),
+                participant__hub_session_code=_extract_hub_session_code(request),
                 question=quiz.current_question
             )
             stats['current_question_responses'] = current_answers.count()
@@ -7766,7 +7639,8 @@ def api_who_live_responses(request, room_code):
             })
         
         responses = WhoAnswer.objects.filter(
-            quiz=quiz,
+            quiz=quiz, round_number=current_round(quiz),
+            participant__hub_session_code=_extract_hub_session_code(request),
             question=quiz.current_question
         ).select_related('participant').order_by('-submitted_at')[:20]
         
@@ -7981,6 +7855,11 @@ def who_that_monitor(request, room_code):
     if not request.user.is_superuser and quiz.creator != request.user:
         return redirect('admin_dashboard:who_that_management')
     
+    from who_is_that.runtime import end_question as finish_who_that_question
+    recovered = finish_who_that_question(quiz.id, active_hub_session_code, expired_only=True)
+    if recovered:
+        quiz.refresh_from_db()
+    hub_session = active_hub_session_code
     participants = quiz.participants.all().filter(hub_session_code=hub_session).order_by('-total_score', 'name')
     if quiz.selected_questions.exists():
         available_questions = quiz.selected_questions.all().order_by('-created_at')
@@ -8010,7 +7889,7 @@ def who_that_monitor(request, room_code):
         )
     )
     review_question = None
-    raw_review_question_id = request.GET.get('review_question')
+    raw_review_question_id = request.GET.get('review_question') or (recovered.get('question_id') if recovered else None)
     if raw_review_question_id and not current_question_presented:
         try:
             review_question_id = int(raw_review_question_id)
@@ -8131,10 +8010,9 @@ def add_who_that_question(request):
 def delete_who_that_question(request):
     """Delete a who is that question via AJAX"""
     try:
-        data = json.loads(request.body)
-        question_id = data.get('question_id')
-        
-        question = get_object_or_404(WhoThatQuestion, id=question_id, created_by=request.user)
+        question, error = _question_for_deletion(request, WhoThatQuestion)
+        if error is not None:
+            return error
         
         # Check if question has been used in games
         if WhoThatAnswer.objects.filter(question=question).exists():
@@ -8178,23 +8056,8 @@ def start_who_that_quiz(request, room_code):
                 'error': 'You are not authorized to start this quiz.'
             }, status=403)
 
-        guard_response = _guard_session_game_start(request, 'who_that', room_code)
-        if guard_response:
-            return guard_response
-        
-        quiz.start_quiz()
-        session_code = _extract_hub_session_code(request) or _get_active_hub_session_code_for_room(
-            'who_that',
-            room_code,
-        )
-        reset_question_flow(
-            game_key='who_that',
-            room_code=room_code,
-            session_code=session_code,
-            mode=GameRuntimeState.QUESTION_FLOW_MANUAL_THREE_PHASE,
-        )
-        
-        return JsonResponse({'success': True})
+        return _dispatch_quiz_host_action(request, quiz, 'who_that', 'handle_admin_start_quiz')
+
     except Exception as e:
         return JsonResponse({
             'success': False,
@@ -8219,13 +8082,8 @@ def end_who_that_quiz(request):
                 'error': 'You are not authorized to end this quiz.'
             }, status=403)
         
-        quiz.end_quiz('completed')
-        
-        # End current question if active
-        if hasattr(quiz, 'session'):
-            quiz.session.end_current_question()
-        
-        return JsonResponse({'success': True})
+        return _dispatch_quiz_host_action(request, quiz, 'who_that', 'handle_admin_end_quiz')
+
     except Exception as e:
         return JsonResponse({
             'success': False,
@@ -8247,13 +8105,8 @@ def end_who_that_quiz_by_room_code(request, room_code):
                 'error': 'You are not authorized to end this quiz.'
             }, status=403)
         
-        quiz.end_quiz('completed')
-        
-        # End current question if active
-        if hasattr(quiz, 'session'):
-            quiz.session.end_current_question()
-        
-        return JsonResponse({'success': True})
+        return _dispatch_quiz_host_action(request, quiz, 'who_that', 'handle_admin_end_quiz')
+
     except Exception as e:
         return JsonResponse({
             'success': False,
@@ -8275,79 +8128,8 @@ def send_who_that_question(request, room_code):
                 'error': 'You are not authorized to send questions to this quiz.'
             }, status=403)
         
-        data = json.loads(request.body)
-        question_id = data.get('question_id')
-        
-        question = get_object_or_404(WhoThatQuestion, id=question_id, is_active=True)
+        return _dispatch_quiz_host_action(request, quiz, 'who_that', 'handle_admin_send_question')
 
-        if quiz.selected_questions.exists() and not quiz.selected_questions.filter(id=question.id).exists():
-            return JsonResponse({
-                'success': False,
-                'error': 'This question is not part of the selected set for this quiz.'
-            }, status=400)
-        
-        session_code = _extract_hub_session_code(request) or _get_active_hub_session_code_for_room(
-            'who_that',
-            room_code,
-        )
-        snapshot = current_snapshot('who_that', room_code, session_code)
-        effective_time_limit = data.get('custom_time_limit') or question.time_limit
-        with transaction.atomic():
-            quiz_session, created = WhoThatSession.objects.select_for_update().get_or_create(quiz=quiz)
-            decision = present_question(
-                game_key='who_that',
-                room_code=room_code,
-                session_code=session_code,
-                action={
-                    'question_id': question.id,
-                    'game_id': str(quiz.id),
-                    'state_revision': data.get('state_revision', snapshot['state_revision']),
-                    'client_action_id': data.get('client_action_id') or str(uuid.uuid4()),
-                },
-                answer_duration_seconds=effective_time_limit,
-            )
-            if decision.accepted and not decision.duplicate:
-                quiz_session.prepare_question(question)
-
-        if not decision.accepted:
-            return JsonResponse({
-                'success': False,
-                'code': decision.code,
-                'error': decision.message,
-                'snapshot': decision.snapshot,
-            }, status=409)
-
-        lifecycle_fields = {
-            key: decision.snapshot.get(key)
-            for key in (
-                'state_revision',
-                'server_now',
-                'game_id',
-                'question_phase',
-                'question_presented_at',
-                'question_visible_at',
-                'content_revealed_at',
-                'answering_started_at',
-                'answering_deadline_at',
-                'answering_allowed',
-                'timer_running',
-                'remaining_answer_time',
-            )
-        }
-        async_to_sync(get_channel_layer().group_send)(
-            f'who_that_{room_code}',
-            {
-                'type': 'question_prepared',
-                'question': {
-                    'id': question.id,
-                    'points': 1,
-                    'question_number': quiz_session.current_question_number,
-                    'time_limit': effective_time_limit,
-                },
-                **lifecycle_fields,
-            },
-        )
-        return JsonResponse({'success': True, **lifecycle_fields})
     except Exception as e:
         return JsonResponse({
             'success': False,
@@ -8369,13 +8151,8 @@ def end_who_that_question(request, room_code):
                 'error': 'You are not authorized to control this quiz.'
             }, status=403)
         
-        # Get quiz session
-        quiz_session = get_object_or_404(WhoThatSession, quiz=quiz)
-        
-        # End current question
-        quiz_session.end_current_question()
-        
-        return JsonResponse({'success': True})
+        return _dispatch_quiz_host_action(request, quiz, 'who_that', 'handle_admin_end_question')
+
     except Exception as e:
         return JsonResponse({
             'success': False,
@@ -8429,7 +8206,7 @@ def set_who_that_question_points(request, room_code):
             ).select_related('participant')
 
             for answer in answers:
-                recalculated_points = question.calculate_score(answer.user_answer)
+                recalculated_points = int(answer.is_correct and not answer.is_tutorial)
                 if answer.points_earned != recalculated_points:
                     WhoThatAnswer.objects.filter(id=answer.id).update(points_earned=recalculated_points)
                 participant_ids.add(answer.participant_id)
@@ -8607,15 +8384,16 @@ def api_who_that_live_responses(request, room_code):
                 'answer_id': response.id,
                 'game_id': response.quiz_id,
                 'question_id': response.question_id,
+                'round_number': response.round_number,
                 'participant_id': response.participant_id,
                 'participant_name': response.participant.name,
                 'hub_session_code': response.participant.hub_session_code,
                 'user_answer': response.user_answer,
                 'formatted_answer': response.user_answer,
-                'points_earned': 1 if response.is_correct else 0,
+                'points_earned': response.points_earned,
                 'is_correct': response.is_correct,
                 'is_manual_override': is_manual_override,
-                'can_mark_correct': not response.is_correct,
+                'can_mark_correct': not response.is_correct and not response.is_tutorial,
                 'accuracy_percentage': response.get_accuracy_percentage(),
                 'match_quality': 'Manual override' if is_manual_override else response.get_match_quality(),
                 'time_taken': response.time_taken,
@@ -8658,8 +8436,8 @@ def api_who_that_live_responses(request, room_code):
             responses = responses.filter(submitted_at__gte=quiz.started_at)
         if active_hub_session_code:
             responses = responses.filter(participant__hub_session_code=active_hub_session_code)
-        responses = responses.order_by('-submitted_at')[:20]
-        
+        from games_hub.quiz_rounds import current_round
+        responses = responses.filter(round_number=current_round(quiz)).order_by('-submitted_at')[:20]
         responses_data = [serialize_who_that_response(response) for response in responses]
         
         return JsonResponse({
@@ -8695,6 +8473,8 @@ def promote_who_that_answer_correct(request, room_code):
                 quiz=quiz,
             )
 
+            if answer.is_tutorial:
+                return JsonResponse({'success': False, 'error': 'Tutorial answers do not award points.'}, status=400)
             if answer.is_correct:
                 return JsonResponse({
                     'success': False,
@@ -8715,6 +8495,8 @@ def promote_who_that_answer_correct(request, room_code):
                     'participant_id': answer.participant_id,
                     'participant_name': answer.participant.name,
                     'question_id': answer.question_id,
+                    'round_number': answer.round_number,
+                    'hub_session_code': answer.participant.hub_session_code,
                     'is_correct': True,
                     'points_earned': answer.points_earned,
                     'match_quality': 'Manual override',
@@ -8725,6 +8507,8 @@ def promote_who_that_answer_correct(request, room_code):
             'success': True,
             'answer_id': answer.id,
             'question_id': answer.question_id,
+                    'round_number': answer.round_number,
+                    'hub_session_code': answer.participant.hub_session_code,
             'participant_id': answer.participant_id,
             'participant_name': answer.participant.name,
             'user_answer': answer.user_answer,
@@ -8989,12 +8773,20 @@ def blackjack_monitor(request, room_code):
     """Real-time BlackJack quiz monitoring page"""
     hub_session = request.GET.get('hub_session') or _get_active_hub_session_code_for_room('blackjack', room_code)
     quiz = get_object_or_404(BlackJackQuiz, room_code=room_code)
-    quiz.ensure_runtime_scoped_to_hub_session(hub_session)
     
     # Ensure the logged-in user is the creator or is admin
     if not request.user.is_superuser and quiz.creator != request.user:
         return redirect('admin_dashboard:blackjack_management')
     
+    from black_jack_quiz import runtime as bj
+    auth = authorize_game_host(request.user, 'blackjack', room_code, hub_session)
+    if not auth.allowed:
+        return JsonResponse({'success': False, 'error': auth.message}, status=403)
+    try:
+        question_runtime = bj.build_state(quiz, hub_session, host=True)
+    except ValueError as exc:
+        return JsonResponse({'success': False, 'error': str(exc)}, status=409)
+    quiz.refresh_from_db()
     participants = quiz.get_ordered_participants(session_code=hub_session)
 
     # Get or create quiz session
@@ -9037,7 +8829,11 @@ def blackjack_monitor(request, room_code):
         int(quiz_session.total_questions_sent or 0),
         len(quiz_session.get_asked_question_ids()),
     )
-    quiz_complete = total_game_questions > 0 and sent_question_count >= total_game_questions
+    play_progress = bj.progress(quiz, quiz_session, bj.pool_code(quiz, hub_session))
+    if quiz.has_configured_question_pool():
+        total_game_questions = sum(len(r['question_ids']) for r in play_progress['entries']) + sum(len(quiz.get_set_question_ids(n)) for n in play_progress['future'])
+    selected_run = next((r for r in reversed(play_progress['entries']) if r['configured_number'] == selected_set_number), None)
+    quiz_complete = quiz.status == 'completed'
     explicit_question_sets = quiz.get_explicit_question_sets()
     all_set_question_ids = [
         question_id
@@ -9065,7 +8861,7 @@ def blackjack_monitor(request, room_code):
             ),
         })
     tutorial_state = get_unit_tutorial_state('blackjack', quiz.room_code, hub_session)
-    question_runtime = current_snapshot('blackjack', quiz.room_code, hub_session)
+    question_runtime = bj.build_state(quiz, hub_session, host=True)
     
     context = {
         'quiz': quiz,
@@ -9087,7 +8883,7 @@ def blackjack_monitor(request, room_code):
         'next_set_question_count': next_set_question_count,
         'participant_progress_question_count': current_set_question_count if quiz.current_question else next_set_question_count,
         'selected_set_number': selected_set_number,
-        'selected_set_has_remaining_questions': bool(configured_question_ids),
+        'selected_set_has_remaining_questions': bool(configured_question_ids) and (not selected_run or selected_run['status'] == 'open'),
         'blackjack_set_overview': set_overview,
         'current_unit_is_tutorial': bool(
             tutorial_state.get('current_unit_is_tutorial')
@@ -9100,40 +8896,20 @@ def blackjack_monitor(request, room_code):
 @admin_required
 @require_POST
 def select_blackjack_set(request, room_code):
+    from black_jack_quiz import runtime as bj
+    quiz = get_object_or_404(BlackJackQuiz, room_code=room_code)
+    code = request.GET.get('hub_session') or quiz.active_hub_session_code or None
+    auth = authorize_game_host(request.user, 'blackjack', room_code, code)
+    if not auth.allowed:
+        return JsonResponse({'success': False, 'error': auth.message}, status=403)
     try:
-        quiz = get_object_or_404(BlackJackQuiz, room_code=room_code)
-
-        if not request.user.is_superuser and quiz.creator != request.user:
-            return JsonResponse({
-                'success': False,
-                'error': 'You are not authorized to control this quiz.'
-            }, status=403)
-
-        quiz_session, created = BlackJackSession.objects.get_or_create(quiz=quiz)
-        if quiz.current_question_id:
-            return JsonResponse({
-                'success': False,
-                'error': 'The current question is still active. End it before switching sets.'
-            }, status=400)
-
         data = json.loads(request.body or '{}')
-        set_number = data.get('set_number')
-        if quiz_session.is_waiting_fresh_start_state() and quiz_session.has_saved_progress_state():
-            quiz_session.reset_for_new_run()
-        quiz_session.set_selected_set_number(set_number)
-        quiz_session.save(update_fields=['selected_set_number'])
-
-        return JsonResponse({
-            'success': True,
-            'selected_set_number': quiz_session.selected_set_number,
-            'remaining_question_count': len(
-                quiz_session.get_remaining_question_ids_for_set(quiz_session.selected_set_number, active_only=True)
-            ),
-        })
-    except json.JSONDecodeError:
-        return JsonResponse({'success': False, 'error': 'Invalid JSON data.'}, status=400)
-    except Exception as e:
-        return JsonResponse({'success': False, 'error': str(e)}, status=400)
+        number = bj.select_set(quiz, data.get('set_number'), code)
+        quiz.refresh_from_db()
+        return JsonResponse({'success': True, 'selected_set_number': number,
+            'remaining_question_count': len(quiz.session.get_remaining_question_ids_for_set(number))})
+    except (ValueError, TypeError) as exc:
+        return JsonResponse({'success': False, 'error': str(exc)}, status=400)
 
 
 @admin_required
@@ -9239,12 +9015,14 @@ def add_blackjack_question(request):
 def delete_blackjack_question(request):
     """Delete a BlackJack question via AJAX"""
     try:
-        data = json.loads(request.body)
-        question_id = data.get('question_id')
-        
-        question = get_object_or_404(BlackJackQuestion, id=question_id, created_by=request.user)
+        question, error = _question_for_deletion(request, BlackJackQuestion)
+        if error is not None:
+            return error
         
         # Check if question has been used in games
+        from black_jack_quiz.runtime import question_in_open_set
+        if question_in_open_set(question.pk):
+            return JsonResponse({'success': False, 'error': 'Dieses Set wird noch gespielt und kann nicht geaendert werden.'}, status=409)
         if BlackJackAnswer.objects.filter(question=question).exists():
             # Soft delete - just deactivate
             question.is_active = False
@@ -9289,10 +9067,7 @@ def start_blackjack_quiz(request, room_code):
         guard_response = _guard_session_game_start(request, 'blackjack', room_code)
         if guard_response:
             return guard_response
-        
-        quiz.start_quiz()
-        
-        return JsonResponse({'success': True})
+        return _dispatch_quiz_host_action(request, quiz, 'blackjack', 'handle_admin_start_quiz')
     except Exception as e:
         return JsonResponse({
             'success': False,
@@ -9303,132 +9078,65 @@ def start_blackjack_quiz(request, room_code):
 @admin_required
 @require_POST
 def end_blackjack_quiz(request):
-    """End a BlackJack quiz via AJAX"""
-    try:
-        data = json.loads(request.body)
-        quiz_id = data.get('quiz_id')
-        
-        quiz = get_object_or_404(BlackJackQuiz, id=quiz_id)
-        
-        # Ensure the logged-in user is the creator or is admin
-        if not request.user.is_superuser and quiz.creator != request.user:
-            return JsonResponse({
-                'success': False,
-                'error': 'You are not authorized to end this quiz.'
-            }, status=403)
-        
-        quiz.end_quiz('completed')
-        
-        # End current question if active
-        if hasattr(quiz, 'session'):
-            quiz.session.end_current_question()
-        
-        return JsonResponse({'success': True})
-    except Exception as e:
-        return JsonResponse({
-            'success': False,
-            'error': str(e)
-        }, status=400)
+    data = json.loads(request.body or '{}')
+    quiz = get_object_or_404(BlackJackQuiz, pk=data.get('quiz_id'))
+    return end_blackjack_quiz_by_room_code(request, quiz.room_code)
 
 
 @admin_required
 @require_POST
 def end_blackjack_quiz_by_room_code(request, room_code):
-    """End a BlackJack quiz by room code"""
+    from black_jack_quiz import runtime as bj
+    quiz = get_object_or_404(BlackJackQuiz, room_code=room_code)
     try:
-        quiz = get_object_or_404(BlackJackQuiz, room_code=room_code)
-        
-        # Ensure the logged-in user is the creator or is admin
-        if not request.user.is_superuser and quiz.creator != request.user:
-            return JsonResponse({
-                'success': False,
-                'error': 'You are not authorized to end this quiz.'
-            }, status=403)
-        
-        quiz.end_quiz('completed')
-        
-        # End current question if active
-        if hasattr(quiz, 'session'):
-            quiz.session.end_current_question()
-        
-        return JsonResponse({'success': True})
-    except Exception as e:
-        return JsonResponse({
-            'success': False,
-            'error': str(e)
-        }, status=400)
+        data = json.loads(request.body or '{}')
+        code = data.get('hub_session') or request.GET.get('hub_session') or quiz.active_hub_session_code or None
+        auth = authorize_game_host(request.user, 'blackjack', room_code, code)
+        if not auth.allowed:
+            return JsonResponse({'success': False, 'error': auth.message}, status=403)
+        event = bj.end_game(quiz, code=code, data=data if 'question_id' in data else None)
+        bj.broadcast(quiz, event)
+        return JsonResponse({'success': True, **event})
+    except (ValueError, TypeError) as exc:
+        return JsonResponse({'success': False, 'error': str(exc)}, status=400)
 
 
 @admin_required
 @require_POST
 def send_blackjack_question(request, room_code):
-    """Send a question to BlackJack quiz participants"""
+    from black_jack_quiz import runtime as bj
+    quiz = get_object_or_404(BlackJackQuiz, room_code=room_code)
     try:
-        quiz = get_object_or_404(BlackJackQuiz, room_code=room_code)
-        
-        # Ensure the logged-in user is the creator or is admin
-        if not request.user.is_superuser and quiz.creator != request.user:
-            return JsonResponse({
-                'success': False,
-                'error': 'You are not authorized to send questions to this quiz.'
-            }, status=403)
-        
-        data = json.loads(request.body)
-        question_id = data.get('question_id')
-        selected_set_number = data.get('selected_set_number')
-        
-        question = get_object_or_404(BlackJackQuestion, id=question_id, is_active=True)
-
-        send_error = quiz.get_next_question_send_error(
-            question.id,
-            selected_set_number=selected_set_number,
-        )
-        if send_error:
-            return JsonResponse({
-                'success': False,
-                'error': send_error
-            }, status=400)
-        
-        # Get or create quiz session
-        quiz_session, created = BlackJackSession.objects.get_or_create(quiz=quiz)
-        
-        # Send the question
-        quiz_session.send_question(question)
-        
-        return JsonResponse({'success': True})
-    except Exception as e:
-        return JsonResponse({
-            'success': False,
-            'error': str(e)
-        }, status=400)
+        data = json.loads(request.body or '{}')
+        code = data.get('hub_session') or request.GET.get('hub_session') or quiz.active_hub_session_code or None
+        auth = authorize_game_host(request.user, 'blackjack', room_code, code)
+        if not auth.allowed:
+            return JsonResponse({'success': False, 'error': auth.message}, status=403)
+        decision = bj.present(quiz, data.get('question_id'), code, data, data.get('custom_time_limit'))
+        if not decision.accepted:
+            return JsonResponse({'success': False, 'error': decision.message, 'code': decision.code}, status=409)
+        bj.broadcast(quiz, {'type': 'question_started', 'question': decision.snapshot['question']})
+        return JsonResponse(decision.snapshot)
+    except (ValueError, TypeError) as exc:
+        return JsonResponse({'success': False, 'error': str(exc)}, status=400)
 
 
 @admin_required
 @require_POST
 def end_blackjack_question(request, room_code):
-    """End the current BlackJack question"""
+    from black_jack_quiz import runtime as bj
+    quiz = get_object_or_404(BlackJackQuiz, room_code=room_code)
     try:
-        quiz = get_object_or_404(BlackJackQuiz, room_code=room_code)
-        
-        # Ensure the logged-in user is the creator or is admin
-        if not request.user.is_superuser and quiz.creator != request.user:
-            return JsonResponse({
-                'success': False,
-                'error': 'You are not authorized to control this quiz.'
-            }, status=403)
-        
-        # Get quiz session
-        quiz_session = get_object_or_404(BlackJackSession, quiz=quiz)
-        
-        # End current question
-        quiz_session.end_current_question()
-        
-        return JsonResponse({'success': True})
-    except Exception as e:
-        return JsonResponse({
-            'success': False,
-            'error': str(e)
-        }, status=400)
+        data = json.loads(request.body or '{}')
+        code = data.get('hub_session') or request.GET.get('hub_session') or quiz.active_hub_session_code or None
+        auth = authorize_game_host(request.user, 'blackjack', room_code, code)
+        if not auth.allowed:
+            return JsonResponse({'success': False, 'error': auth.message}, status=403)
+        event = bj.end_question(quiz, code=code, data=data)
+        bj.broadcast(quiz, event)
+        return JsonResponse({'success': True, **event})
+    except (ValueError, TypeError) as exc:
+        return JsonResponse({'success': False, 'error': str(exc)}, status=400)
 
 
 @admin_required
@@ -9480,14 +9188,18 @@ def api_blackjack_quiz_stats(request, room_code):
         if not request.user.is_superuser and quiz.creator != request.user:
             return JsonResponse({'error': 'Unauthorized'}, status=403)
         
-        participants = quiz.participants.all()
-        if hub_session:
-            participants = participants.filter(hub_session_code=hub_session)
+        from black_jack_quiz import runtime as bj
+        bj.build_state(quiz, hub_session)
+        quiz.refresh_from_db()
+        participants = bj.participants(quiz, hub_session)
+        entry = bj.current_run(quiz.session)
         
         active_participants = participants.filter(is_active=True)
+        if entry and quiz.current_question_id:
+            active_participants = active_participants.filter(pk__in=entry['states'])
         current_answers = BlackJackAnswer.objects.none()
         if quiz.current_question:
-            current_answers = quiz.get_current_run_answers().filter(
+            current_answers = (bj.answer_rows(quiz, entry) if entry else quiz.get_current_run_answers()).filter(
                 question=quiz.current_question,
                 participant__in=active_participants,
             )
@@ -9584,10 +9296,12 @@ def api_blackjack_live_responses(request, room_code):
                 'responses': []
             })
         
+        from black_jack_quiz import runtime as bj
         responses = BlackJackAnswer.objects.filter(
+            set_round_number=(0 if any(r.get('legacy') and r['number'] == quiz.session.current_set_round_number for r in quiz.session.set_rounds) else quiz.session.current_set_round_number),
             quiz=quiz,
             question=quiz.current_question
-        ).select_related('participant').order_by('-submitted_at')[:20]
+        ).filter(bj.pool_filter(bj.pool_code(quiz), 'participant__')).select_related('participant').order_by('-submitted_at')[:20]
         
         responses_data = []
         for response in responses:
@@ -10073,9 +9787,16 @@ def set_quiz_participant_score(request):
 def set_estimation_participant_score(request):
     try:
         data = json.loads(request.body)
-        participant = get_object_or_404(EstimationParticipant, id=data['participant_id'])
-        participant.total_score = int(data['score'])
-        participant.save(update_fields=['total_score'])
+        with transaction.atomic():
+            participant = get_object_or_404(EstimationParticipant.objects.select_for_update().select_related('quiz'), id=data['participant_id'])
+            if not request.user.is_superuser and participant.quiz.creator_id != request.user.id:
+                return JsonResponse({'success': False, 'error': 'Unauthorized'}, status=403)
+            score = int(data['score'])
+            if score < 0:
+                return JsonResponse({'success': False, 'error': 'Score must be nonnegative.'}, status=400)
+            participant.score_adjustment = score - sum(participant.estimation_answers.values_list('points_earned', flat=True))
+            participant.total_score = score
+            participant.save(update_fields=['total_score', 'score_adjustment', 'updated_at'])
         return JsonResponse({'success': True, 'new_score': participant.total_score})
     except Exception as e:
         return JsonResponse({'success': False, 'error': str(e)}, status=400)
@@ -10083,12 +9804,16 @@ def set_estimation_participant_score(request):
 
 @admin_required
 @require_POST
+@transaction.atomic
 def set_assign_participant_score(request):
     try:
         data = json.loads(request.body)
-        participant = get_object_or_404(AssignParticipant, id=data['participant_id'])
+        participant = get_object_or_404(AssignParticipant.objects.select_for_update(), id=data['participant_id'])
+        if not request.user.is_superuser and participant.quiz.creator_id != request.user.pk:
+            return JsonResponse({'success': False, 'error': 'Unauthorized'}, status=403)
+        participant.score_adjustment += int(data['score']) - participant.total_score
         participant.total_score = int(data['score'])
-        participant.save(update_fields=['total_score'])
+        participant.save(update_fields=['total_score', 'score_adjustment'])
         return JsonResponse({'success': True, 'new_score': participant.total_score})
     except Exception as e:
         return JsonResponse({'success': False, 'error': str(e)}, status=400)
@@ -10125,9 +9850,16 @@ def set_who_participant_score(request):
 def set_who_that_participant_score(request):
     try:
         data = json.loads(request.body)
-        participant = get_object_or_404(WhoThatParticipant, id=data['participant_id'])
-        participant.total_score = int(data['score'])
-        participant.save(update_fields=['total_score'])
+        with transaction.atomic():
+            participant = get_object_or_404(WhoThatParticipant.objects.select_for_update().select_related('quiz'), id=data['participant_id'])
+            if not request.user.is_superuser and participant.quiz.creator_id != request.user.id:
+                return JsonResponse({'success': False, 'error': 'Unauthorized'}, status=403)
+            score = int(data['score'])
+            if score < 0:
+                return JsonResponse({'success': False, 'error': 'Score must be nonnegative.'}, status=400)
+            participant.score_adjustment = score - sum(participant.who_that_answers.values_list('points_earned', flat=True))
+            participant.total_score = score
+            participant.save(update_fields=['total_score', 'score_adjustment', 'updated_at'])
         return JsonResponse({'success': True, 'new_score': participant.total_score})
     except Exception as e:
         return JsonResponse({'success': False, 'error': str(e)}, status=400)
@@ -10136,32 +9868,31 @@ def set_who_that_participant_score(request):
 @admin_required
 @require_POST
 def set_blackjack_participant_score(request):
-    """Setzt total_points manuell und berechnet final_score neu."""
+    from black_jack_quiz import runtime as bj
     try:
-        data = json.loads(request.body)
-        participant = get_object_or_404(BlackJackParticipant, id=data['participant_id'])
-        new_points = int(data['score'])
-        participant.total_points = new_points
-        if new_points > 21:
-            participant.is_busted = True
-            participant.final_score = 999
-        else:
-            participant.is_busted = False
-            participant.final_score = abs(21 - new_points)
-        participant.save(update_fields=['total_points', 'is_busted', 'final_score'])
-        return JsonResponse({'success': True, 'new_score': participant.total_points})
-    except Exception as e:
-        return JsonResponse({'success': False, 'error': str(e)}, status=400)
+        data = json.loads(request.body or '{}')
+        participant = get_object_or_404(BlackJackParticipant, pk=data.get('participant_id'))
+        if not request.user.is_superuser and participant.quiz.creator_id != request.user.pk:
+            return JsonResponse({'success': False, 'error': 'Unauthorized'}, status=403)
+        value = bj.set_score(participant, data.get('score'))
+        bj.broadcast(participant.quiz, {'type': 'state_updated'})
+        return JsonResponse({'success': True, 'new_score': value})
+    except (ValueError, TypeError) as exc:
+        return JsonResponse({'success': False, 'error': str(exc)}, status=400)
 
 
 @admin_required
 @require_POST
+@transaction.atomic
 def set_clue_rush_participant_score(request):
     try:
         data = json.loads(request.body)
-        participant = get_object_or_404(ClueRushParticipant, id=data['participant_id'])
+        participant = get_object_or_404(ClueRushParticipant.objects.select_for_update(), id=data['participant_id'])
+        if not request.user.is_superuser and participant.quiz.creator_id != request.user.pk:
+            return JsonResponse({'success': False, 'error': 'Unauthorized'}, status=403)
+        participant.score_adjustment += int(data['score']) - participant.total_score
         participant.total_score = int(data['score'])
-        participant.save(update_fields=['total_score'])
+        participant.save(update_fields=['total_score', 'score_adjustment'])
         return JsonResponse({'success': True, 'new_score': participant.total_score})
     except Exception as e:
         return JsonResponse({'success': False, 'error': str(e)}, status=400)
@@ -10169,12 +9900,16 @@ def set_clue_rush_participant_score(request):
 
 @admin_required
 @require_POST
+@transaction.atomic
 def set_sorting_ladder_participant_score(request):
     try:
         data = json.loads(request.body)
-        participant = get_object_or_404(SortingLadderParticipant, id=data['participant_id'])
+        participant = get_object_or_404(SortingLadderParticipant.objects.select_for_update(), id=data['participant_id'])
+        if not request.user.is_superuser and participant.quiz.creator_id != request.user.pk:
+            return JsonResponse({'success': False, 'error': 'Unauthorized'}, status=403)
+        participant.score_adjustment += int(data['score']) - participant.total_score
         participant.total_score = int(data['score'])
-        participant.save(update_fields=['total_score'])
+        participant.save(update_fields=['total_score', 'score_adjustment'])
         return JsonResponse({'success': True, 'new_score': participant.total_score})
     except Exception as e:
         return JsonResponse({'success': False, 'error': str(e)}, status=400)

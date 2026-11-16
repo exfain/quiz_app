@@ -411,12 +411,12 @@
                                         <tr class="ranking-row" data-player-index="{{ forloop.counter0 }}" style="cursor: pointer;">
                                             <td>
                                                 <div class="rank-display">
-                                                    {% if forloop.counter <= 3 %}
-                                                        <div class="rank-circle rank-{{ forloop.counter }}">
-                                                            {{ forloop.counter }}
+                                                    {% if player.rank <= 3 %}
+                                                        <div class="rank-circle rank-{{ player.rank }}">
+                                                            {{ player.rank }}
                                                         </div>
                                                     {% else %}
-                                                        <div class="rank-number">{{ forloop.counter }}</div>
+                                                        <div class="rank-number">{{ player.rank }}</div>
                                                     {% endif %}
                                                 </div>
                                             </td>
@@ -653,7 +653,8 @@
                 .sort((a, b) => (b.game_scores[gameKey] || 0) - (a.game_scores[gameKey] || 0));
             
             // Find player's rank (1-based index)
-            const rank = playersWithScores.findIndex(p => p.name === playerName) + 1;
+            const player = playersWithScores.find(p => p.name === playerName);
+            const rank = player ? 1 + playersWithScores.filter(p => (p.game_scores[gameKey] || 0) > (player.game_scores[gameKey] || 0)).length : 0;
             
             // Add ordinal suffix (1st, 2nd, 3rd, etc.)
             if (rank === 0) return 'N/A';

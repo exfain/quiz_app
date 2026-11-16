@@ -5,6 +5,7 @@ from django.db import IntegrityError, OperationalError, connection, transaction
 from django.utils import timezone
 
 from .models import HubParticipant, HubSession
+from .team_names import character_error
 
 
 MIN_NICKNAME_LENGTH = 3
@@ -12,13 +13,15 @@ REJOIN_TOKEN_SALT = 'games_hub.lobby_rejoin.v1'
 
 
 def normalize_nickname(value):
-    return str(value or '').strip()
+    return str(value or '').strip(' ')
 
 
 def nickname_validation_error(value):
     nickname = normalize_nickname(value)
     if not nickname:
         return 'name_required', 'Name eingeben'
+    if character_error(nickname):
+        return 'invalid_name_characters', character_error(nickname)
     if len(nickname) < MIN_NICKNAME_LENGTH:
         return 'name_too_short', 'Der Name ist zu kurz.'
     if len(nickname) > HubParticipant._meta.get_field('nickname').max_length:
@@ -52,6 +55,10 @@ def _token_matches_participant(token, participant):
 
 def check_nickname_availability(session_code, nickname, rejoin_token=''):
     nickname = normalize_nickname(nickname)
+    if rejoin_token:
+        legacy = HubParticipant.objects.filter(session__code=session_code, nickname__iexact=nickname).first()
+        if legacy and not legacy.session.ended_at and _token_matches_participant(rejoin_token, legacy):
+            return {'status': 'rejoin', 'nickname': legacy.nickname}
     validation_error = nickname_validation_error(nickname)
     if validation_error:
         code, message = validation_error
@@ -125,6 +132,8 @@ def _join_once(session_code, nickname, rejoin_token):
                 'rejoin_token': issue_rejoin_token(participant),
             }
 
+        if session.session_type == 'duel' and session.participants.count() >= 2:
+            return {'success': False, 'code': 'session_full', 'message': 'Diese 2-Spieler-Session hat bereits zwei Teilnehmer.'}
         participant = HubParticipant.objects.create(
             session=session,
             nickname=nickname,
@@ -142,6 +151,10 @@ def _join_once(session_code, nickname, rejoin_token):
 
 def join_lobby_participant(session_code, nickname, rejoin_token=''):
     nickname = normalize_nickname(nickname)
+    if rejoin_token:
+        legacy = HubParticipant.objects.filter(session__code=session_code, nickname__iexact=nickname).first()
+        if legacy and _token_matches_participant(rejoin_token, legacy):
+            return _join_once(session_code, nickname, rejoin_token)
     validation_error = nickname_validation_error(nickname)
     if validation_error:
         code, message = validation_error

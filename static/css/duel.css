@@ -1,0 +1,9 @@
+.duel-shell{max-width:960px;margin:2rem auto;padding:1.5rem;color:var(--vhs-white,#eee)}
+.duel-shell section,.duel-slot{padding:1.2rem;margin:1rem 0;border:1px solid var(--vhs-muted,#666);background:var(--vhs-panel,#151726)}
+.duel-shell input,.duel-shell select,.duel-shell button,.duel-shell a{font:inherit;padding:.65rem;margin:.35rem;color:inherit}
+.duel-shell input,.duel-shell select,.duel-shell button{background:#171b2a;border:1px solid var(--vhs-orange,#f99d40)}
+.duel-shell button:disabled{opacity:.45}.duel-shell [hidden]{display:none!important}
+.duel-controls{display:flex;gap:.5rem;flex-wrap:wrap}.duel-shell #error{color:#ffae96;white-space:pre-line}
+.duel-shell progress{width:100%;height:1.2rem;accent-color:var(--vhs-orange,#fb9440)}
+.duel-shell #timer{font-size:2rem}.duel-shell #question{font-size:clamp(1.4rem,3vw,2.4rem)}
+.duel-shell #result,.duel-shell #answers{white-space:pre-line;font-size:1.3rem}

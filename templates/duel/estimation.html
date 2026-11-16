@@ -1,0 +1,17 @@
+{% load static %}
+<!doctype html><html lang="de" data-participant-theme="vhs"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Estimation Duell</title>
+<link rel="stylesheet" href="{% static 'theme.css' %}"><link rel="stylesheet" href="{% static 'themes/vhs/vhs.css' %}"><link rel="stylesheet" href="{% static 'css/duel.css' %}"><script src="{% static 'js/authoritative-game-state.js' %}"></script></head>
+<body class="estimation-play-page"><main class="vhs-theme-shell duel-shell" id="duel-match" data-code="{{ session.code }}" data-role="{{ role }}" data-instance="{{ instance_id }}" data-api="{% url 'duel:match_api' session.code instance_id role %}">
+<header class="vhs-theme-header"><h1>Estimation · Duell</h1><p id="names"></p></header>{% csrf_token %}
+<p id="error" role="alert"></p><p id="phase" aria-live="polite">Verbinde …</p>
+<section id="waiting" hidden>{% include 'includes/_participant_start_waiting.html' with waiting_game_title='Estimation' %}</section>
+<section id="question-card" class="question-card qa-active-answer-card estimation-answer-card" hidden><h2 id="question" class="question-text"></h2><p id="timer"></p><p id="unit-label"></p>
+{% if role == 'participant' %}<form id="answer-form"><label>Deine Schätzung <input id="estimate" inputmode="decimal" autocomplete="off" required></label><button id="commit">Einloggen</button></form><p id="own-status"></p>{% endif %}
+</section><section id="answers-card" hidden><h2>Abgegebene Antworten</h2><p id="answers"></p></section>
+<section id="solution-card" hidden><h2>Richtige Lösung</h2><p id="solution"></p><p id="deviations"></p></section>
+<section id="result-card" hidden><h2>Ergebnis</h2><p id="result"></p><div id="score"></div></section>
+{% if role == 'host' %}<section id="host-controls" hidden><label>Frage <select id="question-select"><option value="">Bitte auswählen</option></select></label>
+<button id="prepare">Frage vorbereiten</button><label>Antwortdauer (Sekunden) <input id="duration" type="number" min="1" step="1" required></label>
+<button id="start">Frage starten</button><button id="show_answers">Antworten zeigen</button><button id="show_solution">Lösung zeigen</button><button id="show_result">Ergebnis zeigen</button><button id="complete">Präsentation abschließen</button></section>{% endif %}
+<p><a id="return" href="{% if role == 'host' %}{% url 'games_hub:monitor' session.code %}{% elif role == 'spectator' %}{% url 'games_hub:spectate_session' session.code %}{% else %}{% url 'games_hub:lobby' session.code %}{% endif %}" hidden>Zurück zur Lobby / zum Hub</a></p>
+</main>{% include 'includes/_session_game_start_intro.html' %}<script src="{% static 'js/duel-estimation.js' %}"></script>{% include 'includes/_duel_tournament_pair.html' %}{% include 'includes/_duel_match_status.html' %}</body></html>

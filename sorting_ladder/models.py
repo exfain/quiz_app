@@ -51,9 +51,12 @@ class SortingLadderGame(SyncBase):
 
     def start_quiz(self):
         self.status = 'active'
-        self.started_at = timezone.now()
+        self.started_at = self.started_at or timezone.now()
         self.ended_at = None
         self.save(update_fields=['status', 'started_at', 'ended_at'])
+
+    def get_current_set_number(self):
+        return getattr(getattr(self, 'session', None), 'current_set_number', 0) or None
 
     def reset_runtime_state(self):
         """Clear ephemeral state before a new run without touching question setup or scores."""
@@ -114,6 +117,7 @@ class SortingLadderParticipant(SyncBase):
     is_eliminated = models.BooleanField(default=False)
 
     total_score = models.IntegerField(default=0)
+    score_adjustment = models.IntegerField(default=0)
     rounds_survived = models.IntegerField(default=0)
     last_activity = models.DateTimeField(auto_now=True)
     hub_session_code = models.CharField(max_length=16, null=True, blank=True, db_index=True)
@@ -136,7 +140,7 @@ class SortingLadderParticipant(SyncBase):
             get_scorebox_excluded_tutorial_question_ids,
         )
 
-        qs = RoundSubmission.objects.filter(quiz=self.quiz, participant=self, is_correct=True)
+        qs = RoundSubmission.objects.filter(quiz=self.quiz, participant=self, is_correct=True, is_tutorial=False)
         tutorial_question_ids = get_scorebox_excluded_tutorial_question_ids(
             'sorting_ladder',
             self.quiz.room_code,
@@ -145,7 +149,7 @@ class SortingLadderParticipant(SyncBase):
         if tutorial_question_ids:
             qs = qs.exclude(question_id__in=tutorial_question_ids)
 
-        self.total_score = qs.count()
+        self.total_score = self.score_adjustment + qs.count()
         self.save(update_fields=['total_score'])
         return self.total_score
 
@@ -212,6 +216,8 @@ class SortingItem(SyncBase):
 
 
 class RoundSubmission(SyncBase):
+    set_number = models.PositiveIntegerField(default=0)
+    is_tutorial = models.BooleanField(default=False)
     """
     Records a player's move for a specific round.
     """
@@ -227,7 +233,7 @@ class RoundSubmission(SyncBase):
         ordering = ['-submitted_at']
         constraints = [
             models.UniqueConstraint(
-                fields=['quiz', 'participant', 'question', 'round_number'],
+                fields=['quiz', 'participant', 'question', 'set_number', 'round_number'],
                 name='unique_sorting_round_submission',
             ),
         ]
@@ -266,6 +272,7 @@ class RoundSubmission(SyncBase):
 
 
 class SortingPendingRoundSelection(SyncBase):
+    set_number = models.PositiveIntegerField(default=0)
     quiz = models.ForeignKey(
         SortingLadderGame,
         related_name='pending_round_selections',
@@ -287,7 +294,7 @@ class SortingPendingRoundSelection(SyncBase):
     class Meta:
         constraints = [
             models.UniqueConstraint(
-                fields=['quiz', 'participant', 'question', 'round_number'],
+                fields=['quiz', 'participant', 'question', 'set_number', 'round_number'],
                 name='unique_sorting_pending_round_selection',
             ),
         ]
@@ -297,6 +304,8 @@ class SortingPendingRoundSelection(SyncBase):
 
 
 class SortingLadderSession(SyncBase):
+    current_set_number = models.PositiveIntegerField(default=0)
+    question_rounds = models.JSONField(default=list, blank=True)
     """
     Manages the live state of the quiz rounds.
     """

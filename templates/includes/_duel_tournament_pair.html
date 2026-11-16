@@ -1,0 +1,4 @@
+{% load static %}{% if tournament_url %}
+<style>body[data-tournament-pair] #return,body[data-tournament-pair] #prepare,body[data-tournament-pair] #question-select{display:none!important}</style>
+<aside id="tournament-pair" data-api="{{ tournament_api }}" data-url="{{ tournament_url }}" data-role="{{ role }}" data-set-number="{{ tournament_number }}" data-duration="{{ tournament_duration }}"><p data-message>Turnierset {{ tournament_number }} · öffentliche Auflösung erst nach allen Abgaben.</p><a href="{{ tournament_url }}">Zur Turnierübersicht</a></aside>
+<script src="{% static 'js/duel-tournament-pair.js' %}"></script>{% endif %}

@@ -14,6 +14,7 @@ urlpatterns = [
     
     # Quiz Actions (AJAX endpoints)
     path('submit-answer/<str:room_code>/<str:participant_name>/', views.submit_answer, name='submit_answer'),
+    path('pending/<str:room_code>/<str:participant_name>/', views.pending_input, name='pending_input'),
     path('status/<str:room_code>/<str:participant_name>/', views.get_quiz_status, name='quiz_status'),
     path('leave/<str:room_code>/<str:participant_name>/', views.leave_quiz, name='leave_quiz'),
     

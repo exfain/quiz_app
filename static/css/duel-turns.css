@@ -1,0 +1,6 @@
+.duel-shell #turn{font-size:1.5rem;font-weight:bold;color:#ffc585}
+.duel-shell .turn-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:.75rem}
+.duel-shell .turn-card{padding:1rem;border:1px solid currentColor;min-height:3rem;overflow-wrap:anywhere}
+.duel-shell .turn-card.revealed{background:#203d34;border-color:#7aefb5}
+.duel-shell .turn-pairs p,.duel-shell .turn-order li{padding:.6rem;border-bottom:1px solid #aaa;font-size:1.2rem}
+.duel-shell #selection label{display:block;margin:.5rem 0}

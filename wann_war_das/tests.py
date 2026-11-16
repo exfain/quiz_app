@@ -610,7 +610,8 @@ class WannWarDasEndFlowTests(TransactionTestCase):
         self.assertEqual(response.status_code, 200)
         self.assertFalse(self.participant.is_active)
         self.assertContains(lobby_response, "returnedToLobby")
-        self.assertContains(lobby_response, "if (returnedToLobby)")
+        self.assertContains(lobby_response, "sameReturnedGame")
+        self.assertContains(lobby_response, "from_room")
 
     def test_end_game_does_not_reactivate_returned_participant_and_only_finalizes_once(self):
         self.participant.is_active = False

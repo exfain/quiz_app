@@ -153,9 +153,10 @@ function isQaVhsParticipantTheme() {
     return activeTheme === 'vhs';
   }
   try {
-    return window.localStorage.getItem('participant_interface_theme') === 'vhs';
+    const storedTheme = window.localStorage.getItem('participant_interface_theme');
+    return ['standard', 'arcade', 'vhs'].includes(storedTheme) ? storedTheme === 'vhs' : true;
   } catch (_) {
-    return false;
+    return true;
   }
 }
 

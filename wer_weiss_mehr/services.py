@@ -28,6 +28,10 @@ from games_hub.unit_tutorial_runtime import (
 WER_WEISS_MEHR_FIELD_REVEAL_STAGGER_MS = 120
 WER_WEISS_MEHR_FIELD_REVEAL_ANIMATION_MS = 180
 
+from .progress import ordered_sets, progress
+from .runtime import retry_database_write
+from games_hub.quiz_pause import session_code_for
+
 from .models import (
     WerWeissMehrAnswerOption,
     WerWeissMehrGame,
@@ -87,9 +91,8 @@ def skip_tutorial_set(quiz, hub_session_code=None):
 
 
 def get_scoped_participants(quiz, hub_session_code=None, active_only=False):
-    participants = quiz.participants.all()
-    if hub_session_code is not None:
-        participants = participants.filter(hub_session_code=hub_session_code)
+    code = hub_session_code or session_code_for(quiz, 'wer_weiss_mehr')
+    participants = quiz.participants.filter(hub_session_code=code or None)
     if active_only:
         participants = participants.filter(is_active=True)
     return participants.order_by('name')
@@ -152,6 +155,7 @@ def wer_weiss_mehr_reveal_ready_at(question_visible_at, *, round_number, field_c
     return visible_at + timezone.timedelta(milliseconds=reveal_duration_ms)
 
 
+@retry_database_write
 @transaction.atomic
 def present_set_round(
     quiz,
@@ -188,6 +192,7 @@ def present_set_round(
     return decision
 
 
+@retry_database_write
 @transaction.atomic
 def present_next_round(quiz, *, hub_session_code=None, action, at=None):
     quiz = (
@@ -198,6 +203,7 @@ def present_next_round(quiz, *, hub_session_code=None, action, at=None):
     session = WerWeissMehrSession.objects.select_for_update().filter(quiz=quiz).first()
     if not session or not quiz.current_question:
         raise ValueError('Keine Runtime-Session gefunden.')
+    require_host_context(quiz, action, hub_session_code)
     if session.phase == WerWeissMehrSession.PHASE_ROUND_ACTIVE:
         snapshot = current_snapshot('wer_weiss_mehr', quiz.room_code, hub_session_code)
         return open_answering(
@@ -208,7 +214,7 @@ def present_next_round(quiz, *, hub_session_code=None, action, at=None):
                 **action,
                 'question_id': quiz.current_question_id,
                 'round_id': session.current_round,
-                'set_id': quiz.current_question_id,
+                'set_id': quiz.get_current_set_number(),
                 'state_revision': snapshot.get('state_revision'),
                 'game_id': snapshot.get('game_id'),
             },
@@ -252,7 +258,7 @@ def present_next_round(quiz, *, hub_session_code=None, action, at=None):
             'game_id': presented.snapshot.get('game_id'),
             'question_id': quiz.current_question_id,
             'round_id': session.current_round,
-            'set_id': quiz.current_question_id,
+            'set_id': quiz.get_current_set_number(),
         },
         answer_duration_seconds=session.time_limit_seconds,
         at=transition_at,
@@ -271,6 +277,7 @@ def present_next_round(quiz, *, hub_session_code=None, action, at=None):
     return opened
 
 
+@retry_database_write
 @transaction.atomic
 def open_prepared_round(quiz, *, hub_session_code=None, action, at=None):
     quiz = (
@@ -284,7 +291,7 @@ def open_prepared_round(quiz, *, hub_session_code=None, action, at=None):
 
     snapshot = current_snapshot('wer_weiss_mehr', quiz.room_code, hub_session_code)
     expected_round_id = str(session.current_round)
-    expected_set_id = str(quiz.current_question_id)
+    expected_set_id = str(quiz.get_current_set_number())
     if str(action.get('round_id') or '') != expected_round_id:
         return QuestionPhaseDecision(
             False,
@@ -348,8 +355,10 @@ def finish_round_question_flow(quiz, *, hub_session_code=None):
     )
 
 
-def store_pending_input(quiz, participant, answer_text):
-    quiz.refresh_from_db()
+@retry_database_write
+@transaction.atomic
+def store_pending_input(quiz, participant, answer_text, *, action=None):
+    quiz = WerWeissMehrGame.objects.select_for_update().get(pk=quiz.pk)
     if quiz.status != 'active':
         return None
     session = getattr(quiz, 'session', None)
@@ -358,16 +367,26 @@ def store_pending_input(quiz, participant, answer_text):
         return None
     if not _participant_can_answer(quiz, participant, question):
         return None
+    if action is not None and not participant_context_matches(quiz, action):
+        return None
+    now = timezone.now()
+    if not session.round_start_time or now < session.round_start_time or not session.round_end_time or now >= session.round_end_time:
+        return None
+    if WerWeissMehrRoundResponse.objects.filter(quiz=quiz, participant=participant, question=question,
+        set_number=session.current_set_number, round_number=session.current_round).exists():
+        return None
     pending, _ = WerWeissMehrPendingInput.objects.update_or_create(
         quiz=quiz,
         participant=participant,
         question=question,
+        set_number=session.current_set_number,
         round_number=session.current_round,
         defaults={'answer_text': answer_text or ''},
     )
     return pending
 
 
+@retry_database_write
 @transaction.atomic
 def submit_answer(quiz, participant, answer_text):
     original_quiz = quiz
@@ -387,7 +406,7 @@ def submit_answer(quiz, participant, answer_text):
     if not session or not question or session.phase != WerWeissMehrSession.PHASE_ROUND_ACTIVE:
         raise ValueError('Aktuell laeuft keine Runde.')
     received_at = timezone.now()
-    if session.round_end_time and received_at >= session.round_end_time:
+    if not session.round_start_time or received_at < session.round_start_time or not session.round_end_time or received_at >= session.round_end_time:
         raise ValueError('Die Runde ist bereits beendet.')
     if not _participant_can_answer(quiz, participant, question):
         raise ValueError('Du kannst in diesem Set nicht mehr antworten.')
@@ -395,6 +414,7 @@ def submit_answer(quiz, participant, answer_text):
     round_state = WerWeissMehrRound.objects.filter(
         quiz=quiz,
         question=question,
+        set_number=session.current_set_number,
         round_number=session.current_round,
     ).first()
     if not round_state:
@@ -404,6 +424,7 @@ def submit_answer(quiz, participant, answer_text):
         quiz=quiz,
         participant=participant,
         question=question,
+        set_number=session.current_set_number,
         round_number=session.current_round,
     ).first()
     if existing:
@@ -412,6 +433,7 @@ def submit_answer(quiz, participant, answer_text):
         quiz=quiz,
         participant=participant,
         question=question,
+        set_number=session.current_set_number,
         round_number=session.current_round,
         defaults={
             'answer_text': answer_text or '',
@@ -429,15 +451,17 @@ def submit_answer(quiz, participant, answer_text):
         quiz=quiz,
         participant=participant,
         question=question,
+        set_number=session.current_set_number,
         round_number=session.current_round,
     ).delete()
     original_quiz.refresh_from_db()
     return response
 
 
+@retry_database_write
 @transaction.atomic
 def apply_manual_correction(quiz, response_id, target_answer_id, hub_session_code=None):
-    quiz.refresh_from_db()
+    quiz = WerWeissMehrGame.objects.select_for_update().get(pk=quiz.pk)
     if quiz.status != 'active':
         raise ValueError('Das Spiel ist nicht aktiv.')
     session = getattr(quiz, 'session', None)
@@ -455,7 +479,7 @@ def apply_manual_correction(quiz, response_id, target_answer_id, hub_session_cod
         raise ValueError('Antwort wurde nicht gefunden.')
     if hub_session_code is not None and response.participant.hub_session_code != hub_session_code:
         raise ValueError('Diese Antwort gehoert nicht zur aktuellen Hub-Session.')
-    if response.question_id != quiz.current_question_id or response.round_number != session.current_round:
+    if response.question_id != quiz.current_question_id or response.round_number != session.current_round or response.set_number != session.current_set_number:
         raise ValueError('Diese Antwort gehoert nicht zur aktuellen Review-Runde.')
     effective_hub_session = hub_session_code or response.participant.hub_session_code
     is_tutorial_round = is_current_unit_tutorial_question(
@@ -470,6 +494,7 @@ def apply_manual_correction(quiz, response_id, target_answer_id, hub_session_cod
     round_state = WerWeissMehrRound.objects.filter(
         quiz=quiz,
         question=response.question,
+        set_number=response.set_number,
         round_number=response.round_number,
     ).first()
     if (
@@ -496,8 +521,11 @@ def end_current_round(quiz):
     return session.end_current_round()
 
 
+@retry_database_write
 @transaction.atomic
-def end_current_round_with_question_flow(quiz, *, hub_session_code=None):
+def end_current_round_with_question_flow(quiz, *, hub_session_code=None, action=None):
+    if action is not None:
+        require_host_context(quiz, action, hub_session_code)
     round_state = end_current_round(quiz)
     if round_state:
         quiz.refresh_from_db()
@@ -552,8 +580,11 @@ def finish_set(quiz):
     return session
 
 
+@retry_database_write
 @transaction.atomic
-def finish_set_with_question_flow(quiz, *, hub_session_code=None):
+def finish_set_with_question_flow(quiz, *, hub_session_code=None, action=None):
+    if action is not None:
+        require_host_context(quiz, action, hub_session_code)
     result = finish_set(quiz)
     quiz.refresh_from_db()
     finish_round_question_flow(quiz, hub_session_code=hub_session_code)
@@ -568,7 +599,11 @@ def finish_set_with_question_flow(quiz, *, hub_session_code=None):
     return result
 
 
-def clear_current_set(quiz):
+@retry_database_write
+@transaction.atomic
+def clear_current_set(quiz, *, action=None, hub_session_code=None):
+    if action is not None:
+        require_host_context(quiz, action, hub_session_code)
     quiz.refresh_from_db()
     session = getattr(quiz, 'session', None)
     if not session:
@@ -579,21 +614,16 @@ def clear_current_set(quiz):
     return session
 
 
+@retry_database_write
+@transaction.atomic
 def build_game_state(quiz, hub_session_code=None, participant_name=None):
+    quiz = WerWeissMehrGame.objects.select_for_update().select_related('current_question').get(pk=quiz.pk)
     session, _ = WerWeissMehrSession.objects.get_or_create(quiz=quiz)
     has_incomplete_start = quiz.status == 'active' and quiz.started_at is None
     question = None if has_incomplete_start else quiz.current_question
-    current_set_number = None
-    if question:
-        ordered_questions = get_ordered_scored_questions(quiz, hub_session_code)
-        current_set_number = next(
-            (
-                index
-                for index, ordered_question in enumerate(ordered_questions, start=1)
-                if ordered_question.id == question.id
-            ),
-            None,
-        )
+    hub_session_code = hub_session_code or session_code_for(quiz, 'wer_weiss_mehr')
+    set_progress = progress(quiz, hub_session_code)
+    current_set_number = set_progress['current']
     is_participant_view = bool(participant_name)
     participant = None
     if participant_name:
@@ -619,6 +649,7 @@ def build_game_state(quiz, hub_session_code=None, participant_name=None):
             for state in WerWeissMehrParticipantState.objects.filter(
                 quiz=quiz,
                 question=question,
+            set_number=session.current_set_number,
                 participant_id__in=participant_ids,
             )
         }
@@ -628,6 +659,7 @@ def build_game_state(quiz, hub_session_code=None, participant_name=None):
         response_qs = WerWeissMehrRoundResponse.objects.filter(
             quiz=quiz,
             question=question,
+            set_number=session.current_set_number,
             round_number=session.current_round,
             participant_id__in=participant_ids,
         ).select_related('participant', 'matched_answer')
@@ -642,6 +674,7 @@ def build_game_state(quiz, hub_session_code=None, participant_name=None):
             quiz=quiz,
             participant=participant,
             question=question,
+            set_number=session.current_set_number,
             round_number=session.current_round,
         ).first()
 
@@ -664,8 +697,10 @@ def build_game_state(quiz, hub_session_code=None, participant_name=None):
         'room_code': quiz.room_code,
         'title': quiz.title,
         'current_round': 0 if has_incomplete_start else session.current_round,
+        'current_round_id': str(0 if has_incomplete_start else session.current_round),
         'current_set_number': current_set_number,
-        'current_set_id': str(question.id) if question else None,
+        'current_set_id': str(quiz.get_current_set_number()) if question else None,
+        'set_total': set_progress['total'],
         'timer': _idle_timer_payload(session) if has_incomplete_start else _timer_payload(session),
         'question': _serialize_question(
             question,
@@ -701,6 +736,13 @@ def build_game_state(quiz, hub_session_code=None, participant_name=None):
         room_code=quiz.room_code,
         session_code=hub_session_code,
     )
+    # A completed presentation no longer has an answering context. Keep the
+    # persisted set identity available for the separate return-to-selection action.
+    state['current_question_id'] = str(question.pk) if question else None
+    state['current_round_id'] = str(0 if has_incomplete_start else session.current_round)
+    state['current_set_id'] = str(quiz.get_current_set_number()) if question else None
+    if quiz.status == 'inactive' and state.get('remaining_answer_time') is not None:
+        state['timer']['remaining_seconds'] = state['remaining_answer_time']
     manual_flow = (
         state.get('question_flow_mode')
         == GameRuntimeState.QUESTION_FLOW_MANUAL_THREE_PHASE
@@ -747,10 +789,14 @@ def build_game_state(quiz, hub_session_code=None, participant_name=None):
 
 
 def _participant_can_answer(quiz, participant, question):
+    session = quiz.session
+    if (participant.hub_session_code or '') != session.hub_session_code:
+        return False
     state = WerWeissMehrParticipantState.objects.filter(
         quiz=quiz,
         participant=participant,
         question=question,
+        set_number=session.current_set_number,
         is_eliminated=False,
     ).exists()
     return bool(participant.is_active and state)
@@ -834,7 +880,7 @@ def _serialize_available_question(
         'status': status,
         'is_completed': is_completed,
         'is_tutorial_set': is_tutorial_set,
-        'is_start_disabled': bool((regular_blocked_by_tutorial and not is_completed) or is_completed),
+        'is_start_disabled': bool(regular_blocked_by_tutorial or (is_tutorial_set and is_completed)),
         'disabled_reason': 'Tutorialset zuerst abschliessen oder ueberspringen.'
         if regular_blocked_by_tutorial and not is_completed else '',
     }
@@ -847,6 +893,7 @@ def _serialize_question(question, session, hub_session_code=None, include_hidden
             WerWeissMehrRoundResponse.objects.filter(
                 quiz=session.quiz,
                 question=question,
+            set_number=session.current_set_number,
                 round_number=session.current_round,
                 is_correct=True,
                 matched_answer__isnull=False,
@@ -919,12 +966,16 @@ def _can_start_next_round(quiz, session, question):
         for response in WerWeissMehrRoundResponse.objects.filter(
             quiz=quiz,
             question=question,
+            set_number=session.current_set_number,
+            participant__hub_session_code=session.hub_session_code or None,
             round_number=session.current_round,
         )
     }
     active_states = WerWeissMehrParticipantState.objects.select_related('participant').filter(
         quiz=quiz,
         question=question,
+        set_number=session.current_set_number,
+            participant__hub_session_code=session.hub_session_code or None,
         is_eliminated=False,
         participant__is_active=True,
     )
@@ -963,6 +1014,7 @@ def _serialize_response(response):
         'answer_text': response.answer_text,
         'has_pending_input': False,
         'auto_status': auto_status,
+        'needs_manual_review': response.needs_manual_review and not response.is_manual_override,
         'final_status': final_status,
         'is_correct': response.is_correct,
         'is_manual_override': response.is_manual_override,
@@ -984,6 +1036,7 @@ def _apply_correct_response_progress(response, update_total=True):
         quiz=response.quiz,
         participant=response.participant,
         question=response.question,
+        set_number=response.set_number,
     ).first()
     if not state:
         return None
@@ -1008,12 +1061,15 @@ def _serialize_own_state(quiz, participant, question, state, response, pending, 
         and not state.is_eliminated
         and not has_submitted
         and participant.is_active
+        and session.round_start_time and session.round_start_time <= timezone.now()
+        and session.round_end_time and timezone.now() < session.round_end_time
     )
     response_payload = _serialize_response(response) if response else None
     if response_payload and session.phase == WerWeissMehrSession.PHASE_ROUND_ACTIVE:
         response_payload.update({
             'auto_status': 'submitted',
             'final_status': 'submitted',
+            'needs_manual_review': False,
             'is_correct': False,
             'matched_answer_id': None,
             'matched_answer_text': '',
@@ -1026,6 +1082,7 @@ def _serialize_own_state(quiz, participant, question, state, response, pending, 
         'survived_rounds': state.survived_rounds if state else 0,
         'last_status': state.last_status if state else '',
         'can_answer': can_answer,
+        'waiting_for_next_set': bool(question and state is None),
         'has_submitted': has_submitted,
         'submitted_answer': response.answer_text if response else '',
         'pending_answer': pending.answer_text if pending else '',
@@ -1035,31 +1092,42 @@ def _serialize_own_state(quiz, participant, question, state, response, pending, 
 
 
 def _serialize_scorebox(quiz, participants, hub_session_code=None):
-    selected_questions = get_ordered_scored_questions(quiz, hub_session_code)
-    states = WerWeissMehrParticipantState.objects.filter(
-        quiz=quiz,
-        participant_id__in=[participant.id for participant in participants],
-        question_id__in=[question.id for question in selected_questions],
-    )
-    state_map = {(state.participant_id, state.question_id): state for state in states}
-    rows = []
-    for index, question in enumerate(selected_questions, start=1):
-        max_points = question.answers.count()
-        rows.append({
-            'question_id': question.id,
-            'round_number': index,
-            'label': f'#{index}',
-            'answer_count': max_points,
-            'max_points': max_points,
-            'scores': [
-                {
-                    'participant_id': participant.id,
-                    'participant_name': participant.name,
-                    'points': state_map[(participant.id, question.id)].survived_rounds
-                    if (participant.id, question.id) in state_map else None,
-                    'max_points': max_points,
-                }
-                for participant in participants
-            ],
-        })
-    return rows
+    rows = ordered_sets(quiz, hub_session_code)
+    states = WerWeissMehrParticipantState.objects.filter(quiz=quiz, is_tutorial=False,
+        participant_id__in=[participant.pk for participant in participants])
+    by_key = {(state.participant_id, state.question_id, state.set_number): state for state in states}
+    result = []
+    for row in rows:
+        question = row['question']
+        maximum = question.answers.count()
+        result.append({'question_id': question.pk, 'set_number': row['set_number'],
+            'round_number': row['number'], 'label': f"#{row['number']}", 'answer_count': maximum, 'max_points': maximum,
+            'scores': [{'participant_id': participant.pk, 'participant_name': participant.name,
+                'points': by_key[(participant.pk, question.pk, row['set_number'])].survived_rounds
+                    if (participant.pk, question.pk, row['set_number']) in by_key else None,
+                'max_points': maximum} for participant in participants]})
+    return result
+
+
+def participant_context_matches(quiz, action):
+    session = getattr(quiz, 'session', None)
+    return bool(session and quiz.current_question_id and
+        str(action.get('game_id')) == str(quiz.pk) and
+        str(action.get('question_id')) == str(quiz.current_question_id) and
+        str(action.get('round_id')) == str(session.current_round) and
+        str(action.get('set_id')) == str(quiz.get_current_set_number()))
+
+
+def require_host_context(quiz, action, code=None):
+    quiz.refresh_from_db()
+    if quiz.status != 'active' or not participant_context_matches(quiz, action):
+        raise ValueError('Die Aktion gehoert nicht zum aktuellen Set oder zur aktuellen Runde.')
+    snapshot = current_snapshot('wer_weiss_mehr', quiz.room_code, code)
+    from games_hub.authoritative_state import get_runtime_state
+    runtime = get_runtime_state('wer_weiss_mehr', quiz.room_code, code)
+    try:
+        revision = int(action.get('state_revision'))
+    except (TypeError, ValueError):
+        raise ValueError('Aktionskontext fehlt.')
+    if revision < runtime.context_revision or revision > snapshot['state_revision']:
+        raise ValueError('Der Spielzustand hat sich geaendert.')

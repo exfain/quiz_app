@@ -12,7 +12,7 @@
         <div><div class="host-status-label">Typ</div><span class="badge bg-dark">Wann war das?</span></div>
         <div><div class="host-status-label">Code</div><code>{{ game.room_code }}</code></div>
         <div><div class="host-status-label">Status</div><span id="gameStatus" class="badge bg-secondary">{{ game.status }}</span></div>
-        <div><div class="host-status-label">Frage</div><strong><span id="questionNumber">{{ game.current_question_number|default:0 }}</span> / {{ available_questions|length }}</strong></div>
+        <div><div class="host-status-label">Frage</div><strong><span id="questionNumber">{{ game.current_question_number|default:0 }}</span> / <span id="totalQuestionCount">{{ available_questions|length }}</span></strong></div>
         <div><div class="host-status-label">Toleranz</div><strong id="currentTolerance">-</strong></div>
         <div><div class="host-status-label">Punkte jetzt</div><strong id="currentPoints">-</strong></div>
         <div><div class="host-status-label">Teilnehmer</div><strong id="participantCount">0</strong></div>
@@ -181,13 +181,23 @@ function renderState(data) {
 }
 
 function applyState(data) {
+    const previousRound = latestState?.current_round_id;
+    const previousQuestionState = latestState?.question_state;
     latestState = data;
+    if (data.question_state === 'revealed' && (previousQuestionState !== 'revealed' || previousRound !== data.current_round_id)) {
+        const played = new Set((data.scorebox?.rows?.[0]?.entries || []).filter(e => e.status === 'played').map(e => String(e.question_id)));
+        const select = document.getElementById('questionSelect');
+        const next = Array.from(select.options).find(option => option.value && !played.has(option.value));
+        if (next) select.value = next.value;
+    }
     const game = data.game || {};
+    document.getElementById('startGameBtn').dataset.hostGameResume = String(game.status === 'inactive');
     const question = data.question;
     const timer = data.timer || {};
     const answers = data.answers || [];
     document.getElementById('gameStatus').textContent = game.status || '-';
     document.getElementById('questionNumber').textContent = data.question_number || 0;
+    document.getElementById('totalQuestionCount').textContent = data.progress?.total ?? 0;
     document.getElementById('questionState').textContent = data.question_state || 'bereit';
     const currentTolerance = timer.current_tolerance ?? question?.start_tolerance;
     const currentPoints = timer.current_points ?? question?.max_points;
@@ -330,14 +340,18 @@ function startTimerDisplay(state) {
         const drop = maxSteps > 0
             ? Math.ceil((maxPoints - minPoints) * (currentStep / maxSteps))
             : 0;
-        document.getElementById('currentTolerance').textContent = `Â±${fmt(tolerance)}`;
+        document.getElementById('currentTolerance').textContent = `±${fmt(tolerance)}`;
         document.getElementById('currentPoints').textContent = fmt(Math.max(minPoints, maxPoints - drop));
     };
     tick();
     timerDisplayInterval = window.setInterval(tick, 250);
     const remaining = hostRuntime.remainingMilliseconds(state);
-    if (remaining > 0) {
-        deadlineRefreshTimer = window.setTimeout(() => hostRuntime.requestState(), remaining + 50);
+    if (!state.paused && state.game?.status === 'active') {
+        deadlineRefreshTimer = window.setTimeout(() => {
+            if (latestState?.current_round_id === state.current_round_id && latestState?.question_state === 'active') {
+                send({type: 'admin_end_question'});
+            }
+        }, Math.max(0, remaining) + 50);
     }
 }
 

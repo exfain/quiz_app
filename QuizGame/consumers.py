@@ -1,3 +1,4 @@
+from games_hub.quiz_rounds import current_round
 import json
 import uuid
 from channels.generic.websocket import AsyncWebsocketConsumer
@@ -6,6 +7,7 @@ from django.db import transaction
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 from .models import Quiz, QuizParticipant, QuizQuestion, QuizAnswer, QuizSession
+from .progress import public_question_number, question_progress
 from .presentation import (
     QUIZ_ANSWER_REVEAL_ANIMATION_MS,
     QUIZ_ANSWER_REVEAL_PAUSE_MS,
@@ -40,8 +42,6 @@ from games_hub.tutorial_runtime import (
 )
 from games_hub.unit_tutorial_runtime import (
     finish_current_unit_tutorial,
-    get_scorebox_excluded_tutorial_question_ids,
-    get_unit_tutorial_state,
     is_unit_tutorial_question,
     prepare_unit_tutorial_runtime,
     start_unit_tutorial_if_needed,
@@ -54,12 +54,7 @@ class QuizConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
     authoritative_required_actions = frozenset({'participant_submit_answer'})
 
     def public_question_number(self, session, hub_session_code=None):
-        tutorial_state = get_unit_tutorial_state('quiz', self.room_code, hub_session_code)
-        tutorial_was_started = tutorial_state.get('requested') and (
-            tutorial_state.get('current_unit_is_tutorial')
-            or tutorial_state.get('tutorial_has_been_played')
-        )
-        return max(0, session.current_question_number - int(bool(tutorial_was_started)))
+        return public_question_number(session, self.room_code, hub_session_code)
 
     async def connect(self):
         self.room_code = self.scope['url_route']['kwargs']['room_code']
@@ -141,6 +136,20 @@ class QuizConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
 
     async def handle_admin_start_quiz(self, data):
         """Handle admin starting the quiz"""
+        quiz = await self.get_quiz()
+        if quiz and quiz.status == 'active' and quiz.started_at:
+            await self.send(text_data=json.dumps({'type': 'quiz_started', 'message': 'Quiz has already started.',
+                'start_request_id': data.get('start_request_id')}))
+            return
+        if quiz and quiz.status == 'inactive' and quiz.started_at:
+            activation = await database_sync_to_async(resolve_session_game_activation_for_room)(
+                'quiz', self.room_code, check_only=True,
+            )
+            if not activation.get('success'):
+                await self.send(text_data=json.dumps({'type': 'active_game_conflict', **activation}))
+                return
+            await database_sync_to_async(quiz.start_quiz)(session_code=data.get('hub_session') or None)
+            return
         lobby_ready = await database_sync_to_async(ensure_session_players_ready_for_game_start_for_room)(
             'quiz',
             self.room_code,
@@ -211,7 +220,9 @@ class QuizConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
                 {
                     'type': 'quiz_started',
                     'message': 'Quiz has started!',
+                    'start_request_id': data.get('start_request_id'),
                     'total_questions': total_questions,
+                    'question_number': None,
                 }
             )
             await self.hub_mirror_event('quiz_started', {
@@ -436,6 +447,7 @@ class QuizConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
             {
                 'type': 'question_prepared',
                 'question_id': question.id,
+                **(await self.get_question_progress_data(hub_session)),
                 **self.question_lifecycle_fields(decision.get('snapshot')),
             },
         )
@@ -459,6 +471,7 @@ class QuizConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
             self.room_group_name,
             {
                 'type': 'question_preparation_cleared',
+                **(await self.get_question_progress_data(hub_session)),
                 **self.question_lifecycle_fields(decision.get('snapshot')),
             },
         )
@@ -606,6 +619,9 @@ class QuizConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
     async def handle_admin_end_question(self, data):
         """Handle admin ending current question"""
         quiz = await self.get_quiz()
+        if quiz and quiz.status != 'active':
+            await self.send(text_data=json.dumps({'type': 'error', 'message': 'Das Spiel ist nicht aktiv.'}))
+            return
         if quiz:
             hub_session = data.get('hub_session') or data.get('hub_session_code') or await self._get_hub_session_code_for_room()
             phase_snapshot = await database_sync_to_async(current_snapshot)(
@@ -706,13 +722,6 @@ class QuizConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
         quiz = await self.get_quiz()
         if quiz and quiz.status == 'active':
             await self.set_quiz_inactive_db(quiz.id)
-            await self.channel_layer.group_send(
-                self.room_group_name,
-                {
-                    'type': 'quiz_inactive',
-                    'message': 'Quiz has been set inactive.'
-                }
-            )
 
     async def handle_participant_submit_answer(self, data):
         """Handle participant submitting an answer"""
@@ -773,12 +782,18 @@ class QuizConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
 
     async def handle_participant_update_pending_answer(self, data):
         """Persist the latest unconfirmed selection for authoritative finalization."""
-        await self.save_pending_answer(
+        accepted = await self.save_pending_answer(
             data.get('participant_name'),
             data.get('hub_session') or None,
             data.get('answer'),
             data.get('question_id'),
+            expected_started_at=data.get('question_started_at'),
         )
+        await self.send(text_data=json.dumps({
+            'type': 'pending_answer_saved' if accepted else 'pending_answer_rejected',
+            'question_id': data.get('question_id'),
+            'message': '' if accepted else 'Die Auswahl konnte nicht gespeichert werden.',
+        }))
 
     async def handle_participant_join(self, data):
         """Handle new participant joining"""
@@ -797,6 +812,7 @@ class QuizConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
                 {
                     'type': 'participant_joined',
                     'participant': {
+                        'id': participant['id'],
                         'name': participant['name'],
                         'total_score': participant['total_score']
                     }
@@ -806,14 +822,11 @@ class QuizConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
             # If quiz is already active, send quiz_started directly to this participant
             quiz = await self.get_quiz()
             if quiz and quiz.status == 'active':
-                total_questions = await self.get_total_question_count(
-                    quiz.id,
-                    hub_session,
-                )
+                progress = await self.get_question_progress_data(hub_session)
                 await self.send(text_data=json.dumps({
                     'type': 'quiz_started',
                     'message': 'Quiz is already in progress',
-                    'total_questions': total_questions,
+                    **progress,
                 }))
                 tutorial_payload = await self.get_tutorial_payload(
                     quiz.id,
@@ -854,6 +867,7 @@ class QuizConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
                         await self.send(text_data=json.dumps({
                             'type': 'question_prepared',
                             'question_id': runtime_snapshot.get('prepared_question_id'),
+                            **(await self.get_question_progress_data(hub_session)),
                             **self.question_lifecycle_fields(runtime_snapshot),
                         }))
                         return
@@ -896,7 +910,9 @@ class QuizConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
         await self.send(text_data=json.dumps({
             'type': 'quiz_started',
             'message': event['message'],
+            'start_request_id': event.get('start_request_id'),
             'total_questions': event.get('total_questions'),
+            'question_number': event.get('question_number'),
         }))
 
     async def question_started(self, event):
@@ -919,12 +935,16 @@ class QuizConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
         await self.send(text_data=json.dumps({
             'type': 'question_prepared',
             'question_id': event.get('question_id'),
+            'question_number': event.get('question_number'),
+            'total_questions': event.get('total_questions'),
             **self.question_lifecycle_fields(event),
         }))
 
     async def question_preparation_cleared(self, event):
         await self.send(text_data=json.dumps({
             'type': 'question_preparation_cleared',
+            'question_number': event.get('question_number'),
+            'total_questions': event.get('total_questions'),
             **self.question_lifecycle_fields(event),
         }))
 
@@ -951,6 +971,7 @@ class QuizConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
             'answer_results': event.get('answer_results', []),
             'auto_finalized_answers': event.get('auto_finalized_answers', []),
             'is_tutorial_round': event.get('is_tutorial_round', False),
+            'question_number': event.get('question_number'),
         }))
 
     async def quiz_ended(self, event):
@@ -966,6 +987,9 @@ class QuizConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
             'type': 'quiz_inactive',
             'message': event.get('message', 'Quiz has been set inactive.')
         }))
+
+    async def quiz_resumed(self, event):
+        await self.send(text_data=json.dumps({'type': 'quiz_resumed'}))
 
     async def participant_answered(self, event):
         """Send participant answer to admin"""
@@ -990,6 +1014,8 @@ class QuizConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
             'type': 'answer_corrected',
             'success': True,
             'answer_id': event.get('answer_id'),
+            'round_number': event.get('round_number'),
+            'question_number': event.get('question_number'),
             'participant_id': event.get('participant_id'),
             'participant_name': event.get('participant_name'),
             'question_id': event.get('question_id'),
@@ -1055,6 +1081,9 @@ class QuizConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
     # Database operations
     @database_sync_to_async
     def get_current_question_data(self, hub_session_code=None):
+        return self.current_question_payload(hub_session_code)
+
+    def current_question_payload(self, hub_session_code=None):
         """Return the current question in its authoritative presentation phase."""
         try:
             quiz = Quiz.objects.select_related('current_question').get(room_code=self.room_code)
@@ -1078,9 +1107,10 @@ class QuizConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
             else:
                 options = []
             stored_question = snapshot.get('question') or {}
-            effective_time_limit = int(stored_question.get('time_limit') or q.time_limit)
+            effective_time_limit = int(snapshot.get('answer_duration_seconds') or stored_question.get('time_limit') or q.time_limit)
             return {
                 'id': q.id,
+                'scoreboard': self.round_scoreboard(quiz, hub_session_code),
                 'question_number': self.public_question_number(session, hub_session_code),
                 'question_text': q.question_text,
                 'question_type': q.get_effective_question_type(),
@@ -1119,15 +1149,28 @@ class QuizConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
 
     @staticmethod
     def _total_question_count(quiz, hub_session_code=None):
-        excluded_ids = get_scorebox_excluded_tutorial_question_ids(
-            'quiz',
-            quiz.room_code,
-            hub_session_code,
+        return question_progress(quiz, hub_session_code)['total'] or 0
+
+    @staticmethod
+    def round_scoreboard(quiz, hub_session_code=None):
+        from games_hub.quiz_rounds import scoreboard
+        return scoreboard(quiz, 'quiz', hub_session_code) if quiz.session.question_rounds else None
+
+    @database_sync_to_async
+    def get_question_progress_data(self, hub_session_code=None):
+        quiz = Quiz.objects.get(room_code=self.room_code)
+        snapshot = current_snapshot('quiz', self.room_code, hub_session_code)
+        prepared_id = snapshot.get('prepared_question_id')
+        prepared = bool(snapshot.get('question_shell_prepared'))
+        question_id = prepared_id if prepared else quiz.current_question_id or snapshot.get('completed_question_id')
+        if not question_id and not prepared:
+            session = getattr(quiz, 'session', None)
+            result = session.last_question_result if session else {}
+            question_id = (result.get('correct_answer') or {}).get('question_id')
+        progress = question_progress(
+            quiz, hub_session_code, question_id=question_id, prepared=prepared,
         )
-        questions = quiz.selected_questions.all()
-        if excluded_ids:
-            questions = questions.exclude(id__in=excluded_ids)
-        return questions.count()
+        return {'question_number': progress['current'], 'total_questions': progress['total'] or 0}
 
     @database_sync_to_async
     def get_total_question_count(self, quiz_id, hub_session_code=None):
@@ -1142,7 +1185,7 @@ class QuizConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
         try:
             quiz = Quiz.objects.get(room_code=self.room_code)
             answer = QuizAnswer.objects.select_related('question', 'participant').get(
-                quiz=quiz,
+                quiz=quiz, round_number=current_round(quiz),
                 participant_id=participant_id,
                 question_id=question_id,
             )
@@ -1320,8 +1363,8 @@ class QuizConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
     def set_quiz_inactive_db(self, quiz_id):
         try:
             quiz = Quiz.objects.get(id=quiz_id)
-            quiz.status = 'inactive'
-            quiz.save(update_fields=['status'])
+            from games_hub.quiz_pause import pause
+            pause(quiz, 'quiz')
         except Quiz.DoesNotExist:
             pass
 
@@ -1331,11 +1374,18 @@ class QuizConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
         quiz = Quiz.objects.select_for_update().get(id=quiz_id)
         question = QuizQuestion.objects.get(id=question_id)
         milliseconds_per_character = DashboardSettings.question_reveal_speed()
+        try:
+            duration = int(action.get('custom_time_limit'))
+        except (TypeError, ValueError):
+            duration = question.time_limit
+        if duration <= 0:
+            duration = question.time_limit
         decision = present_question(
             game_key='quiz',
             room_code=self.room_code,
             session_code=hub_session_code,
             action=action,
+            answer_duration_seconds=duration,
             question_presentation_duration_ms=question_typewriter_duration_ms(
                 question.question_text,
                 milliseconds_per_character,
@@ -1485,6 +1535,7 @@ class QuizConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
         quiz = Quiz.objects.select_for_update().get(id=quiz_id)
         question = QuizQuestion.objects.get(id=question_id)
         snapshot = current_snapshot('quiz', self.room_code, hub_session_code)
+        duration = int(snapshot.get('answer_duration_seconds') or (snapshot.get('question') or {}).get('time_limit') or question.time_limit)
         if (
             quiz_answers_open_automatically(question.question_type)
             and snapshot.get('question_phase')
@@ -1542,7 +1593,7 @@ class QuizConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
                 'state_revision': revealed.state_revision,
                 'question_id': question.id,
             },
-            answer_duration_seconds=question.time_limit,
+            answer_duration_seconds=duration,
             at=answering_started_at,
         )
         if not opened.accepted:
@@ -1561,7 +1612,7 @@ class QuizConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
         session.open_answering(
             question,
             started_at=answering_started_at,
-            answer_duration_seconds=question.time_limit,
+            answer_duration_seconds=duration,
         )
         opened.snapshot['server_now'] = timezone.now().isoformat()
         return opened
@@ -1676,7 +1727,7 @@ class QuizConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
                 participants_qs = participants_qs.filter(hub_session_code=hub_session_code)
             total = participants_qs.count()
             answers_qs = QuizAnswer.objects.filter(
-                quiz=quiz,
+                quiz=quiz, round_number=current_round(quiz),
                 question=quiz.current_question,
                 participant__in=participants_qs
             )
@@ -1700,7 +1751,7 @@ class QuizConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
 
     @database_sync_to_async
     @transaction.atomic
-    def save_pending_answer(self, participant_name, hub_session_code, answer_text, question_id=None):
+    def save_pending_answer(self, participant_name, hub_session_code, answer_text, question_id=None, *, expected_started_at=None):
         try:
             quiz = (
                 Quiz.objects.select_for_update()
@@ -1719,6 +1770,10 @@ class QuizConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
                 return False
             if question_id and str(quiz.current_question_id) != str(question_id):
                 return False
+            if expected_started_at is not None and expected_started_at != (
+                quiz.question_start_time.isoformat() if quiz.question_start_time else None
+            ):
+                return False
 
             participant = quiz.participants.get(
                 name=participant_name,
@@ -1727,7 +1782,7 @@ class QuizConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
             pending_answers = dict(session.pending_answers or {})
             entry_key = str(participant.id)
             existing_answer = QuizAnswer.objects.filter(
-                quiz=quiz,
+                quiz=quiz, round_number=current_round(quiz),
                 participant=participant,
                 question=quiz.current_question,
             ).first()
@@ -1753,6 +1808,7 @@ class QuizConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
             if has_answer:
                 pending_answers[entry_key] = {
                     'question_id': quiz.current_question_id,
+                    'round_number': current_round(quiz),
                     'answer': cleaned_answer,
                     'updated_at': timezone.now().isoformat(),
                     'participant_name': participant.name,
@@ -1787,6 +1843,7 @@ class QuizConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
                 'answer_results': [],
                 'auto_finalized_answers': [],
                 'is_tutorial_round': False,
+                'question_number': self.public_question_number(session, hub_session_code),
             }
 
         formatted_answer = question.get_formatted_correct_answer()
@@ -1815,6 +1872,8 @@ class QuizConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
         for participant_id, pending in list(pending_answers.items()):
             if str(pending.get('question_id')) != str(question.id):
                 continue
+            if pending.get('round_number', current_round(quiz)) != current_round(quiz):
+                continue
 
             try:
                 participant = quiz.participants.get(id=int(participant_id))
@@ -1822,13 +1881,10 @@ class QuizConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
                 continue
 
             existing_answer = QuizAnswer.objects.filter(
-                quiz=quiz,
+                quiz=quiz, round_number=current_round(quiz),
                 participant=participant,
                 question=question,
             ).first()
-            if existing_answer and quiz.question_start_time and existing_answer.submitted_at < quiz.question_start_time:
-                existing_answer.delete()
-                existing_answer = None
             if existing_answer:
                 continue
 
@@ -1851,7 +1907,7 @@ class QuizConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
             if question.get_effective_question_type() == 'short_answer':
                 answer_to_store = question.serialize_short_answer_submission(answer_value)
             answer = QuizAnswer.objects.create(
-                quiz=quiz,
+                quiz=quiz, round_number=current_round(quiz),
                 participant=participant,
                 question=question,
                 answer_text=answer_to_store,
@@ -1870,7 +1926,7 @@ class QuizConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
             })
 
         answers = QuizAnswer.objects.filter(
-            quiz=quiz,
+            quiz=quiz, round_number=current_round(quiz),
             question=question,
         ).select_related('participant')
         if hub_session_code is not None:
@@ -1910,8 +1966,11 @@ class QuizConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
         return last_question_result
 
     @database_sync_to_async
+    def save_participant_answer(self, *args, **kwargs):
+        return self.save_participant_answer_sync(*args, **kwargs)
+
     @transaction.atomic
-    def save_participant_answer(
+    def save_participant_answer_sync(
         self,
         participant_name,
         hub_session_code,
@@ -1954,22 +2013,13 @@ class QuizConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
 
             # Check if answer already exists
             existing_answer = QuizAnswer.objects.filter(
-                quiz=quiz,
+                quiz=quiz, round_number=current_round(quiz),
                 participant=participant,
                 question=target_question
             ).first()
 
             if existing_answer:
-                # Allow re-answer if the question was resent after the previous answer
-                if current_question and current_question.id == target_question.id and quiz.question_start_time and existing_answer.submitted_at < quiz.question_start_time:
-                    existing_answer.delete()
-                else:
-                    if session:
-                        pending_answers = dict(session.pending_answers or {})
-                        if pending_answers.pop(str(participant.id), None) is not None:
-                            session.pending_answers = pending_answers
-                            session.save(update_fields=['pending_answers', 'updated_at'])
-                    return None  # Already answered in this round
+                return None  # Already answered in this round
 
             answer_to_store = answer_text
             display_answer = answer_text
@@ -1993,7 +2043,7 @@ class QuizConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
 
             # Create new answer
             answer, created = QuizAnswer.objects.get_or_create(
-                quiz=quiz,
+                quiz=quiz, round_number=current_round(quiz),
                 participant=participant,
                 question=target_question,
                 defaults={
@@ -2019,11 +2069,7 @@ class QuizConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
                 display_answer = option_map.get(answer_text.upper(), answer_text)
 
             field_results = answer.get_short_answer_field_results()
-            is_manual_override = (
-                target_question.get_effective_question_type() == 'short_answer'
-                and answer.is_correct
-                and not target_question.is_correct_answer(answer.answer_text)
-            )
+            is_manual_override = any(field.get('manual_override') for field in field_results)
             participant.refresh_from_db(fields=['total_score'])
             return {
                 'answer_id': answer.id,

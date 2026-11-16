@@ -156,6 +156,8 @@
             const url = new URL(`/hub/lobby/${hubCode}/`, window.location.origin);
             url.searchParams.set('nickname', config.participantName);
             url.searchParams.set('return', '1');
+            url.searchParams.set('from_game', config.gameKey || '');
+            url.searchParams.set('from_room', config.roomCode || '');
             return url;
         }
 

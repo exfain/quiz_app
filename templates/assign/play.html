@@ -1213,8 +1213,8 @@
             class AssignPlayer {
                 constructor() {
                     this.roomCode = '{{ quiz.room_code }}';
-                    this.participantName = '{{ participant.name }}';
-                    this.hubSession = '{{ hub_session }}';
+                    this.participantName = '{{ participant.name|escapejs }}';
+                    this.hubSession = '{{ hub_session|default_if_none:""|escapejs }}' || null;
                     this.websocket = null;
                     this.questionTimer = null;
                     this.questionStartTime = null;
@@ -1315,6 +1315,7 @@
                             window.unitTutorialNotice?.setFromPayload(data);
                             this.onQuestionStarted({
                                 ...data.question,
+                                scoreboard_questions: data.scoreboard_questions,
                                 starts_at: data.question?.starts_at || data.starts_at,
                                 ends_at: data.question?.ends_at || data.ends_at,
                                 server_now: data.question?.server_now || data.server_now,
@@ -1354,6 +1355,17 @@
                             this.onQuestionEnded();
                             break;
 
+                        case 'quiz_inactive':
+                            this.paused = true;
+                            clearInterval(this.questionTimer);
+                            this.clearAssignPhaseTimers();
+                            this.setAssignInteractionEnabled(false);
+                            break;
+                        case 'quiz_resumed':
+                            break;
+                        case 'action_rejected':
+                            this.roundSubmitted = false;
+                            break;
                         case 'quiz_ended':
                             window.gameTutorial?.forceClose();
                             this.onQuizEnded(data);
@@ -1436,6 +1448,9 @@
                                 .filter(([currentQuestionNumber]) => !Number.isNaN(currentQuestionNumber))
                         );
 
+                    if (question?.set_number !== undefined && question.set_number !== null) {
+                        return (this.progressHistory || []).find(entry => Number(entry.set_number) === Number(question.set_number) && Number(entry.question_id) === Number(question.id)) || null;
+                    }
                     const normalizedQuestionId = Number(question?.id);
                     if (!Number.isNaN(normalizedQuestionId)) {
                         return byQuestionId.get(normalizedQuestionId) || null;
@@ -1447,7 +1462,7 @@
                 getCurrentQuestionNumber() {
                     if (this.currentQuestionId !== null && this.currentQuestionId !== undefined) {
                         const normalizedQuestionId = Number(this.currentQuestionId);
-                        const index = (this.scoreboardQuestions || []).findIndex((question) => Number(question?.id) === normalizedQuestionId);
+                        const index = (this.scoreboardQuestions || []).findIndex((question) => Number(question?.id) === normalizedQuestionId && (question.set_number === undefined || question.set_number === null || Number(question.set_number) === Number(this.currentSetNumber)));
                         if (index >= 0) {
                             return index + 1;
                         }
@@ -1617,7 +1632,8 @@
                     if (this.currentQuestionIsTutorial) {
                         this.setCurrentQuestion(null);
                     } else {
-                        this.moveQuestionToNextFreeScoreSlot(question.id, question.total_possible_points);
+                        if (Array.isArray(question.scoreboard_questions)) this.setScoreboardQuestions(question.scoreboard_questions, false);
+                        else this.moveQuestionToNextFreeScoreSlot(question.id, question.total_possible_points);
                         this.setCurrentQuestion(question.id);
                     }
 
@@ -1636,6 +1652,7 @@
                 }
 
                 applyAuthoritativeState(data) {
+                    this.paused = !!data.paused || data.game?.status === 'inactive';
                     this.applyQuestionLifecycle(data);
                     this.setProgressHistory(data.progress_history, data.scoreboard_questions);
                     if (data.game?.status === 'completed') {
@@ -1646,7 +1663,15 @@
                         this.onQuizStarted();
                         return;
                     }
-                    this.onQuestionStarted({
+                    const sameRound = this.currentQuestion?.id === data.question.id
+                        && this.currentSetNumber === data.question.set_number
+                        && this.currentRoundIndex === data.question.round_index;
+                    const keepLocalSelection = sameRound && Object.keys(this.userMatches || {}).length > 0 && !data.participant_state?.answer_locked;
+                    this.roundSubmitted = !!data.participant_state?.answer_locked;
+                    if (sameRound) {
+                        this.currentQuestion = {...this.currentQuestion, ...data.question};
+                        this.renderAssignQuestionPhase(data);
+                    } else this.onQuestionStarted({
                         ...data.question,
                         starts_at: data.starts_at || data.question.starts_at,
                         ends_at: data.ends_at || data.question.ends_at,
@@ -1669,7 +1694,7 @@
                         selection?.left_item_index ?? Object.keys(userMatch)[0]
                     );
                     const rightIndex = Number(userMatch[String(leftIndex)]);
-                    if (Number.isInteger(leftIndex) && Number.isInteger(rightIndex)) {
+                    if (!keepLocalSelection && Number.isInteger(leftIndex) && Number.isInteger(rightIndex)) {
                         const source = document.querySelector(
                             `.draggable-item[data-left-index="${leftIndex}"]`
                         );
@@ -1689,6 +1714,11 @@
                         }
                     }
                     if (participantState.answer_locked) this.onRoundLogged();
+                    if (data.phase === 'revealed' && data.solution) {
+                        this.onShowSolution(data.solution);
+                        return;
+                    }
+                    if (this.paused) clearInterval(this.questionTimer);
                     if (participantState.eliminated) {
                         this.eliminated = true;
                         this.lastEliminationReason = participantState.elimination_reason;
@@ -1715,9 +1745,7 @@
                     // konsistent berücksichtigt werden.
                     if (this.lastRoundCorrect === null) {
                         this._bufferedRoundAdvanced = data;
-                        if (totalElement) {
-                            totalElement.textContent = '0/0';
-                        }
+                        this.websocket?.send(JSON.stringify({type: 'snapshot_request'}));
                         return;
                     }
 
@@ -2120,7 +2148,7 @@
                 }
 
                 setAssignInteractionEnabled(enabled) {
-                    this.assignInteractionEnabled = Boolean(enabled);
+                    this.assignInteractionEnabled = Boolean(enabled) && !this.paused;
                     const workspace = document.getElementById('dragDropInterface');
                     workspace?.classList.toggle('assign-workspace--locked', !enabled);
                     document.querySelectorAll('.draggable-item').forEach((item) => {
@@ -2667,45 +2695,11 @@
                 }
 
                 onTimeUp() {
-                    if (this.questionPhase && this.questionPhase !== 'answering_open') return;
-                    if (this.hasAnswered || this.roundSubmitted) return;
-                    console.log('[onTimeUp] userMatches:', JSON.stringify(this.userMatches), 'currentRoundIndex:', this.currentRoundIndex);
-
-                    // Sicherheitsnetz: userMatches aus dem DOM rekonstruieren falls leer aber ein Drop sichtbar ist
-                    if (Object.keys(this.userMatches).length === 0) {
-                        const matchedItem = document.querySelector('.draggable-item.matched');
-                        const occupiedZone = document.querySelector('.drop-zone.occupied:not(.completed-round)');
-                        if (matchedItem && occupiedZone) {
-                            const leftIndex = parseInt(matchedItem.dataset.leftIndex);
-                            const rightIndex = parseInt(occupiedZone.dataset.rightIndex);
-                            if (!isNaN(leftIndex) && !isNaN(rightIndex)) {
-                                console.warn('[onTimeUp] userMatches war leer, rekonstruiert aus DOM:', leftIndex, '→', rightIndex);
-                                this.userMatches = { [leftIndex]: rightIndex };
-                            }
-                        }
-                    }
-
-                    if (Object.keys(this.userMatches).length > 0) {
-                        // Vorhandene Zuordnung einreichen
-                        this.submitAnswer();
-                    } else {
-                        // Keine Zuordnung getroffen → leere Antwort → Eliminierung
-                        if (this.websocket && this.websocket.readyState === WebSocket.OPEN) {
-                            console.log('[onTimeUp] Keine Zuordnung — leere Antwort gesendet');
-                            this.websocket.send(JSON.stringify({
-                                type: 'participant_log_round',
-                                round_index: this.currentRoundIndex,
-                                user_match: {},
-                            }));
-                            this.roundSubmitted = true;
-                            // UI sperren (identisch zu submitAnswer)
-                            document.querySelectorAll('.draggable-item').forEach(el => {
-                                el.draggable = false; el.style.cursor = 'default';
-                            });
-                            const resetBtn = document.getElementById('resetRoundBtn');
-                            if (resetBtn) resetBtn.classList.add('d-none');
-                        }
-                    }
+                    clearInterval(this.questionTimer);
+                    this.roundSubmitted = true;
+                    this.setAssignInteractionEnabled(false);
+                    const message = document.getElementById('roundSubmittedMessage');
+                    if (message) message.classList.remove('d-none');
                 }
 
                 showWaitingForNextQuestion() {

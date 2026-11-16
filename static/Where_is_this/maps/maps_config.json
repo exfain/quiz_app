@@ -1,0 +1,68 @@
+{
+  "format": "GeoJSON (RFC 7946)",
+  "coordinates": "longitude, latitude, WGS84 EPSG:4326",
+  "palette": {
+    "land": "#36CA38",
+    "water": "#087DF0",
+    "germanyBorder": "#121517"
+  },
+  "maps": {
+    "world": {
+      "file": "world.geojson",
+      "projection": "Web Mercator",
+      "epsg": 3857,
+      "geoBounds": [
+        -180,
+        -60,
+        180,
+        83
+      ],
+      "repeatX": true,
+      "defaultCenter": [
+        0,
+        10
+      ]
+    },
+    "europe": {
+      "file": "europe.geojson",
+      "projection": "Lambert Azimuthal Equal Area",
+      "epsg": 3035,
+      "geoBounds": [
+        -16,
+        32,
+        39,
+        74
+      ],
+      "repeatX": false,
+      "defaultCenter": [
+        11,
+        53
+      ]
+    },
+    "germany": {
+      "file": "germany.geojson",
+      "borderFile": "germany_border.geojson",
+      "projection": "ETRS89 / UTM zone 32N",
+      "epsg": 25832,
+      "geoBounds": [
+        3.3,
+        45.7,
+        16.9,
+        56.4
+      ],
+      "repeatX": false,
+      "defaultCenter": [
+        10.3,
+        51.1
+      ]
+    }
+  },
+  "displayRules": {
+    "water": "only oceans/seas; remove all inland lakes and rivers",
+    "islands": "preserve islands in intermediate-resolution GSHHG (Germany includes Frisian islands)",
+    "geojsonFeatureKind": [
+      "land"
+    ],
+    "germanyOutline": "V4: exactly three LAND-only German border components (Netherlands to Poland via inland path; Denmark; Usedom). No coastline or island outlines. Existing green land and blue sea geometries unchanged."
+  }
+}

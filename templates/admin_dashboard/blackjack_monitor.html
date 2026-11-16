@@ -66,7 +66,7 @@
                                 <label class="form-check-label" for="playTutorialToggle">Tutorial spielen</label>
                             </div>
                             {% endif %}
-                            <button class="btn btn-success" id="startQuizBtn" data-host-game-start>
+                            <button class="btn btn-success" id="startQuizBtn" data-host-game-start data-host-game-resume="{% if quiz.status == 'inactive' %}true{% else %}false{% endif %}">
                                 <i data-lucide="play"></i>
                                 {% if quiz.status == 'inactive' %}Spiel reaktivieren{% else %}Spiel starten{% endif %}
                             </button>
@@ -160,7 +160,7 @@
                                     {% if set_item.is_active %}
                                         · aktuell
                                     {% elif set_item.is_selected %}
-                                        Â· ausgewÃ¤hlt
+                                        · ausgewählt
                                     {% elif set_item.is_completed %}
                                         · gespielt
                                     {% endif %}
@@ -274,7 +274,7 @@
                                     <i data-lucide="inbox"></i>
                                     {% if blackjack_set_overview %}
                                     <h4>Dieses Set ist bereits durchgespielt</h4>
-                                    <p>WÃ¤hle ein anderes Set aus der Set-Ãœbersicht, um weiterzuspielen.</p>
+                                    <p>Wähle ein anderes Set aus der Set-Übersicht, um weiterzuspielen.</p>
                                     {% else %}
                                     <h4>No Questions Available</h4>
                                     <p>Add some BlackJack questions to continue!</p>
@@ -1211,6 +1211,10 @@ document.addEventListener('DOMContentLoaded', function() {
             this.isQuestionRunning = {% if quiz.current_question %}true{% else %}false{% endif %};
             this.stateRevision = Number('{{ question_runtime.state_revision|default:"-1" }}');
             this.gameId = '{{ question_runtime.game_id|default:""|escapejs }}';
+            this.currentQuestionId = '{{ quiz.current_question_id|default:""|escapejs }}';
+            this.currentRoundId = '{{ question_runtime.current_round_id|default:"0"|escapejs }}';
+            this.currentSetId = '{{ question_runtime.current_set_id|default:""|escapejs }}';
+            this.deadlineAt = '{{ question_runtime.answering_deadline_at|default:""|escapejs }}';
             this.questionPhase = '{{ question_runtime.question_phase|default:""|escapejs }}';
             this.questionVisibleAt = '{{ question_runtime.question_visible_at|default:""|escapejs }}';
             this.presentationServerNow = '{{ question_runtime.server_now|default:""|escapejs }}';
@@ -1460,6 +1464,10 @@ document.addEventListener('DOMContentLoaded', function() {
 
         applyAuthoritativeMetadata(data = {}) {
             const source = data.snapshot && typeof data.snapshot === 'object' ? data.snapshot : data;
+            if (source.current_question_id !== undefined) this.currentQuestionId = source.current_question_id;
+            if (source.current_round_id !== undefined) this.currentRoundId = source.current_round_id;
+            if (source.current_set_id !== undefined) this.currentSetId = source.current_set_id;
+            if (source.answering_deadline_at !== undefined) this.deadlineAt = source.answering_deadline_at;
             const revision = Number(source.state_revision);
             if (Number.isFinite(revision) && revision >= this.stateRevision) this.stateRevision = revision;
             if (source.game_id) this.gameId = String(source.game_id);
@@ -1611,7 +1619,7 @@ document.addEventListener('DOMContentLoaded', function() {
             if (list) {
                 list.innerHTML = (participants || []).map(participant => `
                     <div class="d-flex justify-content-between border-top py-1">
-                        <span>${participant.name || ''}</span>
+                        <span>${this.escapeHtml(participant.name || '')}</span>
                         <span class="badge ${participant.completed ? 'bg-success' : 'bg-warning text-dark'}">
                             ${participant.completed ? 'bestätigt' : 'offen'}
                         </span>
@@ -1666,16 +1674,12 @@ document.addEventListener('DOMContentLoaded', function() {
                 btn.addEventListener('click', async (event) => {
                     const targetSetNumber = Number(event.currentTarget.dataset.setNumber || 0);
                     if (!targetSetNumber) return;
-                    if (targetSetNumber === this.selectedSetNumber && !this.isQuestionRunning) {
-                        document.getElementById('questionSelection')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-                        return;
-                    }
                     if (this.isQuestionRunning) {
-                        alert('Eine Frage ist aktuell noch aktiv. Beende zuerst die laufende Frage, bevor du ein anderes Set lÃ¤dst.');
+                        alert('Eine Frage ist aktuell noch aktiv. Beende zuerst die laufende Frage, bevor du ein anderes Set lädst.');
                         return;
                     }
                     if (this.selectedSetHasRemainingQuestions && targetSetNumber !== this.selectedSetNumber) {
-                        const shouldSwitch = window.confirm('Das aktuell ausgewÃ¤hlte Set ist noch nicht beendet. MÃ¶chtest du trotzdem zu einem anderen Set wechseln?');
+                        const shouldSwitch = window.confirm('Das aktuell ausgewählte Set ist noch nicht beendet. Möchtest du trotzdem zu einem anderen Set wechseln?');
                         if (!shouldSwitch) {
                             return;
                         }
@@ -1737,7 +1741,7 @@ document.addEventListener('DOMContentLoaded', function() {
                     return;
                 }
                 this.websocket.send(JSON.stringify({
-                    type: 'admin_start_quiz',
+                    type: 'admin_start_quiz', hub_session: this.hubSession,
                     show_tutorial: showTutorial,
                     play_tutorial: playTutorial
                 }));
@@ -1765,7 +1769,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 //     }
                 // } catch(_) {}
                 this.websocket.send(JSON.stringify({
-                    type: 'admin_end_quiz'
+                    type: 'admin_end_quiz', hub_session: this.hubSession, ...this.hostActionContext()
                 }));
                 // Immediately reset UI/local state on admin action
                 this.resetSentStates();
@@ -1775,7 +1779,7 @@ document.addEventListener('DOMContentLoaded', function() {
         setInactive() {
             if (this.websocket && this.websocket.readyState === WebSocket.OPEN) {
                 this.websocket.send(JSON.stringify({
-                    type: 'admin_set_inactive'
+                    type: 'admin_set_inactive', hub_session: this.hubSession
                 }));
             }
         }
@@ -1826,9 +1830,10 @@ document.addEventListener('DOMContentLoaded', function() {
             }
         }
 
-        hostActionContext(questionId) {
+        hostActionContext(questionId = this.currentQuestionId) {
             return {
                 question_id: questionId,
+                round_id: this.currentRoundId, set_id: this.currentSetId,
                 game_id: this.gameId || null,
                 state_revision: this.stateRevision,
                 client_action_id: window.AuthoritativeGameState?.createActionId?.(),
@@ -1862,7 +1867,7 @@ document.addEventListener('DOMContentLoaded', function() {
                     return;
                 }
                 this.websocket.send(JSON.stringify({
-                    type: 'admin_end_question'
+                    type: 'admin_end_question', hub_session: this.hubSession, ...this.hostActionContext()
                 }));
             }
         }
@@ -1875,7 +1880,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 const answeredCount = Number(stats.current_question_responses || 0);
                 const activeCount = Number(stats.active_participants || 0);
                 if (activeCount > 0 && answeredCount < activeCount) {
-                    return window.confirm(`Es haben erst ${answeredCount} von ${activeCount} Teilnehmenden geantwortet. Frage trotzdem frÃ¼hzeitig beenden?`);
+                    return window.confirm(`Es haben erst ${answeredCount} von ${activeCount} Teilnehmenden geantwortet. Frage trotzdem frühzeitig beenden?`);
                 }
             } catch (_) {}
             return true;
@@ -1909,7 +1914,10 @@ document.addEventListener('DOMContentLoaded', function() {
                     if (!isNaN(sv) && sv > 0) serverTimeLeft = sv;
                 }
             } catch(_) {}
-            const timeLeft = serverTimeLeft;
+            if (!this.isActive) return;
+            const serverNow = () => Date.parse(this.presentationServerNow) + (performance.now() - this.presentationServerReceivedAt);
+            const remaining = () => Math.max(0, Math.ceil((Date.parse(this.deadlineAt) - serverNow()) / 1000));
+            const timeLeft = remaining();
             if (timeLeft <= 0) return;
             
             let currentTime = timeLeft;
@@ -1917,7 +1925,7 @@ document.addEventListener('DOMContentLoaded', function() {
             const circleElement = document.getElementById('questionTimerCircle');
             
             this.questionTimer = setInterval(() => {
-                currentTime--;
+                currentTime = remaining();
                 if (timerElement) timerElement.textContent = currentTime;
                 
                 // Update timer circle color based on time left
@@ -2021,9 +2029,9 @@ document.addEventListener('DOMContentLoaded', function() {
                 const row = document.createElement('div');
                 row.className = 'response-item';
                 row.innerHTML = `
-                    <div class="response-avatar ${quality}">${participantName.charAt(0).toUpperCase()}</div>
+                    <div class="response-avatar ${quality}">${this.escapeHtml(participantName.charAt(0).toUpperCase())}</div>
                     <div class="response-content">
-                        <div class="response-name">${participantName}</div>
+                        <div class="response-name">${this.escapeHtml(participantName)}</div>
                         <div class="response-details">${detailText}</div>
                     </div>
                 `;
@@ -2034,6 +2042,12 @@ document.addEventListener('DOMContentLoaded', function() {
             if (responseCount) responseCount.textContent = `${answeredCount}/${eligibleCount}`;
         }
 
+        escapeHtml(value) {
+            const element = document.createElement('span');
+            element.textContent = String(value ?? '');
+            return element.innerHTML.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+        }
+
         addParticipant(participant) {
             const participantsList = document.getElementById('participantsList');
             if (!participantsList) return;
@@ -2042,7 +2056,8 @@ document.addEventListener('DOMContentLoaded', function() {
             if (noParticipants) noParticipants.remove();
             
             // Check if participant already exists
-            const existingParticipant = participantsList.querySelector(`[data-participant-name="${participant.name}"]`);
+            const existingParticipant = Array.from(participantsList.querySelectorAll('[data-participant-name]'))
+                .find(element => element.dataset.participantName === participant.name);
             if (existingParticipant) return;
             
             const participantEl = document.createElement('div');
@@ -2050,11 +2065,11 @@ document.addEventListener('DOMContentLoaded', function() {
             participantEl.dataset.participantName = participant.name;
             participantEl.innerHTML = `
                 <div class="participant-avatar ${participant.is_busted ? 'busted' : ''}">
-                    ${participant.name.charAt(0).toUpperCase()}
+                    ${this.escapeHtml(participant.name.charAt(0).toUpperCase())}
                 </div>
                 <div class="participant-info">
                     <div class="participant-name">
-                        ${participant.name}
+                        ${this.escapeHtml(participant.name)}
                         ${participant.is_busted ? '<span class="bust-badge">BUST</span>' : ''}
                     </div>
                     <div class="participant-score" id="score-${participant.id}">${participant.total_points || 0} points</div>
@@ -2063,7 +2078,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 <div class="participant-status-dot">
                     <button class="btn btn-link btn-sm p-0 me-1 edit-score-btn" title="Set points manually"
                         data-participant-id="${participant.id}"
-                        data-participant-name="${participant.name}"
+                        data-participant-name="${this.escapeHtml(participant.name)}"
                         data-current-score="${participant.total_points || 0}"
                         data-bs-toggle="modal" data-bs-target="#editScoreModal">
                         <i data-lucide="pencil" style="width:14px;height:14px;color:#6c757d;"></i>
@@ -2104,10 +2119,10 @@ document.addEventListener('DOMContentLoaded', function() {
             responseEl.className = 'response-item';
             responseEl.innerHTML = `
                 <div class="response-avatar ${quality}">
-                    ${response.participant_name.charAt(0).toUpperCase()}
+                    ${this.escapeHtml(response.participant_name.charAt(0).toUpperCase())}
                 </div>
                 <div class="response-content">
-                    <div class="response-name">${response.participant_name}</div>
+                    <div class="response-name">${this.escapeHtml(response.participant_name)}</div>
                     <div class="response-details">
                         Answer: <span class="response-answer">${response.user_answer}</span> • 
                         ${response.points_earned} pts • Total: ${response.total_points}
@@ -2143,7 +2158,7 @@ document.addEventListener('DOMContentLoaded', function() {
             console.log('Question timed out');
             if (this.websocket && this.websocket.readyState === WebSocket.OPEN) {
                 this.websocket.send(JSON.stringify({
-                    type: 'admin_end_question'
+                    type: 'admin_end_question', hub_session: this.hubSession, ...this.hostActionContext()
                 }));
             }
         }

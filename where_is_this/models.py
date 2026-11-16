@@ -48,6 +48,10 @@ class WhereQuiz(SyncBase):
         ('rank', 'Ranking'),
     ]
     scoring_mode = models.CharField(max_length=16, choices=SCORING_CHOICES, default='zones')
+    zone_count = models.PositiveIntegerField(null=True, blank=True)
+    zone_width_km = models.FloatField(null=True, blank=True)
+    active_hub_session_code = models.CharField(max_length=16, blank=True, default='')
+    paused_at = models.DateTimeField(null=True, blank=True)
     
     class Meta:
         ordering = ['-created_at']
@@ -73,45 +77,17 @@ class WhereQuiz(SyncBase):
             return self.participants.filter(is_active=True, hub_session_code=session_code)
         return self.participants.filter(is_active=True)
     
-    def start_quiz(self, reset_runtime=None):
-        restart_from_waiting = self.status != 'inactive' if reset_runtime is None else bool(reset_runtime)
-        self.status = 'active'
-        self.started_at = timezone.now()
-        self.ended_at = None
-        update_fields = ['status', 'started_at', 'ended_at']
-        if restart_from_waiting:
-            self.current_question = None
-            self.question_start_time = None
-            update_fields.extend(['current_question', 'question_start_time'])
-        self.save(update_fields=update_fields)
+    def start_quiz(self, reset_runtime=None, session_code=None):
+        from .runtime import start
+        result = start(self, session_code)
+        self.refresh_from_db()
+        return result
 
-        session, _ = WhereSession.objects.get_or_create(quiz=self)
-        if restart_from_waiting:
-            session.current_question_number = 0
-            session.total_questions_sent = 0
-            session.is_question_active = False
-            session.question_end_time = None
-            session.total_responses_current_question = 0
-            session.average_distance_current_question = 0
-            session.average_accuracy_current_question = 0
-            session.save(update_fields=[
-                'current_question_number',
-                'total_questions_sent',
-                'is_question_active',
-                'question_end_time',
-                'total_responses_current_question',
-                'average_distance_current_question',
-                'average_accuracy_current_question',
-                'updated_at',
-            ])
-    
     def end_quiz(self, status='completed'):
-        if self.status == status and self.ended_at:
-            return False
-        self.status = status
-        self.ended_at = timezone.now()
-        self.save(update_fields=['status', 'ended_at'])
-        return True
+        from .runtime import end_game
+        result = end_game(self, status)
+        self.refresh_from_db()
+        return result
 
     def get_effective_scoring_mode(self):
         return 'rank' if self.scoring_mode == 'rank' else 'zones'
@@ -138,6 +114,8 @@ class WhereQuestion(SyncBase):
     """Location-based questions for 'Where is this?' game"""
     MAP_TYPE_CHOICES = [
         ('world_mercator', 'Weltkarte'),
+        ('germany', 'Deutschland'),
+        ('europe', 'Europa'),
     ]
     
     question_text = models.TextField(help_text="The question, e.g., 'Where is the Eiffel Tower?'")
@@ -170,8 +148,11 @@ class WhereQuestion(SyncBase):
 
     def clean(self):
         super().clean()
-        if self.map_type != 'world_mercator':
-            return
+        try:
+            from .geo import validate_map_location
+            validate_map_location(self.map_type, self.correct_latitude, self.correct_longitude)
+        except (WebMercatorCoordinateError, TypeError, ValueError) as exc:
+            raise ValidationError(str(exc))
         if (
             self.correct_latitude is not None
             and (
@@ -202,7 +183,7 @@ class WhereQuestion(SyncBase):
         dlat = lat2 - lat1
         dlon = lon2 - lon1
         a = math.sin(dlat/2)**2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon/2)**2
-        c = 2 * math.asin(math.sqrt(a))
+        c = 2 * math.asin(math.sqrt(min(1.0, max(0.0, a))))
         
         # Radius of earth in kilometers
         r = 6371
@@ -389,12 +370,13 @@ class WhereAnswer(SyncBase):
     rank_position = models.PositiveIntegerField(null=True, blank=True)
     scoring_mode = models.CharField(max_length=16, blank=True, default='')
     zone_label = models.CharField(max_length=100, blank=True, default='')
+    round_number = models.PositiveIntegerField(default=0)
     
     submitted_at = models.DateTimeField(auto_now_add=True)
     time_taken = models.FloatField(help_text="Time taken to answer in seconds", null=True, blank=True)
     
     class Meta:
-        unique_together = ['quiz', 'participant', 'question']
+        unique_together = ['quiz', 'participant', 'question', 'round_number']
         ordering = ['-submitted_at']
 
     def clean(self):
@@ -416,6 +398,13 @@ class WhereAnswer(SyncBase):
         # Auto-calculate distance, points, and accuracy on creation
         if not self.pk:
             self.distance_km = self.question.calculate_distance(self.user_latitude, self.user_longitude)
+            if self.round_number:
+                rounds = self.quiz.session.question_rounds
+                spec = rounds[self.round_number - 1] if self.round_number <= len(rounds) else {}
+                target = spec.get('question', {}).get('correct_location')
+                if target:
+                    frozen_question = WhereQuestion(correct_latitude=target['latitude'], correct_longitude=target['longitude'])
+                    self.distance_km = frozen_question.calculate_distance(self.user_latitude, self.user_longitude)
             self.scoring_mode = self.quiz.get_effective_scoring_mode()
             if self.scoring_mode == 'rank':
                 self.points_earned = 0
@@ -424,6 +413,9 @@ class WhereAnswer(SyncBase):
                 self.points_earned = int(zone['points']) if zone else 0
                 self.zone_label = zone['label'] if zone else ''
             self.accuracy_percentage = self.question.get_accuracy_percentage(self.user_latitude, self.user_longitude)
+            if self.round_number:
+                # Live-round points are awarded only at the common reveal.
+                self.points_earned = 0
         
         super().save(*args, **kwargs)
         
@@ -492,6 +484,8 @@ class WhereSession(SyncBase):
     total_questions_sent = models.IntegerField(default=0)
     is_question_active = models.BooleanField(default=False)
     question_end_time = models.DateTimeField(null=True, blank=True)
+    question_rounds = models.JSONField(default=list, blank=True)
+    pending_answers = models.JSONField(default=dict, blank=True)
     
     # Session statistics
     total_responses_current_question = models.IntegerField(default=0)
@@ -502,29 +496,18 @@ class WhereSession(SyncBase):
     updated_at = models.DateTimeField(auto_now=True)
     
     def send_question(self, question):
-        """Send a question to all participants"""
-        self.quiz.current_question = question
-        self.quiz.question_start_time = timezone.now()
-        self.current_question_number += 1
-        self.total_questions_sent += 1
-        self.is_question_active = True
-        self.question_end_time = timezone.now() + timezone.timedelta(seconds=question.time_limit)
-        self.total_responses_current_question = 0
-        self.average_distance_current_question = 0
-        self.average_accuracy_current_question = 0
-        
-        self.quiz.save()
-        self.save()
-    
+        from .runtime import send_question
+        result = send_question(self.quiz, question)
+        self.refresh_from_db()
+        self.quiz.refresh_from_db()
+        return result
+
     def end_current_question(self):
-        """End the current active question"""
-        self.is_question_active = False
-        self.quiz.current_question = None
-        self.quiz.question_start_time = None
-        
-        self.quiz.save()
-        self.save()
-    
+        from .runtime import reveal
+        result = reveal(self.quiz)
+        self.refresh_from_db()
+        return result
+
     def record_answer(self, distance_km, accuracy_percentage):
         """Record statistics for an answer"""
         self.total_responses_current_question += 1

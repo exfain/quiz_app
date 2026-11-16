@@ -1,11 +1,12 @@
-from django.db import models
+from django.db import models, transaction
 from games_website.models import SyncBase
 from django.contrib.auth.models import User
 from django.core.validators import MinValueValidator
 from django.utils import timezone
 import random
 import string
-import math
+from .numbers import finite_number, decimal_number, deviation, finite_percentage, display_number, bounded_float
+from decimal import ROUND_CEILING
 
 
 class EstimationQuiz(SyncBase):
@@ -68,15 +69,27 @@ class EstimationQuiz(SyncBase):
             return self.participants.filter(is_active=True, hub_session_code=session_code)
         return self.participants.filter(is_active=True)
     
-    def start_quiz(self):
+    def start_quiz(self, session_code=None):
+        if self.status == 'inactive' and self.started_at:
+            from games_hub.quiz_pause import resume
+            resume(self, 'estimation', session_code)
+            self.refresh_from_db()
+            return
+        if self.status == 'active' and self.started_at:
+            return
+        self.current_question = None
+        self.question_start_time = None
+        self.ended_at = None
+        if hasattr(self, 'session'):
+            self.session.reset_for_new_run()
         self.status = 'active'
         self.started_at = timezone.now()
         self.save()
     
     def end_quiz(self, status='completed'):
-        self.status = status
-        self.ended_at = timezone.now()
-        self.save()
+        from .runtime import end_game
+        end_game(self.pk, status=status)
+        self.refresh_from_db()
 
     def get_effective_scoring_mode(self):
         return 'rank' if self.scoring_mode == 'rank' else 'zones'
@@ -299,18 +312,19 @@ class EstimationQuestion(SyncBase):
         for zone_number in range(1, zone_count + 1):
             min_percentage = 0.0 if zone_number == 1 else zone_width * (zone_number - 1)
             max_percentage = zone_width * zone_number
-            zone_radius = abs(float(self.correct_answer)) * (max_percentage / 100.0)
-            lower_bound = self.correct_answer - zone_radius
-            upper_bound = self.correct_answer + zone_radius
-            absolute_min_value = int(round(min(lower_bound, upper_bound)))
-            absolute_max_value = int(round(max(lower_bound, upper_bound)))
+            correct = decimal_number(self.correct_answer)
+            zone_radius = abs(correct) * decimal_number(max_percentage) / 100
+            lower_bound = correct - zone_radius
+            upper_bound = correct + zone_radius
+            absolute_min_value = bounded_float(min(lower_bound, upper_bound))
+            absolute_max_value = bounded_float(max(lower_bound, upper_bound))
             zones.append({
                 'zone_number': zone_number,
                 'min_percentage': round(min_percentage, 4),
                 'max_percentage': round(max_percentage, 4),
                 'absolute_min_value': absolute_min_value,
                 'absolute_max_value': absolute_max_value,
-                'absolute_range_display': f'{absolute_min_value}-{absolute_max_value}',
+                'absolute_range_display': f'{display_number(absolute_min_value)}-{display_number(absolute_max_value)}',
                 'points': self.get_points_for_zone(zone_number),
             })
 
@@ -323,56 +337,31 @@ class EstimationQuestion(SyncBase):
         }
 
     def calculate_score(self, user_answer):
-        """Zone scoring based on percentage deviation from the correct answer."""
-        if user_answer is None:
-            return 0
-        
         try:
-            user_answer = float(user_answer)
-        except (ValueError, TypeError):
-            return 0
-        
-        zone_count = self.get_zone_count()
-        if self.correct_answer == 0:
-            return self.get_zone_max_points() if user_answer == 0 else 0
-        
-        # Calculate percentage difference
-        percentage_diff = abs((user_answer - self.correct_answer) / abs(self.correct_answer)) * 100
-
-        zone_width = self.get_zone_width_percentage()
-        if zone_width <= 0:
-            return 0
-        if percentage_diff > zone_width * zone_count:
+            value = finite_number(user_answer)
+            correct = finite_number(self.correct_answer)
+            if correct == 0:
+                return self.get_zone_max_points() if value == 0 else 0
+            width = decimal_number(self.get_zone_width_percentage())
+            difference = deviation(value, correct)
+            if width <= 0 or difference > width * self.get_zone_count():
+                return 0
+            zone = max(1, int((difference / width).to_integral_value(rounding=ROUND_CEILING)))
+            return self.get_points_for_zone(zone)
+        except (ValueError, TypeError, OverflowError):
             return 0
 
-        zone_number = max(1, math.ceil(percentage_diff / zone_width))
-        return self.get_points_for_zone(zone_number)
-    
     def get_accuracy_percentage(self, user_answer):
-        """Get accuracy percentage for display purposes"""
-        if user_answer is None:
-            return 0
-        
         try:
-            user_answer = float(user_answer)
-        except (ValueError, TypeError):
+            if self.correct_answer == 0:
+                return 100 if finite_number(user_answer) == 0 else 0
+            return float(max(0, 100 - min(deviation(user_answer, self.correct_answer), 100)))
+        except (ValueError, TypeError, OverflowError):
             return 0
-        
-        if self.correct_answer == 0:
-            return 100 if user_answer == 0 else 0
-        
-        percentage_diff = abs((user_answer - self.correct_answer) / self.correct_answer) * 100
-        
-        # Convert to accuracy percentage
-        accuracy = max(0, 100 - percentage_diff)
-        return min(100, accuracy)  # Cap at 100%
-    
+
     def format_number(self, number):
-        """Format number for display"""
-        if number == int(number):
-            return str(int(number))
-        return f"{number:.2f}".rstrip('0').rstrip('.')
-    
+        return display_number(number)
+
     def get_formatted_correct_answer(self):
         """Get formatted correct answer with unit"""
         formatted_number = self.format_number(self.correct_answer)
@@ -395,6 +384,7 @@ class EstimationParticipant(SyncBase):
     joined_at = models.DateTimeField(auto_now_add=True)
     is_active = models.BooleanField(default=True)
     total_score = models.IntegerField(default=0)
+    score_adjustment = models.IntegerField(default=0)
     questions_answered = models.IntegerField(default=0)
     last_activity = models.DateTimeField(auto_now=True)
     hub_session_code = models.CharField(max_length=16, null=True, blank=True, db_index=True)
@@ -403,18 +393,21 @@ class EstimationParticipant(SyncBase):
         unique_together = ['quiz', 'name', 'hub_session_code']
         ordering = ['-total_score', 'name']
     
+    @transaction.atomic
     def calculate_score(self):
         """Recalculate total score based on answers"""
         total_score = sum(answer.points_earned for answer in self.estimation_answers.all())
-        self.total_score = total_score
+        self.score_adjustment = type(self).objects.select_for_update().get(pk=self.pk).score_adjustment
+        self.total_score = total_score + self.score_adjustment
         self.questions_answered = self.estimation_answers.count()
-        self.save()
+        self.save(update_fields=['total_score', 'questions_answered', 'updated_at'])
         return self.total_score
     
     def get_rank(self):
         """Get participant's rank in the quiz"""
         higher_scores = EstimationParticipant.objects.filter(
             quiz=self.quiz,
+            hub_session_code=self.hub_session_code,
             total_score__gt=self.total_score
         ).count()
         return higher_scores + 1
@@ -442,19 +435,26 @@ class EstimationAnswer(SyncBase):
     
     user_answer = models.FloatField(help_text="The participant's numerical answer")
     points_earned = models.IntegerField(default=0)
+    round_number = models.PositiveIntegerField(default=0)
+    is_tutorial = models.BooleanField(default=False)
     submitted_at = models.DateTimeField(auto_now_add=True)
     time_taken = models.FloatField(help_text="Time taken to answer in seconds", null=True, blank=True)
     
     class Meta:
-        unique_together = ['quiz', 'participant', 'question']
+        unique_together = ['quiz', 'participant', 'question', 'round_number']
         ordering = ['-submitted_at']
     
     def save(self, *args, **kwargs):
         # Auto-calculate points on creation
+        self.user_answer = finite_number(self.user_answer)
         if not self.pk:
+            from games_hub.quiz_rounds import current_round
+            self.round_number = self.round_number or current_round(self.quiz)
             # Zone mode is computed immediately; ranking is resolved when the round ends.
             if self.quiz.get_effective_scoring_mode() == 'zones':
                 self.points_earned = self.question.calculate_score(self.user_answer)
+        if self.is_tutorial:
+            self.points_earned = 0
         super().save(*args, **kwargs)
         
         # Update participant's total score
@@ -466,11 +466,8 @@ class EstimationAnswer(SyncBase):
     
     def get_percentage_difference(self):
         """Get the percentage difference from correct answer"""
-        if self.question.correct_answer == 0:
-            return 0 if self.user_answer == 0 else float('inf')
-        
-        return abs((self.user_answer - self.question.correct_answer) / self.question.correct_answer) * 100
-    
+        return finite_percentage(self.user_answer, self.question.correct_answer)
+
     def get_formatted_user_answer(self):
         """Get formatted user answer with unit"""
         return f"{self.question.format_number(self.user_answer)} {self.question.get_unit_display_text()}".strip()
@@ -496,6 +493,8 @@ class EstimationSession(SyncBase):
     is_question_active = models.BooleanField(default=False)
     question_end_time = models.DateTimeField(null=True, blank=True)
     pending_answers = models.JSONField(default=dict, blank=True)
+    question_rounds = models.JSONField(default=list, blank=True)
+    round_max_points = models.JSONField(default=dict, blank=True)
     
     # Session statistics
     total_responses_current_question = models.IntegerField(default=0)
@@ -505,8 +504,23 @@ class EstimationSession(SyncBase):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     
+    def reset_for_new_run(self):
+        self.current_question_number = 0
+        self.total_questions_sent = 0
+        self.is_question_active = False
+        self.question_end_time = None
+        self.pending_answers = {}
+        self.question_rounds = []
+        self.round_max_points = {}
+        self.total_responses_current_question = 0
+        self.average_score_current_question = 0
+        self.average_accuracy_current_question = 0
+        self.save()
+
     def prepare_question(self, question):
         """Prepare a question without opening the participant answer window."""
+        from games_hub.quiz_rounds import record_round
+        record_round(self, question)
         self.quiz.current_question = question
         self.quiz.question_start_time = None
         self.current_question_number += 1

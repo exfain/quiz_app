@@ -1,3 +1,4 @@
+from games_hub.quiz_rounds import current_round
 import json
 from channels.generic.websocket import AsyncWebsocketConsumer
 from channels.db import database_sync_to_async
@@ -117,6 +118,19 @@ class EstimationConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer)
 
     async def handle_admin_start_quiz(self, data):
         """Handle admin starting the quiz"""
+        quiz = await self.get_quiz()
+        if quiz and quiz.status == 'active' and quiz.started_at:
+            await self.channel_layer.group_send(self.room_group_name, {'type': 'quiz_started', 'message': 'Quiz is already active.', 'resume_existing': True})
+            await self.hub_mirror_event('quiz_started', {'room_code': self.room_code, 'game_key': 'estimation', 'message': 'Quiz is already active.'})
+            return
+        if quiz and quiz.status == 'inactive' and quiz.started_at:
+            activation = await database_sync_to_async(resolve_session_game_activation_for_room)(
+                'estimation', self.room_code, check_only=True)
+            if not activation.get('success'):
+                await self.send(text_data=json.dumps({'type': 'active_game_conflict', **activation}))
+                return
+            await database_sync_to_async(quiz.start_quiz)(session_code=data.get('hub_session') or None)
+            return
         lobby_ready = await database_sync_to_async(ensure_session_players_ready_for_game_start_for_room)(
             'estimation',
             self.room_code,
@@ -279,6 +293,7 @@ class EstimationConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer)
         question_data = await self.get_question_data(question)
         max_points = await self.get_question_max_points_for_quiz(quiz.id, question.id)
         question_number = await self.get_question_number_for_quiz(quiz.id, question.id)
+        round_state = await self.get_current_question_data(None, hub_session)
         question_payload = {
             'type': 'question_started',
             'question': {
@@ -287,6 +302,9 @@ class EstimationConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer)
                 'unit': question_data['unit'],
                 'unit_display': question_data['unit_display'],
                 'question_number': question_number,
+                'round_number': round_state.get('round_number'),
+                'scoreboard': round_state.get('scoreboard'),
+                'total_questions': round_state.get('total_questions'),
                 'max_points': 0 if is_tutorial_round else max_points,
                 'is_tutorial_round': is_tutorial_round,
                 'hint_text': question.hint_text,
@@ -439,82 +457,20 @@ class EstimationConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer)
 
     async def handle_admin_end_question(self, data):
         """Handle admin ending current question"""
+        from .runtime import end_question
         quiz = await self.get_quiz()
-        if quiz:
-            hub_session = data.get('hub_session') or data.get('hub_session_code') or await self._get_hub_session_code_for_room()
-            phase_snapshot = await database_sync_to_async(current_snapshot)(
-                'estimation', self.room_code, hub_session,
-            )
-            if (
-                phase_snapshot.get('question_flow_mode')
-                == GameRuntimeState.QUESTION_FLOW_MANUAL_THREE_PHASE
-                and phase_snapshot.get('question_phase')
-                != GameRuntimeState.QUESTION_PHASE_ANSWERING_OPEN
-            ):
-                await self.send(text_data=json.dumps({
-                    'type': 'error',
-                    'message': 'Die Frage kann vor der Freigabe nicht beendet werden.',
-                }))
-                return
-            revealed_question_id = quiz.current_question_id
-            # Get the correct answer and, if rank mode, compute rankings before clearing
-            correct_answer_data = await self.get_current_question_answer(quiz)
-            max_points = await self.get_current_question_max_points(quiz)
-            evaluated_pending_answers = await self.finalize_pending_answers(quiz.id, hub_session)
-            unit_tutorial = await self.finish_current_unit_tutorial(hub_session)
-            is_tutorial_round = bool(unit_tutorial.get('is_tutorial_round'))
-            rank_results = None
-            if not is_tutorial_round and quiz.get_effective_scoring_mode() == 'rank':
-                rank_results = await self.compute_rank_points_for_current_question(quiz.id, hub_session)
-                if rank_results and evaluated_pending_answers:
-                    rank_points_by_participant = {
-                        str(result.get('participant_id')): int(result.get('points_earned') or 0)
-                        for result in rank_results
-                    }
-                    for result in evaluated_pending_answers:
-                        participant_id = str(result.get('participant_id') or '')
-                        if participant_id in rank_points_by_participant:
-                            result['points_earned'] = rank_points_by_participant[participant_id]
-
-            # Now clear the current question
-            await self.clear_current_question(quiz.id)
-            if revealed_question_id:
-                await database_sync_to_async(finish_question_flow)(
-                    game_key='estimation',
-                    room_code=self.room_code,
-                    session_code=hub_session,
-                    question_id=revealed_question_id,
-                )
-
-            # Broadcast end of question (include rank results when applicable)
-            payload = {
-                'type': 'question_ended',
-                'phase': 'question_result',
-                'revealed': True,
-                'current_question_id': revealed_question_id,
-                'question': {'id': revealed_question_id},
-                'message': 'Time\'s up!',
-                'correct_answer': correct_answer_data,
-                'max_points': 0 if is_tutorial_round else max_points,
-                'evaluated_pending_answers': evaluated_pending_answers,
-                'is_tutorial_round': is_tutorial_round,
-            }
-            if rank_results is not None:
-                payload['rank_results'] = [
-                    {
-                        'participant_name': result.get('participant_name'),
-                        'points_earned': result.get('points_earned'),
-                        'rank_position': result.get('rank_position'),
-                    }
-                    for result in rank_results
-                ]
-            await database_sync_to_async(observe_snapshot)(
-                'estimation',
-                self.room_code,
-                payload,
-                hub_session,
-            )
-            await self.channel_layer.group_send(self.room_group_name, payload)
+        if not quiz:
+            return
+        code = data.get('hub_session') or data.get('hub_session_code') or await self._get_hub_session_code_for_room()
+        snapshot = await database_sync_to_async(current_snapshot)('estimation', self.room_code, code)
+        if (snapshot.get('question_flow_mode') == 'manual_three_phase'
+                and snapshot.get('question_phase') != 'answering_open'):
+            await self.send(text_data=json.dumps({'type': 'error', 'message': 'Die Frage kann vor der Freigabe nicht beendet werden.'}))
+            return
+        event = await database_sync_to_async(end_question)(quiz.pk, code,
+            question_id=data.get('question_id'), round_number=data.get('round_number'), emit=False)
+        if event:
+            await self.channel_layer.group_send(self.room_group_name, event)
 
     async def handle_admin_set_scoring_mode(self, data):
         quiz = await self.get_quiz()
@@ -582,18 +538,11 @@ class EstimationConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer)
         quiz = await self.get_quiz()
         if quiz and quiz.status == 'active':
             await self.set_quiz_inactive_db(quiz.id)
-            await self.channel_layer.group_send(
-                self.room_group_name,
-                {
-                    'type': 'quiz_inactive',
-                    'message': 'Quiz has been set inactive.'
-                }
-            )
 
     async def handle_participant_submit_answer(self, data):
         """Handle participant submitting their estimation answer"""
         participant_name = data.get('participant_name')
-        hub_session = data.get('hub_session')
+        hub_session = data.get('hub_session') or None
         user_answer = data.get('user_answer')
         time_taken = data.get('time_taken', 0)
         question_id = data.get('question_id')
@@ -604,15 +553,10 @@ class EstimationConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer)
         )
         
         if answer:
-            # Send confirmation to participant
             await self.send(text_data=json.dumps({
-                'type': 'answer_submitted',
-                'message': 'Answer submitted successfully',
-                'points_earned': answer['points_earned'],
-                'is_tutorial_round': answer['is_tutorial_round'],
-                'accuracy_percentage': answer['accuracy_percentage'],
-                'user_answer': answer['user_answer'],
-                'percentage_difference': answer['percentage_difference']
+                'type': 'answer_submitted', 'question_id': answer['question_id'],
+                'round_number': answer['round_number'], 'user_answer': answer['user_answer'],
+                'formatted_answer': answer['formatted_answer'], 'answer_locked': True,
             }))
 
             # Broadcast to admin dashboard (live answers)
@@ -633,25 +577,37 @@ class EstimationConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer)
                     }
                     }
                 )
+        else:
+            await self.send(text_data=json.dumps({'type': 'answer_rejected', 'question_id': question_id,
+                'message': 'Antwort wurde nicht gespeichert. Bitte eine gültige Zahl eingeben oder erneut versuchen.'}))
 
     async def handle_participant_update_pending_answer(self, data):
         """Persist the latest typed estimate so it can be evaluated when the round ends."""
-        await self.save_pending_answer(
+        saved = await self.save_pending_answer(
             data.get('participant_name'),
             data.get('hub_session'),
             data.get('user_answer', ''),
             data.get('question_id'),
         )
+        await self.send(text_data=json.dumps({'type': 'pending_answer_saved' if saved else 'pending_answer_rejected',
+            'question_id': data.get('question_id'), 'round_number': data.get('round_number'),
+            'user_answer': data.get('user_answer', '')}))
 
     async def handle_participant_join(self, data):
         """Handle new participant joining"""
         participant_name = data.get('participant_name')
-        hub_session = data.get('hub_session')
+        hub_session = data.get('hub_session') or None
         self.participant_name = participant_name
         participant = await self.get_participant_by_name(participant_name, hub_session)
         
         if participant:
             await self.mark_participant_active(participant['id'])
+            quiz = await self.get_quiz()
+            if quiz and quiz.status == 'inactive':
+                await self.send(text_data=json.dumps({'type': 'quiz_inactive'}))
+                question = await self.get_current_question_data(participant_name, hub_session)
+                if question:
+                    await self.send(text_data=json.dumps({'type': 'question_started', 'question': question}))
             
             # Broadcast to admin
             await self.channel_layer.group_send(
@@ -659,6 +615,7 @@ class EstimationConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer)
                 {
                     'type': 'participant_joined',
                     'participant': {
+                        'id': participant['id'], 'hub_session_code': hub_session,
                         'name': participant['name'],
                         'total_score': participant['total_score']
                     }
@@ -699,6 +656,40 @@ class EstimationConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer)
                             'question_id': runtime_snapshot.get('prepared_question_id'),
                             **self.question_lifecycle_fields(runtime_snapshot),
                         }))
+                    else:
+                        event = await self.get_reveal_state(participant_name, hub_session)
+                        if event:
+                            await self.send(text_data=json.dumps(event))
+
+    async def is_host(self):
+        from games_hub.host_permissions import authorize_game_host
+        return (await database_sync_to_async(authorize_game_host)(getattr(self, 'scope', {}).get('user'),
+            'estimation', self.room_code, self._authoritative_session_code() or None)).allowed
+
+    async def send_state(self, data):
+        code = data.get('hub_session') or data.get('hub_session_code') or None
+        name = data.get('participant_name') or self._authoritative_participant_name() or None
+        if not name and await self.is_host():
+            from .runtime import end_question
+            quiz = await self.get_quiz()
+            if quiz:
+                event = await database_sync_to_async(end_question)(quiz.pk, code, expired_only=True, emit=False)
+                if event:
+                    await self.channel_layer.group_send(self.room_group_name, event)
+            return
+        question = await self.get_current_question_data(name, code)
+        if question:
+            await self.send(text_data=json.dumps({'type': 'question_started', 'question': question}))
+        elif name:
+            event = await self.get_reveal_state(name, code)
+            if event:
+                await self.send(text_data=json.dumps(event))
+
+    @database_sync_to_async
+    def get_reveal_state(self, name, code):
+        from .runtime import reveal_state
+        return reveal_state(self.room_code, name, code)
+
 
     async def handle_tutorial_completed(self, data):
         participant_name = data.get('participant_name') or data.get('name')
@@ -738,6 +729,7 @@ class EstimationConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer)
         """Send quiz started message"""
         await self.send(text_data=json.dumps({
             'type': 'quiz_started',
+            'resume_existing': event.get('resume_existing', False),
             'message': event['message'],
             'phase': event.get('phase'),
             'revealed': event.get('revealed', False),
@@ -822,12 +814,19 @@ class EstimationConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer)
 
     async def question_ended(self, event):
         """Send question ended message"""
+        event = dict(event)
+        if not await self.is_host():
+            event['evaluated_pending_answers'] = [row for row in event.get('evaluated_pending_answers', [])
+                if row.get('participant_name') == self._authoritative_participant_name()
+                and (row.get('hub_session_code') or '') == self._authoritative_session_code()]
         await self.send(text_data=json.dumps({
             'type': 'question_ended',
             'phase': event.get('phase'),
             'revealed': event.get('revealed', True),
             'current_question_id': event.get('current_question_id'),
             'message': event['message'],
+            'question_number': event.get('question_number'), 'round_number': event.get('round_number'),
+            'scoreboard': event.get('scoreboard'), 'is_tutorial_round': event.get('is_tutorial_round', False),
             'correct_answer': event.get('correct_answer'),
             'rank_results': event.get('rank_results'),
             'max_points': event.get('max_points'),
@@ -853,9 +852,14 @@ class EstimationConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer)
             'type': 'quiz_inactive',
             'message': event.get('message', 'Quiz has been set inactive.')
         }))
+    async def quiz_resumed(self, event):
+        await self.send(text_data=json.dumps({'type': 'quiz_resumed'}))
+
 
     async def participant_answered(self, event):
         """Send participant answer to admin"""
+        if not await self.is_host():
+            return
         await self.send(text_data=json.dumps({
             'type': 'participant_answered',
             'answer': event['answer']
@@ -943,6 +947,9 @@ class EstimationConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer)
                 **self.question_lifecycle_fields(runtime),
             }
 
+            from .progress import metadata
+            payload.update(metadata(quiz, hub_session))
+
             if participant_name is not None:
                 participant = quiz.participants.filter(
                     name=participant_name,
@@ -953,14 +960,13 @@ class EstimationConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer)
                         quiz=quiz,
                         participant=participant,
                         question=question,
+                        round_number=current_round(quiz),
                     ).first()
                     if answer:
                         payload['has_answered'] = True
                         payload['existing_answer'] = {
                             'user_answer': answer.user_answer,
                             'formatted_answer': answer.get_formatted_user_answer(),
-                            'points_earned': int(answer.points_earned or 0),
-                            'accuracy_percentage': round(answer.get_accuracy_percentage(), 2),
                         }
                     elif session and (
                         not manual_flow
@@ -1070,23 +1076,9 @@ class EstimationConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer)
             quiz = EstimationQuiz.objects.get(id=quiz_id)
             if reset_for_fresh_start is None:
                 reset_for_fresh_start = quiz.status == 'waiting' or quiz.started_at is None
-            quiz.status = 'active'
-            quiz.started_at = timezone.now()
             if reset_for_fresh_start:
-                quiz.current_question = None
-                quiz.question_start_time = None
-            quiz.save()
-            if reset_for_fresh_start:
-                session, _ = EstimationSession.objects.get_or_create(quiz=quiz)
-                session.current_question_number = 0
-                session.total_questions_sent = 0
-                session.is_question_active = False
-                session.question_end_time = None
-                session.pending_answers = {}
-                session.total_responses_current_question = 0
-                session.average_score_current_question = 0
-                session.average_accuracy_current_question = 0
-                session.save()
+                quiz.status = 'waiting'
+            quiz.start_quiz()
         except EstimationQuiz.DoesNotExist:
             pass
 
@@ -1094,10 +1086,7 @@ class EstimationConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer)
     def end_quiz_db(self, quiz_id):
         try:
             quiz = EstimationQuiz.objects.get(id=quiz_id)
-            quiz.status = 'completed'
-            quiz.ended_at = timezone.now()
-            quiz.current_question = None
-            quiz.save()
+            quiz.end_quiz()
         except EstimationQuiz.DoesNotExist:
             pass
 
@@ -1105,44 +1094,15 @@ class EstimationConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer)
     def set_quiz_inactive_db(self, quiz_id):
         try:
             quiz = EstimationQuiz.objects.get(id=quiz_id)
-            quiz.status = 'inactive'
-            quiz.save(update_fields=['status'])
+            from games_hub.quiz_pause import pause
+            pause(quiz, 'estimation')
         except EstimationQuiz.DoesNotExist:
             pass
 
     @database_sync_to_async
-    @transaction.atomic
-    def present_estimation_question(
-        self,
-        quiz_id,
-        question_id,
-        hub_session_code,
-        action,
-        answer_duration_seconds,
-        at=None,
-    ):
-        quiz = EstimationQuiz.objects.select_for_update().get(id=quiz_id)
-        question = EstimationQuestion.objects.get(id=question_id)
-        session, _ = EstimationSession.objects.select_for_update().get_or_create(quiz=quiz)
-        decision = present_question(
-            game_key='estimation',
-            room_code=self.room_code,
-            session_code=hub_session_code,
-            action=action,
-            answer_duration_seconds=answer_duration_seconds,
-            at=at,
-            **question_typewriter_timing(question.question_text),
-        )
-        if decision.accepted and not decision.duplicate:
-            runtime = get_runtime_state('estimation', self.room_code, hub_session_code)
-            runtime = GameRuntimeState.objects.select_for_update().get(pk=runtime.pk)
-            public_snapshot = dict(runtime.public_snapshot or {})
-            public_snapshot.pop('prepared_question_id', None)
-            public_snapshot.pop('question_shell_prepared', None)
-            runtime.public_snapshot = public_snapshot
-            runtime.save(update_fields=['public_snapshot', 'updated_at'])
-            session.prepare_question(question)
-        return decision
+    def present_estimation_question(self, quiz_id, question_id, hub_session_code, action, answer_duration_seconds, at=None):
+        from .runtime import present
+        return present(self.room_code, quiz_id, question_id, hub_session_code, action, answer_duration_seconds, at)
 
     @database_sync_to_async
     @transaction.atomic
@@ -1263,47 +1223,9 @@ class EstimationConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer)
         }
 
     @database_sync_to_async
-    @transaction.atomic
-    def open_estimation_answering(
-        self,
-        quiz_id,
-        question_id,
-        hub_session_code,
-        action,
-        at=None,
-    ):
-        quiz = (
-            EstimationQuiz.objects.select_for_update()
-            .select_related('current_question')
-            .get(id=quiz_id)
-        )
-        session = EstimationSession.objects.select_for_update().get(quiz=quiz)
-        if quiz.current_question_id != question_id:
-            return open_answering(
-                game_key='estimation',
-                room_code=self.room_code,
-                session_code=hub_session_code,
-                action=action,
-            )
-        opened_at = at or timezone.now()
-        decision = open_answering(
-            game_key='estimation',
-            room_code=self.room_code,
-            session_code=hub_session_code,
-            action=action,
-            at=opened_at,
-        )
-        if decision.accepted and not decision.duplicate:
-            started_at = parse_datetime(decision.snapshot.get('answering_started_at') or '')
-            deadline = parse_datetime(decision.snapshot.get('answering_deadline_at') or '')
-            if not started_at or not deadline:
-                raise ValueError('Authoritative answering timestamps are missing.')
-            session.open_answering(
-                quiz.current_question,
-                started_at=started_at,
-                answer_duration_seconds=(deadline - started_at).total_seconds(),
-            )
-        return decision
+    def open_estimation_answering(self, quiz_id, question_id, hub_session_code, action, at=None):
+        from .runtime import open_question
+        return open_question(self.room_code, quiz_id, question_id, hub_session_code, action, at)
 
     @database_sync_to_async
     def clear_current_question(self, quiz_id):
@@ -1357,62 +1279,9 @@ class EstimationConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer)
         return None
 
     @database_sync_to_async
-    def compute_rank_points_for_current_question(self, quiz_id: int, hub_session_code=None):
-        """Pool all answers for the current question, rank by closeness, assign descending points.
-        Returns list of dicts: participant_name, points_earned, rank_position, user_answer, formatted_answer, accuracy_percentage, percentage_difference, difference_indicator.
-        """
-        try:
-            quiz = EstimationQuiz.objects.get(id=quiz_id)
-            question = quiz.current_question
-            if not question:
-                return []
-
-            # Gather all answers for this quiz/question
-            answers_qs = EstimationAnswer.objects.filter(
-                quiz=quiz,
-                question=question,
-            ).select_related('participant', 'question')
-            if hub_session_code:
-                answers_qs = answers_qs.filter(participant__hub_session_code=hub_session_code)
-            answers = list(answers_qs)
-            if not answers:
-                return []
-
-            # Rank by absolute difference to correct answer; tie-breaker: faster time_taken wins, then earlier submitted_at
-            def sort_key(ans: EstimationAnswer):
-                diff = abs(ans.user_answer - question.correct_answer)
-                time_val = ans.time_taken if ans.time_taken is not None else float('inf')
-                return (diff, time_val, ans.submitted_at)
-
-            answers.sort(key=sort_key)
-
-            participant_count = max(quiz.get_participant_count(hub_session_code), len(answers))
-
-            results = []
-            for idx, ans in enumerate(answers):
-                # Descending points from participant count to 1
-                points = max(1, participant_count - idx)
-                # Update and save; this recalculates participant total via model's save
-                ans.points_earned = points
-                ans.save()
-
-                results.append({
-                    'participant_id': ans.participant_id,
-                    'participant_name': ans.participant.name,
-                    'hub_session_code': ans.participant.hub_session_code,
-                    'points_earned': ans.points_earned,
-                    'rank_position': idx + 1,
-                    'user_answer': ans.user_answer,
-                    'formatted_answer': ans.get_formatted_user_answer(),
-                    'accuracy_percentage': ans.get_accuracy_percentage(),
-                    'percentage_difference': ans.get_percentage_difference(),
-                    'difference_indicator': ans.get_difference_indicator(),
-                    'time_taken': ans.time_taken,
-                })
-
-            return results
-        except EstimationQuiz.DoesNotExist:
-            return []
+    def compute_rank_points_for_current_question(self, quiz_id, hub_session_code=None):
+        from .runtime import rank_answers
+        return rank_answers(self.room_code, quiz_id, hub_session_code)
 
     @database_sync_to_async
     def get_question_data(self, question):
@@ -1443,302 +1312,31 @@ class EstimationConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer)
         return self.get_question_number_for_quiz_value(quiz, question_id)
 
     def get_question_number_for_quiz_value(self, quiz, question_id):
-        try:
-            session = quiz.session
-        except EstimationSession.DoesNotExist:
-            session = None
+        from .progress import question_progress
+        return question_progress(quiz, self.current_session_code(), question_id)['current'] or 0
 
-        if (
-            session
-            and quiz.current_question_id
-            and int(question_id) == int(quiz.current_question_id)
-            and session.current_question_number > 0
-        ):
-            return session.current_question_number
-
-        ordered_ids = []
-        seen_ids = set()
-        for answer in (
-            EstimationAnswer.objects
-            .filter(quiz=quiz)
-            .order_by('submitted_at', 'id')
-            .values_list('question_id', flat=True)
-        ):
-            if answer in seen_ids:
-                continue
-            ordered_ids.append(answer)
-            seen_ids.add(answer)
-
-        if quiz.current_question_id and quiz.current_question_id not in seen_ids:
-            ordered_ids.append(quiz.current_question_id)
-            seen_ids.add(quiz.current_question_id)
-
-        for raw_question_id in quiz.question_order or []:
-            try:
-                normalized_question_id = int(raw_question_id)
-            except (TypeError, ValueError):
-                continue
-            if normalized_question_id not in seen_ids:
-                ordered_ids.append(normalized_question_id)
-                seen_ids.add(normalized_question_id)
-
-        for selected_id in quiz.selected_questions.values_list('id', flat=True):
-            if selected_id not in seen_ids:
-                ordered_ids.append(selected_id)
-                seen_ids.add(selected_id)
-
-        if question_id in ordered_ids:
-            return ordered_ids.index(question_id) + 1
-        return 0
+    def current_session_code(self):
+        from games_hub.quiz_pause import session_code_for
+        return session_code_for(EstimationQuiz.objects.get(room_code=self.room_code), 'estimation')
 
     def get_participant_count_for_quiz(self, quiz):
-        try:
-            qs = HubGameStep.objects.select_related('session').filter(game_key='estimation', room_code=self.room_code)
-            active = qs.filter(session__ended_at__isnull=True).order_by('-id').first()
-            step = active or qs.order_by('-id').first()
-            session_code = step.session.code if step else None
-        except Exception:
-            session_code = None
-
-        participants = quiz.participants
-        if session_code:
-            participants = participants.filter(hub_session_code=session_code)
-        return participants.count()
+        from .progress import participant_count
+        return participant_count(quiz)
 
     @database_sync_to_async
-    @transaction.atomic
     def save_participant_answer(self, participant_name, hub_session_code, user_answer, time_taken, question_id=None):
-        try:            # Collect final scores
-            quiz = (
-                EstimationQuiz.objects.select_for_update()
-                .select_related('current_question')
-                .get(room_code=self.room_code)
-            )
-            participant = quiz.participants.get(name=participant_name, hub_session_code=hub_session_code)
-            
-            if quiz.status != 'active':
-                return None
-            if not quiz.current_question:
-                return None
-            if question_id is None or str(quiz.current_question_id) != str(question_id):
-                return None
-            session = EstimationSession.objects.select_for_update().filter(quiz=quiz).first()
-            received_at = timezone.now()
-            if (
-                not session
-                or not session.is_question_active
-                or (
-                    session.question_end_time
-                    and received_at >= session.question_end_time
-                )
-            ):
-                return None
-            
-            # Check if answer already exists
-            existing_answer = EstimationAnswer.objects.filter(
-                quiz=quiz,
-                participant=participant,
-                question=quiz.current_question
-            ).first()
-            
-            if existing_answer:
-                return None  # Already answered
-            
-            # Convert user answer to float
-            try:
-                user_answer_float = float(user_answer)
-            except (ValueError, TypeError):
-                return None
-            
-            server_time_taken = (
-                max(0.0, (received_at - quiz.question_start_time).total_seconds())
-                if quiz.question_start_time
-                else 0.0
-            )
-
-            # Create new answer
-            answer, created = EstimationAnswer.objects.get_or_create(
-                quiz=quiz,
-                participant=participant,
-                question=quiz.current_question,
-                defaults={
-                    'user_answer': user_answer_float,
-                    'time_taken': server_time_taken,
-                },
-            )
-            if not created:
-                return None
-            is_tutorial_answer = is_unit_tutorial_question(
-                'estimation',
-                self.room_code,
-                hub_session_code,
-                quiz.current_question_id,
-            )
-            if is_tutorial_answer and answer.points_earned:
-                answer.points_earned = 0
-                answer.save(update_fields=['points_earned', 'updated_at'])
-
-            if session:
-                pending_answers = dict(session.pending_answers or {})
-                if pending_answers.pop(str(participant.id), None) is not None:
-                    session.pending_answers = pending_answers
-                    session.save(update_fields=['pending_answers', 'updated_at'])
-            
-            return {
-                'points_earned': answer.points_earned,
-                'is_tutorial_round': is_tutorial_answer,
-                'accuracy_percentage': answer.get_accuracy_percentage(),
-                'user_answer': answer.user_answer,
-                'formatted_answer': answer.get_formatted_user_answer(),
-                'percentage_difference': answer.get_percentage_difference(),
-                'difference_indicator': answer.get_difference_indicator(),
-                'time_taken': answer.time_taken,
-            }
-            
-        except (EstimationQuiz.DoesNotExist, EstimationParticipant.DoesNotExist):
-            return None
+        from .runtime import save_answer
+        return save_answer(self.room_code, participant_name, hub_session_code, user_answer, time_taken, question_id)
 
     @database_sync_to_async
-    @transaction.atomic
     def save_pending_answer(self, participant_name, hub_session_code, user_answer, question_id=None):
-        try:
-            quiz = EstimationQuiz.objects.select_for_update().get(room_code=self.room_code)
-            if quiz.status != 'active':
-                return False
-            if not quiz.current_question:
-                return False
-            if question_id is None or str(quiz.current_question_id) != str(question_id):
-                return False
-
-            participant = quiz.participants.get(name=participant_name, hub_session_code=hub_session_code)
-            session, _ = EstimationSession.objects.select_for_update().get_or_create(quiz=quiz)
-            received_at = timezone.now()
-            if (
-                not session.is_question_active
-                or not session.question_end_time
-                or received_at >= session.question_end_time
-            ):
-                return False
-            pending_answers = dict(session.pending_answers or {})
-            entry_key = str(participant.id)
-            cleaned_answer = '' if user_answer is None else str(user_answer).strip()
-
-            existing_answer = EstimationAnswer.objects.filter(
-                quiz=quiz,
-                participant=participant,
-                question=quiz.current_question,
-            ).first()
-            if existing_answer:
-                if pending_answers.pop(entry_key, None) is not None:
-                    session.pending_answers = pending_answers
-                    session.save(update_fields=['pending_answers', 'updated_at'])
-                return False
-
-            if cleaned_answer:
-                pending_answers[entry_key] = {
-                    'question_id': quiz.current_question_id,
-                    'user_answer': cleaned_answer,
-                    'updated_at': received_at.isoformat(),
-                    'participant_name': participant.name,
-                    'hub_session_code': participant.hub_session_code,
-                }
-            else:
-                pending_answers.pop(entry_key, None)
-
-            session.pending_answers = pending_answers
-            session.save(update_fields=['pending_answers', 'updated_at'])
-            return True
-        except (EstimationQuiz.DoesNotExist, EstimationParticipant.DoesNotExist):
-            return False
+        from .runtime import save_pending
+        return save_pending(self.room_code, participant_name, hub_session_code, user_answer, question_id)
 
     @database_sync_to_async
     def finalize_pending_answers(self, quiz_id, hub_session_code=None):
-        try:
-            quiz = EstimationQuiz.objects.select_related('current_question', 'session').get(id=quiz_id)
-        except EstimationQuiz.DoesNotExist:
-            return []
-
-        question = quiz.current_question
-        session = getattr(quiz, 'session', None)
-        if not question or not session:
-            return []
-
-        pending_answers = dict(session.pending_answers or {})
-        finalized = []
-        changed = False
-
-        for participant_id, pending in list(pending_answers.items()):
-            if str(pending.get('question_id')) != str(question.id):
-                continue
-
-            raw_user_answer = '' if pending.get('user_answer') is None else str(pending.get('user_answer')).strip()
-            if not raw_user_answer:
-                pending_answers.pop(participant_id, None)
-                changed = True
-                continue
-
-            try:
-                user_answer_float = float(raw_user_answer)
-            except (TypeError, ValueError):
-                pending_answers.pop(participant_id, None)
-                changed = True
-                continue
-
-            try:
-                participant = quiz.participants.get(id=int(participant_id))
-            except (EstimationParticipant.DoesNotExist, ValueError, TypeError):
-                pending_answers.pop(participant_id, None)
-                changed = True
-                continue
-            if hub_session_code and participant.hub_session_code != hub_session_code:
-                continue
-
-            existing_answer = EstimationAnswer.objects.filter(
-                quiz=quiz,
-                participant=participant,
-                question=question,
-            ).first()
-            if existing_answer:
-                pending_answers.pop(participant_id, None)
-                changed = True
-                continue
-
-            updated_at = parse_datetime(pending.get('updated_at') or '')
-            if updated_at and timezone.is_naive(updated_at):
-                updated_at = timezone.make_aware(updated_at, timezone.get_current_timezone())
-
-            time_taken = 0
-            if quiz.question_start_time and updated_at:
-                time_taken = max(0, (updated_at - quiz.question_start_time).total_seconds())
-
-            answer = EstimationAnswer.objects.create(
-                quiz=quiz,
-                participant=participant,
-                question=question,
-                user_answer=user_answer_float,
-                time_taken=time_taken,
-            )
-
-            finalized.append({
-                'participant_id': participant.id,
-                'participant_name': participant.name,
-                'hub_session_code': participant.hub_session_code,
-                'user_answer': answer.user_answer,
-                'formatted_answer': answer.get_formatted_user_answer(),
-                'points_earned': answer.points_earned,
-                'accuracy_percentage': answer.get_accuracy_percentage(),
-                'percentage_difference': answer.get_percentage_difference(),
-                'difference_indicator': answer.get_difference_indicator(),
-            })
-
-            pending_answers.pop(participant_id, None)
-            changed = True
-
-        if changed:
-            session.pending_answers = pending_answers
-            session.save(update_fields=['pending_answers', 'updated_at'])
-
-        return finalized
+        from .runtime import finalize_pending
+        return finalize_pending(self.room_code, quiz_id, hub_session_code)
 
     @database_sync_to_async
     def mark_participant_active(self, participant_id):
@@ -1754,18 +1352,8 @@ class EstimationConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer)
     def get_final_scores(self):
         try:
             quiz = EstimationQuiz.objects.get(room_code=self.room_code)
-            # Filter by hub session code if available via HubGameStep
-            try:
-                qs = HubGameStep.objects.select_related('session').filter(game_key='estimation', room_code=self.room_code)
-                active = qs.filter(session__ended_at__isnull=True).order_by('-id').first()
-                step = active or qs.order_by('-id').first()
-                session_code = step.session.code if step else None
-            except Exception:
-                session_code = None
-
-            qs = quiz.participants
-            if session_code:
-                qs = qs.filter(hub_session_code=session_code)
+            from .progress import scope_code
+            qs = quiz.participants.filter(hub_session_code=scope_code(quiz))
             return list(qs.values('name', 'total_score'))
         except EstimationQuiz.DoesNotExist:
             return []

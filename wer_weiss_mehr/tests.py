@@ -1,6 +1,7 @@
 import json
 import os
 import uuid
+from wer_weiss_mehr.identity import issue_player_token
 from datetime import timedelta
 from pathlib import Path
 from unittest.mock import AsyncMock
@@ -253,7 +254,7 @@ class WerWeissMehrRuntimeTests(TestCase):
             [self.bayern.id, self.saarland.id, self.thueringen.id],
         )
 
-    def test_participant_snapshot_uses_configured_set_number(self):
+    def test_participant_snapshot_uses_played_set_number(self):
         second_question = WerWeissMehrQuestion.objects.create(
             question_text='Welche Planeten kennst du?',
             round_time_limit=30,
@@ -280,7 +281,7 @@ class WerWeissMehrRuntimeTests(TestCase):
             participant_name=self.p1.name,
         )
 
-        self.assertEqual(state['current_set_number'], 2)
+        self.assertEqual(state['current_set_number'], 1)
 
     def test_normalization_accepts_umlauts_and_aliases(self):
         self.assertEqual(normalize_answer_text(' Thüringen '), 'thueringen')
@@ -609,6 +610,7 @@ class WerWeissMehrConsumerTests(TransactionTestCase):
         consumer.room_group_name = f'werweissmehr_{self.game.room_code}'
         consumer.channel_layer = DummyChannelLayer()
         consumer.send = AsyncMock()
+        consumer.scope = {'user': self.user}
 
         async_to_sync(consumer.handle_admin_start_quiz)({})
 
@@ -650,6 +652,7 @@ class WerWeissMehrConsumerTests(TransactionTestCase):
         consumer.room_group_name = f'werweissmehr_{self.game.room_code}'
         consumer.channel_layer = DummyChannelLayer()
         consumer.send = AsyncMock()
+        consumer.scope = {'user': self.user}
 
         async_to_sync(consumer.handle_admin_start_quiz)({'hub_session_code': self.hub_session.code})
 
@@ -685,6 +688,7 @@ class WerWeissMehrAdminIntegrationTests(TestCase):
         )
 
     def _action_context(self, game, session_code, participant_name=None):
+        game.refresh_from_db()
         state = build_game_state(
             game,
             hub_session_code=session_code,
@@ -697,6 +701,7 @@ class WerWeissMehrAdminIntegrationTests(TestCase):
             'question_id': state['current_question_id'],
             'round_id': state['current_round_id'],
             'set_id': state.get('current_set_id'),
+            **({'player_token': issue_player_token(WerWeissMehrParticipant.objects.get(quiz=game, hub_session_code=session_code, name=participant_name))} if participant_name else {}),
         }
 
     def _enable_manual_question_flow(self, game, session_code):
@@ -722,7 +727,7 @@ class WerWeissMehrAdminIntegrationTests(TestCase):
         runtime.question_presented_at = timezone.now() - (ready_at - presented_at) - timedelta(milliseconds=10)
         runtime.save(update_fields=['question_presented_at', 'updated_at'])
         action_context = self._action_context(game, session_code)
-        self.assertEqual(str(action_context['set_id']), str(game.current_question_id))
+        self.assertEqual(str(action_context['set_id']), str(game.get_current_set_number()))
         response = self.client.post(
             reverse('admin_dashboard:open_wer_weiss_mehr_round', args=[game.room_code]),
             data=json.dumps({
@@ -1275,7 +1280,7 @@ class WerWeissMehrAdminIntegrationTests(TestCase):
 
         response = self.client.post(
             reverse('admin_dashboard:end_wer_weiss_mehr_round', args=[game.room_code]),
-            data=json.dumps({'hub_session': session.code}),
+            data=json.dumps({**self._action_context(game, session.code), 'hub_session': session.code}),
             content_type='application/json',
         )
 
@@ -1477,7 +1482,7 @@ class WerWeissMehrAdminIntegrationTests(TestCase):
         submit_answer(game, max_player, 'Falsch')
         end_response = self.client.post(
             reverse('admin_dashboard:end_wer_weiss_mehr_round', args=[game.room_code]),
-            data=json.dumps({'hub_session': session.code}),
+            data=json.dumps({**self._action_context(game, session.code), 'hub_session': session.code}),
             content_type='application/json',
         )
         self.assertEqual(end_response.status_code, 200)
@@ -1595,7 +1600,7 @@ class WerWeissMehrAdminIntegrationTests(TestCase):
 
         response = self.client.post(
             reverse('admin_dashboard:finish_wer_weiss_mehr_set', args=[game.room_code]),
-            data=json.dumps({'hub_session': session.code}),
+            data=json.dumps({**self._action_context(game, session.code), 'hub_session': session.code}),
             content_type='application/json',
         )
 
@@ -1667,14 +1672,14 @@ class WerWeissMehrAdminIntegrationTests(TestCase):
 
         finish_response = self.client.post(
             reverse('admin_dashboard:finish_wer_weiss_mehr_set', args=[game.room_code]),
-            data=json.dumps({'hub_session': session.code}),
+            data=json.dumps({**self._action_context(game, session.code), 'hub_session': session.code}),
             content_type='application/json',
         )
         self.assertEqual(finish_response.status_code, 200)
         self.assertFalse(finish_response.json()['question_phase'])
         clear_response = self.client.post(
             reverse('admin_dashboard:clear_wer_weiss_mehr_set', args=[game.room_code]),
-            data=json.dumps({'hub_session': session.code}),
+            data=json.dumps({**self._action_context(game, session.code), 'hub_session': session.code}),
             content_type='application/json',
         )
         self.assertEqual(clear_response.status_code, 200)
@@ -1724,7 +1729,7 @@ class WerWeissMehrAdminIntegrationTests(TestCase):
 
         response = self.client.post(
             reverse('admin_dashboard:clear_wer_weiss_mehr_set', args=[game.room_code]),
-            data=json.dumps({'hub_session': session.code}),
+            data=json.dumps({**self._action_context(game, session.code), 'hub_session': session.code}),
             content_type='application/json',
         )
 
@@ -1772,7 +1777,7 @@ class WerWeissMehrAdminIntegrationTests(TestCase):
 
         response = self.client.post(
             reverse('admin_dashboard:finish_wer_weiss_mehr_set', args=[game.room_code]),
-            data=json.dumps({'hub_session': session.code}),
+            data=json.dumps({**self._action_context(game, session.code), 'hub_session': session.code}),
             content_type='application/json',
         )
 
@@ -2042,7 +2047,7 @@ class WerWeissMehrAdminIntegrationTests(TestCase):
 
         response = self.client.post(
             f'/wer-weiss-mehr/pending/{game.room_code}/',
-            data=json.dumps({
+            data=json.dumps({**self._action_context(game, session.code, 'Lisa'),
                 'participant_name': 'Lisa',
                 'hub_session': session.code,
                 'answer_text': 'Bayern',
@@ -2225,7 +2230,7 @@ class WerWeissMehrAdminIntegrationTests(TestCase):
 
         response = self.client.post(
             reverse('admin_dashboard:end_wer_weiss_mehr_round', args=[game.room_code]),
-            data=json.dumps({'hub_session': session.code}),
+            data=json.dumps({**self._action_context(game, session.code), 'hub_session': session.code}),
             content_type='application/json',
         )
         self.assertEqual(response.status_code, 200)
@@ -2288,7 +2293,7 @@ class WerWeissMehrAdminIntegrationTests(TestCase):
 
         response = self.client.post(
             reverse('admin_dashboard:finish_wer_weiss_mehr_set', args=[game.room_code]),
-            data=json.dumps({'hub_session': session.code}),
+            data=json.dumps({**self._action_context(game, session.code), 'hub_session': session.code}),
             content_type='application/json',
         )
         self.assertEqual(response.status_code, 200)
@@ -2305,7 +2310,7 @@ class WerWeissMehrAdminIntegrationTests(TestCase):
 
         response = self.client.post(
             reverse('admin_dashboard:clear_wer_weiss_mehr_set', args=[game.room_code]),
-            data=json.dumps({'hub_session': session.code}),
+            data=json.dumps({**self._action_context(game, session.code), 'hub_session': session.code}),
             content_type='application/json',
         )
         self.assertEqual(response.status_code, 200)
@@ -2540,6 +2545,24 @@ class WerWeissMehrQuestionPhaseBrowserTests(_BrowserTestBase):
                 pass
 
     def test_two_participants_receive_ordered_fields_before_host_opens_answering(self):
+        self.admin_context.add_init_script("""(() => {
+            const NativeWebSocket = window.WebSocket;
+            window.__wwmHostContextReady = false;
+            window.WebSocket = new Proxy(NativeWebSocket, {
+                construct(Target, args) {
+                    const socket = new Target(...args);
+                    if (String(args[0]).includes('/ws/wer-weiss-mehr/')) {
+                        socket.addEventListener('message', event => {
+                            const data = JSON.parse(event.data);
+                            if (data.type === 'state' && data.session_id === EXPECTED_SESSION) {
+                                window.__wwmHostContextReady = true;
+                            }
+                        });
+                    }
+                    return socket;
+                },
+            });
+        })();""".replace('EXPECTED_SESSION', str(self.hub_session.pk)))
         monitor_url = reverse(
             'admin_dashboard:wer_weiss_mehr_monitor',
             args=[self.game.room_code],
@@ -2547,11 +2570,24 @@ class WerWeissMehrQuestionPhaseBrowserTests(_BrowserTestBase):
         self.admin_page.goto(f'{self.live_server_url}{monitor_url}?hub_session={self.hub_session.code}')
         self.admin_page.wait_for_selector('.start-set-btn')
         self.admin_page.wait_for_function('state !== null')
+        # This animation test intentionally disconnects live updates. Do not
+        # close a still-connecting socket or act on its earlier HTTP snapshot.
+        self.admin_page.wait_for_function('window.__wwmHostContextReady === true')
         self._stop_live_connections(self.admin_page)
+        self.admin_page.evaluate('fetchState()')
         self.assertEqual(self.admin_page.get_by_text('ANTWORTTAFEL ANZEIGEN').count(), 0)
         start_button = self.admin_page.locator('.start-set-btn').first
         start_button.click()
-        start_button.click()
+        self.admin_page.wait_for_function(
+            "document.querySelector('.start-set-btn')?.dataset.hostQuestionReadyToSend === 'true'"
+        )
+        with self.admin_page.expect_response(
+            lambda response: '/wer-weiss-mehr/start-set/' in response.url
+            and response.request.method == 'POST'
+        ) as started:
+            start_button.click()
+        self.assertTrue(started.value.ok, started.value.text())
+        self.assertTrue(started.value.json()['success'])
         self.admin_page.wait_for_selector('#openRoundBtn')
         self.assertTrue(self.admin_page.locator('#openRoundBtn').is_disabled())
         runtime = GameRuntimeState.objects.get(

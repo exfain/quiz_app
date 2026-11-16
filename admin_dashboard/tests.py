@@ -24,10 +24,11 @@ from QuizGame.models import Quiz, QuizQuestion
 from black_jack_quiz.models import BlackJackQuiz
 from clue_rush.models import Clue, ClueQuestion, ClueRushGame, ClueRushSession
 from django.contrib.auth.models import User
+from django.contrib.staticfiles.testing import StaticLiveServerTestCase
 from django.test import Client, LiveServerTestCase, TestCase
 from django.urls import reverse
 from games_hub.models import HubGameStep, HubSession
-from sorting_ladder.models import SortingLadderGame
+from sorting_ladder.models import SortingLadderGame, SortingQuestion
 from where_is_this.models import WhereQuiz
 from who_is_lying.models import WhoQuiz
 from who_is_that.models import WhoThatQuiz
@@ -1226,7 +1227,7 @@ class EstimationMonitorRenderTest(TestCase):
 # 4. Browser-Tests mit Playwright (Suche & Filter in Manage Games)
 # ---------------------------------------------------------------------------
 
-class ManageGamesBrowserTest(LiveServerTestCase):
+class ManageGamesBrowserTest(StaticLiveServerTestCase):
     """
     Testet clientseitige Funktionen (Suche, Typ-Filter) mit Playwright.
     Voraussetzung: playwright + Chromium installiert.
@@ -1311,6 +1312,381 @@ class ManageGamesBrowserTest(LiveServerTestCase):
                 self.assertIn("suchspiel", name_text,
                               f"Sichtbare Zeile passt nicht zum Suchbegriff: {name_text!r}")
         self.assertGreaterEqual(visible_count, 1, "Keine Treffer nach Suche")
+
+    def _open_game_deletion_page(self):
+        self.page.goto(f"{self.live_server_url}{reverse('admin_dashboard:manage_games')}")
+        # Exercise real Bootstrap stacking and dismissal, not the CDN fallback stub.
+        self.page.wait_for_function("window.bootstrap?.Modal?.VERSION === '5.3.2'")
+        self.page.wait_for_function(
+            "getComputedStyle(document.getElementById('deleteGameModal')).position === 'fixed'"
+        )
+        self.page.wait_for_function(
+            "getComputedStyle(document.querySelector('.admin-layout')).zIndex === '1'"
+        )
+
+    def test_single_game_delete_dialog_can_cancel_reopen_and_confirm(self):
+        from playwright.sync_api import expect
+
+        quiz = Quiz.objects.get(title=self._test_titles['quiz'])
+        question = QuizQuestion.objects.create(
+            question_text='Keep this question after deleting its game',
+            correct_answer='A',
+            created_by=self.admin,
+        )
+        quiz.selected_questions.add(question)
+        self._open_game_deletion_page()
+        delete_button = self.page.locator(
+            f'.delete-game-btn[data-game-type="quiz"][data-game-id="{quiz.pk}"]'
+        )
+        modal = self.page.locator('#deleteGameModal')
+
+        delete_button.click()
+        expect(modal).to_be_visible()
+        modal.get_by_role('button', name='Abbrechen', exact=True).click(timeout=3000)
+        expect(modal).to_be_hidden()
+        expect(self.page.locator('.modal-backdrop')).to_have_count(0)
+        self.assertTrue(Quiz.objects.filter(pk=quiz.pk).exists())
+
+        delete_button.click()
+        expect(modal).to_be_visible()
+        with self.page.expect_navigation(wait_until='domcontentloaded'):
+            modal.locator('#confirmDeleteGameBtn').click(timeout=3000)
+        self.assertFalse(Quiz.objects.filter(pk=quiz.pk).exists())
+        self.assertTrue(QuizQuestion.objects.filter(pk=question.pk).exists())
+        expect(self.page.locator('.modal-backdrop')).to_have_count(0)
+
+    def test_selected_games_delete_dialog_can_cancel_reopen_and_confirm(self):
+        from playwright.sync_api import expect
+
+        quiz = Quiz.objects.get(title=self._test_titles['quiz'])
+        estimation = EstimationQuiz.objects.get(title=self._test_titles['estimation'])
+        unselected = AssignQuiz.objects.get(title=self._test_titles['assign'])
+        self._open_game_deletion_page()
+        for game_type, game in [('quiz', quiz), ('estimation', estimation)]:
+            self.page.locator(
+                f'.game-select-cb[data-game-type="{game_type}"][data-game-id="{game.pk}"]'
+            ).check()
+        modal = self.page.locator('#deleteSelectedGamesModal')
+
+        self.page.locator('#deleteSelectedBtn').click()
+        expect(modal).to_be_visible()
+        expect(modal.locator('#deleteSelectedModalCount')).to_have_text('2')
+        modal.get_by_role('button', name='Abbrechen', exact=True).click(timeout=3000)
+        expect(modal).to_be_hidden()
+        expect(self.page.locator('.modal-backdrop')).to_have_count(0)
+        self.assertTrue(Quiz.objects.filter(pk=quiz.pk).exists())
+        self.assertTrue(EstimationQuiz.objects.filter(pk=estimation.pk).exists())
+
+        self.page.locator('#deleteSelectedBtn').click()
+        expect(modal).to_be_visible()
+        with self.page.expect_navigation(wait_until='domcontentloaded'):
+            modal.locator('#confirmDeleteSelectedBtn').click(timeout=3000)
+        self.assertFalse(Quiz.objects.filter(pk=quiz.pk).exists())
+        self.assertFalse(EstimationQuiz.objects.filter(pk=estimation.pk).exists())
+        self.assertTrue(AssignQuiz.objects.filter(pk=unselected.pk).exists())
+        expect(self.page.locator('.modal-backdrop')).to_have_count(0)
+
+    def _make_bank_question(self, text):
+        return QuizQuestion.objects.create(
+            question_text=text, correct_answer='A', created_by=self.admin,
+            option_a='One', option_b='Two', option_c='Three', option_d='Four',
+        )
+
+    def test_question_bank_editor_can_cancel_reopen_and_save(self):
+        from playwright.sync_api import expect
+
+        question = self._make_bank_question('Editable bank question')
+        self._open_game_deletion_page()
+        self.page.select_option('#qbTypeSelect', 'quiz')
+        row = self.page.locator(f'#qbBody tr[data-item-id="{question.pk}"]')
+        row.get_by_text(question.question_text, exact=True).click()
+        modal = self.page.locator('#qbEditModal')
+        expect(modal).to_be_visible()
+        modal.locator('#qbq-text').fill('Discard this change', timeout=3000)
+        modal.get_by_role('button', name='Cancel', exact=True).click(timeout=3000)
+        expect(modal).to_be_hidden()
+        expect(self.page.locator('.modal-backdrop')).to_have_count(0)
+        question.refresh_from_db()
+        self.assertEqual(question.question_text, 'Editable bank question')
+
+        row.get_by_text(question.question_text, exact=True).click()
+        modal.locator('#qbq-text').fill('Saved bank question', timeout=3000)
+        modal.locator('#qbEditSaveBtn').click(timeout=3000)
+        expect(modal).to_be_hidden()
+        expect(row.get_by_text('Saved bank question', exact=True)).to_be_visible()
+        expect(self.page.locator('.modal-backdrop')).to_have_count(0)
+        question.refresh_from_db()
+        self.assertEqual(question.question_text, 'Saved bank question')
+
+    def test_question_bank_direct_delete_can_cancel_and_confirm_without_opening_editor(self):
+        from playwright.sync_api import expect
+
+        question = self._make_bank_question('Delete directly from bank')
+        kept = self._make_bank_question('Unselected bank question')
+        quiz = Quiz.objects.get(title=self._test_titles['quiz'])
+        quiz.selected_questions.add(question, kept)
+        self._open_game_deletion_page()
+        self.page.select_option('#qbTypeSelect', 'quiz')
+        row = self.page.locator(f'#qbBody tr[data-item-id="{question.pk}"]')
+        modal = self.page.locator('#qbDeleteModal')
+
+        row.get_by_role('button', name='Frage löschen').click()
+        expect(self.page.locator('#qbEditModal')).to_be_hidden()
+        expect(modal.locator('#qbDeleteCount')).to_have_text('1')
+        modal.get_by_role('button', name='Abbrechen', exact=True).click(timeout=3000)
+        expect(modal).to_be_hidden()
+        expect(self.page.locator('.modal-backdrop')).to_have_count(0)
+        self.assertTrue(QuizQuestion.objects.filter(pk=question.pk).exists())
+
+        row.get_by_role('button', name='Frage löschen').click()
+        modal.locator('#qbConfirmDeleteBtn').click(timeout=3000)
+        expect(modal).to_be_hidden()
+        expect(row).to_have_count(0)
+        self.assertFalse(QuizQuestion.objects.filter(pk=question.pk).exists())
+        self.assertTrue(QuizQuestion.objects.filter(pk=kept.pk).exists())
+        self.assertTrue(Quiz.objects.filter(pk=quiz.pk).exists())
+
+    def test_question_bank_bulk_delete_preserves_used_answers_and_unselected_questions(self):
+        from playwright.sync_api import expect
+        from QuizGame.models import QuizAnswer, QuizParticipant
+
+        used = self._make_bank_question('Already answered bank question')
+        unused = self._make_bank_question('Unused bank question')
+        kept = self._make_bank_question('Keep this bank question')
+        quiz = Quiz.objects.get(title=self._test_titles['quiz'])
+        participant = QuizParticipant.objects.create(quiz=quiz, name='Bank player')
+        answer = QuizAnswer.objects.create(quiz=quiz, participant=participant, question=used, answer_text='A')
+        participant.refresh_from_db()
+        original_score = participant.total_score
+        self._open_game_deletion_page()
+        self.page.select_option('#qbTypeSelect', 'quiz')
+        for question in (used, unused):
+            self.page.locator(f'#qbBody tr[data-item-id="{question.pk}"] .qb-select-cb').check()
+        expect(self.page.locator('#qbEditModal')).to_be_hidden()
+        expect(self.page.locator('#qbSelectedCount')).to_have_text('2')
+        self.page.locator('#qbDeleteSelectedBtn').click()
+        modal = self.page.locator('#qbDeleteModal')
+        expect(modal.locator('#qbDeleteCount')).to_have_text('2')
+        modal.get_by_role('button', name='Abbrechen', exact=True).click(timeout=3000)
+        expect(modal).to_be_hidden()
+        self.assertEqual(QuizQuestion.objects.filter(pk__in=[used.pk, unused.pk], is_active=True).count(), 2)
+
+        self.page.locator('#qbDeleteSelectedBtn').click()
+        modal.locator('#qbConfirmDeleteBtn').click(timeout=3000)
+        expect(modal).to_be_hidden()
+        expect(self.page.locator('#qbBody .qb-select-cb')).to_have_count(1)
+        used.refresh_from_db()
+        self.assertFalse(used.is_active)
+        self.assertFalse(QuizQuestion.objects.filter(pk=unused.pk).exists())
+        self.assertTrue(QuizQuestion.objects.filter(pk=kept.pk, is_active=True).exists())
+        self.assertTrue(QuizAnswer.objects.filter(pk=answer.pk).exists())
+        participant.refresh_from_db()
+        self.assertEqual(participant.total_score, original_score)
+
+    def test_question_bank_selection_is_scoped_to_page_search_and_type(self):
+        from playwright.sync_api import expect
+
+        for index in range(21):
+            self._make_bank_question(f'Bank question {index:02d}')
+        topic = SortingQuestion.objects.create(question_text='Sorting bank topic', created_by=self.admin)
+        self._open_game_deletion_page()
+        self.page.select_option('#qbTypeSelect', 'quiz')
+        expect(self.page.locator('#qbBody .qb-select-cb')).to_have_count(20)
+        self.page.locator('#qbSelectAll').check()
+        expect(self.page.locator('#qbSelectedCount')).to_have_text('20')
+        self.page.locator('#qbPagination [data-page="2"]').click()
+        expect(self.page.locator('#qbBody .qb-select-cb')).to_have_count(1)
+        expect(self.page.locator('#qbSelectedCount')).to_have_text('0')
+        expect(self.page.locator('#qbDeleteSelectedBtn')).to_be_disabled()
+
+        self.page.locator('#qbSelectAll').check()
+        self.page.fill('#qbSearch', 'Bank question 20')
+        expect(self.page.locator('#qbSelectedCount')).to_have_text('0')
+        expect(self.page.locator('#qbBody').get_by_text('Bank question 20', exact=True)).to_be_visible()
+        self.page.locator('#qbSelectAll').check()
+        self.page.select_option('#qbTypeSelect', 'sorting_ladder')
+        expect(self.page.locator('#qbBody').get_by_text(topic.question_text, exact=True)).to_be_visible()
+        expect(self.page.locator('#qbSelectedCount')).to_have_text('0')
+        expect(self.page.locator('#qbDeleteSelectedBtn')).to_be_disabled()
+        self.page.locator('#qbBody .qb-delete-btn').click()
+        self.page.locator('#qbConfirmDeleteBtn').click(timeout=3000)
+        expect(self.page.locator('#qbDeleteModal')).to_be_hidden()
+        expect(self.page.locator('#qbBody')).to_contain_text('No items found')
+        self.assertFalse(SortingQuestion.objects.filter(pk=topic.pk).exists())
+        self.assertEqual(QuizQuestion.objects.filter(created_by=self.admin).count(), 21)
+
+    def test_question_bank_partial_delete_retries_only_failed_questions(self):
+        from playwright.sync_api import expect
+
+        deleted = self._make_bank_question('Delete on first attempt')
+        retry = self._make_bank_question('Retry failed deletion')
+        attempts = []
+        blocked = []
+        fail_once = True
+
+        def intercept(route):
+            question_id = route.request.post_data_json['question_id']
+            attempts.append(question_id)
+            if question_id == retry.pk and fail_once:
+                blocked.append(route)
+            else:
+                route.continue_()
+
+        self.context.route('**/quiz/delete-question/', intercept)
+        self._open_game_deletion_page()
+        self.page.select_option('#qbTypeSelect', 'quiz')
+        expect(self.page.locator('#qbBody .qb-select-cb')).to_have_count(2)
+        self.page.locator('#qbSelectAll').check()
+        self.page.locator('#qbDeleteSelectedBtn').click()
+        confirm = self.page.locator('#qbConfirmDeleteBtn')
+        with self.page.expect_request(
+            lambda request: request.url.endswith('/quiz/delete-question/')
+            and request.post_data_json == {'question_id': retry.pk}
+        ):
+            confirm.click(timeout=3000)
+        expect(confirm).to_be_disabled()
+        self.assertEqual(len(blocked), 1)
+        blocked[0].fulfill(status=403, json={'success': False, 'error': 'Test deletion denied'})
+        expect(self.page.locator('#qbDeleteError')).to_contain_text('Test deletion denied')
+        expect(self.page.locator('#qbDeleteCount')).to_have_text('1')
+        expect(confirm).to_be_enabled()
+        self.assertFalse(QuizQuestion.objects.filter(pk=deleted.pk).exists())
+        self.assertTrue(QuizQuestion.objects.filter(pk=retry.pk).exists())
+
+        fail_once = False
+        confirm.click(timeout=3000)
+        expect(self.page.locator('#qbDeleteModal')).to_be_hidden()
+        expect(self.page.locator('#qbBody')).to_contain_text('No items found')
+        self.assertFalse(QuizQuestion.objects.filter(pk=retry.pk).exists())
+        self.assertEqual(attempts.count(deleted.pk), 1)
+        self.assertEqual(attempts.count(retry.pk), 2)
+
+    def test_wer_weiss_mehr_bank_deletion_as_superuser_handles_other_creators(self):
+        from playwright.sync_api import expect
+        from wer_weiss_mehr.models import WerWeissMehrQuestion
+
+        owner = User.objects.create_user('wwm-bank-owner', is_staff=True)
+        questions = [
+            WerWeissMehrQuestion.objects.create(question_text=f'Foreign bank question {index}', created_by=owner)
+            for index in range(3)
+        ]
+        self._open_game_deletion_page()
+        self.page.select_option('#qbTypeSelect', 'wer_weiss_mehr')
+        row = self.page.locator(f'#qbBody tr[data-item-id="{questions[0].pk}"]')
+        row.locator('.qb-delete-btn').click()
+        self.page.locator('#qbConfirmDeleteBtn').click(timeout=3000)
+        expect(self.page.locator('#qbDeleteModal')).to_be_hidden()
+        expect(row).to_have_count(0)
+        expect(self.page.locator('#qbBody .qb-select-cb')).to_have_count(2)
+
+        self.page.locator('#qbSelectAll').check()
+        self.page.locator('#qbDeleteSelectedBtn').click()
+        self.page.locator('#qbConfirmDeleteBtn').click(timeout=3000)
+        expect(self.page.locator('#qbDeleteModal')).to_be_hidden()
+        expect(self.page.locator('#qbBody')).to_contain_text('No items found')
+        for question in questions:
+            question.refresh_from_db()
+            self.assertFalse(question.is_active)
+
+    def test_question_bank_non_json_delete_errors_are_readable_and_cancelable(self):
+        from playwright.sync_api import expect
+        from wer_weiss_mehr.models import WerWeissMehrQuestion
+
+        question = WerWeissMehrQuestion.objects.create(question_text='Keep on server error', created_by=self.admin)
+        self._open_game_deletion_page()
+        self.page.select_option('#qbTypeSelect', 'wer_weiss_mehr')
+        row = self.page.locator(f'#qbBody tr[data-item-id="{question.pk}"]')
+        modal = self.page.locator('#qbDeleteModal')
+        cases = [
+            (404, 'text/html', '<h1>Not found</h1>', 'nicht gefunden'),
+            (403, 'text/html', '<h1>Forbidden</h1>', 'Berechtigung'),
+            (500, 'text/html', '<h1>Server error</h1>', 'HTTP 500'),
+            (200, 'application/json', '{', 'Ungültige Serverantwort'),
+            (302, 'text/html', '', 'anmelden'),
+        ]
+
+        def respond(route):
+            status, content_type, body, _ = case
+            headers = {'Location': reverse('admin_dashboard:login')} if status == 302 else {}
+            route.fulfill(status=status, content_type=content_type, body=body, headers=headers)
+
+        self.context.route('**/wer-weiss-mehr/delete-question/', respond)
+        for case in cases:
+            with self.subTest(status=case[0], content_type=case[1]):
+                row.locator('.qb-delete-btn').click()
+                modal.locator('#qbConfirmDeleteBtn').click(timeout=3000)
+                expect(modal.locator('#qbDeleteError')).to_contain_text(case[3])
+                expect(modal.locator('#qbConfirmDeleteBtn')).to_be_enabled()
+                modal.get_by_role('button', name='Abbrechen', exact=True).click(timeout=3000)
+                expect(modal).to_be_hidden()
+                expect(self.page.locator('.modal-backdrop')).to_have_count(0)
+                question.refresh_from_db()
+                self.assertTrue(question.is_active)
+
+    def test_question_bank_single_and_bulk_deletion_as_superuser_for_all_listed_types(self):
+        from playwright.sync_api import expect
+        from .test_question_bank_deletion import ALWAYS_DEACTIVATE, QUESTION_CASES
+
+        owner = User.objects.create_user('all-bank-question-owner', is_staff=True)
+        self._open_game_deletion_page()
+        game_types = self.page.locator('#qbTypeSelect option').evaluate_all(
+            'options => options.map(option => option.value).filter(Boolean)'
+        )
+        self.assertEqual(set(game_types), set(QUESTION_CASES) - {'wann_war_das'})
+        for key in game_types:
+            with self.subTest(game=key):
+                model, fields, _ = QUESTION_CASES[key]
+                questions = [model.objects.create(created_by=owner, **fields) for _ in range(3)]
+                self.page.select_option('#qbTypeSelect', key)
+                expect(self.page.locator('#qbBody .qb-select-cb')).to_have_count(3)
+                row = self.page.locator(f'#qbBody tr[data-item-id="{questions[0].pk}"]')
+                row.locator('.qb-delete-btn').click()
+                self.page.locator('#qbConfirmDeleteBtn').click(timeout=3000)
+                expect(self.page.locator('#qbDeleteModal')).to_be_hidden()
+                expect(row).to_have_count(0)
+                expect(self.page.locator('#qbBody .qb-select-cb')).to_have_count(2)
+
+                self.page.locator('#qbSelectAll').check()
+                self.page.locator('#qbDeleteSelectedBtn').click()
+                expect(self.page.locator('#qbDeleteCount')).to_have_text('2')
+                self.page.locator('#qbConfirmDeleteBtn').click(timeout=3000)
+                expect(self.page.locator('#qbDeleteModal')).to_be_hidden()
+                expect(self.page.locator('#qbBody')).to_contain_text('No items found')
+                for question in questions:
+                    if key in ALWAYS_DEACTIVATE:
+                        question.refresh_from_db()
+                        self.assertFalse(question.is_active)
+                    else:
+                        self.assertFalse(model.objects.filter(pk=question.pk).exists())
+
+    def test_question_bank_deletes_twenty_mixed_owner_questions_without_touching_next_page(self):
+        from playwright.sync_api import expect
+        from .test_question_bank_deletion import QUESTION_CASES
+
+        owners = [User.objects.create_user(f'twenty-bank-owner-{index}', is_staff=True) for index in range(2)]
+        self._open_game_deletion_page()
+        for key in ('who_that', 'quiz'):
+            with self.subTest(game=key):
+                model, fields, _ = QUESTION_CASES[key]
+                kept = model.objects.create(created_by=self.admin, **fields)
+                questions = [model.objects.create(created_by=owners[index % 2], **fields) for index in range(20)]
+                self.page.select_option('#qbTypeSelect', key)
+                expect(self.page.locator('#qbBody .qb-select-cb')).to_have_count(20)
+                self.page.locator('#qbSelectAll').check()
+                expect(self.page.locator('#qbSelectedCount')).to_have_text('20')
+                self.page.locator('#qbDeleteSelectedBtn').click()
+                modal = self.page.locator('#qbDeleteModal')
+                expect(modal.locator('#qbDeleteCount')).to_have_text('20')
+                modal.get_by_role('button', name='Abbrechen', exact=True).click(timeout=3000)
+                expect(modal).to_be_hidden()
+                self.assertEqual(model.objects.filter(pk__in=[q.pk for q in questions]).count(), 20)
+
+                self.page.locator('#qbDeleteSelectedBtn').click()
+                modal.locator('#qbConfirmDeleteBtn').click(timeout=3000)
+                expect(modal).to_be_hidden(timeout=30000)
+                expect(self.page.locator('#qbBody .qb-select-cb')).to_have_count(1)
+                self.assertFalse(model.objects.filter(pk__in=[q.pk for q in questions]).exists())
+                self.assertTrue(model.objects.filter(pk=kept.pk).exists())
 
     def test_filter_by_game_type(self):
         """Der Typ-Filter blendet nur Spiele des gewählten Typs ein."""

@@ -1,3 +1,4 @@
+from games_hub.team_names import validate_join_name
 from django.shortcuts import render, get_object_or_404, redirect
 from django.http import JsonResponse
 from django.views.decorators.http import require_POST
@@ -8,6 +9,7 @@ from .models import SortingLadderGame, SortingLadderParticipant
 from games_hub.unit_tutorial_runtime import is_current_unit_tutorial_question
 
 
+@validate_join_name('sorting_ladder', 'sorting_ladder/join.html')
 def join_view(request):
     """Combined view for Sorting Ladder join page (GET) and join action (POST)."""
     if request.method == 'GET':
@@ -47,7 +49,7 @@ def join_view(request):
             return JsonResponse({'success': False, 'error': 'This game is full. Maximum participants reached.'})
 
         # Enforce unique name per game (and per hub session if provided)
-        name_qs = quiz.participants.filter(name__iexact=participant_name)
+        name_qs = quiz.participants.filter(name__iexact=participant_name, hub_session_code=hub_session)
         if hub_session:
             name_qs = name_qs.filter(hub_session_code=hub_session)
         if name_qs.exists():
@@ -64,6 +66,7 @@ def join_view(request):
             participant, created = SortingLadderParticipant.objects.get_or_create(
                 quiz=quiz,
                 name=participant_name,
+                hub_session_code=None,
                 defaults={'is_active': True},
             )
 
@@ -179,10 +182,11 @@ def api_participants(request, room_code):
     """Public API: get active participants and their rounds survived."""
     try:
         quiz = get_object_or_404(SortingLadderGame, room_code=room_code)
-        participants = quiz.participants.filter(is_active=True).order_by('-rounds_survived', 'name')
+        participants = quiz.participants.filter(is_active=True, hub_session_code=request.GET.get('hub_session') or None).order_by('-total_score', 'name')
         data = [
             {
                 'name': p.name,
+                'total_score': p.total_score,
                 'rounds_survived': p.rounds_survived,
                 'is_eliminated': p.is_eliminated,
             }
@@ -197,11 +201,12 @@ def api_leaderboard(request, room_code):
     """Public API: simple leaderboard ordered by rounds survived."""
     try:
         quiz = get_object_or_404(SortingLadderGame, room_code=room_code)
-        participants = quiz.participants.all().order_by('-rounds_survived', 'name')[:10]
+        participants = quiz.participants.filter(hub_session_code=request.GET.get('hub_session') or None).order_by('-total_score', 'name')[:10]
         data = [
             {
                 'rank': idx,
                 'name': p.name,
+                'total_score': p.total_score,
                 'rounds_survived': p.rounds_survived,
                 'is_eliminated': p.is_eliminated,
             }

@@ -24,6 +24,8 @@ from games_hub.models import (
 from games_hub.playwright_e2e import install_browser_test_stubs, start_chromium_browser
 from games_hub.views import get_leaderboard_data
 
+from games_hub.test_manual_repairs import with_transport_context
+
 from .consumers import HostPointsConsumer
 from .models import HostPointsAdjustment, HostPointsGame, HostPointsParticipant
 
@@ -81,7 +83,7 @@ class HostPointsFlowTests(TransactionTestCase):
             sent_messages.append(json.loads(text_data))
 
         consumer.send = fake_send
-        return consumer, sent_messages
+        return with_transport_context(consumer, self.game, self.session.code), sent_messages
 
     def test_creation_manage_games_and_session_registration(self):
         client = Client()
@@ -165,7 +167,7 @@ class HostPointsFlowTests(TransactionTestCase):
             {'number': 2, 'points': 0},
         ])
 
-    def test_inactive_previous_run_starts_as_clean_new_run(self):
+    def test_inactive_run_resumes_round_points_and_history(self):
         self.assertTrue(self.game.start_quiz(self.session.code))
         alice = self.game.participants.get(name='Alice', hub_session_code=self.session.code)
         self.assertTrue(self.game.adjust_score(alice.id, 5)[0])
@@ -191,11 +193,11 @@ class HostPointsFlowTests(TransactionTestCase):
         self.game.refresh_from_db()
         alice.refresh_from_db()
         self.assertEqual(self.game.status, 'active')
-        self.assertEqual(self.game.current_round_number, 1)
-        self.assertGreater(self.game.started_at, previous_started_at)
-        self.assertEqual(alice.total_score, 0)
-        self.assertTrue(alice.is_active)
-        self.assertFalse(self.game.adjustments.filter(hub_session_code=self.session.code).exists())
+        self.assertEqual(self.game.current_round_number, 2)
+        self.assertEqual(self.game.started_at, previous_started_at)
+        self.assertEqual(alice.total_score, 5)
+        self.assertFalse(alice.is_active)
+        self.assertTrue(self.game.adjustments.filter(hub_session_code=self.session.code).exists())
         state = self.game.serialize_state(self.session.code)
         self.assertIsNone(state['question_phase'])
         self.assertIsNone(state['answering_deadline_at'])
@@ -848,10 +850,9 @@ class HostPointsBrowserStartFlowTests(_BrowserLiveServerTestCase):
         self.game.refresh_from_db()
         self.assertEqual(self.game.status, 'waiting')
 
-        self.page.locator('#lobbyReturnGuardCancelBtn').evaluate('button => button.click()')
-        self.page.locator('#lobbyReturnGuardModal').evaluate(
-            "modal => modal.dispatchEvent(new Event('hidden.bs.modal'))"
-        )
+        self.page.click('#lobbyReturnGuardCancelBtn')
+        self.page.wait_for_selector('#lobbyReturnGuardModal', state='hidden')
+        self.page.wait_for_selector('#startQuizBtn:not([disabled])')
         self.page.locator('#lobbyReturnGuardNames').evaluate("element => { element.textContent = ''; }")
         self.assertFalse(self.page.locator('#startQuizBtn').is_disabled())
         self.game.refresh_from_db()
@@ -866,9 +867,7 @@ class HostPointsBrowserStartFlowTests(_BrowserLiveServerTestCase):
         self.page.wait_for_timeout(11000)
         previous_participant.refresh_from_db()
         self.assertFalse(previous_participant.is_active)
-        self.page.locator('#lobbyReturnGuardModal').evaluate(
-            "modal => modal.dispatchEvent(new Event('hidden.bs.modal'))"
-        )
+        self.page.wait_for_selector('#lobbyReturnGuardModal', state='hidden')
         self.page.click('#startQuizBtn')
         self.page.wait_for_selector('#nextRoundBtn:not(.d-none)', timeout=self.TIMEOUT)
         self.game.refresh_from_db()

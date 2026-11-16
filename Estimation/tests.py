@@ -330,7 +330,7 @@ class EstimationStartSyncTests(TransactionTestCase):
         self.assertContains(response, 'id="correctAnswerState" class="game-state d-none"', html=False)
         self.assertContains(response, 'this.onQuizStarted(data);')
         self.assertContains(response, 'data.resume_existing')
-        self.assertContains(response, 'Ignoring stale question_ended outside the active estimation question.')
+        self.assertContains(response, 'if (data.round_number && Number(data.round_number) < this.currentRound) return;')
         self.assertContains(
             response,
             "String(data.current_question_id || '') !== String(this.currentQuestionId)",
@@ -1101,7 +1101,7 @@ class EstimationScoringTests(TransactionTestCase):
         self.assertEqual(question.calculate_score(50), 4)
         self.assertEqual(question.calculate_score(49), 0)
 
-    def test_zone_reveal_data_includes_rounded_absolute_ranges(self):
+    def test_zone_reveal_data_preserves_decimal_absolute_ranges(self):
         user = User.objects.create_user(username='zone-range-host')
         question = EstimationQuestion.objects.create(
             question_text='Estimate 12.34',
@@ -1121,18 +1121,18 @@ class EstimationScoringTests(TransactionTestCase):
                     'zone_number': 1,
                     'min_percentage': 0.0,
                     'max_percentage': 10.0,
-                    'absolute_min_value': 11,
-                    'absolute_max_value': 14,
-                    'absolute_range_display': '11-14',
+                    'absolute_min_value': 11.106,
+                    'absolute_max_value': 13.574,
+                    'absolute_range_display': '11.106-13.574',
                     'points': 2,
                 },
                 {
                     'zone_number': 2,
                     'min_percentage': 10.0,
                     'max_percentage': 20.0,
-                    'absolute_min_value': 10,
-                    'absolute_max_value': 15,
-                    'absolute_range_display': '10-15',
+                    'absolute_min_value': 9.872,
+                    'absolute_max_value': 14.808,
+                    'absolute_range_display': '9.872-14.808',
                     'points': 1,
                 },
             ],
@@ -1577,7 +1577,7 @@ class EstimationRevealRenderTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "this.scoringMode = 'zones';")
-        self.assertContains(response, "this.showSubmittedWaitingState(userAnswer);")
+        self.assertContains(response, "this.showSubmittedWaitingState(data.formatted_answer || String(value), {formatted: true});")
         self.assertContains(response, 'id="zoneSubmitFeedback"')
         self.assertContains(response, 'id="zoneSubmittedEstimate"')
         self.assertContains(response, 'Waiting for the other participants...')
@@ -1591,7 +1591,7 @@ class EstimationRevealRenderTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "this.scoringMode = 'rank';")
-        self.assertContains(response, "this.showSubmittedWaitingState(userAnswer);")
+        self.assertContains(response, "this.showSubmittedWaitingState(data.formatted_answer || String(value), {formatted: true});")
         self.assertContains(response, 'id="rankResultsCard"')
         self.assertContains(response, 'id="rankResultsList"')
         self.assertContains(response, 'renderRankResults(rankResults)')
@@ -2057,7 +2057,7 @@ class EstimationScoreBoxViewTests(TestCase):
             [question_one.id, question_three.id, question_two.id],
         )
         self.assertEqual(response.context['current_question_number'], 2)
-        self.assertContains(response, 'moveQuestionToNextFreeScoreSlot(question.id, question.max_points);')
+        self.assertContains(response, 'const nextQuestionNumber = Number(mergedQuestion.question_number);')
 
     def test_estimation_play_renders_current_question_unit_directly_next_to_input(self):
         question = EstimationQuestion.objects.create(

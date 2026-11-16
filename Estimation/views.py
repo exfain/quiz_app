@@ -1,3 +1,5 @@
+from games_hub.team_names import validate_join_name
+from games_hub.quiz_rounds import current_round
 from django.shortcuts import render, get_object_or_404, redirect
 from django.http import JsonResponse
 from django.urls import reverse
@@ -29,6 +31,9 @@ def _get_run_tutorial_question_id(quiz, session_code=None):
 
 
 def _get_ordered_quiz_questions(quiz, session_code=None):
+    if getattr(getattr(quiz, 'session', None), 'question_rounds', None):
+        from games_hub.quiz_rounds import ordered_rounds
+        return [row['question'] for row in ordered_rounds(quiz, 'estimation', session_code) if row['question']]
     tutorial_question_ids = get_scorebox_excluded_tutorial_question_ids('estimation', quiz.room_code, session_code)
     configured_questions = list(quiz.selected_questions.all())
     configured_order_ids = []
@@ -93,6 +98,9 @@ def _get_ordered_quiz_questions(quiz, session_code=None):
 
 
 def _get_question_max_points_for_score_box(quiz, question, session_code=None):
+    if getattr(getattr(quiz, 'session', None), 'question_rounds', None):
+        from .progress import max_points
+        return max_points(quiz, question, session_code)
     scoring_mode = quiz.get_effective_scoring_mode()
     if scoring_mode == 'rank':
         answer_qs = EstimationAnswer.objects.filter(quiz=quiz, question=question)
@@ -128,6 +136,9 @@ def _build_participant_progress_history(quiz, participant, session_code=None):
 
 
 def _build_question_scoreboard(quiz, participant, session_code=None):
+    if getattr(getattr(quiz, 'session', None), 'question_rounds', None):
+        from .progress import participant_board
+        return participant_board(quiz, participant, session_code)
     ordered_questions = _get_ordered_quiz_questions(quiz, session_code)
     history = _build_participant_progress_history(quiz, participant, session_code)
     history_by_question_id = {entry['question_id']: entry for entry in history}
@@ -234,6 +245,7 @@ def _serialize_estimation_question(
         quiz=quiz,
         participant=participant,
         question=question,
+        round_number=current_round(quiz),
     ).first()
     payload = {
         'id': question.id,
@@ -273,9 +285,11 @@ def _serialize_estimation_question(
         'state_revision': runtime.get('state_revision'),
         'game_id': runtime.get('game_id'),
     }
+    from .progress import metadata
+    payload.update(metadata(quiz, session_code))
     if answer:
         payload['has_answered'] = True
-        payload['existing_answer'] = _serialize_estimation_answer(answer)
+        payload['existing_answer'] = {'user_answer': answer.user_answer, 'formatted_answer': answer.get_formatted_user_answer()}
     else:
         payload['has_answered'] = False
         if (
@@ -328,6 +342,10 @@ def _get_last_revealed_estimation_question(quiz, session_code=None):
     )
     if not revealed_question_id:
         return None, 0
+    if session.question_rounds:
+        from .progress import question_progress
+        question = EstimationQuestion.objects.filter(pk=revealed_question_id).first()
+        return question, question_progress(quiz, session_code, question.pk)['current'] or 0 if question else 0
     ordered_questions = _get_ordered_quiz_questions(quiz, session_code)
     for index, question in enumerate(ordered_questions, start=1):
         if str(question.id) == revealed_question_id:
@@ -403,6 +421,7 @@ def _build_estimation_initial_state(quiz, participant, session_code, current_que
         quiz=quiz,
         participant=participant,
         question=revealed_question,
+        round_number=current_round(quiz),
     ).first()
     state.update({
         'phase': 'reveal',
@@ -416,9 +435,17 @@ def _build_estimation_initial_state(quiz, participant, session_code, current_que
         'participant_answer': _serialize_estimation_answer(answer),
         'points_for_question': int(answer.points_earned or 0) if answer else 0,
     })
+    if quiz.get_effective_scoring_mode() == 'rank':
+        answers = EstimationAnswer.objects.filter(quiz=quiz, question=revealed_question,
+            round_number=current_round(quiz), participant__hub_session_code=session_code,
+            is_tutorial=False).select_related('participant').order_by('-points_earned', 'time_taken', 'submitted_at')
+        state['rank_results'] = [{'participant_name': answer.participant.name,
+            'points_earned': answer.points_earned, 'rank_position': index}
+            for index, answer in enumerate(answers, 1)]
     return state
 
 
+@validate_join_name('estimation', 'estimation/join.html')
 def estimation_join_view(request):
     """Combined view for estimation quiz join page (GET) and join action (POST)"""
     if request.method == 'GET':
@@ -478,7 +505,7 @@ def estimation_join_view(request):
                 })
             
             # Check if name is already taken in this quiz (scope by session if provided)
-            name_qs = quiz.participants.filter(name__iexact=participant_name)
+            name_qs = quiz.participants.filter(name__iexact=participant_name, hub_session_code=hub_session or None)
             if hub_session:
                 name_qs = name_qs.filter(hub_session_code=hub_session)
             if name_qs.exists():
@@ -499,6 +526,7 @@ def estimation_join_view(request):
                 participant, created = EstimationParticipant.objects.get_or_create(
                     quiz=quiz,
                     name=participant_name,
+                    hub_session_code=None,
                     defaults={'is_active': True}
                 )
             
@@ -546,7 +574,7 @@ def check_room_code(request, room_code):
                 'title': quiz.title,
                 'room_code': quiz.room_code,
                 'status': quiz.get_status_display(),
-                'participant_count': quiz.get_participant_count(),
+                'participant_count': quiz.participants.filter(hub_session_code=request.GET.get('hub_session') or None).count(),
                 'max_participants': quiz.max_participants,
             }
         })
@@ -732,19 +760,6 @@ def submit_answer(request, room_code, participant_name):
                 'error': 'No active question available.'
             })
         
-        # Check if participant has already answered this question
-        existing_answer = EstimationAnswer.objects.filter(
-            quiz=quiz,
-            participant=participant,
-            question=quiz.current_question
-        ).first()
-        
-        if existing_answer:
-            return JsonResponse({
-                'success': False,
-                'error': 'You have already answered this question.'
-            })
-        
         data = json.loads(request.body)
         user_answer = data.get('user_answer')
         if user_answer is None or user_answer == '':
@@ -778,71 +793,14 @@ def submit_answer(request, room_code, participant_name):
                 'code': decision.code,
                 'error': decision.message,
             }, status=409)
-        with transaction.atomic():
-            locked_quiz = EstimationQuiz.objects.select_for_update().get(pk=quiz.pk)
-            locked_session = EstimationSession.objects.select_for_update().filter(quiz=locked_quiz).first()
-            received_at = timezone.now()
-            if (
-                locked_quiz.status != 'active'
-                or locked_quiz.current_question_id != question.id
-                or not locked_session
-                or not locked_session.is_question_active
-                or not locked_session.question_end_time
-                or received_at >= locked_session.question_end_time
-            ):
-                return JsonResponse({
-                    'success': False,
-                    'error': 'The answer deadline has expired.'
-                })
-            server_time_taken = (
-                max(0.0, (received_at - locked_quiz.question_start_time).total_seconds())
-                if locked_quiz.question_start_time
-                else 0.0
-            )
-            answer, created = EstimationAnswer.objects.get_or_create(
-                quiz=locked_quiz,
-                participant=participant,
-                question=question,
-                defaults={
-                    'user_answer': user_answer_float,
-                    'time_taken': server_time_taken,
-                },
-            )
-            if not created:
-                return JsonResponse({
-                    'success': False,
-                    'error': 'You have already answered this question.'
-                })
-        is_tutorial_answer = is_unit_tutorial_question(
-            'estimation',
-            quiz.room_code,
-            session_code,
-            quiz.current_question_id,
-        )
-        if is_tutorial_answer and answer.points_earned:
-            answer.points_earned = 0
-            answer.save(update_fields=['points_earned', 'updated_at'])
+        from .runtime import save_answer, broadcast
+        answer = save_answer(room_code, participant_name, session_code, user_answer, 0, data.get('question_id'))
+        if not answer:
+            return JsonResponse({'success': False, 'type': 'answer_rejected', 'error': 'Antwort konnte nicht gespeichert werden.'}, status=409)
+        broadcast(room_code, {'type': 'participant_answered', 'answer': answer})
+        return JsonResponse({'success': True, 'answer_locked': True, 'question_id': answer['question_id'],
+            'round_number': answer['round_number'], 'user_answer': answer['user_answer'], 'formatted_answer': answer['formatted_answer']})
 
-        if hasattr(quiz, 'session'):
-            pending_answers = dict(quiz.session.pending_answers or {})
-            if pending_answers.pop(str(participant.id), None) is not None:
-                quiz.session.pending_answers = pending_answers
-                quiz.session.save(update_fields=['pending_answers', 'updated_at'])
-        
-        # Update participant's last activity
-        participant.last_activity = timezone.now()
-        participant.save()
-        
-        return JsonResponse({
-            'success': True,
-            'points_earned': answer.points_earned,
-            'is_tutorial_round': is_tutorial_answer,
-            'accuracy_percentage': answer.get_accuracy_percentage(),
-            'formatted_answer': answer.get_formatted_user_answer(),
-            'percentage_difference': answer.get_percentage_difference(),
-            'difference_indicator': answer.get_difference_indicator()
-        })
-        
     except json.JSONDecodeError:
         return JsonResponse({
             'success': False,
@@ -875,7 +833,7 @@ def get_quiz_status(request, room_code, participant_name):
             'quiz_status': quiz.status,
             'current_question': None,
             'participant_score': participant.total_score,
-            'participant_count': quiz.get_participant_count(),
+            'participant_count': quiz.participants.filter(hub_session_code=request.GET.get('hub_session') or None).count(),
             'questions_answered': participant.questions_answered
         }
         
@@ -904,7 +862,7 @@ def get_quiz_status(request, room_code, participant_name):
             has_answered = EstimationAnswer.objects.filter(
                 quiz=quiz,
                 participant=participant,
-                question=question
+                question=question, round_number=current_round(quiz)
             ).exists()
             status_data['has_answered'] = has_answered
         
@@ -951,7 +909,7 @@ def api_quiz_participants(request, room_code):
     try:
         quiz = get_object_or_404(EstimationQuiz, room_code=room_code)
         
-        participants = quiz.participants.filter(is_active=True).order_by('-total_score', 'name')
+        participants = quiz.participants.filter(is_active=True, hub_session_code=request.GET.get('hub_session') or None).order_by('-total_score', 'name')
         
         participants_data = []
         for participant in participants:
@@ -982,7 +940,7 @@ def api_quiz_leaderboard(request, room_code):
         quiz = get_object_or_404(EstimationQuiz, room_code=room_code)
         
         # Get top 10 participants
-        participants = quiz.participants.all().order_by('-total_score', 'name')[:10]
+        participants = quiz.participants.filter(hub_session_code=request.GET.get('hub_session') or None).order_by('-total_score', 'name')[:10]
         
         leaderboard_data = []
         for rank, participant in enumerate(participants, 1):

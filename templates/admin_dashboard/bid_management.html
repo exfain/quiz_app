@@ -1,0 +1,12 @@
+{% extends 'admin_dashboard/base.html' %}
+{% block title %}Gebotsspiel verwalten{% endblock %}
+{% block page_title %}Gebotsspiel · nur 2-Spieler-Sessions{% endblock %}
+{% block content %}<div class="container py-4">
+<a href="{% url 'admin_dashboard:manage_games' %}">Zur Spielübersicht</a>
+{% if error %}<p role="alert">{{ error }}</p>{% endif %}
+<section class="card p-3 my-3"><h2>Spiel erstellen</h2><form method="post" id="create-bid-game">{% csrf_token %}<input type="hidden" name="action" value="create_game"><label>Titel <input name="title" required maxlength="200"></label><button type="submit">Gebotsspiel erstellen</button></form></section>
+<section class="card p-3 my-3"><h2>Spiele</h2>{% for game in bid_games %}<p><a href="?game={{ game.pk }}">{{ game.title }} · {{ game.room_code }}</a></p>{% empty %}<p>Noch kein Gebotsspiel erstellt.</p>{% endfor %}</section>
+{% if selected %}<h2>{{ selected.title }}</h2><p>Beide Zeitdauern werden ausdrücklich pro Aufgabe festgelegt. Gebote sind ganze Zahlen ab 1. Aufgaben werden bei der Rundenvorbereitung eingefroren.</p>
+<section class="card p-3 my-3"><h3>Neue Aufgabe</h3><form method="post" id="new-bid-task">{% csrf_token %}<input type="hidden" name="action" value="save_task">{{ task_form.as_p }}<button type="submit">Aufgabe speichern</button></form></section>
+{% for task, form in task_forms %}<section class="card p-3 my-3"><form method="post" class="edit-bid-task">{% csrf_token %}<input type="hidden" name="task_id" value="{{ task.pk }}">{{ form.as_p }}<button name="action" value="save_task">Änderungen speichern</button><button name="action" value="delete_task" formnovalidate>Aufgabe löschen</button></form></section>{% endfor %}
+{% endif %}</div>{% endblock %}

@@ -8,6 +8,7 @@ from django.utils import timezone
 from games_hub.authoritative_state import attach_snapshot_metadata
 
 from games_website.models import SyncBase
+from games_hub.manual_game_runtime import atomic_write, session_code as checked_session
 
 
 class HostPointsGame(SyncBase):
@@ -63,14 +64,23 @@ class HostPointsGame(SyncBase):
         active = qs.filter(session__is_active=True, session__ended_at__isnull=True).order_by('-id').first()
         return active or qs.order_by('-id').first()
 
-    def ensure_snapshot_participants(self, session_code=None):
+    def ensure_snapshot_participants(self, session_code=None, *, freeze=False):
         step = self._get_relevant_step(session_code)
         if not step:
             return []
 
         from games_hub.models import HubGameParticipantSnapshot
 
-        snapshots = HubGameParticipantSnapshot.create_for_step(step)
+        snapshots = list(step.participant_snapshots.select_related('participant'))
+        if freeze and not (self.started_at and self.active_hub_session_code == step.session.code):
+            # This is the first actual start in this step. A previous preview
+            # must not freeze eligibility or leave/zero flags from the check-in.
+            step.participant_snapshots.all().delete()
+            snapshots = []
+        if not snapshots:
+            if not freeze and not (self.started_at and self.active_hub_session_code == step.session.code):
+                return []
+            snapshots = HubGameParticipantSnapshot.create_for_step(step)
         should_be_active = bool(
             self.status == 'active'
             and (
@@ -87,9 +97,6 @@ class HostPointsGame(SyncBase):
                 hub_session_code=step.session.code,
                 defaults={'is_active': should_be_active},
             )
-            if should_be_active and not participant.is_active:
-                participant.is_active = True
-                participant.save(update_fields=['is_active', 'updated_at'])
             participants.append(participant)
         return participants
 
@@ -110,11 +117,10 @@ class HostPointsGame(SyncBase):
 
     def get_ordered_participants(self, session_code=None):
         qs = self.participants.all()
-        if session_code:
-            qs = qs.filter(hub_session_code=session_code)
+        qs = qs.filter(hub_session_code=self.active_hub_session_code if session_code is None else session_code)
         return qs.order_by('name')
 
-    @transaction.atomic
+    @atomic_write
     def start_quiz(
         self,
         session_code=None,
@@ -124,26 +130,23 @@ class HostPointsGame(SyncBase):
         expected_previous_round=None,
     ):
         game = HostPointsGame.objects.select_for_update().get(pk=self.pk)
-        if (
-            game.status == 'active'
-            and game.started_at is not None
-            and game.current_round_number >= 1
-        ):
-            reactivation_context_matches = bool(
-                allow_reactivation
-                and game.started_at == expected_previous_started_at
-                and game.current_round_number == expected_previous_round
-            )
-            if not reactivation_context_matches:
-                return False
-        session_code = session_code or game.active_hub_session_code or ''
-        official_participants = game.ensure_snapshot_participants(session_code or None)
-        if session_code:
+        code = checked_session(game, session_code, starting=True)
+        if game.started_at and game.active_hub_session_code == code:
+            if game.status == 'inactive':
+                game.status = 'active'
+                game.save(update_fields=['status', 'updated_at'])
+            self.refresh_from_db()
+            return False
+        session_code = code
+        official_participants = game.ensure_snapshot_participants(code or None, freeze=True)
+        if code:
             official_ids = [participant.id for participant in official_participants]
-            game.participants.exclude(hub_session_code=session_code).update(is_active=False)
-            game.participants.filter(hub_session_code=session_code).exclude(id__in=official_ids).update(is_active=False)
+            game.participants.exclude(hub_session_code=code).update(is_active=False)
+            game.participants.filter(hub_session_code=code).exclude(id__in=official_ids).update(is_active=False)
             game.participants.filter(id__in=official_ids).update(total_score=0, is_active=True)
-            game.adjustments.filter(hub_session_code=session_code).delete()
+        else:
+            game.participants.filter(hub_session_code='').update(total_score=0, is_active=True)
+        game.adjustments.filter(hub_session_code=code).delete()
         game.status = 'active'
         game.started_at = timezone.now()
         game.ended_at = None
@@ -162,13 +165,13 @@ class HostPointsGame(SyncBase):
         self.refresh_from_db()
         return True
 
-    @transaction.atomic
+    @atomic_write
     def end_quiz(self, status='completed'):
         game = HostPointsGame.objects.select_for_update().get(pk=self.pk)
         if game.status == status and game.ended_at:
             return False
 
-        if game.status == 'active' and game.current_round_number:
+        if game.status in {'active', 'inactive'} and game.current_round_number:
             game._finalize_round_scores(game.current_round_number)
         game.status = status
         game.ended_at = timezone.now()
@@ -176,13 +179,17 @@ class HostPointsGame(SyncBase):
         self.refresh_from_db()
         return True
 
-    @transaction.atomic
+    @atomic_write
     def adjust_score(self, participant_id, delta):
         game = HostPointsGame.objects.select_for_update().get(pk=self.pk)
         if game.status != 'active':
             return False, 'Das Spiel ist nicht aktiv.'
         try:
+            if isinstance(delta, bool) or isinstance(delta, float) and not delta.is_integer():
+                raise ValueError
             safe_delta = int(delta)
+            if not -2147483648 <= safe_delta <= 2147483647:
+                raise ValueError
         except (TypeError, ValueError):
             return False, 'Ungültige Punktezahl.'
         if safe_delta == 0:
@@ -196,6 +203,8 @@ class HostPointsGame(SyncBase):
         if not game.is_official_participant(participant):
             return False, 'Teilnehmer ist nicht spielberechtigt.'
 
+        if not -2147483648 <= participant.total_score + safe_delta <= 2147483647:
+            return False, 'Die Punktezahl ist zu gross.'
         participant.total_score += safe_delta
         participant.save(update_fields=['total_score', 'updated_at'])
         HostPointsAdjustment.objects.create(
@@ -211,7 +220,7 @@ class HostPointsGame(SyncBase):
         session_code = self.active_hub_session_code or ''
         participants = [
             participant
-            for participant in self.get_ordered_participants(session_code or None)
+            for participant in self.get_ordered_participants(session_code)
             if self.is_official_participant(participant)
         ]
         scored_participant_ids = set(
@@ -232,7 +241,7 @@ class HostPointsGame(SyncBase):
             if participant.id not in scored_participant_ids
         ])
 
-    @transaction.atomic
+    @atomic_write
     def next_round(self, expected_round=None):
         game = HostPointsGame.objects.select_for_update().get(pk=self.pk)
         if game.status != 'active':
@@ -249,6 +258,7 @@ class HostPointsGame(SyncBase):
         game.save(update_fields=['current_round_number', 'updated_at'])
         return True
 
+    @atomic_write
     def serialize_state(self, session_code=None, participant_name=None):
         if self.pk:
             self.refresh_from_db()
@@ -263,7 +273,7 @@ class HostPointsGame(SyncBase):
         round_number = 0 if session_mismatch else self.current_round_number
 
         participants = []
-        for participant in self.get_ordered_participants(session_code or None):
+        for participant in self.get_ordered_participants(session_code):
             if not self.is_official_participant(participant):
                 continue
             participants.append({
@@ -298,6 +308,7 @@ class HostPointsGame(SyncBase):
             ]
 
         state = {
+            'hub_session_code': session_code,
             'game': {
                 'id': self.id,
                 'title': self.title,

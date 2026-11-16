@@ -1,0 +1,14 @@
+{% load static %}
+<!doctype html><html lang="de" data-participant-theme="vhs"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{{ title }} · Duell</title>
+<link rel="stylesheet" href="{% static 'theme.css' %}"><link rel="stylesheet" href="{% static 'themes/vhs/vhs.css' %}"><link rel="stylesheet" href="{% static 'css/duel.css' %}"><link rel="stylesheet" href="{% static 'css/duel-quiz.css' %}"><link rel="stylesheet" href="{% static 'css/duel-oral.css' %}"><script src="{% static 'js/authoritative-game-state.js' %}"></script></head>
+<body><main id="duel-match" class="vhs-theme-shell duel-shell" data-code="{{ session.code }}" data-role="{{ role }}" data-game="{{ game_key }}" data-instance="{{ instance_id }}" data-api="{{ match_api_url }}">
+<header class="vhs-theme-header"><h1>{{ title }} · Duell</h1><p id="names"></p></header>{% csrf_token %}
+<p id="error" role="alert"></p><p id="phase" aria-live="polite">Verbinde …</p>
+<section id="waiting" hidden>{% include 'includes/_participant_start_waiting.html' with waiting_game_title=title %}</section>
+<section id="question-card" class="question-card qa-active-answer-card" hidden><h2 id="question"></h2><p id="timer" role="timer"></p><p id="person"></p><ol id="clues"></ol><p id="tolerance"></p><img id="photo" alt="Gesuchte Person" hidden><p id="answer-right" aria-live="polite"></p><p id="blocked"></p>
+{% if role == 'participant' %}<button id="buzz" disabled>BUZZ!</button>{% endif %}</section>
+<section id="result-card" hidden><h2>Auflösung</h2><p id="solution"></p><p id="result"></p><div id="people"></div><div id="score"></div></section>
+{% if role == 'host' %}<section id="host-controls"><label>Frage / Set <select id="question-select"><option value="">Bitte auswählen</option></select></label><button id="prepare">Frage vorbereiten</button><button id="start" hidden>Frage starten</button>
+<div id="judgment" hidden><p id="host-solution"></p><p id="range"></p><button id="correct">Richtig</button><button id="incorrect">Falsch</button></div><button id="show_result" hidden>Auflösung und Ergebnis zeigen</button><button id="complete" hidden>Präsentation abschließen</button></section>{% endif %}
+<p><a id="return" href="{% if role == 'host' %}{% url 'games_hub:monitor' session.code %}{% elif role == 'spectator' %}{% url 'games_hub:spectate_session' session.code %}{% else %}{% url 'games_hub:lobby' session.code %}{% endif %}" hidden>Zurück zur Lobby / zum Hub</a></p>
+</main>{% include 'includes/_session_game_start_intro.html' %}<script src="{% static 'js/duel-client.js' %}"></script><script src="{% static 'js/duel-oral.js' %}"></script>{% include 'includes/_duel_match_status.html' %}</body></html>

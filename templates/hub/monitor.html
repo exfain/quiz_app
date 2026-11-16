@@ -8,6 +8,9 @@
 
 {% block content %}
 <div class="monitor-wrap host-session-monitor">
+    <section id="session-encounter" data-role="host" data-code="{{ session.code }}" data-csrf="{{ csrf_token }}">
+        <p role="alert"></p><p data-result></p><a data-resume hidden>Zum laufenden Duell / Turnier</a>
+    </section>
 
     <div class="session-floating-menu session-floating-menu-left is-expanded" aria-label="Session tools left" data-session-floating-menu>
         <button type="button" class="session-float-btn session-float-toggle" data-session-menu-toggle aria-expanded="true" aria-label="Linkes Menü ein- oder ausklappen" title="Menü einklappen">
@@ -65,7 +68,7 @@
                 <label class="form-label fw-semibold mb-1">Participant Lobby Link</label>
                 <div class="input-group">
                     <input type="text" class="form-control font-monospace" id="lobbyLink"
-                           value="{{ request.scheme }}://{{ ip }}:8000{% url 'games_hub:lobby' session_code=session.code %}"
+                           value="{{ join_url }}"
                            readonly>
                     <button class="btn btn-outline-secondary" type="button" id="copyLinkBtn">
                         <i data-lucide="copy" class="me-1"></i> Copy
@@ -191,7 +194,7 @@
                 </select>
                 <button id="openVotingBtn" class="btn btn-sm btn-outline-primary">Voting freischalten</button>
                 <button type="button" class="btn-close session-panel-close" aria-label="Schließen" data-session-panel-close></button>
-                <button id="closeVotingBtn" class="btn btn-sm btn-outline-secondary">Voting schlieÃŸen</button>
+                <button id="closeVotingBtn" class="btn btn-sm btn-outline-secondary">Voting schließen</button>
             </div>
         </div>
         <div class="card-body">
@@ -222,6 +225,7 @@
             </div>
         </div>
         <div class="card-body">
+            <p class="text-muted small">Prüft die Bereitschaft für das nächste Spiel. Nur möglich, wenn kein Spiel läuft und alle Teilnehmer in der Lobby sind.</p>
             <div id="readinessAllReadyAlert" class="alert alert-success py-2 d-none">Alle Teilnehmer sind bereit.</div>
             <div id="readinessError" class="alert alert-danger py-2 d-none"></div>
             <div class="d-flex flex-wrap gap-2 mb-3">
@@ -282,13 +286,24 @@
                             <div class="step-info">
                                 <div class="step-name step-name-primary">{% if s.title %}{{ s.title }}{% else %}{{ s.get_game_key_display }}{% endif %}</div>
                                 <div class="step-game-type">{{ s.get_game_key_display }}</div>
+                                {% if s.tournament_capable and s.game_format == 'standard' %}<button type="button" class="tournament-start btn btn-sm btn-outline-primary">Turnier starten</button>{% endif %}
+                                {% if s.game_format == 'tournament' and s.tournament_url %}<a href="{{ s.tournament_url }}">Turnier / Ergebnisse öffnen</a>{% endif %}
+                                {% if s.duel_capable and s.game_format == 'standard' %}
+                                <div class="encounter-config">
+                                    <label>Partei A <select class="encounter-party form-select form-select-sm"><option value="">Partei auswählen</option></select></label>
+                                    <label>Partei B <select class="encounter-party form-select form-select-sm"><option value="">Partei auswählen</option></select></label>
+                                    <label>Duellformat <select class="encounter-mode form-select form-select-sm"><option value="">Bitte auswählen</option><option value="best_of_n" {% if s.game_key == 'host_points' %}disabled{% endif %} {% if s.duel_match_config.mode == 'best_of_n' %}selected{% endif %}>Best of N</option><option value="target_score" {% if s.duel_match_config.mode == 'target_score' %}selected{% endif %}>Zielpunktzahl</option></select></label>
+                                    <label>Rundenzahl / Punkteziel <input class="encounter-value form-control form-control-sm" type="number" min="1" step="1" value="{% firstof s.duel_match_config.best_of s.duel_match_config.target_score '' %}"></label>
+                                    <button type="button" class="encounter-start btn btn-sm btn-outline-primary" {% if not session.started_at or not session.is_active %}disabled{% endif %}>Duell starten</button>
+                                </div>
+                                {% elif s.game_format == 'duel' %}<span>Als Duell gespielt – getrennt von der Abendwertung</span>{% if s.duel_url %}<a href="{{ s.duel_url }}">Duell / Ergebnis öffnen</a>{% endif %}{% endif %}
                             </div>
                             <div class="step-votes">
                                 <span class="vote-badge" data-order="{{ s.order }}" title="Votes for this game"></span>
                             </div>
                             <div class="step-action gap-1">
-                                {% if s.room_code %}
-                                <a href="{{ request.scheme }}://{{ ip }}:8000{% url 'admin_dashboard:home' %}"
+                                {% if s.room_code and s.game_format == 'standard' %}
+                                <a href="{% url 'admin_dashboard:home' %}"
                                    class="btn btn-sm btn-primary launch-btn{% if not session.started_at or not session.is_active %} disabled{% endif %}"
                                    data-game-key="{{ s.game_key }}" data-room-code="{{ s.room_code }}"
                                    data-session="{{ session.code }}"
@@ -344,7 +359,7 @@
                         {% if scoring_settings_locked %}
                         <small class="text-muted">Gesperrt, weil bereits ein Spiel gestartet wurde.</small>
                         {% else %}
-                        <small class="text-muted">Bis zum Start des ersten Spiels Ã¤nderbar.</small>
+                        <small class="text-muted">Bis zum Start des ersten Spiels änderbar.</small>
                         {% endif %}
                     </div>
                     <div class="d-flex flex-wrap gap-2 align-items-center">
@@ -356,6 +371,12 @@
                 </div>
                 <div class="card-body">
                     <div id="scoringSettingsAlert" class="alert d-none mb-3" role="alert"></div>
+                    <div class="border-bottom pb-3 mb-3">
+                        {% include 'includes/_text_match_slider.html' with slider_id='sessionTextMatchThreshold' threshold=session.text_match_threshold locked=text_matching_locked %}
+                        <p class="small text-muted mt-2">Gilt nur für diese Session. Änderbar zwischen Spielen; laufende oder pausierte Spiele sind gesperrt.</p>
+                        <button type="button" id="saveTextMatchSettingsBtn" class="btn btn-sm btn-outline-primary" {% if text_matching_locked %}disabled{% endif %}>Textbewertung speichern</button>
+                        <p id="textMatchSettingsStatus" role="status" class="small mt-2"></p>
+                    </div>
                     <div class="row g-3">
                         <div class="col-md-3">
                             <label class="form-label fw-semibold">Modus</label>
@@ -1147,7 +1168,7 @@ const NEXT_PLANNED_STEP_ID = {% if next_planned_step_id %}{{ next_planned_step_i
         }).join('');
 
         let rows = players.map((p, i) => {
-            const rankClass = rankLabels[i] || '';
+            const rankClass = rankLabels[(p.rank || i + 1) - 1] || '';
             const gameCols = instanceKeys.map(k => {
                 const score = p.game_scores?.[k];
                 const isWinner = score !== undefined && score === Math.max(...players.map(x => x.game_scores?.[k] ?? -1));
@@ -1160,7 +1181,7 @@ const NEXT_PLANNED_STEP_ID = {% if next_planned_step_id %}{{ next_planned_step_i
             const pid = p.hub_participant_id;
 
             return `<tr data-pid="${pid}">
-                <td class="sb-rank ${rankClass}">${i + 1}</td>
+                <td class="sb-rank ${rankClass}">${p.rank || i + 1}</td>
                 <td>${p.name}</td>
                 ${gameCols}
                 <td class="sb-total">${p.weighted_score}</td>
@@ -1598,7 +1619,7 @@ document.addEventListener('DOMContentLoaded', function() {
         }).join('');
 
         const rows = players.map((player, index) => {
-            const rankClass = rankLabels[index] || '';
+            const rankClass = rankLabels[(player.rank || index + 1) - 1] || '';
             const gameCols = instanceKeys.map((key) => {
                 const score = player.game_scores ? player.game_scores[key] : undefined;
                 const bestScore = Math.max(...players.map((entry) => (
@@ -1614,7 +1635,7 @@ document.addEventListener('DOMContentLoaded', function() {
             const participantId = player.hub_participant_id;
 
             return `<tr data-pid="${participantId}">
-                <td class="sb-rank ${rankClass}">${index + 1}</td>
+                <td class="sb-rank ${rankClass}">${player.rank || index + 1}</td>
                 <td>${player.name}</td>
                 ${gameCols}
                 <td class="sb-total">${player.weighted_score}</td>
@@ -1840,7 +1861,7 @@ document.addEventListener('DOMContentLoaded', function() {
         const rankingPool = settings.ranking_pool || {};
         const rankingSummary = rankingMode
             ? `<div class="alert alert-light border py-2 mb-3 small">
-                <strong>Teilnehmerzahl fÃ¼r Rankingwertung:</strong>
+                <strong>Teilnehmerzahl für Rankingwertung:</strong>
                 ${rankingPool.available ? escapeHtml(rankingPool.participant_count) : '-'}
                 <span class="text-muted ms-2">Basis: ${escapeHtml(rankingPool.basis_label || '-')}</span>
                 <div class="text-muted">${escapeHtml(rankingPool.message || '')}</div>
@@ -1874,7 +1895,7 @@ document.addEventListener('DOMContentLoaded', function() {
         }).join('');
 
         const rows = players.map((player, index) => {
-            const rankClass = rankLabels[index] || '';
+            const rankClass = rankLabels[(player.rank || index + 1) - 1] || '';
             const gameCols = displayedInstanceKeys.map((key) => {
                 const rawScore = player.game_scores ? player.game_scores[key] : undefined;
                 if (rawScore === undefined) return '<td class="sb-game">&mdash;</td>';
@@ -1910,7 +1931,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 : '';
 
             return `<tr data-pid="${participantId || ''}">
-                <td class="sb-rank ${rankClass}">${index + 1}</td>
+                <td class="sb-rank ${rankClass}">${player.rank || index + 1}</td>
                 <td class="sb-name">${escapeHtml(player.name)}</td>
                 <td class="sb-total sb-overall" data-session-points="${formatScore(sessionPoints)}">
                     <div class="sb-overall-main">
@@ -2012,6 +2033,40 @@ document.addEventListener('DOMContentLoaded', function() {
         checkInError.textContent = message || '';
         checkInError.classList.toggle('d-none', !message);
     }
+
+    let textMatchingSettingsDirty = false;
+    document.getElementById('sessionTextMatchThreshold')?.addEventListener('input', () => { textMatchingSettingsDirty = true; });
+
+    function renderTextMatchingSettings(data) {
+        if (!data) return;
+        const input = document.getElementById('sessionTextMatchThreshold');
+        if (!textMatchingSettingsDirty || data.locked) {
+            input.value = data.threshold;
+            input.nextElementSibling.value = data.threshold + ' %';
+            textMatchingSettingsDirty = false;
+        }
+        input.disabled = !!data.locked;
+        document.getElementById('saveTextMatchSettingsBtn').disabled = !!data.locked;
+    }
+
+    document.getElementById('saveTextMatchSettingsBtn')?.addEventListener('click', async function () {
+        const status = document.getElementById('textMatchSettingsStatus');
+        this.disabled = true;
+        let locked = false;
+        try {
+            const response = await fetch(`/hub/api/session/${SESSION_CODE}/text-matching/`, {
+                method: 'POST', headers: {'Content-Type': 'application/json', 'X-CSRFToken': '{{ csrf_token }}'},
+                body: JSON.stringify({text_match_threshold: Number(document.getElementById('sessionTextMatchThreshold').value)}),
+            });
+            const payload = await response.json();
+            locked = !!payload.locked;
+            if (!response.ok || !payload.success) throw new Error(payload.error || 'Speichern fehlgeschlagen.');
+            textMatchingSettingsDirty = false;
+            renderTextMatchingSettings({threshold: payload.text_match_threshold, locked: false});
+            status.textContent = 'Textbewertung für diese Session gespeichert.';
+        } catch (error) { status.textContent = error.message; }
+        finally { this.disabled = locked; document.getElementById('sessionTextMatchThreshold').disabled = locked; }
+    });
 
     function showReadinessError(message) {
         if (!readinessError) return;
@@ -2184,7 +2239,7 @@ document.addEventListener('DOMContentLoaded', function() {
             votingModeSelect.value = voting.mode;
         }
         if (votingStatusText) {
-            votingStatusText.textContent = `Status: ${statusLabel} Â· Modus: ${modeLabel}`;
+            votingStatusText.textContent = `Status: ${statusLabel} · Modus: ${modeLabel}`;
         }
         if (votingModeBadge) votingModeBadge.textContent = `Modus: ${modeLabel}`;
         if (votingRoundBadge) votingRoundBadge.textContent = `Runde: ${voting.round || '-'}`;
@@ -2714,6 +2769,7 @@ document.addEventListener('DOMContentLoaded', function() {
             renderCheckInState(message);
             renderVotingState(message);
             renderReadinessState(message);
+            renderTextMatchingSettings(message.text_matching);
             renderVoteBadges(message.votes || []);
             break;
         case 'vote_update':
@@ -2723,6 +2779,9 @@ document.addEventListener('DOMContentLoaded', function() {
         case 'scoreboard_visibility':
             scoreboardVisible = !!message.visible;
             updateScoreboardToggle();
+            break;
+        case 'text_matching_updated':
+            renderTextMatchingSettings(message);
             break;
         case 'check_in_started':
         case 'participant_checked_in':
@@ -2808,4 +2867,5 @@ document.addEventListener('DOMContentLoaded', function() {
 });
 </script>
 
+<script src="{% static 'js/duel-encounters.js' %}"></script>
 {% endblock %}

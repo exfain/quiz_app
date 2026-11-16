@@ -6,16 +6,18 @@ from django.shortcuts import render, redirect, get_object_or_404
 from django.views.decorators.http import require_http_methods, require_POST
 from django.db.models import Max
 from django.contrib.auth.decorators import login_required
+from django.core.exceptions import ValidationError
 from django.http import JsonResponse, Http404
 from django.urls import reverse
 from django.db.models import Sum, F, Case, When, Value, IntegerField, Q
-from django.db import connection, transaction
+from django.db import connection, transaction, DatabaseError
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
 from .models import HubGameParticipantSnapshot, HubSession, HubParticipant, HubGameStep
 from .host_permissions import authorize_game_host, user_can_manage_hub_session
-from .lobby_join import MIN_NICKNAME_LENGTH, check_nickname_availability
+from .lobby_join import MIN_NICKNAME_LENGTH, check_nickname_availability, nickname_validation_error
 from .active_game_guard import resolve_session_game_activation
+from .text_matching import validate_threshold, settings_locked as text_matching_settings_locked
 from .check_in import (
     complete_session_check_in,
     get_check_in_state,
@@ -64,7 +66,8 @@ def gen_code(length=6):
 
 
 def _session_join_url(request, session_code):
-    return request.build_absolute_uri(reverse('games_hub:lobby', args=[session_code]))
+    from .utils import session_join_url
+    return session_join_url(request, session_code)
 
 
 def _managed_session_or_error(request, session_code):
@@ -84,13 +87,15 @@ def join_session(request):
     error = None
     if request.method == 'POST':
         code = (request.POST.get('code') or '').strip().upper()
-        nickname = (request.POST.get('nickname') or '').strip()
+        nickname = (request.POST.get('nickname') or '').strip(' ')
         if not code:
             error = 'Bitte einen Session-Code eingeben.'
         elif not nickname:
             error = 'Bitte einen Namen eingeben.'
         elif len(nickname) < MIN_NICKNAME_LENGTH:
             error = 'Der Name ist zu kurz.'
+        elif nickname_validation_error(nickname):
+            error = nickname_validation_error(nickname)[1]
         else:
             try:
                 session = HubSession.objects.get(code=code)
@@ -113,6 +118,11 @@ def create_session(request):
         name = request.POST.get('name') or ''
         code = request.POST.get('code') or gen_code()
         scoring_settings = _parse_scoring_settings(request.POST)
+        from admin_dashboard.models import DashboardSettings
+        try:
+            text_match_threshold = validate_threshold(request.POST.get('text_match_threshold', DashboardSettings.load().text_match_threshold))
+        except ValueError as exc:
+            return render(request, 'hub/create_session.html', {'error': str(exc), **_get_game_instances()}, status=400)
 
         if HubSession.objects.filter(code=code).exists():
             return render(request, 'hub/create_session.html', {
@@ -127,6 +137,25 @@ def create_session(request):
                 games_ordered = []
         except json.JSONDecodeError:
             games_ordered = []
+
+        from duel.contracts import SessionType
+        from duel.oral_material import ORAL_GAMES
+        from duel.turn_material import TURN_GAMES
+        from duel.input_material import INPUT_GAMES
+        from duel.control_games import CONTROL_GAMES, validate_config
+        try:
+            session_type = SessionType(request.POST.get('session_type', 'multiplayer'))
+            if session_type is SessionType.MULTIPLAYER and any(isinstance(e, dict) and e.get("game_key") == "bid" for e in games_ordered):
+                raise ValueError("Das Gebotsspiel ist ausschlie?lich f?r 2-Spieler-Sessions freigegeben.")
+            if session_type is SessionType.DUEL:
+                if not games_ordered or any(not isinstance(e, dict) or e.get('game_key') not in {'estimation', 'quiz', *ORAL_GAMES, *TURN_GAMES, *INPUT_GAMES, *CONTROL_GAMES} for e in games_ordered):
+                    raise ValueError('Der Duellspielplan enthält einen noch nicht unterstützten Spieltyp.')
+                for entry in games_ordered:
+                    planned = HubGameStep(game_key=entry['game_key'], duel_match_config=entry.get('duel_match_config', {}))
+                    planned.clean()
+                    validate_config(planned.game_key, planned.get_duel_match_config())
+        except (ValueError, TypeError, ValidationError) as exc:
+            return render(request, 'hub/create_session.html', {'error': str(exc), **_get_game_instances()}, status=400)
 
         for entry in games_ordered:
             game_key = entry.get('game_key', '')
@@ -144,7 +173,9 @@ def create_session(request):
             code=code,
             name=name,
             creator=request.user,
+            session_type=session_type.value,
             is_active=False,
+            text_match_threshold=text_match_threshold,
             **scoring_settings,
         )
 
@@ -172,8 +203,10 @@ def create_session(request):
                 continue
             # Reset the game instance to waiting so it can be played fresh
             model = GAME_MODEL_MAP.get(game_key)
-            if model:
+            if model and session_type is SessionType.MULTIPLAYER:
                 try:
+                    from .session_results import freeze_previous_results
+                    freeze_previous_results(game_key, model.objects.filter(room_code=room_code).first(), session.code)
                     model.objects.filter(room_code=room_code).update(status='waiting')
                 except Exception:
                     pass
@@ -183,6 +216,8 @@ def create_session(request):
                 game_key=game_key,
                 room_code=room_code,
                 title=title,
+                **({'game_format': 'duel', 'duel_match_config': entry.get('duel_match_config', {})}
+                   if session_type is SessionType.DUEL else {}),
             )
 
         return redirect('admin_dashboard:sessions_overview')
@@ -207,6 +242,8 @@ def _get_game_instances():
         ('wann_war_das',   WannWarDasGame,    'Wann war das?',   'calendar-clock'),
         ('wer_weiss_mehr', WerWeissMehrGame,   'Wer weiß mehr?', 'layers'),
     ]
+    from duel.models import BidGame
+    GAME_TYPES.append(("bid", BidGame, "Gebotsspiel (nur Duell)", "gavel"))
     games = []
     for game_key, model, label, icon in GAME_TYPES:
         qs = model.objects.all().order_by('-created_at') if hasattr(model, 'created_at') else model.objects.all()
@@ -224,7 +261,8 @@ def _get_game_instances():
                 'question_count': q_count,
                 'status': getattr(obj, 'status', ''),
             })
-    return {'all_game_instances': games}
+    from admin_dashboard.models import DashboardSettings
+    return {'all_game_instances': games, 'text_match_threshold': DashboardSettings.load().text_match_threshold}
 
 
 def _parse_scoring_settings(data):
@@ -320,6 +358,8 @@ def _legacy_get_leaderboard_data(session):
         
         # Process each game step
         for step in steps:
+            if step.game_format != 'standard':
+                continue  # Duel results never contribute to the evening ranking.
             game_key = step.game_key
             if game_key not in [g['key'] for g in games]:
                 games.append({
@@ -574,12 +614,13 @@ def get_leaderboard_data(session, participant_count_override=None):
 
         for step in steps:
             game_key = step.game_key
-            if game_key not in GAME_MODELS:
+            if step.game_format != 'standard' or game_key not in GAME_MODELS:
                 continue
 
             game_model, participant_model, type_name = GAME_MODELS[game_key]
             game_obj = game_model.objects.filter(room_code=step.room_code).first()
-            game_status = getattr(game_obj, 'status', '') if game_obj else ''
+            from .session_results import step_status
+            game_status = step_status(step, game_obj)
             game_number = step.order + 1
             weight = session.get_game_weight(game_number)
             snapshot_pool = _get_step_snapshot_pool(step)
@@ -590,7 +631,8 @@ def get_leaderboard_data(session, participant_count_override=None):
             )
             range_basis_override = 'snapshot' if snapshot_pool else None
             game_title = (
-                getattr(game_obj, 'title', None)
+                (step.result_snapshot or {}).get('title')
+                or getattr(game_obj, 'title', None)
                 or getattr(step, 'title', '')
                 or type_name
             )
@@ -619,13 +661,15 @@ def get_leaderboard_data(session, participant_count_override=None):
             if game_status != 'completed':
                 continue
 
-            game_data = get_game_participant_data(
-                session,
-                game_model,
-                participant_model,
-                step.room_code,
-                game_key,
-            )
+            game_data = (step.result_snapshot or {}).get('scores')
+            if game_data is None:
+                game_data = get_game_participant_data(
+                    session,
+                    game_model,
+                    participant_model,
+                    step.room_code,
+                    game_key,
+                )
             if snapshot_pool:
                 game_pool_names = snapshot_pool['names']
                 for name, snapshot in snapshot_pool['participants_by_name'].items():
@@ -705,6 +749,14 @@ def get_leaderboard_data(session, participant_count_override=None):
             participants_data.values(),
             key=lambda pdata: (-float(pdata.get('total_with_adjustment') or 0), pdata['name'].lower()),
         )
+        previous_score = None
+        rank = 0
+        for position, participant in enumerate(participants, 1):
+            score = participant['total_with_adjustment']
+            if score != previous_score:
+                rank = position
+            participant['rank'] = rank
+            previous_score = score
     except Exception as e:
         print("Error getting leaderboard data:", e)
 
@@ -742,7 +794,10 @@ def get_participant_leaderboard_data(session, participant_name):
 
     for index, participant in enumerate(leaderboard.get('participants', []), start=1):
         row = dict(participant)
-        row['rank'] = index
+        row['rank'] = participant.get('rank') or 1 + sum(
+            other.get('total_with_adjustment', 0) > participant.get('total_with_adjustment', 0)
+            for other in leaderboard.get('participants', [])
+        )
         row['is_current_participant'] = (
             current_hub_participant_id is not None
             and row.get('hub_participant_id') == current_hub_participant_id
@@ -931,6 +986,34 @@ def update_session_scoring_settings(request, session_code):
         'locked': session.scoring_settings_locked,
         **settings,
     })
+
+
+@login_required
+@require_POST
+@transaction.atomic
+def update_session_text_matching(request, session_code):
+    session, error = _managed_session_or_error(request, session_code)
+    if error:
+        return error
+    session = HubSession.objects.select_for_update().get(pk=session.pk)
+    if text_matching_settings_locked(session):
+        return JsonResponse({'success': False, 'locked': True,
+            'error': 'Die Textbewertung kann nur zwischen Spielen und vor dem Sessionende geändert werden. Ein pausiertes Spiel muss zuerst beendet werden.'}, status=409)
+    try:
+        data = json.loads(request.body or '{}')
+        if not isinstance(data, dict):
+            raise ValueError('Ungültige Einstellungen.')
+        threshold = validate_threshold(data.get('text_match_threshold'))
+    except (ValueError, TypeError) as exc:
+        return JsonResponse({'success': False, 'error': str(exc)}, status=400)
+    session.text_match_threshold = threshold
+    session.save(update_fields=['text_match_threshold', 'updated_at'])
+    layer = get_channel_layer()
+    if layer:
+        transaction.on_commit(lambda: async_to_sync(layer.group_send)(f'hub_{session.code}', {
+            'type': 'text_matching_updated', 'threshold': threshold, 'locked': False,
+        }))
+    return JsonResponse({'success': True, 'text_match_threshold': threshold, 'locked': False})
 
 
 def _broadcast_check_in_update(session, event_type):
@@ -1124,6 +1207,9 @@ def post_game_results_api(request, session_code):
 
 def lobby(request, session_code: str):
     session = get_object_or_404(HubSession, code=session_code)
+    if session.session_type == 'duel':
+        from duel.browser import session_page
+        return session_page(request, session, 'participant')
     participants = HubParticipant.objects.filter(session=session)
     next_game_number = session.get_next_game_number()
     
@@ -1163,6 +1249,9 @@ def monitor(request, session_code: str):
         raise Http404
 
     session = get_object_or_404(HubSession, code=session_code)
+    if session.session_type == 'duel':
+        from duel.browser import session_page
+        return session_page(request, session, 'host')
     steps = list(session.steps.all())
 
     # Annotate each step with the current status of its game instance
@@ -1188,6 +1277,20 @@ def monitor(request, session_code: str):
             step.game_status = getattr(game, 'status', None) if game else None
         else:
             step.game_status = None
+        from duel.hub import ORAL_GAMES, TURN_GAMES, INPUT_GAMES, CONTROL_GAMES
+        step.duel_capable = step.game_key in {'estimation', 'quiz', *ORAL_GAMES, *TURN_GAMES, *INPUT_GAMES, *CONTROL_GAMES}
+        from duel.tournaments import SUPPORTED, page_url as tournament_url
+        step.tournament_capable = step.game_key in SUPPORTED
+        if step.game_format == 'tournament':
+            run = getattr(step, 'tournament', None)
+            step.tournament_url = tournament_url(run, 'host') if run else None
+            step.game_status = 'completed' if run and run.status == 'completed' else 'active'
+        if step.game_format == 'duel':
+            from duel.encounters import page_url
+            from .session_results import step_status
+            instance = step.duel_instances.order_by('-created_at').first()
+            step.duel_url = page_url(instance, 'host') if instance else None
+            step.game_status = step_status(step, None)
 
     next_planned_step = session.get_next_planned_step()
 
@@ -1213,16 +1316,15 @@ def monitor(request, session_code: str):
     session_players = list(
         session.participants.order_by('joined_at').values('id', 'nickname', 'score_adjustment')
     )
-    from .utils import get_server_ip
-    ip = get_server_ip()
     return render(request, 'hub/monitor.html', {
         'session': session,
         'steps': steps,
         'next_planned_step_id': next_planned_step.id if next_planned_step else None,
-        'ip': ip,
+        'join_url': _session_join_url(request, session_code),
         'waiting_games': waiting_games,
         'session_players': session_players,
         'scoring_settings_locked': session.scoring_settings_locked,
+        'text_matching_locked': text_matching_settings_locked(session),
         'voting_state': get_voting_state(session),
     })
 
@@ -1230,6 +1332,9 @@ def monitor(request, session_code: str):
 def spectate_session(request, session_code: str):
     """Read-only spectator view for a hub session. No participant registration."""
     session = get_object_or_404(HubSession, code=session_code)
+    if session.session_type == 'duel':
+        from duel.browser import session_page
+        return session_page(request, session, 'spectator')
     return render(request, 'hub/spectate.html', {
         'session': session,
         'session_code': session_code,
@@ -1579,6 +1684,31 @@ def activate_session_game(request, session_code):
             'error': authorization.message,
             'code': authorization.code,
         }, status=403)
+
+    if session.session_type == 'duel' or action in {'start_duel', 'start_tournament'}:
+        from duel.hub import start_slot
+        from duel.commands import CommandRejected
+        try:
+            slots = session.steps.filter(game_key=game_key, room_code=room_code)
+            step = slots.get(pk=data['step_id']) if data.get('step_id') else slots.get()
+            if check_only:
+                return JsonResponse({'success': True, 'duel': True})
+            if action == 'start_tournament':
+                from duel.tournaments import start_tournament
+                return JsonResponse(start_tournament(user=request.user, session_code=session.code, step_id=step.pk))
+            return JsonResponse(start_slot(user=request.user, session_code=session.code, step_id=step.pk,
+                **({'participant_ids': data.get('participant_ids'), 'match_config': data.get('match_config')}
+                   if action == 'start_duel' and session.session_type == 'multiplayer' else {})))
+        except (HubGameStep.DoesNotExist, HubGameStep.MultipleObjectsReturned):
+            return JsonResponse({'success': False, 'error': 'Wähle einen eindeutigen geplanten Spielslot.'}, status=400)
+        except (CommandRejected, ValueError) as exc:
+            return JsonResponse({'success': False, 'error': str(exc)}, status=409)
+        except DatabaseError:
+            logger.exception('Duell-Hubstart konnte nicht gespeichert werden')
+            return JsonResponse({'success': False, 'error': 'Der Duellstart konnte nicht gespeichert werden. Versuche es erneut.'}, status=503)
+
+    if game_key in HubGameStep.DUEL_ONLY_GAME_KEYS:
+        return JsonResponse({'success': False, 'error': 'Dieser Spieltyp ist ausschließlich für 2-Spieler-Sessions freigegeben.'}, status=409)
 
     result = resolve_session_game_activation(
         session_code,

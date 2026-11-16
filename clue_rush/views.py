@@ -1,3 +1,4 @@
+from games_hub.team_names import validate_join_name
 from django.shortcuts import render, get_object_or_404, redirect
 from django.http import JsonResponse
 from django.views.decorators.http import require_http_methods, require_POST
@@ -6,7 +7,9 @@ from django.utils import timezone
 from django.db import IntegrityError, transaction
 import json
 from .models import ClueRushGame, ClueRushParticipant, ClueAnswer, ClueRushSession
-from .runtime import reconcile_clue_schedule
+from .runtime import reconcile_clue_schedule, submission_position
+from .progress import current_round as clue_round, question_progress, score_history
+from .public import visible_score
 from games_hub.authoritative_state import validate_and_reserve_action
 from games_hub.unit_tutorial_runtime import (
     get_scorebox_excluded_tutorial_question_ids,
@@ -15,6 +18,7 @@ from games_hub.unit_tutorial_runtime import (
 )
 
 
+@validate_join_name('clue_rush', 'clue_rush/join.html')
 def join_view(request):
     """Combined view for Clue Rush join page (GET) and join action (POST)."""
     if request.method == 'GET':
@@ -52,7 +56,7 @@ def join_view(request):
             if current_count >= quiz.max_participants:
                 return JsonResponse({'success': False, 'error': 'This quiz is full. Maximum participants reached.'})
 
-            name_qs = quiz.participants.filter(name__iexact=participant_name)
+            name_qs = quiz.participants.filter(name__iexact=participant_name, hub_session_code=hub_session)
             if hub_session:
                 name_qs = name_qs.filter(hub_session_code=hub_session)
             if name_qs.exists():
@@ -69,6 +73,7 @@ def join_view(request):
                 participant, created = ClueRushParticipant.objects.get_or_create(
                     quiz=quiz,
                     name=participant_name,
+                    hub_session_code=None,
                     defaults={'is_active': True}
                 )
 
@@ -125,21 +130,8 @@ def play(request, room_code, participant_name):
         participant.last_activity = timezone.now()
         participant.save()
 
-        excluded_question_ids = get_scorebox_excluded_tutorial_question_ids(
-            'clue_rush',
-            quiz.room_code,
-            session_code,
-        )
-        total_question_count = (
-            quiz.selected_questions
-            .filter(is_active=True)
-            .exclude(id__in=excluded_question_ids)
-            .count()
-        )
-        try:
-            current_question_number = quiz.session.current_question_number
-        except ClueRushSession.DoesNotExist:
-            current_question_number = 0
+        progress = question_progress(quiz, session_code, quiz.current_question_id)
+        current_question_number, total_question_count = progress['current'] or 0, progress['total'] or 0
 
         context = {
             'quiz': quiz,
@@ -158,10 +150,11 @@ def play(request, room_code, participant_name):
 def result(request, room_code, participant_name):
     try:
         quiz = get_object_or_404(ClueRushGame, room_code=room_code)
-        participant = get_object_or_404(ClueRushParticipant, quiz=quiz, name=participant_name)
+        participant = get_object_or_404(ClueRushParticipant, quiz=quiz, name=participant_name, hub_session_code=request.GET.get('hub_session') or None)
         context = {
             'quiz': quiz,
             'participant': participant,
+            'history': score_history(quiz, participant),
         }
         return render(request, 'clue_rush/result.html', context)
     except (ClueRushGame.DoesNotExist, ClueRushParticipant.DoesNotExist):
@@ -176,6 +169,8 @@ def submit_guess(request, room_code, participant_name):
         session_code = request.GET.get('hub_session')
         data = json.loads(request.body)
         guess_text = data.get('guess', '').strip()
+        if len(guess_text) > 200:
+            return JsonResponse({'success': False, 'error': 'invalid_answer'}, status=400)
         if not guess_text:
             return JsonResponse({'success': False, 'error': 'Guess cannot be empty.'})
         decision = validate_and_reserve_action(
@@ -222,6 +217,10 @@ def submit_guess(request, room_code, participant_name):
                     quiz=quiz,
                     participant=participant,
                     question=quiz.current_question,
+                    round_number=clue_round(quiz),
+                    is_tutorial=is_unit_tutorial_question('clue_rush', room_code, session_code, quiz.current_question_id),
+                    submitted_clue_number=submission_position(quiz, at=received_at)[0],
+                    total_clues_at_submission=submission_position(quiz, at=received_at)[1],
                     answer_text=guess_text,
                     time_taken=(
                         max(0, (received_at - quiz.question_start_time).total_seconds())
@@ -245,8 +244,7 @@ def submit_guess(request, room_code, participant_name):
 
         return JsonResponse({
             'success': True,
-            'correct': answer.is_correct,
-            'points_earned': answer.points_earned,
+            'answer_saved': True,
             'is_tutorial_round': is_tutorial_answer,
         })
 
@@ -277,7 +275,8 @@ def get_game_status(request, room_code, participant_name):
             has_guessed = ClueAnswer.objects.filter(
                 quiz=quiz,
                 participant=participant,
-                question=current_question
+                question=current_question,
+                round_number=clue_round(quiz),
             ).exists()
             total_clues = current_question.clues.count()
         else:
@@ -301,7 +300,7 @@ def get_game_status(request, room_code, participant_name):
             'game_status': quiz.status,
             'current_round': current_round,
             'total_clues': total_clues,
-            'participant_score': participant.total_score,
+            'participant_score': visible_score(participant),
             'has_guessed': has_guessed,
         }
 
@@ -331,7 +330,7 @@ def leave_game(request, room_code, participant_name):
 def api_participants(request, room_code):
     try:
         quiz = get_object_or_404(ClueRushGame, room_code=room_code)
-        participants = quiz.participants.filter(is_active=True).order_by('-total_score', 'name')
+        participants = quiz.participants.filter(is_active=True, hub_session_code=request.GET.get('hub_session') or None).order_by('-total_score', 'name')
         current_question = quiz.current_question
         data = []
         for p in participants:
@@ -340,13 +339,14 @@ def api_participants(request, room_code):
                 latest_answer = ClueAnswer.objects.filter(
                     quiz=quiz,
                     participant=p,
-                    question=current_question
+                    question=current_question,
+                round_number=clue_round(quiz),
                 ).first()
             data.append({
                 'name': p.name,
-                'total_score': p.total_score,
+                'total_score': visible_score(p),
                 'has_guessed': bool(latest_answer),
-                'points_earned': latest_answer.points_earned if latest_answer else 0,
+                'points_earned': None if current_question else (latest_answer.points_earned if latest_answer else 0),
             })
         return JsonResponse({'success': True, 'participants': data, 'count': len(data)})
     except ClueRushGame.DoesNotExist:
@@ -356,7 +356,8 @@ def api_participants(request, room_code):
 def api_leaderboard(request, room_code):
     try:
         quiz = get_object_or_404(ClueRushGame, room_code=room_code)
-        participants = quiz.participants.all().order_by('-total_score', 'name')[:10]
+        participants = sorted(quiz.participants.filter(hub_session_code=request.GET.get('hub_session') or None),
+            key=lambda p: (-visible_score(p), p.name))[:10]
         current_question = quiz.current_question
         data = []
         for idx, p in enumerate(participants, 1):
@@ -365,14 +366,15 @@ def api_leaderboard(request, room_code):
                 latest_answer = ClueAnswer.objects.filter(
                     quiz=quiz,
                     participant=p,
-                    question=current_question
+                    question=current_question,
+                round_number=clue_round(quiz),
                 ).first()
             data.append({
                 'rank': idx,
                 'name': p.name,
-                'total_score': p.total_score,
+                'total_score': visible_score(p),
                 'has_guessed': bool(latest_answer),
-                'points_earned': latest_answer.points_earned if latest_answer else 0,
+                'points_earned': None if current_question else (latest_answer.points_earned if latest_answer else 0),
             })
         return JsonResponse({'success': True, 'leaderboard': data})
     except ClueRushGame.DoesNotExist:

@@ -65,7 +65,7 @@
                                 <label class="form-check-label" for="playTutorialToggle">Tutorial spielen</label>
                             </div>
                             {% endif %}
-                            <button class="btn btn-success" id="startQuizBtn" data-host-game-start>
+                            <button class="btn btn-success" id="startQuizBtn" data-host-game-start data-host-game-resume="{% if quiz.status == 'inactive' and quiz.started_at %}true{% else %}false{% endif %}">
                                 <i data-lucide="play"></i>
                                 {% if quiz.status == 'inactive' %}Spiel reaktivieren{% else %}Spiel starten{% endif %}
                             </button>
@@ -226,7 +226,7 @@
                                 <h6>Current Question</h6>
                                 <div class="question-timer{% if question_runtime.question_phase != 'answering_open' %} d-none{% endif %}" id="questionTimerWrapper">
                                     <div class="timer-circle" id="questionTimerCircle">
-                                        <span id="questionTimeLeft">{% firstof question_runtime.remaining_answer_time 90 %}</span>
+                                        <span id="questionTimeLeft">{{ question_runtime.remaining_answer_time|default_if_none:0 }}</span>
                                     </div>
                                 </div>
                             </div>
@@ -1087,6 +1087,7 @@ document.addEventListener('DOMContentLoaded', function() {
             this.websocket.onopen = () => {
                 console.log('WebSocket connected');
                 this.updateConnectionStatus(true);
+                this.websocket.send(JSON.stringify({type: 'snapshot_request', hub_session: this.getHubSession()}));
             };
             
             this.websocket.onmessage = (event) => {
@@ -1208,6 +1209,10 @@ document.addEventListener('DOMContentLoaded', function() {
                     window.hostEndState?.apply({ message: data.message, event: data });
                     break;
 
+                case 'quiz_resumed':
+                    location.reload();
+                    break;
+
                 case 'quiz_inactive':
                     console.log('Quiz set inactive:', data.message);
                     this.isActive = false;
@@ -1255,6 +1260,11 @@ document.addEventListener('DOMContentLoaded', function() {
         scheduleQuestionOpenAvailability() {
             const button = document.getElementById('openAnsweringBtn');
             if (!button) return;
+            if (!this.isActive) {
+                button.disabled = true;
+                button.setAttribute('aria-disabled', 'true');
+                return;
+            }
             clearTimeout(this.questionPresentationTimer);
             const remaining = this.remainingQuestionPresentationDelay();
             if (remaining <= 0) {
@@ -1554,6 +1564,7 @@ document.addEventListener('DOMContentLoaded', function() {
         }
 
         sendQuestionPhaseAction(type, questionId, button) {
+            if (!this.isActive) return;
             if (this.pendingPhaseAction || !questionId) return;
             if (
                 type === 'admin_open_answering'
@@ -1577,59 +1588,33 @@ document.addEventListener('DOMContentLoaded', function() {
         }
         
         endCurrentQuestion() {
+            if (!this.isActive) return;
             if (this.websocket && this.websocket.readyState === WebSocket.OPEN) {
                 this.websocket.send(JSON.stringify({
-                    type: 'admin_end_question'
+                    type: 'admin_end_question', question_id: '{{ quiz.current_question_id|default_if_none:"" }}', round_number: {{ quiz_session.current_question_number|default:0 }}
                 }));
             }
         }
         
         startQuestionTimer() {
-            // Prefer any override set at send-time (stored just before backend switched state)
-            let override = null;
-            try {
-                const raw = localStorage.getItem(`override_time_${this.roomCode}`);
-                if (raw) {
-                    const v = parseInt(raw, 10);
-                    if (!isNaN(v) && v > 0) override = v;
-                }
-            } catch(_) {}
-            let serverTimeLeft = 0;
-            try {
-                const serverEl = document.getElementById('questionTimeLeft');
-                if (serverEl && serverEl.textContent) {
-                    const sv = parseInt(serverEl.textContent, 10);
-                    if (!isNaN(sv) && sv > 0) serverTimeLeft = sv;
-                }
-            } catch(_) {}
-            const timeLeft = (override !== null) ? override : serverTimeLeft;
-            if (timeLeft <= 0) return;
-            
-            let currentTime = timeLeft;
-            const timerElement = document.getElementById('questionTimeLeft');
-            const circleElement = document.getElementById('questionTimerCircle');
-            
-            this.questionTimer = setInterval(() => {
-                currentTime--;
-                if (timerElement) timerElement.textContent = currentTime;
-                
-                // Update timer circle color based on time left
-                if (circleElement) {
-                    circleElement.className = 'timer-circle';
-                    if (currentTime <= 20) {
-                        circleElement.classList.add('danger');
-                    } else if (currentTime <= 40) {
-                        circleElement.classList.add('warning');
-                    }
-                }
-                
-                if (currentTime <= 0) {
+            {% if quiz.status == 'active' and question_runtime.question_phase == 'answering_open' %}
+            const deadline = Date.parse('{{ question_runtime.answering_deadline_at|default:""|escapejs }}');
+            const serverNow = Date.parse('{{ question_runtime.server_now|default:""|escapejs }}');
+            const receivedAt = performance.now();
+            if (!Number.isFinite(deadline)) return;
+            const tick = () => {
+                const now = Number.isFinite(serverNow) ? serverNow + performance.now() - receivedAt : Date.now();
+                const left = Math.max(0, Math.ceil((deadline - now) / 1000));
+                const element = document.getElementById('questionTimeLeft');
+                if (element) element.textContent = left;
+                if (!left) {
                     clearInterval(this.questionTimer);
                     this.onQuestionTimeout();
                 }
-            }, 1000);
-            // Clear one-time override so subsequent questions use their own values
-            try { localStorage.removeItem(`override_time_${this.roomCode}`); } catch(_) {}
+            };
+            this.questionTimer = setInterval(tick, 250);
+            tick();
+            {% endif %}
         }
         
         startQuizTimer() {
@@ -1711,9 +1696,9 @@ document.addEventListener('DOMContentLoaded', function() {
                 const row = document.createElement('div');
                 row.className = 'response-item';
                 row.innerHTML = `
-                    <div class="response-avatar ${quality}">${participantName.charAt(0).toUpperCase()}</div>
+                    <div class="response-avatar ${quality}">${this.escapeHtml(participantName.charAt(0).toUpperCase())}</div>
                     <div class="response-content">
-                        <div class="response-name">${participantName}</div>
+                        <div class="response-name">${this.escapeHtml(participantName)}</div>
                         <div class="response-details">${detailText}</div>
                     </div>
                 `;
@@ -1724,6 +1709,10 @@ document.addEventListener('DOMContentLoaded', function() {
             if (responseCount) responseCount.textContent = `${answeredCount}/${entries.length}`;
         }
 
+        escapeHtml(value) {
+            return String(value ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+        }
+
         addParticipant(participant) {
             const participantsList = document.getElementById('participantsList');
             if (!participantsList) return;
@@ -1732,7 +1721,7 @@ document.addEventListener('DOMContentLoaded', function() {
             if (noParticipants) noParticipants.remove();
             
             // Check if participant already exists
-            const existingParticipant = participantsList.querySelector(`[data-participant-name="${participant.name}"]`);
+            const existingParticipant = [...participantsList.querySelectorAll('[data-participant-name]')].find(row => row.dataset.participantName === participant.name);
             if (existingParticipant) return;
             
             const participantEl = document.createElement('div');
@@ -1740,17 +1729,17 @@ document.addEventListener('DOMContentLoaded', function() {
             participantEl.dataset.participantName = participant.name;
             participantEl.innerHTML = `
                 <div class="participant-avatar">
-                    ${participant.name.charAt(0).toUpperCase()}
+                    ${this.escapeHtml(participant.name.charAt(0).toUpperCase())}
                 </div>
                 <div class="participant-info">
-                    <div class="participant-name">${participant.name}</div>
+                    <div class="participant-name">${this.escapeHtml(participant.name)}</div>
                     <div class="participant-score" id="score-${participant.id}">${participant.total_score || 0} pts</div>
                     <div class="participant-accuracy">0% avg</div>
                 </div>
                 <div class="participant-status">
                     <button class="btn btn-link btn-sm p-0 me-1 edit-score-btn" title="Set points manually"
                         data-participant-id="${participant.id}"
-                        data-participant-name="${participant.name}"
+                        data-participant-name="${this.escapeHtml(participant.name)}"
                         data-current-score="${participant.total_score || 0}"
                         data-bs-toggle="modal" data-bs-target="#editScoreModal">
                         <i data-lucide="pencil" style="width:14px;height:14px;color:#6c757d;"></i>
@@ -1832,7 +1821,7 @@ document.addEventListener('DOMContentLoaded', function() {
             console.log('Question timed out');
             if (this.websocket && this.websocket.readyState === WebSocket.OPEN) {
                 this.websocket.send(JSON.stringify({
-                    type: 'admin_end_question'
+                    type: 'admin_end_question', question_id: '{{ quiz.current_question_id|default_if_none:"" }}', round_number: {{ quiz_session.current_question_number|default:0 }}
                 }));
             }
         }
@@ -1913,6 +1902,9 @@ document.addEventListener('DOMContentLoaded', function() {
 })();
 </script>
 
+{% endblock %}
+{% block modals %}
+{{ block.super }}
 <!-- Score Edit Modal -->
 <div class="modal fade" id="editScoreModal" tabindex="-1" aria-hidden="true">
   <div class="modal-dialog modal-sm modal-dialog-centered">

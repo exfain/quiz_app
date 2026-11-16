@@ -377,7 +377,7 @@ class LobbyReturnFlowTests(TransactionTestCase):
         self.assertContains(response, '/recall-to-lobby/')
 
     def test_all_registered_host_start_buttons_use_the_semantic_guard(self):
-        registered_game_keys = {key for key, _label in HubGameStep.GAME_CHOICES}
+        registered_game_keys = {key for key, _label in HubGameStep.GAME_CHOICES} - HubGameStep.DUEL_ONLY_GAME_KEYS
         self.assertEqual(set(self.MONITOR_START_BUTTONS), registered_game_keys)
 
         for game_key, (relative_path, button_id) in self.MONITOR_START_BUTTONS.items():
@@ -408,6 +408,16 @@ class LobbyReturnFlowTests(TransactionTestCase):
         for relative_path in legacy_monitors:
             with self.subTest(relative_path=relative_path):
                 source = Path(settings.BASE_DIR / relative_path).read_text(encoding='utf-8')
+                if relative_path == 'templates/admin_dashboard/where_monitor.html':
+                    self.assertIn("'js/where-live.js'", source)
+                    source = Path(settings.BASE_DIR / 'static/js/where-live.js').read_text(encoding='utf-8')
+                    self.assertIn("el('startQuizBtn').onclick = startQuiz;", source)
+                    self.assertEqual(source.count("type: 'admin_start_quiz'"), 1)
+                    start_source = source.split('    function startQuiz() {', 1)[1].split('    const map =', 1)[0]
+                    self.assertIn("type: 'admin_start_quiz'", start_source)
+                    self.assertNotIn('location.reload()', start_source)
+                    self.assertNotIn("type: 'navigate_direct'", source)
+                    continue
                 start_source = source.split('        startQuiz() {', 1)[1].split(
                     '        endQuiz() {',
                     1,
@@ -423,8 +433,18 @@ class LobbyReturnFlowTests(TransactionTestCase):
         ):
             with self.subTest(relative_path=relative_path):
                 source = Path(settings.BASE_DIR / relative_path).read_text(encoding='utf-8')
-                started_handler = source.split("case 'quiz_started':", 1)[1].split('break;', 1)[0]
+                if relative_path == 'templates/admin_dashboard/where_monitor.html':
+                    self.assertIn("'js/where-live.js'", source)
+                    live = Path(settings.BASE_DIR / 'static/js/where-live.js').read_text(encoding='utf-8')
+                    self.assertIn("data.type === 'host_start_confirmed' && data.start_request_id === pendingStart", live)
+                    self.assertNotIn('location.reload()', live)
+                    self.assertNotIn('location.href', live)
+                    consumer = Path(settings.BASE_DIR / 'where_is_this/consumers.py').read_text(encoding='utf-8')
+                    self.assertLess(consumer.index('await self.action(data)'), consumer.index("'type': 'host_start_confirmed'"))
+                    continue
+                started_handler = source.split("case 'quiz_started':", 1)[1].split("case 'tutorial_start':", 1)[0]
                 self.assertIn('location.reload()', started_handler)
+                self.assertIn('data.start_request_id !== this.pendingStart', started_handler)
                 self.assertNotIn('updateQuizStatus', started_handler)
 
     def test_shared_start_and_leave_guards_are_not_bound_to_legacy_ids(self):

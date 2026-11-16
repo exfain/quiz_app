@@ -44,6 +44,7 @@ INSTALLED_APPS = [
     'who_is_that.apps.WhoIsThatConfig',
     'black_jack_quiz.apps.BlackJackQuizConfig',
     'games_hub.apps.GamesHubConfig',
+    'duel.apps.DuelConfig',
     'channels',
     'clue_rush.apps.ClueRushConfig',
     'sorting_ladder.apps.SortingLadderConfig',
@@ -96,6 +97,10 @@ DATABASES = {
         # same SQLite file. Let short concurrent writes serialize cleanly.
         'OPTIONS': {
             'timeout': 20,
+            # Acquire the writer reservation before reading in atomic blocks.
+            # Deferred lock upgrades fail immediately under concurrent clients,
+            # bypassing SQLite's busy timeout.
+            'transaction_mode': 'IMMEDIATE',
         },
         'TEST': {
             # Dateibasierte Test-DB – erforderlich für ChannelsLiveServerTestCase

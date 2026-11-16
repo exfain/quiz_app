@@ -5,6 +5,7 @@
 {% block page_subtitle %}{% if edit_mode %}Update title and assigned questions{% else %}Create a new game instance{% endif %}{% endblock %}
 
 {% block content %}
+<p class="m-3"><a class="btn btn-outline-primary" href="{% url 'admin_dashboard:bid_management' %}">Gebotsspiel: Spiele und Aufgaben verwalten</a></p>
 <style>
 .drag-over { background-color: #e8f4ff !important; outline: 2px dashed #0d6efd; }
 .blackjack-set-builder-card { border: 1px solid #dee2e6; }

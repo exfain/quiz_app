@@ -1,4 +1,8 @@
+from games_hub.team_names import validate_join_name
 import json
+from urllib.parse import urlencode
+from django.urls import reverse
+from games_hub import manual_game_runtime as manual
 
 from django.http import JsonResponse
 from django.contrib.auth.decorators import login_required
@@ -14,11 +18,13 @@ from .models import HostPointsGame, HostPointsParticipant
 
 def _json_body(request):
     try:
-        return json.loads(request.body or '{}')
+        value = json.loads(request.body or '{}')
+        return value if isinstance(value, dict) else {}
     except json.JSONDecodeError:
         return {}
 
 
+@validate_join_name('host_points', 'host_points/join.html')
 def host_points_join_view(request):
     error = None
     if request.method == 'POST':
@@ -34,19 +40,25 @@ def host_points_join_view(request):
             if not game:
                 error = 'Host-Punktevergabe nicht gefunden.'
             else:
-                participant, _ = HostPointsParticipant.objects.get_or_create(
+                participant, created = HostPointsParticipant.objects.get_or_create(
                     quiz=game,
                     name=participant_name,
                     hub_session_code=hub_session,
                     defaults={'is_active': False},
                 )
+                capability = manual.page_token(request, participant, created=created)
+                if not hub_session and not capability:
+                    return JsonResponse({'success': False, 'error': 'Dieser Name ist bereits vergeben.'}, status=403)
+                destination = reverse('host_points:play', args=[room_code, participant_name])
+                if hub_session:
+                    destination += '?' + urlencode({'hub_session': hub_session})
                 if request.content_type == 'application/json':
                     return JsonResponse({
                         'success': True,
                         'participant_id': participant.id,
-                        'redirect_url': f'/host-points/play/{room_code}/{participant_name}/',
+                        'redirect_url': destination,
                     })
-                return redirect('host_points:play', room_code=room_code, participant_name=participant_name)
+                return redirect(destination)
 
         if request.content_type == 'application/json':
             return JsonResponse({'success': False, 'error': error}, status=400)
@@ -58,20 +70,19 @@ def host_points_join_view(request):
 def host_points_play(request, room_code, participant_name):
     game = get_object_or_404(HostPointsGame, room_code=room_code)
     hub_session = (request.GET.get('hub_session') or '').strip()
-    participant, _ = HostPointsParticipant.objects.get_or_create(
+    participant, created = HostPointsParticipant.objects.get_or_create(
         quiz=game,
         name=participant_name,
         hub_session_code=hub_session,
         defaults={'is_active': False},
     )
-    participant.is_active = bool(
-        game.status == 'active'
-        and game.is_official_participant(participant)
-        and (
-            not game.active_hub_session_code
-            or game.active_hub_session_code == hub_session
-        )
-    )
+    token = manual.page_token(request, participant, created=created)
+    if not hub_session and not token:
+        return JsonResponse({'success': False, 'error': 'Teilnahme nicht bestaetigt.'}, status=403)
+    if token and game.status == 'active' and game.active_hub_session_code == hub_session:
+        participant.is_active = manual.eligible_player(game, participant)
+    elif game.status != 'inactive':
+        participant.is_active = False
     participant.last_activity = timezone.now()
     participant.save(update_fields=['is_active', 'last_activity', 'updated_at'])
     state = game.serialize_state(hub_session or None, participant.name)
@@ -80,6 +91,7 @@ def host_points_play(request, room_code, participant_name):
         'participant': participant,
         'hub_session': hub_session,
         'state': state,
+        'player_token': token,
     })
 
 
@@ -112,6 +124,11 @@ def host_points_state(request, room_code):
     game = get_object_or_404(HostPointsGame, room_code=room_code)
     participant_name = (request.GET.get('participant_name') or request.GET.get('name') or '').strip()
     hub_session = (request.GET.get('hub_session') or '').strip()
+    if participant_name:
+        try:
+            manual.identify_player(game, participant_name, hub_session, request.GET.get('player_token'))
+        except manual.ActionError as exc:
+            return JsonResponse({'success': False, 'error': str(exc)}, status=403)
     return JsonResponse(game.serialize_state(hub_session or None, participant_name), json_dumps_params={'ensure_ascii': False})
 
 
@@ -134,10 +151,13 @@ def host_points_adjust_score(request, room_code):
             'error': authorization.message,
             'code': authorization.code,
         }, status=403)
-    success, result = game.adjust_score(data.get('participant_id'), data.get('delta'))
-    status = 200 if success else 400
-    return JsonResponse({
-        'success': success,
-        'message': 'Punkte gespeichert.' if success else result,
-        'state': game.serialize_state(data.get('hub_session') or None),
-    }, status=status, json_dumps_params={'ensure_ascii': False})
+    try:
+        code = data.get('hub_session', data.get('hub_session_code', game.active_hub_session_code))
+        success, result = manual.perform(game, {**data, 'type': 'admin_adjust_score'}, code,
+            lambda locked: locked.adjust_score(data.get('participant_id'), data.get('delta')))
+        if success:
+            manual.broadcast(game, 'score_adjusted')
+        return JsonResponse({'success': success, 'message': 'Punkte gespeichert.' if success else str(result),
+            'state': game.serialize_state(code)}, status=200 if success else 400)
+    except (ValueError, TypeError) as exc:
+        return JsonResponse({'success': False, 'error': str(exc)}, status=409)

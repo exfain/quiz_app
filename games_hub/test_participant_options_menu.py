@@ -305,7 +305,7 @@ class ParticipantOptionsMenuTests(unittest.TestCase):
         self.assertIn("participant-theme-select", rendered)
         self.assertIn('<option value="standard">Standard</option>', rendered)
         self.assertIn('<option value="arcade">Arcade</option>', rendered)
-        self.assertIn('<option value="vhs">VHS</option>', rendered)
+        self.assertIn('<option value="vhs" selected>VHS</option>', rendered)
         self.assertIn("participant-score-position-select", rendered)
         self.assertIn('<option value="bottom-left">links unten</option>', rendered)
         self.assertIn('<option value="top-left">links oben</option>', rendered)
@@ -694,7 +694,7 @@ class ParticipantOptionsMenuTests(unittest.TestCase):
         self.assertIn("clearWaitLoaderVariantClasses", rendered)
         self.assertIn("applyRandomLoaderVariant(loader, force)", rendered)
         self.assertIn(
-            "if ([DEFAULT_THEME, ARCADE_THEME, VHS_THEME].indexOf(datasetTheme) !== -1) return datasetTheme;",
+            "if (['standard', ARCADE_THEME, VHS_THEME].indexOf(datasetTheme) !== -1) return datasetTheme;",
             rendered,
         )
         self.assertIn("previousTheme && previousTheme !== normalized", rendered)
@@ -788,7 +788,7 @@ class ParticipantOptionsMenuTests(unittest.TestCase):
         for relative_path in submit_templates:
             with self.subTest(template=relative_path):
                 content = read_text(relative_path)
-                self.assertIn("Einloggen", content)
+                self.assertIn("einloggen" if relative_path == "templates/where_is_this/play.html" else "Einloggen", content)
                 self.assertNotIn("Submit Location", content)
                 self.assertNotIn('data-lucide="send"', content)
 
@@ -1530,6 +1530,10 @@ class ParticipantThemeButtonBrowserTests(unittest.TestCase):
         try:
             page.set_content(f"<!doctype html><html><body>{fixture}{widget}</body></html>")
             page.wait_for_selector("#gameAction.qa-theme-button")
+            # This test exercises the Standard theme's frame and click styling.
+            page.locator("#participant-theme-select").evaluate(
+                "el => { el.value = 'standard'; el.dispatchEvent(new Event('change', { bubbles: true })); }"
+            )
 
             self.assertEqual(page.locator("#gameAction").evaluate("el => el.parentElement.className"), "qa-theme-button-shell")
             self.assertEqual(page.locator("#answerAction").evaluate("el => el.parentElement.className"), "qa-theme-button-shell qa-theme-button-shell--block")
@@ -3980,6 +3984,10 @@ class ParticipantThemeButtonBrowserTests(unittest.TestCase):
         try:
             page.goto("http://qa.test/participant")
             page.wait_for_selector("#answerA.qa-theme-button")
+            # Start with Standard explicitly; a fresh page now defaults to VHS.
+            page.locator("#participant-theme-select").evaluate(
+                "el => { el.value = 'standard'; el.dispatchEvent(new Event('change', { bubbles: true })); }"
+            )
             page.evaluate(
                 f"window.quickQuizPlayer = {{ selectedAnswer: null, syncPendingAnswer() {{}}, {selection_method} }}"
             )
@@ -4066,10 +4074,8 @@ class ParticipantThemeButtonBrowserTests(unittest.TestCase):
             self.assertTrue(page.locator("#participant-accent-color-2").is_disabled())
             self.assertIsNone(page.evaluate("localStorage.getItem('participant_interface_accent_color')"))
             self.assertIsNone(page.evaluate("localStorage.getItem('participant_interface_accent_color_2')"))
-            self.assertEqual(
-                page.locator("#answerB").locator("xpath=..").evaluate("el => getComputedStyle(el, '::after').borderRadius"),
-                page.locator("#answerB").evaluate("el => getComputedStyle(el).borderRadius"),
-            )
+            self.assertEqual(page.locator("html").get_attribute("data-participant-theme"), "vhs")
+            self.assertEqual(page.locator("#participant-theme-select").input_value(), "vhs")
             self.assertEqual(browser_errors, [])
         finally:
             page.close()

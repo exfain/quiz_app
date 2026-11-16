@@ -1,3 +1,5 @@
+from games_hub.team_names import validate_join_name
+from games_hub.quiz_rounds import current_round
 from django.shortcuts import render, get_object_or_404, redirect
 from django.http import JsonResponse
 from django.views.decorators.http import require_http_methods, require_POST
@@ -7,6 +9,7 @@ from django.db import transaction
 from django.db.models import Avg, Count, Q
 import json
 from .models import Quiz, QuizQuestion, QuizParticipant, QuizAnswer, QuizSession
+from .progress import question_progress
 from games_hub.authoritative_state import current_snapshot, validate_and_reserve_action
 from games_hub.unit_tutorial_runtime import (
     get_scorebox_excluded_tutorial_question_ids,
@@ -23,6 +26,9 @@ def _get_run_tutorial_question_id(quiz, session_code=None):
 
 
 def _get_ordered_quiz_questions(quiz, session_code=None):
+    if getattr(getattr(quiz, 'session', None), 'question_rounds', None):
+        from games_hub.quiz_rounds import ordered_rounds
+        return [row['question'] for row in ordered_rounds(quiz, 'quiz', session_code) if row['question']]
     tutorial_question_ids = get_scorebox_excluded_tutorial_question_ids('quiz', quiz.room_code, session_code)
     active_question_id = None
     try:
@@ -80,6 +86,9 @@ def _get_ordered_quiz_questions(quiz, session_code=None):
 
 
 def _build_participant_progress_history(quiz, participant, session_code=None):
+    if getattr(getattr(quiz, 'session', None), 'question_rounds', None):
+        from games_hub.quiz_rounds import participant_history
+        return participant_history(quiz, participant, 'quiz', session_code)
     ordered_questions = _get_ordered_quiz_questions(quiz, session_code=session_code)
     tutorial_question_ids = get_scorebox_excluded_tutorial_question_ids('quiz', quiz.room_code, session_code)
     active_question_id = None
@@ -124,6 +133,7 @@ def _build_participant_progress_history(quiz, participant, session_code=None):
     return history
 
 
+@validate_join_name('quiz', 'quiz/join.html')
 def quiz_join_view(request):
     """Combined view for quiz join page (GET) and join action (POST)"""
     if request.method == 'GET':
@@ -270,6 +280,7 @@ def check_room_code(request, room_code):
 
 @require_POST
 @csrf_exempt
+@validate_join_name('quiz', 'quiz/join.html')
 def join_quiz(request):
     """Join a quiz session"""
     try:
@@ -376,7 +387,7 @@ def join_quiz(request):
 def quiz_play(request, room_code, participant_name):
     """Quiz play page for participants"""
     try:
-        session_code = request.GET.get('hub_session')
+        session_code = request.GET.get('hub_session') or None
         quiz = get_object_or_404(Quiz, room_code=room_code)
         participant = get_object_or_404(
             QuizParticipant, 
@@ -414,21 +425,15 @@ def quiz_play(request, room_code, participant_name):
             (index for index, question in enumerate(ordered_questions, start=1) if question.id == current_question_id),
             None,
         )
-        try:
-            session_question_number = quiz.session.current_question_number
-        except QuizSession.DoesNotExist:
-            session_question_number = 0
-        tutorial_state = get_unit_tutorial_state('quiz', quiz.room_code, session_code)
-        if tutorial_state.get('requested') and (
-            tutorial_state.get('current_unit_is_tutorial')
-            or tutorial_state.get('tutorial_has_been_played')
-        ):
-            session_question_number = max(0, session_question_number - 1)
-        if question_runtime.get('prepared_question_id'):
-            current_question_number = session_question_number + 1
-        elif current_question_id is not None and session_question_number > 0:
-            current_question_number = session_question_number
-        else:
+        progress = question_progress(
+            quiz, session_code, question_id=current_question_id,
+            prepared=bool(question_runtime.get('prepared_question_id')),
+        )
+        current_question_number = progress['current']
+        if getattr(getattr(quiz, 'session', None), 'question_rounds', None):
+            current_question_position = current_question_number
+        # Keep legacy quizzes without a persisted send counter loadable.
+        if current_question_number is None and not getattr(getattr(quiz, 'session', None), 'current_question_number', 0):
             current_question_number = current_question_position
         question_scoreboard = []
         for index, question in enumerate(ordered_questions, start=1):
@@ -451,6 +456,13 @@ def quiz_play(request, room_code, participant_name):
                 'max_points': question.get_effective_max_points(),
             })
 
+        if getattr(getattr(quiz, 'session', None), 'question_rounds', None):
+            from games_hub.quiz_rounds import scoreboard as round_scoreboard
+            question_scoreboard = round_scoreboard(quiz, 'quiz', session_code)
+            for row in question_scoreboard:
+                entry = progress_by_number.get(row['number'])
+                row['is_correct'] = entry['is_correct'] if entry else None
+                row['points_earned'] = entry['points_earned'] if entry else None
         score_total_correct = sum(entry['points_earned'] for entry in initial_progress_history)
         score_total_questions = sum(question['max_points'] for question in question_scoreboard)
         
@@ -463,7 +475,7 @@ def quiz_play(request, room_code, participant_name):
             'initial_progress_history': initial_progress_history,
             'current_question_id': current_question_id,
             'current_question_number': current_question_number,
-            'total_question_count': len(question_scoreboard),
+            'total_question_count': progress['total'] or 0,
             'current_unit_is_tutorial': is_current_unit_tutorial_question('quiz', quiz.room_code, session_code, quiz.current_question_id),
             'score_total_correct': score_total_correct,
             'score_total_questions': score_total_questions,
@@ -482,7 +494,8 @@ def quiz_result(request, room_code, participant_name):
         participant = get_object_or_404(
             QuizParticipant, 
             quiz=quiz, 
-            name=participant_name
+            name=participant_name,
+            hub_session_code=request.GET.get('hub_session') or None,
         )
         
         # Get participant's answers
@@ -504,7 +517,7 @@ def quiz_result(request, room_code, participant_name):
         participant_rank = participant.get_rank()
         
         # Get leaderboard (top 10)
-        leaderboard = quiz.participants.all().order_by('-total_score', 'name')[:10]
+        leaderboard = quiz.participants.filter(hub_session_code=participant.hub_session_code).order_by('-total_score', 'name')[:10]
         
         # Calculate performance insights
         average_time = None
@@ -534,7 +547,7 @@ def quiz_result(request, room_code, participant_name):
             'accuracy_percentage': accuracy_percentage,
             'participant_rank': participant_rank,
             'leaderboard': leaderboard,
-            'total_participants': quiz.get_participant_count(),
+            'total_participants': quiz.participants.filter(hub_session_code=participant.hub_session_code).count(),
             'average_time': average_time,
             'fastest_answer': fastest_answer,
             'quiz_duration': quiz_duration,
@@ -557,7 +570,7 @@ def quiz_result(request, room_code, participant_name):
 def submit_answer(request, room_code, participant_name):
     """Submit an answer for the current question"""
     try:
-        session_code = request.GET.get('hub_session')
+        session_code = request.GET.get('hub_session') or None
         quiz = get_object_or_404(Quiz, room_code=room_code)
         participant = get_object_or_404(
             QuizParticipant, 
@@ -575,7 +588,7 @@ def submit_answer(request, room_code, participant_name):
         
         # Check if participant has already answered this question
         existing_answer = QuizAnswer.objects.filter(
-            quiz=quiz,
+            quiz=quiz, round_number=current_round(quiz),
             participant=participant,
             question=quiz.current_question
         ).first()
@@ -621,53 +634,20 @@ def submit_answer(request, room_code, participant_name):
                 'error': decision.message,
             }, status=409)
 
-        with transaction.atomic():
-            locked_quiz = Quiz.objects.select_for_update().get(pk=quiz.pk)
-            locked_session = QuizSession.objects.select_for_update().filter(quiz=locked_quiz).first()
-            received_at = timezone.now()
-            if (
-                locked_quiz.status != 'active'
-                or locked_quiz.current_question_id != question.id
-                or not locked_session
-                or not locked_session.is_question_active
-                or not locked_session.question_end_time
-                or received_at >= locked_session.question_end_time
-            ):
-                return JsonResponse({
-                    'success': False,
-                    'error': 'The answer deadline has expired.'
-                })
-            server_time_taken = (
-                max(0.0, (received_at - locked_quiz.question_start_time).total_seconds())
-                if locked_quiz.question_start_time
-                else 0.0
-            )
-            answer, created = QuizAnswer.objects.get_or_create(
-                quiz=locked_quiz,
-                participant=participant,
-                question=question,
-                defaults={
-                    'answer_text': answer_text,
-                    'time_taken': server_time_taken,
-                },
-            )
-            if not created:
-                return JsonResponse({
-                    'success': False,
-                    'error': 'You have already answered this question.'
-                })
-        
-        # Update participant's last activity
+        from .consumers import QuizConsumer
+        consumer = QuizConsumer()
+        consumer.room_code = room_code
+        answer = consumer.save_participant_answer_sync(
+            participant_name, session_code, answer_text, 0, question.id,
+        )
+        if not answer:
+            return JsonResponse({'success': False, 'error': 'Die Antwort wurde nicht angenommen.'}, status=409)
         participant.last_activity = timezone.now()
-        participant.save()
-        
-        return JsonResponse({
-            'success': True,
-            'is_correct': answer.is_correct,
-            'points_earned': answer.points_earned,
-            'correct_answer': question.get_formatted_correct_answer() if not answer.is_correct else None
-        })
-        
+        participant.save(update_fields=['last_activity'])
+        # The host reveals evaluation. Transport choice must not reveal solutions.
+        return JsonResponse({'success': True, 'answer_locked': True,
+                             'evaluation_revealed': False, 'question_id': question.id})
+
     except json.JSONDecodeError:
         return JsonResponse({
             'success': False,
@@ -683,7 +663,7 @@ def submit_answer(request, room_code, participant_name):
 def get_quiz_status(request, room_code, participant_name):
     """Get current quiz status for participant"""
     try:
-        session_code = request.GET.get('hub_session')
+        session_code = request.GET.get('hub_session') or None
         quiz = get_object_or_404(Quiz, room_code=room_code)
         participant = get_object_or_404(
             QuizParticipant, 
@@ -704,38 +684,20 @@ def get_quiz_status(request, room_code, participant_name):
             'questions_answered': participant.questions_answered
         }
         
-        # Include current question if active
         if quiz.current_question and quiz.status == 'active':
-            question = quiz.current_question
-            status_data['current_question'] = {
-                'id': question.id,
-                'question_text': question.question_text,
-                'question_type': question.get_effective_question_type(),
-                'time_limit': question.time_limit,
-                'options': [],
-                'short_answer_fields': question.get_public_short_answer_fields(),
-            }
-            
-            # Add options for multiple choice questions
-            if question.question_type == 'multiple_choice':
-                for key, text in question.get_options():
-                    status_data['current_question']['options'].append({
-                        'key': key,
-                        'text': text
-                    })
-            elif question.question_type == 'true_false':
-                status_data['current_question']['options'] = [
-                    {'key': 'True', 'text': 'True'},
-                    {'key': 'False', 'text': 'False'}
-                ]
-            # Check if user has already answered
-            has_answered = QuizAnswer.objects.filter(
-                quiz=quiz,
-                participant=participant,
-                question=question
+            from .consumers import QuizConsumer
+            consumer = QuizConsumer()
+            consumer.room_code = room_code
+            question = consumer.current_question_payload(session_code)
+            if question and question.get('question_phase') == 'prompt_visible':
+                question['options'] = []
+                question['people'] = []
+            status_data['current_question'] = question
+            status_data['has_answered'] = QuizAnswer.objects.filter(
+                quiz=quiz, participant=participant, question=quiz.current_question,
+                round_number=current_round(quiz),
             ).exists()
-            status_data['has_answered'] = has_answered
-        
+
         return JsonResponse({
             'success': True,
             **status_data
@@ -751,7 +713,7 @@ def get_quiz_status(request, room_code, participant_name):
 def leave_quiz(request, room_code, participant_name):
     """Leave a quiz session"""
     try:
-        session_code = request.GET.get('hub_session')
+        session_code = request.GET.get('hub_session') or None
         quiz = get_object_or_404(Quiz, room_code=room_code)
         participant = get_object_or_404(
             QuizParticipant, 
@@ -779,7 +741,7 @@ def api_quiz_participants(request, room_code):
     try:
         quiz = get_object_or_404(Quiz, room_code=room_code)
         
-        participants = quiz.participants.filter(is_active=True).order_by('-total_score', 'name')
+        participants = quiz.participants.filter(is_active=True, hub_session_code=request.GET.get('hub_session') or None).order_by('-total_score', 'name')
         
         participants_data = []
         for participant in participants:
@@ -809,7 +771,7 @@ def api_quiz_leaderboard(request, room_code):
         quiz = get_object_or_404(Quiz, room_code=room_code)
         
         # Get top 10 participants
-        participants = quiz.participants.all().order_by('-total_score', 'name')[:10]
+        participants = quiz.participants.filter(hub_session_code=request.GET.get('hub_session') or None).order_by('-total_score', 'name')[:10]
         
         leaderboard_data = []
         for rank, participant in enumerate(participants, 1):
