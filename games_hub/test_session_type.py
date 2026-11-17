@@ -18,6 +18,7 @@ from games_website.services import restore_all_models_from_supabase, sync_all_mo
 
 from .lobby_join import join_lobby_participant
 from .models import HubGameStep, HubParticipant, HubSession
+from .migration_test_utils import targets_before
 
 
 class HubSessionTypeTests(TestCase):
@@ -151,9 +152,9 @@ class HubSessionTypeMigrationTests(TransactionTestCase):
     def test_existing_sessions_become_multiplayer_and_rollback_preserves_data(self):
         executor = MigrationExecutor(connection)
         latest = executor.loader.graph.leaf_nodes()
-        old_targets = [target for target in latest if target[0] != "games_hub"]
-        new_targets = [*old_targets, ("games_hub", "0025_hubsession_session_type")]
-        old_targets.append(("games_hub", "0024_text_answer_matching"))
+        old_targets = targets_before(executor.loader, ("games_hub", "0025_hubsession_session_type"))
+        new_targets = [target for target in old_targets if target[0] != "games_hub"]
+        new_targets.append(("games_hub", "0025_hubsession_session_type"))
         old_state = executor.loader.project_state(old_targets)
         migration = executor.loader.get_migration("games_hub", "0025_hubsession_session_type")
         self.assertEqual([type(operation) for operation in migration.operations], [

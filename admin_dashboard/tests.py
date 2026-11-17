@@ -21,7 +21,7 @@ from pathlib import Path
 from Assign.models import AssignQuestion, AssignQuiz
 from Estimation.models import EstimationQuestion, EstimationQuiz
 from QuizGame.models import Quiz, QuizQuestion
-from black_jack_quiz.models import BlackJackQuiz
+from black_jack_quiz.models import BlackJackQuiz, BlackJackSession
 from clue_rush.models import Clue, ClueQuestion, ClueRushGame, ClueRushSession
 from django.contrib.auth.models import User
 from django.contrib.staticfiles.testing import StaticLiveServerTestCase
@@ -170,9 +170,15 @@ class HostEndStateTemplateTest(TestCase):
         for path in monitor_paths:
             with self.subTest(path=path):
                 content = self.read_template(path)
+                if path.endswith('/where_monitor.html'):
+                    self.assertIn("js/where-live.js", content)
+                    live = self.read_template("static/js/where-live.js")
+                    self.assertIn("if (status === 'completed') window.hostEndState?.apply", live)
+                    self.assertNotIn("location.reload", live)
+                    continue
                 start = content.find("case 'quiz_ended':")
                 self.assertNotEqual(start, -1)
-                end = content.find("case 'quiz_inactive':", start)
+                end = content.find("case '", start + len("case 'quiz_ended':"))
                 block = content[start:end if end != -1 else start + 600]
                 self.assertIn("hostEndState?.apply", block)
                 self.assertNotIn("location.reload", block)
@@ -241,6 +247,13 @@ class HostQuestionStartTemplateTest(TestCase):
 
         for path in monitor_paths:
             with self.subTest(path=path):
+                if path.endswith('/where_monitor.html'):
+                    content = self.read_template("static/js/where-live.js")
+                    block = content.split("el('sendQuestionBtn').onclick =", 1)[1].split(";", 1)[0]
+                    self.assertIn("type: 'admin_send_question'", block)
+                    self.assertNotIn("render(", block)
+                    self.assertNotIn("state =", block)
+                    continue
                 block = self.question_send_block(self.read_template(path))
                 if "this.websocket.send(JSON.stringify(payload));" in block:
                     after_send = block.split("this.websocket.send(JSON.stringify(payload));", 1)[1]
@@ -265,6 +278,13 @@ class HostQuestionStartTemplateTest(TestCase):
 
         for path in monitor_paths:
             with self.subTest(path=path):
+                if path.endswith('/where_monitor.html'):
+                    live = self.read_template("static/js/where-live.js")
+                    self.assertIn("if (data.type === 'where_state')", live)
+                    self.assertIn("state = data", live)
+                    self.assertIn("el('sendQuestionBtn').disabled = status !== 'active' || (!!q && !reveal)", live)
+                    self.assertIn("el('questionText').textContent = q?.text", live)
+                    continue
                 block = self.question_started_block(self.read_template(path))
                 self.assertIn("data.question?.id", block)
                 self.assertIn("this.markQuestionSent(data.question.id)", block)
@@ -285,7 +305,10 @@ class HostQuestionStartTemplateTest(TestCase):
         for path in monitor_paths:
             with self.subTest(path=path):
                 content = self.read_template(path)
-                self.assertRegex(content, r'<button\s+type="button"[^>]*class="[^"]*\bsend-question-btn\b')
+                if path.endswith('/where_monitor.html'):
+                    self.assertRegex(content, r'<button[^>]*id="sendQuestionBtn"[^>]*type="button"')
+                else:
+                    self.assertRegex(content, r'<button\s+type="button"[^>]*class="[^"]*\bsend-question-btn\b')
 
     def test_quick_quiz_send_question_has_visible_error_and_ready_state_guard(self):
         content = self.read_template("templates/admin_dashboard/quiz_monitor.html")
@@ -806,6 +829,9 @@ class ManageGamesApiTest(TestCase):
 
         for relative_path in monitor_templates:
             content = (repo_root / relative_path).read_text(encoding="utf-8")
+            if relative_path.endswith('/where_monitor.html'):
+                self.assertIn("js/where-live.js", content)
+                content += (repo_root / 'static/js/where-live.js').read_text(encoding='utf-8')
             self.assertIn(expected_gate, content, relative_path)
             self.assertIn("Spielerläuterung anzeigen", content, relative_path)
             self.assertNotIn('id="showTutorialToggle" checked', content, relative_path)
@@ -856,14 +882,22 @@ class ManageGamesApiTest(TestCase):
 
         for relative_path in play_templates:
             content = (repo_root / relative_path).read_text(encoding="utf-8")
+            if relative_path.endswith('/where_is_this/play.html'):
+                self.assertIn("js/where-live.js", content)
+                live = (repo_root / 'static/js/where-live.js').read_text(encoding='utf-8')
+                self.assertIn("if (data.tutorial) window.gameTutorial?.showFromPayload(data.tutorial)", live)
+                self.assertIn("else window.gameTutorial?.forceClose()", live)
+                self.assertIn("manualGameTutorialComplete", live)
+                content += live
             self.assertIn("{% include 'includes/_game_tutorial_overlay.html' %}", content, relative_path)
             self.assertIn("_unit_tutorial_notice.html", content, relative_path)
             self.assertIn("unitTutorialNotice", content, relative_path)
-            self.assertTrue(
-                "case 'tutorial_start':" in content or "data.type === 'tutorial_start'" in content,
-                relative_path,
-            )
-            self.assertIn("tutorial_force_close", content, relative_path)
+            if not relative_path.endswith('/where_is_this/play.html'):
+                self.assertTrue(
+                    "case 'tutorial_start':" in content or "data.type === 'tutorial_start'" in content,
+                    relative_path,
+                )
+                self.assertIn("tutorial_force_close", content, relative_path)
 
         blackjack_content = (repo_root / "templates/black_jack_quiz/play.html").read_text(encoding="utf-8")
         self.assertIn("tutorial_notice_label='Tutorialset'", blackjack_content)
@@ -1094,11 +1128,14 @@ class SessionsTest(TestCase):
             title="Bulk End Black Jack",
             status="active",
         )
+        # Real creation/start always creates the runtime session alongside the game.
+        BlackJackSession.objects.create(quiz=active_blackjack)
         active_clue_rush = ClueRushGame.objects.create(
             creator=self.user,
             title="Bulk End Clue Rush",
             status="active",
         )
+        ClueRushSession.objects.create(quiz=active_clue_rush)
         waiting_quiz = Quiz.objects.create(
             creator=self.user,
             title="Waiting Quiz",

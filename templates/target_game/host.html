@@ -1,0 +1,5 @@
+{% extends 'admin_dashboard/base.html' %}{% load static %}
+{% block page_title %}Zielansage{% endblock %}
+{% block extra_head %}<link rel="stylesheet" href="{% static 'themes/vhs/vhs.css' %}"><link rel="stylesheet" href="{% static 'css/duel.css' %}"><script src="{% static 'js/authoritative-game-state.js' %}"></script>{% endblock %}
+{% block content %}{% include 'target_game/_content.html' %}{% endblock %}
+{% block extra_js %}<script src="{% static 'js/target-game.js' %}"></script>{% endblock %}

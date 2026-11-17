@@ -46,6 +46,7 @@ urlpatterns = [
     # Central games hub
     path('hub/', include('games_hub.urls')),
     path('duel/', include('duel.urls')),
+    path('target/', include('target_game.urls')),
 
     # Clue Rush game
     path('clue-rush/', include('clue_rush.urls')),

@@ -3,6 +3,7 @@ from dataclasses import replace
 from random import SystemRandom
 from uuid import uuid5, NAMESPACE_URL
 from django.db import transaction
+from django.db.models import OuterRef, Q, Subquery
 from django.utils import timezone
 from django.urls import reverse
 from games_hub.authoritative_state import _retry_sqlite_locked
@@ -46,6 +47,13 @@ def answering(state):
 
 def reveal_ready(pair):
     """A Black Jack question has its own barrier within the shared set."""
+    if pair.game_instance.game_key == 'estimation':
+        # Each pair plays the same single-question unit. Keep the barrier live
+        # in this transaction, without loading 12 units/states on every poll.
+        # Missing units/states must continue to block publication.
+        phase = DuelUnit.objects.filter(game_instance_id=OuterRef('game_instance_id')).order_by('number').values('estimation_round_state__phase')[:1]
+        return not pair.tournament_set.pairs.annotate(_phase=Subquery(phase)).filter(
+            Q(_phase__isnull=True) | Q(_phase__in=('prepared', 'answering'))).exists()
     own = state_for(pair.game_instance)
     index = getattr(own, 'question_index', 0)
     for other in pair.tournament_set.pairs.select_related('game_instance'):

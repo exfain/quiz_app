@@ -178,7 +178,8 @@ class ReadinessCheckBoundaryTests(TestCase):
             if key == 'where':
                 continue
             with self.subTest(game_key=key):
-                game = model.objects.create(creator=self.host, status='active')
+                config = {'title': 'Zielansage', 'scoring_mode': 'simple', 'answer_seconds': 30} if key == 'target' else {}
+                game = model.objects.create(creator=self.host, status='active', **config)
                 step = HubGameStep.objects.create(session=self.session, game_key=key, room_code=game.room_code, order=1)
                 result = start_readiness_check(self.session)
                 self.assertFalse(result['success'])

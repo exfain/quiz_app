@@ -3,6 +3,7 @@ import json
 from channels.db import database_sync_to_async
 from channels.generic.websocket import AsyncJsonWebsocketConsumer
 from django.core.exceptions import ValidationError
+from django.db import transaction
 
 from games_hub.active_game_guard import resolve_session_game_activation_for_room
 from games_hub.authoritative_consumer import AuthoritativeGameConsumerMixin
@@ -12,6 +13,7 @@ from games_hub.authoritative_state import register_socket_connection, disconnect
 from .identity import valid_player_token
 from .models import WhereQuiz, WhereParticipant, WhereQuestion
 from . import runtime as r
+from games_hub import tutorial_runtime as tutorials, unit_tutorial_runtime as units
 
 
 class WhereConsumer(AuthoritativeGameConsumerMixin, AsyncJsonWebsocketConsumer):
@@ -46,6 +48,11 @@ class WhereConsumer(AuthoritativeGameConsumerMixin, AsyncJsonWebsocketConsumer):
                 await self.send_state()
             elif kind in {'ping', 'heartbeat'}:
                 await self.send_json({'type': 'pong'})
+            elif kind == 'tutorial_completed':
+                if not self.player_id:
+                    raise r.ActionError('Teilnahme nicht bestätigt.')
+                await self.complete_tutorial()
+                await self.send_state()
             elif kind in {'participant_submit_answer', 'participant_input_changed'}:
                 if not self.player_id:
                     raise r.ActionError('Teilnahme nicht bestätigt.')
@@ -54,7 +61,10 @@ class WhereConsumer(AuthoritativeGameConsumerMixin, AsyncJsonWebsocketConsumer):
                                      'question_id': data.get('question_id'), 'round_id': data.get('round_id'), **point})
                 await self.send_state()
             elif str(kind).startswith('admin_'):
-                await self.action(data)
+                result = await self.action(data)
+                if result:
+                    await self.send_json(result)
+                    return
                 if kind == 'admin_start_quiz':
                     await self.send_json({'type': 'host_start_confirmed', 'start_request_id': data.get('start_request_id')})
                 await self.send_state()
@@ -94,6 +104,7 @@ class WhereConsumer(AuthoritativeGameConsumerMixin, AsyncJsonWebsocketConsumer):
         return r.save_input(participant.quiz, participant, data, confirm=confirm)
 
     @database_sync_to_async
+    @transaction.atomic
     def action(self, data):
         code = str(data.get('hub_session') or self.code or '')
         auth = authorize_game_host(self.scope.get('user'), 'where', self.room_code, code)
@@ -103,6 +114,11 @@ class WhereConsumer(AuthoritativeGameConsumerMixin, AsyncJsonWebsocketConsumer):
         kind = data['type']
         if kind == 'admin_start_quiz':
             already_started = game.status == 'active' and bool(game.started_at)
+            new_run = not game.started_at or game.active_hub_session_code != code
+            if new_run:
+                validation = units.validate_unit_tutorial_request('where', self.room_code, data.get('play_tutorial') is True)
+                if not validation['success']:
+                    return validation
             if game.status not in {'active', 'inactive'} or not game.started_at:
                 presence = ensure_session_players_ready_for_game_start_for_room('where', self.room_code, code)
                 if not presence.get('allowed', True):
@@ -111,14 +127,23 @@ class WhereConsumer(AuthoritativeGameConsumerMixin, AsyncJsonWebsocketConsumer):
             if not decision.get('success'):
                 raise r.ActionError(decision.get('error') or 'Ein anderes Spiel ist noch aktiv.')
             r.start(game, code)
+            if new_run:
+                tutorials.activate_tutorial_runtime('where', self.room_code, code, game, data.get('show_tutorial') is True)
+                units.prepare_unit_tutorial_runtime('where', self.room_code, code, data.get('play_tutorial') is True)
             # Use the established hub event to route the confirmed lobby teams.
             from asgiref.sync import async_to_sync
             if not already_started:
                 async_to_sync(self.channel_layer.group_send)(f'hub_{code}', {'type': 'hub_event', 'event': {'type': 'quiz_started',
                     'game_key': 'where', 'room_code': game.room_code, 'title': game.title}})
         elif kind == 'admin_send_question':
-            question = WhereQuestion.objects.get(pk=data['question_id'], created_by=game.creator, is_active=True)
-            r.send_question(game, question, time_limit=data.get('custom_time_limit'))
+            warning = tutorials.get_tutorial_start_warning('where', self.room_code, code)
+            if warning and data.get('force_tutorial_continue') is not True:
+                return {'type': 'tutorial_ack_warning', **warning, 'original_message': data}
+            tutorials.force_close_tutorial_runtime('where', self.room_code, code, game)
+            tutorial = units.start_unit_tutorial_if_needed('where', self.room_code, code)
+            question = WhereQuestion.objects.get(pk=tutorial['tutorial_question_id'] if tutorial['is_tutorial_round'] else data['question_id'],
+                created_by=game.creator, is_active=True)
+            r.send_question(game, question, time_limit=data.get('custom_time_limit'), tutorial=tutorial['is_tutorial_round'])
         elif kind == 'admin_end_question':
             self.check_round(game, data)
             r.reveal(game)
@@ -129,6 +154,12 @@ class WhereConsumer(AuthoritativeGameConsumerMixin, AsyncJsonWebsocketConsumer):
             r.set_paused(game, True)
         else:
             raise r.ActionError('Unbekannte Hostaktion.')
+
+    @database_sync_to_async
+    def complete_tutorial(self):
+        participant = WhereParticipant.objects.get(pk=self.player_id)
+        tutorials.mark_tutorial_completed('where', self.room_code, self.code, participant.name)
+        r.broadcast(participant.quiz)
 
     @staticmethod
     def check_round(game, data):
@@ -143,7 +174,10 @@ class WhereConsumer(AuthoritativeGameConsumerMixin, AsyncJsonWebsocketConsumer):
             return None
         game = WhereQuiz.objects.get(room_code=self.room_code)
         participant = WhereParticipant.objects.get(pk=self.player_id) if self.player_id else None
-        return r.state(game, self.code, participant, host=self.host)
+        state = r.state(game, self.code, participant, host=self.host)
+        state['tutorial'] = tutorials.get_tutorial_payload('where', self.room_code, self.code,
+            participant.name if participant else None)
+        return state
 
     async def send_state(self, data=None):
         state = await self.get_state()

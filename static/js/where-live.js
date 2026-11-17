@@ -14,7 +14,9 @@
         pendingStart = window.AuthoritativeGameState.createActionId();
         el('startQuizBtn').disabled = true;
         error('');
-        if (!send({type: 'admin_start_quiz', start_request_id: pendingStart})) {finishStart(); return;}
+        if (!send({type: 'admin_start_quiz', start_request_id: pendingStart,
+            show_tutorial: el('showTutorialToggle')?.checked || false,
+            play_tutorial: el('playTutorialToggle')?.checked || false})) {finishStart(); return;}
         startTimer = setTimeout(() => finishStart('Keine Startbestätigung erhalten. Bitte den Spielstand prüfen und erneut versuchen.'), 10000);
     }
     const map = new WhereMap(el('whereMap'), {onSelect(point) {
@@ -31,6 +33,11 @@
             round_id: state?.current_round_id, ...finalContext, ...data})); return true;
     }
     function error(message) {el('whereError').hidden = !message; el('whereError').textContent = message || '';}
+    function handleTutorialAckWarning(data) {
+        window.showTutorialAckWarning?.(data, () => send({...data.original_message, force_tutorial_continue: true}));
+    }
+    // Acknowledgement uses the already authenticated player socket.
+    if (!host) window.manualGameTutorialComplete = () => send({type: 'tutorial_completed'});
     function connect() {
         socket = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws/where/${config.room}/`);
         socket.onopen = () => {error(''); send({type: host ? 'host_join' : 'participant_join', participant_name: config.name, player_token: config.token});};
@@ -41,11 +48,18 @@
                 const changed = String(state?.current_round_id) !== String(data.current_round_id) || state?.current_question_id !== data.current_question_id;
                 if (changed || data.revealed) draft = null;
                 state = data; offset = Date.parse(data.server_now) - Date.now();
+                window.unitTutorialNotice?.setFromPayload(data);
+                if (!host) {
+                    if (data.tutorial) window.gameTutorial?.showFromPayload(data.tutorial);
+                    else window.gameTutorial?.forceClose();
+                }
                 if (draft && !data.own_answer && data.can_answer) send({type: 'participant_input_changed', ...draft});
                 if (data.own_answer || !data.can_answer) sending = false;
                 if (!host) window.sessionGameStartIntro?.handleState(data);
                 render();
             } else if (data.type === 'host_start_confirmed' && data.start_request_id === pendingStart) {finishStart();}
+            else if (data.type === 'tutorial_question_missing') {finishStart(); window.showTutorialQuestionMissing?.(data);}
+            else if (data.type === 'tutorial_ack_warning') {handleTutorialAckWarning(data);}
             else if (data.type === 'error' || data.type === 'action_rejected') {if (host) finishStart(); error(data.message); sending = false; endedRound = ''; send({type: 'get_state'});}
             else if (data.type === 'input_saved' && draft && String(data.round_id) === String(draft.round_id)
                     && Math.abs(Number(data.x_norm) - draft.x_norm) < 1e-10 && Math.abs(Number(data.y_norm) - draft.y_norm) < 1e-10) draft = null;

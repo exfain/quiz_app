@@ -132,6 +132,11 @@ def get_session_lobby_presence(session_code: str) -> dict:
     participant_model_map = get_game_participant_model_map()
 
     for step in session.steps.exclude(room_code='').order_by('order'):
+        if step.game_key == 'target':
+            from target_game.models import Enrollment
+            for name in Enrollment.objects.filter(run__step=step,is_active=True).values_list('participant__nickname',flat=True):
+                active_game_map.setdefault(name, []).append({'game_key':'target','room_code':step.room_code,'title':step.title or 'Zielansage'})
+            continue
         participant_model = participant_model_map.get(step.game_key)
         if not participant_model:
             continue
@@ -208,6 +213,8 @@ def ensure_session_players_ready_for_game_start_for_room(
 
 def mark_session_game_participants_inactive(session_code: str) -> dict:
     session = HubSession.objects.prefetch_related('steps').get(code=session_code)
+    from target_game.models import Enrollment
+    Enrollment.objects.filter(run__step__session=session, is_active=True).update(is_active=False)
     participant_model_map = get_game_participant_model_map()
 
     for step in session.steps.exclude(room_code='').order_by('order'):
@@ -247,6 +254,11 @@ def mark_single_participant_inactive_for_lobby_return(
     ).first()
     if not step:
         return {'success': False, 'error': 'Spiel der Session nicht gefunden.'}
+
+    if game_key == 'target':
+        from target_game.models import Enrollment
+        Enrollment.objects.filter(run__step=step,participant__nickname=participant_name).update(is_active=False)
+        return {'success':True,'presence':get_session_lobby_presence(session_code)}
 
     participant_model = get_game_participant_model_map().get(game_key)
     if not participant_model:

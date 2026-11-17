@@ -652,6 +652,7 @@
             return;
           }
           const routes = {
+            target: { join: '/target/join/', play: '/target/play/' },
             quiz: { join: '/quiz/join/', play: '/quiz/play/' },
             clue_rush: { join: '/clue-rush/join/', play: '/clue-rush/play/' },
             assign: { join: '/assign/join/', play: '/assign/play/' },
@@ -700,7 +701,7 @@
                 for (let attempt = 0; attempt < 3; attempt++) {
                   response = await fetch(joinUrl.toString(), {
                     method: 'POST',
-                    headers: {'Content-Type': 'application/json', 'X-CSRFToken': csrfToken},
+                    headers: {'Content-Type': 'application/json', 'X-CSRFToken': csrfToken, ...(step.game_key === 'target' ? {Authorization: 'Bearer '+rejoinTokenFor(nickname)} : {})},
                     body, credentials: 'same-origin',
                   });
                   if (response.status < 500) break;
@@ -1016,13 +1017,27 @@
         }
       }
 
+      let votesRefreshInFlight = false;
+      let votesRefreshAgain = false;
       function refreshVotes() {
+        if (votesRefreshInFlight) {
+          votesRefreshAgain = true;
+          return;
+        }
+        votesRefreshInFlight = true;
         const nickname = currentNickname;
         const suffix = nickname ? `?nickname=${encodeURIComponent(nickname)}` : '';
         fetch(`/hub/api/session/${code}/votes/${suffix}`)
           .then(r => r.json())
           .then(data => renderVotingPayload(data))
-          .catch(() => hideVoting());
+          .catch(() => hideVoting())
+          .finally(() => {
+            votesRefreshInFlight = false;
+            if (votesRefreshAgain) {
+              votesRefreshAgain = false;
+              refreshVotes();
+            }
+          });
       }
 
       // Leaderboard

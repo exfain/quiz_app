@@ -4,6 +4,7 @@
 <body class="quiz-play-page" data-authoritative-paint-gate data-vhs-progress-kind="question" data-vhs-progress-source="#questionProgress">
 <main class="play-container where-live"><header><h1>{{ quiz.title }}</h1><p>{{ participant.name }} · <span id="questionProgress">0 / 0</span> · <span id="timeLeft"></span></p></header>
 <p id="whereMessage" role="status">Verbindung wird hergestellt …</p><p id="whereError" role="alert" hidden></p>
+{% include 'includes/_unit_tutorial_notice.html' %}
 <section id="whereWaiting" hidden>{% include 'includes/_participant_start_waiting.html' with waiting_game_title=quiz.title %}</section>
 <section id="whereQuestion" hidden>
 <h2 id="questionText"></h2><img id="questionImage" alt="Bild zur Frage" hidden>
@@ -13,6 +14,7 @@
 <div id="whereScoreboard"></div><div id="whereLeaderboard"></div>
 {% if hub_session %}<button id="returnToLobbyBtn" type="button" disabled>Zur Lobby zurückkehren</button>{% endif %}
 </main>
+{% include 'includes/_game_tutorial_overlay.html' %}
 {{ where_config|json_script:'whereConfig' }}
 {% include 'includes/_session_game_start_intro.html' with game_key='where' room_code=quiz.room_code %}
 {% include 'includes/_hub_return_to_lobby_player.html' with game_key='where' room_code=quiz.room_code participant_name=participant.name %}

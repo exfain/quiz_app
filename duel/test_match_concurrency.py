@@ -1,7 +1,6 @@
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from threading import Barrier, Event, Lock
-import time
 from uuid import uuid4
 
 from django.db import connection, connections
@@ -143,12 +142,16 @@ class MatchConcurrencyTests(MatchFixture):
                 self.assertTrue(first_written.wait(timeout=10))
                 read_future = pool.submit(reader)
                 self.assertTrue(reader_started.wait(timeout=10))
-                time.sleep(0.03)
-                self.assertFalse(read_future.done())
+                # A SQLite reader sees the previous COMPLETE committed batch
+                # without reserving a writer lock or seeing the first new row.
+                before = read_future.result(timeout=3)
+                self.assertEqual((before['party_a']['score'], before['party_b']['score']), (9, 9))
+                self.assertEqual(before['evaluation'], 'running')
             finally:
                 release.set()
             write_future.result(timeout=20)
-            snapshot = read_future.result(timeout=20)
+            read_future.result(timeout=20)
+        snapshot = get_match_snapshot(self.instance.pk)
         self.assertEqual((snapshot["party_a"]["score"], snapshot["party_b"]["score"]), (10, 10))
         self.assertEqual(snapshot["evaluation"], "sudden_death")
         self.assertIsNone(snapshot["winner_id"])

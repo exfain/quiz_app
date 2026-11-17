@@ -133,9 +133,20 @@ class HostOwnershipTests(TransactionTestCase):
     def test_all_registered_game_consumers_share_the_admin_authorization_boundary(self):
         registered_keys = {key for key, _label in HubGameStep.GAME_CHOICES} - HubGameStep.DUEL_ONLY_GAME_KEYS
         consumer_keys = {consumer.authoritative_game_key for consumer in REGISTERED_GAME_CONSUMERS}
-        self.assertEqual(consumer_keys, registered_keys)
+        # Zielansage deliberately uses authenticated JSON HTTP, not a consumer.
+        self.assertEqual(consumer_keys | {'target'}, registered_keys)
         for consumer in REGISTERED_GAME_CONSUMERS:
             self.assertTrue(issubclass(consumer, AuthoritativeGameConsumerMixin), consumer.__name__)
+        from target_game.models import TargetGame, Run
+        game = TargetGame.objects.create(title='HTTP Zielansage', creator=self.owner, scoring_mode='simple', answer_seconds=30)
+        step = HubGameStep.objects.create(session=self.session, game_key='target', room_code=game.room_code, order=1)
+        Run.objects.create(step=step, game=game, scoring_mode='simple', answer_seconds=30, text_match_threshold=100)
+        url = reverse('target_game:api', args=[self.session.code, game.room_code, 'host'])
+        self.assertEqual(Client().get(url).status_code, 403)
+        self.client.force_login(self.other)
+        self.assertEqual(self.client.get(url).status_code, 403)
+        self.client.force_login(self.owner)
+        self.assertEqual(self.client.get(url).status_code, 200)
 
     def _dispatch_admin_message(self, user, session_code):
         consumer = BuzzerConsumer()

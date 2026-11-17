@@ -73,11 +73,21 @@ class EncounterTests(TransactionTestCase):
     def test_all_supported_game_transports_keep_pair_authorization_in_mixed_sessions(self):
         for key, model in HubSession._get_game_model_map().items():
             with self.subTest(game_key=key):
-                game = model.objects.create(creator=self.user, title='Mixed '+key)
+                # Zielansage has required explicit duration and is a regular
+                # Multiplayer team game, not the separate duel bidding game.
+                game = model.objects.create(creator=self.user, title='Mixed '+key,
+                    **({'answer_seconds':60,'scoring_mode':'simple'} if key == 'target' else {}))
                 self.step.game_key = key; self.step.room_code = game.room_code
                 self.step.game_format = 'standard'; self.step.intro_started_at = self.step.intro_ends_at = None
                 self.step.save()
                 response = self.start(game_key=key, room_code=game.room_code)
+                if key == 'target':
+                    self.assertEqual(response.status_code,409,response.content)
+                    self.assertIn('nicht für 2-Spieler-Sessions',response.json()['error'])
+                    self.assertFalse(DuelGameInstance.objects.filter(hub_game_step=self.step).exists())
+                    self.step.refresh_from_db()
+                    self.assertEqual(self.step.game_format,'standard')
+                    continue
                 self.assertEqual(response.status_code, 200, response.content)
                 instance = DuelGameInstance.objects.get(hub_game_step=self.step)
                 api_name = 'match_api' if key == 'estimation' else key+'_match_api'

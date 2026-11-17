@@ -45,6 +45,7 @@ INSTALLED_APPS = [
     'black_jack_quiz.apps.BlackJackQuizConfig',
     'games_hub.apps.GamesHubConfig',
     'duel.apps.DuelConfig',
+    'target_game.apps.TargetGameConfig',
     'channels',
     'clue_rush.apps.ClueRushConfig',
     'sorting_ladder.apps.SortingLadderConfig',

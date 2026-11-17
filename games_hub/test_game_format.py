@@ -19,6 +19,7 @@ from duel.models import DuelGameInstance, DuelUnit
 from games_website.services import restore_all_models_from_supabase, sync_all_models_to_supabase
 
 from .models import HubGameStep, HubParticipant, HubSession
+from .migration_test_utils import targets_before
 
 
 class HubGameFormatTests(TestCase):
@@ -222,9 +223,9 @@ class HubGameFormatMigrationTests(TransactionTestCase):
     def test_backfill_and_rollback_preserve_steps_sessions_games_and_duels(self):
         executor = MigrationExecutor(connection)
         latest = executor.loader.graph.leaf_nodes()
-        old_targets = [target for target in latest if target[0] != "games_hub"]
-        new_targets = [*old_targets, ("games_hub", "0026_hubgamestep_game_format")]
-        old_targets.append(("games_hub", "0025_hubsession_session_type"))
+        old_targets = targets_before(executor.loader, ("games_hub", "0026_hubgamestep_game_format"))
+        new_targets = [target for target in old_targets if target[0] != "games_hub"]
+        new_targets.append(("games_hub", "0026_hubgamestep_game_format"))
         old_state = executor.loader.project_state(old_targets)
         migration = executor.loader.get_migration("games_hub", "0026_hubgamestep_game_format")
         self.assertEqual([type(operation) for operation in migration.operations], [

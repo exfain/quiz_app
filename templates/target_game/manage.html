@@ -1,0 +1,13 @@
+{% extends 'admin_dashboard/base.html' %}
+{% block title %}Zielansage – Aufgabenverwaltung{% endblock %}
+{% block page_title %}Zielansage{% endblock %}
+{% block content %}
+<p>Mehrspieler-Teamspiel. Das Duell-Gebotsspiel verwendet weiterhin seine eigenen Regeln.</p>
+<p><a href="{% url 'games_hub:create_session' %}">Session planen</a></p>
+{% if error %}<p role="alert">{{ error }}</p>{% endif %}
+<ul>{% for game in games %}<li><a href="?game={{ game.pk }}">{{ game.title }}</a> · {{ game.get_scoring_mode_display }}</li>{% endfor %}</ul>
+<form method="post" id="game-form">{% csrf_token %}{{ game_form.as_p }}<button name="action" value="{% if selected %}save_game{% else %}create_game{% endif %}">Spiel speichern</button></form>
+{% if selected %}<h2>Aufgaben für {{ selected.title }}</h2>
+<form method="post" id="new-task">{% csrf_token %}{{ task_form.as_p }}<button name="action" value="save_task">Aufgabe hinzufügen</button></form>
+{% for task, form in task_forms %}<form method="post" class="task-form">{% csrf_token %}<input type="hidden" name="task_id" value="{{ task.pk }}">{{ form.as_p }}<button name="action" value="save_task">Aufgabe speichern</button><button name="action" value="delete_task">Aufgabe löschen</button></form>{% endfor %}
+{% endif %}{% endblock %}

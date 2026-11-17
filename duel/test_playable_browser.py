@@ -174,11 +174,22 @@ class PlayableEstimationBrowserTests(ChannelsLiveServerTestCase):
                     host.wait_for_selector('#show_answers:not([hidden])',timeout=15000)
                     self.click_response(host,'#show_answers','/units/')
                     self.click_response(host,'#show_solution','/units/')
-                    host.wait_for_selector('#show_result[disabled]')
-                    self.assertIn('Mindestens eine Antwort fehlt',host.inner_text('#error'))
+                    # Confirmed rule: the sole valid submission wins. Expiry
+                    # alone still publishes neither points nor a solution.
                     self.assertFalse(DuelScoreEntry.objects.filter(game_instance=second).exists())
-                    second.refresh_from_db();self.assertEqual(second.match_status,'in_progress')
                     self.assertEqual(second.units.get().estimation_round_state.phase,'show_solution')
+                    host.wait_for_selector('#show_result:not([disabled])')
+                    self.click_response(host,'#show_result','/units/')
+                    second.refresh_from_db();self.assertEqual(second.match_status,'completed')
+                    self.assertEqual(second.match_outcome.winner_id,second.participant_a_id)
+                    self.assertEqual(dict(DuelScoreEntry.objects.filter(game_instance=second).values_list('participant_id','delta')),
+                        {second.participant_a_id:1,second.participant_b_id:0})
+                    self.click_response(host,'#complete','/units/')
+                    self.assertEqual(second.units.get().estimation_round_state.phase,'completed')
+                    for page in (alice,bob,spectator,host):
+                        page.wait_for_selector('#return:not([hidden])');page.click('#return')
+                    alice.wait_for_url('**/hub/lobby/BROWSER-DUEL/')
+                    host.wait_for_url('**/hub/monitor/BROWSER-DUEL/')
                 finally:
                     worker.terminate();worker.wait(timeout=10)
         self.assertFalse(self.errors,self.errors)

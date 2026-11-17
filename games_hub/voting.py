@@ -1,3 +1,4 @@
+from target_game.models import TargetGame
 from django.db import transaction
 from django.db.models import Count
 from django.utils import timezone
@@ -20,6 +21,7 @@ from .models import GameVote, HubGameParticipantSnapshot, HubGameStep, HubPartic
 
 
 GAME_MODELS = {
+    'target': (TargetGame, None, 'Zielansage'),
     'quiz': (QuizGameModel, QuizParticipant, 'Quick Quiz'),
     'clue_rush': (ClueRushGame, ClueRushParticipant, 'Clue Rush'),
     'estimation': (EstimationQuiz, EstimationParticipant, 'Estimation'),
@@ -57,6 +59,9 @@ def _score_value_for_participant(participant):
 
 
 def _game_data_for_step(session, step):
+    if step.game_key == 'target':
+        from target_game.service import scores_for_session
+        return {name: row['score'] for name,row in scores_for_session(session,step.room_code).items()}
     config = GAME_MODELS.get(step.game_key)
     if not config or not step.room_code:
         return {}

@@ -1,3 +1,5 @@
+from target_game.models import TargetGame
+from django.core.exceptions import PermissionDenied
 import random
 import string
 import json
@@ -192,6 +194,7 @@ def create_session(request):
             'wer_weiss_mehr': WerWeissMehrGame,
             'buzzer':         BuzzerGame,
             'host_points':    HostPointsGame,
+            'target': TargetGame,
             'wann_war_das':   WannWarDasGame,
         }
 
@@ -243,6 +246,7 @@ def _get_game_instances():
         ('wer_weiss_mehr', WerWeissMehrGame,   'Wer weiß mehr?', 'layers'),
     ]
     from duel.models import BidGame
+    GAME_TYPES.append(('target', TargetGame, 'Zielansage', 'flag'))
     GAME_TYPES.append(("bid", BidGame, "Gebotsspiel (nur Duell)", "gavel"))
     games = []
     for game_key, model, label, icon in GAME_TYPES:
@@ -252,6 +256,8 @@ def _get_game_instances():
                 q_count = obj.selected_questions.count()
             except Exception:
                 q_count = 0
+            if game_key == 'target':
+                q_count = obj.tasks.filter(is_active=True).count()
             games.append({
                 'game_key': game_key,
                 'label': label,
@@ -303,6 +309,9 @@ def _display_score(value):
 
 def get_game_participant_data(session, game_model, participant_model, room_code, game_key):
     """Helper function to get participant data for a specific game"""
+    if game_key == 'target':
+        from target_game.service import scores_for_session
+        return scores_for_session(session, room_code)
     try:
         game = game_model.objects.get(room_code=room_code)
         # Only include participants who joined during this session's window
@@ -352,6 +361,7 @@ def _legacy_get_leaderboard_data(session):
             'sorting_ladder': (SortingLadderGame, SortingLadderParticipant, 'Sorting Ladder'),
             'buzzer': (BuzzerGame, BuzzerParticipant, 'Buzzer'),
             'host_points': (HostPointsGame, HostPointsParticipant, 'Host-Punktevergabe'),
+            'target': (TargetGame, None, 'Zielansage'),
             'wann_war_das': (WannWarDasGame, WannWarDasParticipant, 'Wann war das?'),
             'wer_weiss_mehr': (WerWeissMehrGame, WerWeissMehrParticipant, 'Wer weiß mehr?'),
         }
@@ -592,6 +602,7 @@ def get_leaderboard_data(session, participant_count_override=None):
             'sorting_ladder': (SortingLadderGame, SortingLadderParticipant, 'Sorting Ladder'),
             'buzzer': (BuzzerGame, BuzzerParticipant, 'Buzzer'),
             'host_points': (HostPointsGame, HostPointsParticipant, 'Host-Punktevergabe'),
+            'target': (TargetGame, None, 'Zielansage'),
             'wann_war_das': (WannWarDasGame, WannWarDasParticipant, 'Wann war das?'),
             'wer_weiss_mehr': (WerWeissMehrGame, WerWeissMehrParticipant, 'Wer weiss mehr?'),
         }
@@ -1268,6 +1279,7 @@ def monitor(request, session_code: str):
         'wer_weiss_mehr': WerWeissMehrGame,
         'buzzer': BuzzerGame,
         'host_points': HostPointsGame,
+        'target': TargetGame,
         'wann_war_das': WannWarDasGame,
     }
     for step in steps:
@@ -1309,6 +1321,7 @@ def monitor(request, session_code: str):
         'wer_weiss_mehr': WerWeissMehrGame.objects.filter(status='waiting', creator=user).values('title', 'room_code'),
         'buzzer': BuzzerGame.objects.filter(status='waiting', creator=user).values('title', 'room_code'),
         'host_points': HostPointsGame.objects.filter(status='waiting', creator=user).values('title', 'room_code'),
+        'target': TargetGame.objects.filter(status='waiting', creator=user).values('title', 'room_code'),
         'wann_war_das': WannWarDasGame.objects.filter(status='waiting', creator=user).values('title', 'room_code'),
     }
 
@@ -1381,6 +1394,7 @@ def add_step_to_session(request, session_code):
         'wer_weiss_mehr': WerWeissMehrGame,
         'buzzer': BuzzerGame,
         'host_points': HostPointsGame,
+        'target': TargetGame,
         'wann_war_das': WannWarDasGame,
     }
 
@@ -1599,6 +1613,7 @@ def get_game_instances(request, game_key):
         'wer_weiss_mehr': WerWeissMehrGame,
         'buzzer': BuzzerGame,
         'host_points': HostPointsGame,
+        'target': TargetGame,
         'wann_war_das': WannWarDasGame,
     }
     model = model_map.get(game_key)
@@ -1710,13 +1725,13 @@ def activate_session_game(request, session_code):
     if game_key in HubGameStep.DUEL_ONLY_GAME_KEYS:
         return JsonResponse({'success': False, 'error': 'Dieser Spieltyp ist ausschließlich für 2-Spieler-Sessions freigegeben.'}, status=409)
 
-    result = resolve_session_game_activation(
-        session_code,
-        game_key,
-        room_code,
-        action=action,
-        check_only=check_only,
-    )
+    from target_game.service import ActionError as TargetActionError
+    try:
+        result = resolve_session_game_activation(
+            session_code, game_key, room_code, action=action, check_only=check_only,
+        )
+    except TargetActionError as exc:
+        return JsonResponse({'success': False, 'error': str(exc)}, status=409)
     if result.get('check_in_required'):
         status = 428
     else:
@@ -1863,6 +1878,18 @@ def participant_return_to_lobby(request, session_code):
 
     if not game_key or not room_code or not participant_name:
         return JsonResponse({'success': False, 'error': 'Missing participant return data.'}, status=400)
+
+    if game_key == 'target':
+        from target_game.views import context
+        from target_game.service import leave_for_lobby, ActionError
+        try:
+            run, participant = context(request, room_code, session_code, 'participant', participant_name)
+            leave_for_lobby(run.pk, participant)
+        except PermissionDenied:
+            return JsonResponse({'success': False, 'error': 'Teilnahme nicht bestätigt.'}, status=403)
+        except ActionError as exc:
+            return JsonResponse({'success': False, 'error': str(exc)}, status=409)
+        return JsonResponse({'success': True})
 
     result = mark_single_participant_inactive_for_lobby_return(
         session_code=session_code,

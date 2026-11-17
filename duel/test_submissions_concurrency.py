@@ -22,11 +22,13 @@ class SubmissionConcurrencyTests(SubmissionFixture):
         self.assertNotIn("mode=memory", str(connection.settings_dict["NAME"]))
         self.assertEqual(connection.transaction_mode, "IMMEDIATE")
 
-    def parallel(self, operations):
+    def parallel(self, operations, *, expected_begins=None):
         barrier, guard = Barrier(len(operations)), Lock()
+        expected_begins = expected_begins or ['BEGIN IMMEDIATE'] * len(operations)
+        self.assertEqual(len(expected_begins), len(operations))
         identities, begins = [], []
 
-        def worker(operation):
+        def worker(operation, expected_begin):
             db = connections["default"]
             try:
                 db.ensure_connection()
@@ -35,7 +37,7 @@ class SubmissionConcurrencyTests(SubmissionFixture):
                 def observe(execute, sql, params, many, context):
                     if sql.startswith("BEGIN"):
                         with guard:
-                            begins.append(sql)
+                            begins.append((sql, expected_begin))
                     return execute(sql, params, many, context)
                 barrier.wait(timeout=10)
                 with db.execute_wrapper(observe):
@@ -47,11 +49,11 @@ class SubmissionConcurrencyTests(SubmissionFixture):
                 db.close()
 
         with ThreadPoolExecutor(max_workers=len(operations)) as pool:
-            futures = [pool.submit(worker, operation) for operation in operations]
+            futures = [pool.submit(worker, operation, expected) for operation, expected in zip(operations, expected_begins)]
             results = [future.result(timeout=30) for future in futures]
         self.assertEqual(len(set(identities)), len(operations))
         self.assertTrue(begins)
-        self.assertTrue(all(sql == "BEGIN IMMEDIATE" for sql in begins))
+        self.assertTrue(all(sql == expected for sql, expected in begins), begins)
         return results
 
     def assert_consistent_commits(self, count):

@@ -1,3 +1,4 @@
+from target_game.models import TargetGame
 from django.shortcuts import render, redirect, get_object_or_404
 from django.contrib.auth.decorators import login_required, user_passes_test
 from django.contrib.auth.models import User
@@ -373,6 +374,7 @@ def duplicate_session(request):
             'wer_weiss_mehr': (WerWeissMehrGame,  None),
             'buzzer':         (BuzzerGame,        None),
             'host_points':    (HostPointsGame,    None),
+            'target':         (TargetGame, None),
             'wann_war_das':   (WannWarDasGame,   None),
         }
 
@@ -382,6 +384,16 @@ def duplicate_session(request):
 
             if entry:
                 game_model, _ = entry
+                if step.game_key == 'target':
+                    source = TargetGame.objects.get(room_code=step.room_code)
+                    copied = TargetGame.objects.create(title=source.title, creator=request.user,
+                        scoring_mode=source.scoring_mode, answer_seconds=source.answer_seconds)
+                    for task in source.tasks.all():
+                        copied.tasks.create(question_text=task.question_text, solutions=task.solutions, is_active=task.is_active)
+                    new_room_code = copied.room_code
+                    HubGameStep.objects.create(session=new_session, order=step.order, game_key='target',
+                        room_code=new_room_code, title=step.title)
+                    continue
                 # Create fresh game instance
                 new_game = game_model.objects.create(
                     title=step.title or step.game_key,
@@ -2758,6 +2770,7 @@ def delete_game_instance(request):
             'wer_weiss_mehr': WerWeissMehrGame,
             'buzzer':         BuzzerGame,
             'host_points':    HostPointsGame,
+            'target': TargetGame,
             'wann_war_das':   WannWarDasGame,
         }
         model = MODEL_MAP.get(game_type)
@@ -2792,6 +2805,7 @@ def delete_all_game_instances(request):
         'wer_weiss_mehr': WerWeissMehrGame,
         'buzzer':         BuzzerGame,
         'host_points':    HostPointsGame,
+        'target': TargetGame,
         'wann_war_das':   WannWarDasGame,
     }
     for model in MODEL_MAP.values():
@@ -2816,6 +2830,7 @@ def edit_game(request, game_type, game_id):
         'wer_weiss_mehr': WerWeissMehrGame,
         'buzzer': BuzzerGame,
         'host_points': HostPointsGame,
+        'target': TargetGame,
         'wann_war_das': WannWarDasGame,
     }
     model = type_to_model.get(game_type)

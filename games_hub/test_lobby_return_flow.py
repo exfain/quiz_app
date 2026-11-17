@@ -30,6 +30,7 @@ from who_is_that.models import WhoThatParticipant, WhoThatQuiz
 
 class LobbyReturnFlowTests(TransactionTestCase):
     MONITOR_START_BUTTONS = {
+        'target': ('templates/target_game/_content.html', 'startGameBtn'),
         'quiz': ('templates/admin_dashboard/quiz_monitor.html', 'startQuizBtn'),
         'assign': ('templates/admin_dashboard/assign_monitor.html', 'startQuizBtn'),
         'estimation': ('templates/admin_dashboard/estimation_monitor.html', 'startQuizBtn'),

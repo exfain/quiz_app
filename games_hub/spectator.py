@@ -1,3 +1,4 @@
+from target_game.models import TargetGame
 import math
 
 from django.utils import timezone
@@ -54,6 +55,7 @@ GAME_MODELS = {
     'wer_weiss_mehr': WerWeissMehrGame,
     'buzzer': BuzzerGame,
     'host_points': HostPointsGame,
+    'target': TargetGame,
     'wann_war_das': WannWarDasGame,
 }
 
@@ -141,6 +143,7 @@ def build_spectator_state(session):
     }
 
     serializer = {
+        'target': _serialize_target,
         'quiz': _serialize_quick_quiz,
         'estimation': _serialize_estimation,
         'where': _serialize_where,
@@ -1368,3 +1371,9 @@ def _sorting_item_payload(item, *, include_rank=False):
     if include_rank:
         payload['rank'] = str(item.correct_rank)
     return payload
+
+
+def _serialize_target(game, session):
+    from django.urls import reverse
+    from urllib.parse import urlencode
+    return {"transport_url": reverse("target_game:spectate", args=[game.room_code])+"?"+urlencode({"hub_session":session.code})}

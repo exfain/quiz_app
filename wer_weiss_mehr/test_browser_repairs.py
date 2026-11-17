@@ -92,10 +92,14 @@ class WwmBrowserRepairs(ChannelsLiveServerTestCase):
                 player.fill('#answerInput', word)
                 player.click('#submitBtn')
                 player.wait_for_function('latestState.participant_state.has_submitted')
-            host.click('#endRoundBtn')
-            host.wait_for_function('state.phase === "review"')
+            with host.expect_response(lambda response: '/end-round/' in response.url and response.request.method == 'POST') as ended:
+                host.click('#endRoundBtn')
+            self.assertEqual(ended.value.status, 200, ended.value.text())
+            host.wait_for_function('state.phase === "review" && !hostRuntime.hasPendingAction')
             if word == 'Bayern':
-                host.click('#nextRoundBtn')
+                with host.expect_response(lambda response: '/next-round/' in response.url and response.request.method == 'POST') as advanced:
+                    host.click('#nextRoundBtn')
+                self.assertEqual(advanced.value.status, 200, advanced.value.text())
                 host.wait_for_function('state.current_round === 2 && state.phase === "round_active"')
         host.click('#finishSetBtn')
         host.wait_for_function('state.phase === "set_completed"')

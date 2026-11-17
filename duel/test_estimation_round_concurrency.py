@@ -139,7 +139,7 @@ class EstimationRoundConcurrencyTests(fixtures.PhaseFixture):
             snapshot, reconciliation = self.parallel([
                 lambda: get_estimation_state(unit_id=self.unit.pk, actor=self.actor),
                 lambda: reconcile_estimation_deadline(**self.command_args()),
-            ])
+            ], expected_begins=['BEGIN DEFERRED', 'BEGIN IMMEDIATE'])
         self.assertNotIn("target", snapshot)
         self.assertFalse(snapshot["can_answer"])
         self.assertIn(snapshot["phase"], (Phase.ANSWERING, Phase.AWAITING_REVEAL))

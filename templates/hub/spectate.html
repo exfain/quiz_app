@@ -576,7 +576,12 @@
             return gameMarkup(game, `${typewriterQuestionMarkup(q, 'text', meta)}${game.phase === 'reveal' ? revealMarkup(q, 'Richtiges Jahr') : ''}`);
         }
 
+        function renderTarget(game) {
+            return `<iframe id="target-spectator-frame" title="Zielansage" src="${escapeHtml(game.transport_url)}" style="width:100%;height:80vh;border:0"></iframe>`;
+        }
+
         const renderers = {
+            target: renderTarget,
             quiz: renderQuiz,
             assign: renderAssign,
             estimation: renderEstimation,
@@ -711,7 +716,7 @@
             if (!game.question && game.question_visible_at) {
                 schedulePresentation(Date.parse(game.question_visible_at), true);
             }
-            const scoreboard = game.game_key === 'where' && game.phase === 'reveal' ? '' : scoreboardMarkup(game);
+            const scoreboard = game.game_key === 'target' || game.game_key === 'where' && game.phase === 'reveal' ? '' : scoreboardMarkup(game);
             if (scoreboard) {
                 updateStage(scoreboard);
             } else {

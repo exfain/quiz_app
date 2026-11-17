@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from target_game.models import TargetGame
+
 import logging
 from typing import Any
 
@@ -49,6 +51,7 @@ def get_game_model_map():
         'wer_weiss_mehr': WerWeissMehrGame,
         'buzzer': BuzzerGame,
         'host_points': HostPointsGame,
+        'target': TargetGame,
         'wann_war_das': WannWarDasGame,
     }
 
@@ -146,6 +149,10 @@ def _set_game_status(game, status: str):
 def _activate_target_game(game_key: str, game, hub_session_code: str | None = None):
     from .session_results import freeze_previous_results
     freeze_previous_results(game_key, game, hub_session_code)
+    if game_key == 'target':
+        from target_game.service import start_for_hub
+        start_for_hub(game, hub_session_code)
+        return
     if game_key == 'where':
         game.start_quiz(session_code=hub_session_code)
         return
@@ -325,6 +332,10 @@ def resolve_session_game_activation(
             except ActionError as exc:
                 return {'success': False, 'error': str(exc)}
 
+        if (target_game and target_game_key == 'target' and target_game.status == 'active'
+                and target_game.active_hub_session_code != session.code):
+            return {'success': False, 'error': 'Diese Zielansage läuft bereits in einer anderen Session.'}
+
         completed_in_current_session = bool(
             target_game
             and getattr(target_game, 'status', None) == 'completed'
@@ -364,7 +375,7 @@ def resolve_session_game_activation(
         # current display, including after the normal game has ended.
         current_format = list(session.steps.order_by('order', 'id').values_list('game_format', flat=True))
         returning_from_duel = 0 <= session.current_step_index < len(current_format) and current_format[session.current_step_index] in {'duel', 'tournament'}
-        if (target_game_key == 'who' or returning_from_duel) and target_game:
+        if (target_game_key in {'who', 'target'} or returning_from_duel) and target_game:
             ordered_step_ids = list(
                 session.steps.order_by('order', 'id').values_list('id', flat=True)
             )

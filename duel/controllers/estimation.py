@@ -26,7 +26,7 @@ from uuid import UUID
 from sys import float_info
 from math import ceil
 
-from django.db import DEFAULT_DB_ALIAS, connection, transaction
+from django.db import DEFAULT_DB_ALIAS, connection
 from django.utils import timezone
 
 from Estimation.models import EstimationQuestion
@@ -43,6 +43,7 @@ from ..models import (
     DuelEstimationRoundState, EstimationPhase,
 )
 from ..submissions import commit_submission
+from ..read_transactions import snapshot_transaction
 
 
 # Resource guard for exact subtraction/output, not a scoring or rounding rule.
@@ -377,7 +378,7 @@ def get_estimation_state(
     if type(unit_id) is not int or unit_id <= 0:
         raise ValueError("A concrete positive unit ID is required.")
     def read():
-        with transaction.atomic(using=DEFAULT_DB_ALIAS):
+        with snapshot_transaction(using=DEFAULT_DB_ALIAS):
             unit = DuelUnit.objects.using(DEFAULT_DB_ALIAS).get(pk=unit_id)
             if instance_id is not None and unit.game_instance_id != instance_id:
                 raise CommandRejected("invalid_unit", "Unit belongs to another instance.")
@@ -393,7 +394,10 @@ def get_estimation_state(
             state = DuelEstimationRoundState.objects.using(DEFAULT_DB_ALIAS).filter(unit=unit).first()
             if state is None:
                 raise CommandRejected("round_not_initialized", "No persisted Estimation phase.")
-            state.full_clean()
+            # This is a persisted row in a consistent read transaction. Keep
+            # field/cross-model validation; DB-enforced uniqueness and CHECKs
+            # need not be re-executed as SQL on every device poll.
+            state.full_clean(validate_unique=False, validate_constraints=False)
             own_side = None
             if actor is not None:
                 if not isinstance(actor, ActorContext):

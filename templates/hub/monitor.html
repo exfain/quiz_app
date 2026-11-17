@@ -470,6 +470,7 @@
             <option value="clue_rush">Clue Rush</option>
             <option value="buzzer">Buzzer</option>
             <option value="host_points">Host-Punktevergabe</option>
+            <option value="target">Zielansage</option>
             <option value="wann_war_das">Wann war das?</option>
             <option value="wer_weiss_mehr">Wer weiß mehr?</option>
           </select>
@@ -1258,6 +1259,7 @@ const SCORING_SETTINGS_LOCKED = {{ scoring_settings_locked|yesno:"true,false" }}
 const NEXT_PLANNED_STEP_ID = {% if next_planned_step_id %}{{ next_planned_step_id }}{% else %}null{% endif %};
 const SCORE_RANGE_PREVIEW_STORAGE_KEY = `hub:${SESSION_CODE}:scoreRangePreview`;
 const GAME_MONITOR_ROUTES = {
+    target: '/target/monitor/{room_code}/',
     quiz: '/admin-dashboard/quiz/{room_code}/monitor/',
     assign: '/admin-dashboard/assign/{room_code}/monitor/',
     estimation: '/admin-dashboard/estimation/{room_code}/monitor/',

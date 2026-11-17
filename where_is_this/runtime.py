@@ -103,7 +103,7 @@ def send_question(game, question, *, time_limit=None, tutorial=False):
     game, session = locked(game)
     if game.status != 'active' or session.is_question_active:
         raise ActionError('Beende zuerst die laufende Frage beziehungsweise starte das Spiel.')
-    if game.selected_questions.exists() and not game.selected_questions.filter(pk=question.pk).exists():
+    if not tutorial and game.selected_questions.exists() and not game.selected_questions.filter(pk=question.pk).exists():
         raise ActionError('Diese Frage gehört nicht zum Spiel.')
     question.full_clean()
     limit = int(time_limit or question.time_limit)
@@ -202,6 +202,9 @@ def reveal(game):
         history[-1] = {**history[-1], 'revealed': True}
     session.question_rounds = history
     session.save()
+    if spec.get('tutorial'):
+        from games_hub.unit_tutorial_runtime import finish_current_unit_tutorial
+        finish_current_unit_tutorial('where', game.room_code, game.active_hub_session_code)
     broadcast(game)
     return True
 
@@ -214,6 +217,8 @@ def end_game(game, status='completed'):
     reveal(game)
     game.status, game.ended_at, game.paused_at = status, timezone.now(), None
     game.save(update_fields=['status', 'ended_at', 'paused_at', 'updated_at'])
+    from games_hub.tutorial_runtime import force_close_tutorial_runtime
+    force_close_tutorial_runtime('where', game.room_code, game.active_hub_session_code, game)
     broadcast(game)
     return True
 
@@ -294,6 +299,7 @@ def state(game, code=None, participant=None, *, host=False, observe=True):
               'starts_at': game.question_start_time.isoformat() if question and game.question_start_time else None,
               'ends_at': session.question_end_time.isoformat() if question and session.question_end_time else None,
               'revealed': revealed, 'progress': {'kind': 'question', 'current': len(history), 'total': total},
+              'is_tutorial_round': bool(spec.get('tutorial')) and not revealed,
               'scoring_mode': spec.get('scoring_mode', game.scoring_mode), 'participants': scores,
               'response_count': len(answers), 'remaining_seconds': remaining,
               'can_answer': bool(participant and participant.pk in spec.get('participants', []) and game.status == 'active'

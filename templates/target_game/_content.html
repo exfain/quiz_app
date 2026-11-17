@@ -1,0 +1,11 @@
+<main class="vhs-theme-shell duel-shell" id="target-game" data-api="{{ api_url }}" data-role="{{ role }}" data-code="{{ session.code }}" data-room="{{ room }}" data-started="{{ started|yesno:'true,false' }}"><header class="vhs-theme-header"><h1>Zielansage</h1><p id="team-name">{{ nickname|default:'' }}</p></header>{% csrf_token %}
+<p id="error" role="alert"></p><p id="phase" aria-live="polite">Verbinde …</p>
+<section id="waiting">{% include 'includes/_participant_start_waiting.html' with waiting_game_title='Zielansage' %}</section>
+<section id="question-card" class="question-card" hidden><h2 id="question"></h2><p id="timer"></p><p id="target-label"></p></section>
+{% if role == 'participant' %}<section id="nomination" hidden><h2>Bestimmt eine Person aus eurem Team.</h2><p>Die benannte Person geht außer Hörweite. Das übrige Team berät sich anschließend über die Zielzahl.</p><button id="ready">Bereit</button></section>
+<form id="goal-form" hidden><label>Wie viele richtige Antworten soll euer Teammitglied finden? <input id="goal" type="number" min="1" step="1" required></label><button id="commit-goal">Zielzahl einloggen</button></form>
+<form id="answer-form" hidden><label>Einzelne Antwort <input id="answer" maxlength="500" autocomplete="off" required></label><button id="commit-answer">Einloggen</button></form><p id="own-status"></p><ol id="own-answers"></ol>{% endif %}
+{% if role == 'host' %}<button id="startGameBtn" data-host-game-start>Spiel starten</button><button id="backToHubBtn" data-host-game-leave>Hub verlassen</button><section id="host-controls"><label>Aufgabe <select id="task"><option value="">Bitte auswählen</option></select></label><button id="prepare">Aufgabe vorbereiten</button><button id="start" hidden>Personen zurück · Antwortzeit starten</button><button id="publish" hidden>Geprüftes Ergebnis verbindlich veröffentlichen</button><button id="finish" hidden>Spiel beenden</button><p id="progress"></p><section id="corrections"></section></section>{% endif %}
+<section id="results" hidden><h2>Ergebnis</h2><div id="result-rows"></div><h3>Spielstand</h3><div id="totals"></div></section>
+<button id="return" hidden>Zur Lobby zurückkehren</button>
+</main>

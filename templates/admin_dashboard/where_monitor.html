@@ -3,11 +3,16 @@
 {% block page_title %}Where is this{% endblock %}
 {% block content %}
 <link rel="stylesheet" href="{% static 'css/where-live.css' %}">
-<main class="where-live"><h2>{{ quiz.title }}</h2><p>Frage <span id="questionProgress">0 / 0</span> · <span id="timeLeft"></span> · <span id="responseCount"></span></p>
+<main class="where-live host-monitor-content"><h2>{{ quiz.title }}</h2><p>Frage <span id="questionProgress">0 / 0</span> · <span id="timeLeft"></span> · <span id="responseCount"></span></p>
+{% include 'includes/_unit_tutorial_notice.html' %}
+{% if quiz.status == 'waiting' and quiz.tutorial_enabled %}
+<label><input type="checkbox" id="showTutorialToggle"> Spielerläuterung anzeigen</label>
+<label><input type="checkbox" id="playTutorialToggle"> Tutorial spielen</label>
+{% endif %}
 <div class="where-controls"><button id="startQuizBtn" type="button" data-host-game-start disabled>Spiel starten / fortsetzen</button><button id="setInactiveBtn" type="button" disabled>Inaktiv setzen</button><button id="endQuizBtn" type="button" disabled>Spiel beenden</button>
 {% if hub_session %}<a href="{% url 'games_hub:monitor' hub_session %}" data-host-game-leave>Zur Sessionübersicht</a>{% endif %}<a href="{% url 'admin_dashboard:where_management' %}">Zur Spieleübersicht</a></div>
 <p id="whereMessage" role="status"></p><p id="whereError" role="alert" hidden></p>
-<div class="where-controls"><select id="questionSelect" aria-label="Nächste Frage">{% for question in available_questions %}<option value="{{ question.pk }}">{{ question.question_text }}</option>{% endfor %}</select><button id="sendQuestionBtn" disabled>Ausgewählte Frage senden</button><button id="endQuestionBtn" disabled>Frage auflösen</button></div>
+<div class="where-controls"><select id="questionSelect" aria-label="Nächste Frage">{% for question in available_questions %}<option value="{{ question.pk }}">{{ question.question_text }}</option>{% endfor %}</select><button id="sendQuestionBtn" type="button" disabled>Ausgewählte Frage senden</button><button id="endQuestionBtn" type="button" disabled>Frage auflösen</button></div>
 <h3 id="questionText"></h3><img id="questionImage" alt="Bild zur Frage" hidden><div id="whereMap" class="where-map"></div>
 <div class="where-controls"><button id="zoomIn" aria-label="Vergrößern">+</button><button id="zoomOut" aria-label="Verkleinern">−</button><button id="resetMap">Kartenansicht zurücksetzen</button></div>
 <p id="revealExplanation"></p><div id="whereLeaderboard"></div></main>

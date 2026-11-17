@@ -19,6 +19,7 @@ from .commands import ActorContext, ActionContext, ActionResult, HandlerResult, 
 from .contracts import MatchStatus, RoundOutcome, RoundResult
 from .matches import MatchConfig, MatchMode, MatchEvaluation, MatchEvaluationState as State, evaluate_match, parse_match_config
 from .models import DuelGameInstance, DuelUnit, DuelUnitOutcome, DuelMatchOutcome, DuelScoreEntry, ReceiptStatus, UnitStatus
+from .read_transactions import snapshot_transaction
 
 
 class MatchIntegrityError(RuntimeError):
@@ -251,21 +252,26 @@ def finalize_match(*, instance_id: UUID, actor: ActorContext, client_action_id: 
 
 
 def get_match_snapshot(instance_id: UUID) -> dict:
-    """Internal aggregate projection, coherent with the same parent-lock policy.
+    """Internal aggregate projection in a consistent read transaction.
 
     Reads no submissions, decisions, receipt payloads, nicknames or full rule
     configuration. winner_id is a PERSISTED match winner, not a provisional
     threshold candidate. Scores remain signed/unclamped, and no totals are
-    cached or written. A surrounding command transaction is reused if present.
+    cached or written. Standalone SQLite reads do not reserve the writer slot;
+    row-locking databases retain the parent lock. A surrounding command
+    transaction is reused if present.
     """
     if not isinstance(instance_id, UUID):
         raise TypeError("instance_id must be a concrete duel instance UUID.")
 
     def read_once():
-        with transaction.atomic(using=DEFAULT_DB_ALIAS):
+        with snapshot_transaction(using=DEFAULT_DB_ALIAS):
             instance = DuelGameInstance.objects.using(DEFAULT_DB_ALIAS).select_for_update().get(pk=instance_id)
             try:
-                instance.full_clean()
+                # Persisted UNIQUE/CHECK invariants are enforced by the DB.
+                # Retain field and cross-table checks without re-querying the
+                # same constraints on each read-only device poll.
+                instance.full_clean(validate_unique=False, validate_constraints=False)
             except ValidationError as exc:
                 raise MatchIntegrityError("Invalid persisted match identity.") from exc
             config, evaluation, a, b, completion = _read(instance)

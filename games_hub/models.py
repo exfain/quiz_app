@@ -126,6 +126,7 @@ class HubSession(SyncBase):
         from wer_weiss_mehr.models import WerWeissMehrGame
         from buzzer.models import BuzzerGame
         from duel.models import BidGame
+        from target_game.models import TargetGame
         from host_points.models import HostPointsGame
         from wann_war_das.models import WannWarDasGame
 
@@ -143,6 +144,7 @@ class HubSession(SyncBase):
             'bid': BidGame,
             'buzzer': BuzzerGame,
             'host_points': HostPointsGame,
+            'target': TargetGame,
             'wann_war_das': WannWarDasGame,
         }
 
@@ -443,6 +445,7 @@ class HubGameStep(SyncBase):
         ('blackjack', 'Black Jack Quiz'),
         ('sorting_ladder', 'Sorting Ladder'),
         ('clue_rush', 'Clue Rush'),
+        ('target', 'Zielansage'),
         ('bid', 'Gebotsspiel'),
         ('buzzer', 'Buzzer'),
         ('host_points', 'Host-Punktevergabe'),

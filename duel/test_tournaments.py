@@ -80,6 +80,54 @@ class TournamentTests(TransactionTestCase):
         self.assertEqual({p.game_instance.units.get().estimation_question_binding.target_value for p in self.pairs()},{'100'})
         self.assertEqual(self.api().json()['set_number'],1)
 
+    def test_estimation_overview_reads_without_reserving_sqlite_writer(self):
+        self.start(); self.assertEqual(self.draw().status_code, 200)
+        original = connection.transaction_mode
+        with CaptureQueriesContext(connection) as queries:
+            response = self.api('spectator', Client())
+        self.assertEqual(response.status_code, 200)
+        if connection.vendor == 'sqlite':
+            self.assertIn('BEGIN DEFERRED', [q['sql'] for q in queries])
+        self.assertEqual(connection.transaction_mode, original)
+        self.assertFalse(any(q['sql'].lstrip().upper().startswith(('INSERT', 'UPDATE', 'DELETE')) for q in queries))
+
+    def test_25_estimation_parties_have_a_bounded_shared_reveal_check(self):
+        for n in range(21):
+            party=HubParticipant.objects.create(session=self.hub, nickname=f'Extra {n}', scoring_eligible=True,
+                checked_in_at=timezone.now())
+            self.clients[party.pk]=Client(HTTP_AUTHORIZATION='Bearer '+issue_rejoin_token(party))
+        self.hub.locked_participant_count=25;self.hub.save()
+        self.start();self.assertEqual(self.draw().status_code,200);self.open_pairs()
+        pairs=self.pairs();self.assertEqual(len(pairs),12)
+        for pair in pairs[:-1]:self.answer_pair(pair)
+        with CaptureQueriesContext(connection) as queries:
+            self.assertFalse(tournaments.reveal_ready(pairs[0]))
+        self.assertLessEqual(len(queries),3,'Every participant poll must not load all twelve encounters separately')
+        self.answer_pair(pairs[-1])
+        with CaptureQueriesContext(connection) as queries:
+            self.assertTrue(tournaments.reveal_ready(pairs[0]))
+        self.assertLessEqual(len(queries),3)
+        with CaptureQueriesContext(connection) as queries:
+            overview=self.api('spectator',Client())
+        self.assertEqual(overview.status_code,200,overview.content)
+        self.assertEqual(len(overview.json()['pairs']),12)
+        self.assertTrue(all('points' not in row for row in overview.json()['pairs']))
+        self.assertLessEqual(len(queries),80,'Overview polling must not reload every pairing inside each row')
+        self.assertLessEqual(sum('FROM "games_hub_hubsession"' in q['sql'] for q in queries),2,
+            'Encounter links must not reload the same session once per pairing')
+        for pair in pairs:self.finish_pair(pair)
+        with CaptureQueriesContext(connection) as queries:
+            published=self.api('spectator',Client())
+        self.assertEqual(published.status_code,200,published.content)
+        data=published.json()
+        self.assertTrue(data['complete'])
+        self.assertEqual(len(data['results']),13)  # includes the zero-point bye
+        self.assertTrue(all(row['points']==[1,0] for row in data['pairs']))
+        self.assertLessEqual(len(queries),80,'Completed routers must not multiply scoring/history queries per device')
+        last_state=tournaments.state_for(pairs[-1].game_instance)
+        last_state.delete()
+        self.assertFalse(tournaments.reveal_ready(pairs[0]),'Missing phase state must block the shared reveal')
+
     def test_odd_eligible_pool_gets_one_persisted_random_bye_without_points(self):
         extra=HubParticipant.objects.create(session=self.hub,nickname='Fifth',scoring_eligible=True,checked_in_at=timezone.now())
         for opts in ({'is_active':False},{'scoring_eligible':False},{'check_in_excluded_by_host':True},{'left_permanently_at':timezone.now()}):

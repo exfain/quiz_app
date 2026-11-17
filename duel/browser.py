@@ -21,6 +21,7 @@ from games_hub.authoritative_state import _retry_sqlite_locked
 from games_hub.game_intro import serialize_game_intro
 from .models import DuelGameInstance
 from .match_service import get_match_snapshot
+from .read_transactions import snapshot_transaction
 from .hub import prepare_question, save_plan
 from .views import _errors, _context, _body, _snapshot
 from .oral_material import ORAL_GAMES
@@ -135,7 +136,7 @@ def match_api(request, session_code, instance_id, role, game_key="estimation"):
                 question_id=data["question_id"], previous_unit_id=data["previous_unit_id"])
     def read_snapshot():
         # One read transaction: same revision/phase and score visibility, no writes.
-        with transaction.atomic():
+        with (snapshot_transaction() if game_key == 'estimation' else transaction.atomic()):
             instance = get_object_or_404(DuelGameInstance.objects.select_for_update().select_related(
                 "hub_game_step", "participant_a", "participant_b"), pk=instance_id)
             unit = instance.units.order_by("-number").first()

@@ -51,8 +51,8 @@ class SessionBrowserBase(ChannelsLiveServerTestCase):
         with ThreadPoolExecutor(max_workers=1) as pool:
             return pool.submit(run).result()
 
-    def context(self, *, player=None, host=False, theme='standard'):
-        context = self.browser.new_context()
+    def context(self, *, player=None, host=False, theme='standard', viewport=None):
+        context = self.browser.new_context(**({'viewport': viewport} if viewport else {}))
         self.contexts.append(context)
         install_browser_test_stubs(context)
         context.route('**/*', lambda route: route.continue_() if route.request.url.startswith(self.live_server_url)

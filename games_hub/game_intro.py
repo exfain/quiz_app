@@ -9,6 +9,7 @@ from .models import HubGameStep
 GAME_INTRO_DURATION_MS = 8000
 
 GAME_INTRO_TITLES = {
+    'target': 'ZIELANSAGE',
     'quiz': 'QUICK QUIZ',
     'assign': 'ASSIGN',
     'estimation': 'ESTIMATION',

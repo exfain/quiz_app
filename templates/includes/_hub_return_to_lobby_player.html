@@ -126,6 +126,7 @@
                     headers: {
                         'Content-Type': 'application/json',
                         'X-CSRFToken': config.csrfToken || '',
+                        ...(typeof config.identityHeaders === 'function' ? config.identityHeaders() : {}),
                     },
                     body: JSON.stringify({
                         game_key: config.gameKey,

@@ -1626,6 +1626,9 @@ document.addEventListener('DOMContentLoaded', function() {
             this.websocket.onopen = () => {
                 console.log('WebSocket connected');
                 this.updateConnectionStatus(true);
+                // Joins can occur after HTML rendering but before this socket
+                // subscribes. Recover them through the existing host-only API.
+                this.refreshParticipants();
             };
             
             this.websocket.onmessage = (event) => {
@@ -2646,6 +2649,19 @@ document.addEventListener('DOMContentLoaded', function() {
                 status.textContent = answered ? 'Beantwortet' : 'Offen';
                 status.classList.toggle('is-answered', answered);
             });
+        }
+
+        async refreshParticipants() {
+            const url = new URL('{% url "admin_dashboard:api_participants" quiz.room_code %}', location.origin);
+            const hub = this.getHubSession();
+            if (hub) url.searchParams.set('hub_session', hub);
+            try {
+                const response = await fetch(url, {cache: 'no-store'});
+                const data = await response.json();
+                if (!response.ok || !data.success) return;
+                for (const participant of data.participants || []) this.addParticipant(participant);
+                this.updateParticipantCount();
+            } catch (_) { /* A reconnect repeats the authoritative roster read. */ }
         }
 
         addParticipant(participant) {

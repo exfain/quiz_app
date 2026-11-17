@@ -117,6 +117,19 @@ class HubSpectatorBrowserTests(unittest.TestCase):
             'http://spectator.test/spectate',
             lambda route: route.fulfill(status=200, content_type='text/html; charset=utf-8', body=body),
         )
+        if resolved_game_state and resolved_game_state.get('game_key') == 'where':
+            # Exercise the current SVG map rather than the retired coordinate
+            # text renderer. Serve its real local assets without a live server.
+            context.route(
+                'http://spectator.test/static/js/where-map.js',
+                lambda route: route.fulfill(path=str(REPO_ROOT / 'static/js/where-map.js')),
+            )
+            context.route(
+                'http://spectator.test/static/Where_is_this/maps/*',
+                lambda route: route.fulfill(path=str(
+                    REPO_ROOT / 'static/Where_is_this/maps' / route.request.url.rsplit('/', 1)[-1]
+                )),
+            )
         page = context.new_page()
         page.goto('http://spectator.test/spectate')
         if state['game']:
@@ -587,7 +600,7 @@ class HubSpectatorBrowserTests(unittest.TestCase):
         cases = {
             'quiz': ({'text': 'Quiz', 'options': [], 'correct_answer': 'SECRET QUIZ'}, None),
             'estimation': ({'text': 'Estimation', 'correct_answer': 'SECRET ESTIMATION', 'zones': {'zones': []}}, None),
-            'where': ({'text': 'Where', 'correct_location': {'latitude': 'SECRET WHERE', 'longitude': '1'}}, None),
+            'where': ({'text': 'Where', 'correct_location': {'latitude': 52.52, 'longitude': 13.405}, 'explanation': 'SECRET WHERE'}, None),
             'who_that': ({'text': 'Who That', 'correct_answer': 'SECRET WHO THAT'}, None),
             'blackjack': ({'text': 'Blackjack', 'correct_answer': 'SECRET BLACKJACK'}, None),
             'who': ({'statement': 'Who', 'liars': ['SECRET WHO'], 'truth_tellers': []}, None),
@@ -623,6 +636,9 @@ class HubSpectatorBrowserTests(unittest.TestCase):
                 }
                 context, page = self._open_game({'width': 1920, 'height': 1080}, game)
                 try:
+                    if game_key == 'where':
+                        page.wait_for_selector('#whereSpectatorMap[data-loaded="true"]')
+                        self.assertEqual(page.locator('[data-marker="target"]').count(), 0)
                     secret = next(
                         token
                         for token in (
@@ -646,6 +662,9 @@ class HubSpectatorBrowserTests(unittest.TestCase):
                 context, page = self._open_game({'width': 1920, 'height': 1080}, reveal_game)
                 try:
                     self.assertIn(secret, page.locator('#stage').inner_text())
+                    if game_key == 'where':
+                        page.wait_for_selector('#whereSpectatorMap[data-loaded="true"] [data-marker="target"]')
+                        self.assertEqual(page.locator('[data-team-label="target"]').first.text_content(), 'Ziel')
                 finally:
                     page.close()
                     context.close()

@@ -23,6 +23,7 @@
     <div class="admin-layout">
         <!-- Main Content -->
         <main class="main-content" id="mainContent">
+            <a href="{% url 'target_game:manage' %}" class="btn">Zielansage verwalten</a>
             <!-- Top Navbar -->
             <header class="navbar-top">
                 <div class="navbar-content">
@@ -241,6 +242,7 @@
             const pendingLeaveStorageKey = '_admin_leave_to_hub';
 
             const monitorRouteMatchers = [
+                { regex: /^\/target\/monitor\/([^/]+)\/?$/, gameKey: 'target' },
                 { regex: /^\/admin-dashboard\/quiz\/([^/]+)\/monitor\/?$/, gameKey: 'quiz' },
                 { regex: /^\/admin-dashboard\/assign\/([^/]+)\/monitor\/?$/, gameKey: 'assign' },
                 { regex: /^\/admin-dashboard\/estimation\/([^/]+)\/monitor\/?$/, gameKey: 'estimation' },

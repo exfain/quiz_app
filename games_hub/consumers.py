@@ -1,5 +1,7 @@
+from target_game.models import TargetGame
 import json
 import logging
+from autobahn.exception import Disconnected
 from channels.generic.websocket import AsyncWebsocketConsumer
 from channels.db import database_sync_to_async
 from django.utils import timezone
@@ -43,6 +45,15 @@ logger = logging.getLogger(__name__)
 
 class HubConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
     authoritative_scope_kind = 'lobby'
+
+    async def send(self, text_data=None, bytes_data=None, close=False):
+        try:
+            await super().send(text_data=text_data, bytes_data=bytes_data, close=close)
+        except (Disconnected, OSError):
+            # A page change can close the protocol while a DB-backed reply is
+            # pending. Let the queued disconnect run its normal presence cleanup.
+            # Only transport closure is ignored; application/DB errors propagate.
+            return
 
     async def connect(self):
         self.session_code = self.scope['url_route']['kwargs']['session_code']
@@ -167,9 +178,11 @@ class HubConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
         }
         await self.send_json(payload)
         
-        # Notify others and send updated state
-        await self.channel_layer.group_send(self.group_name, {'type': 'lobby_update'})
-        await self.send_state()
+        # This is the same public lobby projection for every connection. Build
+        # it once, rather than queueing a full DB snapshot per connected device.
+        state = await self.get_state()
+        await self.channel_layer.group_send(self.group_name, {'type': 'lobby_update', 'state': state})
+        await self._send_lobby_state(state)
 
     async def handle_check_nickname(self, data):
         result = await database_sync_to_async(check_nickname_availability)(
@@ -250,6 +263,16 @@ class HubConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
 
     async def send_state(self):
         state = await self.get_state()
+        await self._send_lobby_state(state)
+
+    async def _send_lobby_state(self, state):
+        # A join's direct response may overtake an older queued group event.
+        # Do not replace that newer roster/check-in state with the older one.
+        stamp = state.get('lobby_state_at')
+        if stamp and stamp < getattr(self, '_last_lobby_state_at', ''):
+            return
+        if stamp:
+            self._last_lobby_state_at = stamp
         await self.send_json({'type': 'state', **state})
 
     async def send_json(self, payload):
@@ -257,7 +280,10 @@ class HubConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
 
     # group events
     async def lobby_update(self, event):
-        await self.send_state()
+        if event.get('state') is None:
+            await self.send_state()
+        else:
+            await self._send_lobby_state(event['state'])
 
     async def session_started(self, event):
         await self.send_json({'type': 'session_started'})
@@ -754,6 +780,7 @@ class HubConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
             readiness_state = get_readiness_state(session)
             from .text_matching import settings_locked
             return {
+                'lobby_state_at': server_now.isoformat(),
                 'session': {'code': session.code, 'name': session.name, 'started_at': session.started_at is not None},
                 'participants': participants,
                 'steps': steps,
@@ -809,6 +836,7 @@ class HubConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
             'wer_weiss_mehr': WerWeissMehrGame,
             'buzzer': BuzzerGame,
             'host_points': HostPointsGame,
+            'target': TargetGame,
             'wann_war_das': WannWarDasGame,
         }
         model = model_map.get(game_key)
@@ -836,6 +864,7 @@ class HubConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
             'wer_weiss_mehr': WerWeissMehrGame,
             'buzzer': BuzzerGame,
             'host_points': HostPointsGame,
+            'target': TargetGame,
             'wann_war_das': WannWarDasGame,
         }
         try:
@@ -895,5 +924,6 @@ class HubConsumer(AuthoritativeGameConsumerMixin, AsyncWebsocketConsumer):
             'wer_weiss_mehr': WerWeissMehrGame,
             'buzzer': BuzzerGame,
             'host_points': HostPointsGame,
+            'target': TargetGame,
             'wann_war_das': WannWarDasGame,
         }
